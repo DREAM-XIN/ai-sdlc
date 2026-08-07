@@ -79,6 +79,12 @@ def main():
     gate_without_evidence = apply_event(initial, event("F-0030", [{"kind": "gate", "id": "design-gate", "status": "PASS"}]))
     require(gate_without_evidence["outcome"] == "INVALID", "gate PASS without evidence unexpectedly passed")
 
+    terminal = deepcopy(initial)
+    terminal["workflow"]["status"] = "CANCELLED"
+    terminal_event = apply_event(terminal, event("F-0030", [{"kind": "stage", "id": "design", "status": "WORKING"}]))
+    require(terminal_event["outcome"] == "INVALID", "terminal workflow unexpectedly reopened")
+    require("terminal workflow" in "\n".join(terminal_event["errors"]), f"terminal failure lacks detail: {terminal_event}")
+
     print("Feature transition and closed-loop orchestration scenarios passed")
 
 
