@@ -40,6 +40,7 @@ def main():
         created = build_manifest(bootstrap_doc(f"F-{profile_id}", profile_id, risk), profile)
         require(created["outcome"] == "BOOTSTRAPPED", f"{profile_id} bootstrap failed: {created}")
         manifest = created["manifest"]
+        require(manifest["revision"] == 0, f"{profile_id} bootstrap did not start at revision 0")
         require(manifest["workflow"]["stages"][0]["status"] == "READY", f"{profile_id} first stage not READY")
         require(all(stage["status"] == "TODO" for stage in manifest["workflow"]["stages"][1:]), f"{profile_id} later stages not TODO")
         gate_ids = {stage.get("gate") for stage in profile["stages"] if stage.get("gate")}
@@ -64,6 +65,7 @@ def main():
     created = build_manifest(bootstrap, profile)
     require(created["outcome"] == "BOOTSTRAPPED", f"bootstrap failed: {created}")
     manifest = created["manifest"]
+    require(manifest["revision"] == 0, "bootstrap revision should be zero")
     require(manifest["workflow"]["current_stage"] == "requirement", "wrong bootstrap current stage")
     require(not manifest["applied_events"], "bootstrap should start with empty event ledger")
 
@@ -72,11 +74,29 @@ def main():
     require(first["actions"][0]["stage"] == "requirement", f"wrong first dispatch: {first}")
     require(first["actions"][0]["role"] == "product", f"wrong first role: {first}")
 
+    missing_revision = event(
+        "F-0041",
+        [{"kind": "stage", "id": "requirement", "status": "WORKING"}],
+        "2026-08-07T11:22:30Z",
+        event_id="EVT-F0041-NO-REV",
+    )
+    missing_revision_result = ingest(
+        manifest,
+        missing_revision,
+        event_path="state/events/F-0041/EVT-F0041-NO-REV.yaml",
+        repository="DREAM-XIN/ai-sdlc",
+        manifest_path="state/features/F-0041.yaml",
+        target_ref="feature/F-0041",
+    )
+    require(missing_revision_result["outcome"] == "INVALID", "Inbox accepted an event without expected_revision")
+    require("requires expected_revision" in "\n".join(missing_revision_result["errors"]), "missing revision rejection lacks detail")
+
     start = event(
         "F-0041",
         [{"kind": "stage", "id": "requirement", "status": "WORKING"}],
         "2026-08-07T11:23:00Z",
         event_id="EVT-F0041-REQ-START",
+        expected_revision=0,
     )
     start_result = ingest(
         manifest,
@@ -88,7 +108,11 @@ def main():
         issue=41,
     )
     require(start_result["outcome"] == "PLANNED", f"start inbox event failed: {start_result}")
+    require(start_result["plan"]["manifest"]["source_revision"] == 0, "persistence plan lost source revision")
+    require(start_result["plan"]["manifest"]["revision"] == 1, "persistence plan lost result revision")
+    require(len(start_result["plan"]["manifest"]["source_sha256"]) == 64, "source manifest digest missing")
     working_manifest = materialize(start_result)
+    require(working_manifest["revision"] == 1, "first Inbox event did not produce revision 1")
     require("EVT-F0041-REQ-START" in working_manifest["applied_events"], "event id not persisted")
     require(compute_state(working_manifest, profile)["outcome"] == "WAIT", "working stage should produce WAIT")
 
@@ -102,11 +126,29 @@ def main():
     )
     require(replay["outcome"] == "INVALID", "replayed inbox event unexpectedly passed")
 
+    stale_done = event(
+        "F-0041",
+        [{"kind": "stage", "id": "requirement", "status": "DONE"}],
+        "2026-08-07T11:23:30Z",
+        event_id="EVT-F0041-REQ-DONE-STALE",
+        expected_revision=0,
+    )
+    stale_result = ingest(
+        working_manifest,
+        stale_done,
+        event_path="state/events/F-0041/EVT-F0041-REQ-DONE-STALE.yaml",
+        repository="DREAM-XIN/ai-sdlc",
+        manifest_path="state/features/F-0041.yaml",
+        target_ref="feature/F-0041",
+    )
+    require(stale_result["outcome"] == "INVALID", "Inbox accepted a stale expected revision")
+
     done = event(
         "F-0041",
         [{"kind": "stage", "id": "requirement", "status": "DONE"}],
         "2026-08-07T11:24:00Z",
         event_id="EVT-F0041-REQ-DONE",
+        expected_revision=1,
     )
     done_result = ingest(
         working_manifest,
@@ -118,6 +160,7 @@ def main():
     )
     require(done_result["outcome"] == "PLANNED", f"done inbox event failed: {done_result}")
     completed_manifest = materialize(done_result)
+    require(completed_manifest["revision"] == 2, "second Inbox event did not produce revision 2")
     next_state = compute_state(completed_manifest, profile)
     require(next_state["outcome"] == "DISPATCH", f"completion did not unlock next dispatch: {next_state}")
     require([action["stage"] for action in next_state["actions"]] == ["requirement-review"], f"wrong next stage: {next_state}")
@@ -154,7 +197,7 @@ def main():
     )
     require(legacy_inbox["outcome"] == "INVALID", "Inbox accepted a legacy event without explicit id")
 
-    print("Feature bootstrap and event inbox scenarios passed")
+    print("Feature bootstrap, revision and Event Inbox scenarios passed")
 
 
 if __name__ == "__main__":
