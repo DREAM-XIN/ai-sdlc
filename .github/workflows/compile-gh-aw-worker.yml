@@ -27,7 +27,7 @@ jobs:
       - name: Install pinned gh-aw compiler
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh extension install github/gh-aw@v0.83.4 --force
+        run: gh extension install github/gh-aw --pin v0.83.4 --force
       - name: Compile worker with strict validation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,7 +49,7 @@ jobs:
       - name: Install pinned gh-aw compiler
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh extension install github/gh-aw@v0.83.4 --force
+        run: gh extension install github/gh-aw --pin v0.83.4 --force
       - name: Compile worker with strict validation
         env:
           GH_TOKEN: ${{ github.token }}
