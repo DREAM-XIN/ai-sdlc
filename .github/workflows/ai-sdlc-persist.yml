@@ -1,0 +1,100 @@
+name: AI-SDLC Persist Feature Event
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Repository path to the Feature Manifest
+        required: true
+        type: string
+      event_path:
+        description: Repository path to the Feature Event
+        required: true
+        type: string
+      target_ref:
+        description: Existing branch/ref to update
+        required: true
+        type: string
+      feature_issue:
+        description: Optional Feature Issue number for status output
+        required: false
+        type: string
+      dry_run:
+        description: Generate and validate the plan without pushing changes
+        required: true
+        default: true
+        type: boolean
+      allow_default_branch:
+        description: Explicitly allow persistence directly to the repository default branch
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  persist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Protect default branch
+        shell: bash
+        run: |
+          if [[ "${{ inputs.target_ref }}" == "${{ github.event.repository.default_branch }}" && "${{ inputs.allow_default_branch }}" != "true" ]]; then
+            echo "Refusing direct persistence to default branch without allow_default_branch=true"
+            exit 1
+          fi
+      - name: Build persistence plan
+        shell: bash
+        run: |
+          ISSUE_ARG=""
+          if [[ -n "${{ inputs.feature_issue }}" ]]; then
+            ISSUE_ARG="--issue ${{ inputs.feature_issue }}"
+          fi
+          python scripts/github_persistence.py \
+            "${{ inputs.manifest_path }}" \
+            "${{ inputs.event_path }}" \
+            --repository "${{ github.repository }}" \
+            --manifest-path "${{ inputs.manifest_path }}" \
+            --target-ref "${{ inputs.target_ref }}" \
+            $ISSUE_ARG \
+            --output persistence-plan.json
+      - name: Materialize updated manifest
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('persistence-plan.json').read_text(encoding='utf-8'))
+          if plan['outcome'] != 'PLANNED':
+              raise SystemExit('persistence plan was not PLANNED')
+          target = Path(plan['plan']['target']['manifest_path'])
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
+      - name: Validate materialized manifest
+        shell: bash
+        run: python scripts/validate_feature_manifest.py "${{ inputs.manifest_path }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-sdlc-persistence-plan
+          path: persistence-plan.json
+      - name: Commit and push
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          git config user.name "ai-sdlc[bot]"
+          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git add "${{ inputs.manifest_path }}"
+          if git diff --cached --quiet; then
+            echo "No manifest changes to persist"
+            exit 0
+          fi
+          git commit -m "chore(ai-sdlc): persist feature event"
+          git push origin "HEAD:${{ inputs.target_ref }}"
