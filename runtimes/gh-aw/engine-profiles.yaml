@@ -1,0 +1,26 @@
+version: 0.1.0
+profiles:
+  copilot:
+    engine: copilot
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker.md
+    worker_workflow: ai-sdlc-gh-aw-worker.lock.yml
+    credential: COPILOT_GITHUB_TOKEN
+    maturity: reference
+  codex:
+    engine: codex
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-codex.md
+    worker_workflow: ai-sdlc-gh-aw-worker-codex.lock.yml
+    credential: OPENAI_API_KEY
+    maturity: reference
+  claude:
+    engine: claude
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-claude.md
+    worker_workflow: ai-sdlc-gh-aw-worker-claude.lock.yml
+    credential: ANTHROPIC_API_KEY
+    maturity: reference
+  gemini:
+    engine: gemini
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-gemini.md
+    worker_workflow: ai-sdlc-gh-aw-worker-gemini.lock.yml
+    credential: GEMINI_API_KEY
+    maturity: reference
