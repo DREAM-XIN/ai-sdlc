@@ -1,0 +1,275 @@
+name: AI-SDLC Control
+
+description: Run trusted AI-SDLC plan/bootstrap/persist operations against the caller repository.
+
+inputs:
+  operation:
+    description: One of plan, bootstrap, persist.
+    required: true
+  repository:
+    description: Caller repository in owner/name form.
+    required: true
+  target_ref:
+    description: Caller branch/ref containing AI-SDLC state.
+    required: true
+  manifest_path:
+    description: Feature Manifest path under state/features/.
+    required: true
+  bootstrap_path:
+    description: Repository-relative bootstrap YAML path for bootstrap.
+    required: false
+    default: ''
+  event_path:
+    description: Event Inbox path for persist.
+    required: false
+    default: ''
+  policy_path:
+    description: Optional caller-repository Dispatch Policy override; empty uses the trusted runtime default.
+    required: false
+    default: ''
+  project_path:
+    description: Canonical caller Project Adapter path.
+    required: false
+    default: .ai-sdlc/project.yaml
+  feature_issue:
+    description: Optional numeric Feature Issue for persistence status metadata.
+    required: false
+    default: ''
+  persist:
+    description: Whether bootstrap/persist operations commit and push state to target_ref.
+    required: false
+    default: 'false'
+  allow_default_branch:
+    description: Explicitly allow write operations directly to the caller default branch.
+    required: false
+    default: 'false'
+  default_branch:
+    description: Caller repository default branch, required for write protection.
+    required: false
+    default: ''
+
+outputs:
+  exit_code:
+    description: Reference Commander/control result code. Zero means the operation is valid.
+    value: ${{ steps.control.outputs.exit_code }}
+  commander_plan_path:
+    description: Commander Plan path when operation=plan.
+    value: ${{ steps.control.outputs.commander_plan_path }}
+  summary_path:
+    description: Human-readable plan summary path when operation=plan.
+    value: ${{ steps.control.outputs.summary_path }}
+  prompts_path:
+    description: ChatGPT Web prompt artifact path when operation=plan.
+    value: ${{ steps.control.outputs.prompts_path }}
+  bootstrap_manifest_path:
+    description: Generated Feature Manifest path when operation=bootstrap.
+    value: ${{ steps.control.outputs.bootstrap_manifest_path }}
+  persistence_plan_path:
+    description: Persistence Plan path when operation=persist.
+    value: ${{ steps.control.outputs.persistence_plan_path }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install trusted AI-SDLC runtime dependencies
+      shell: bash
+      env:
+        AI_SDLC_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        runtime_root="$(cd "$AI_SDLC_ACTION_PATH/../../.." && pwd)"
+        pip install -r "$runtime_root/requirements-dev.txt"
+
+    - name: Run AI-SDLC control operation
+      id: control
+      shell: bash
+      env:
+        AI_SDLC_ACTION_PATH: ${{ github.action_path }}
+        OPERATION: ${{ inputs.operation }}
+        REPOSITORY: ${{ inputs.repository }}
+        TARGET_REF: ${{ inputs.target_ref }}
+        MANIFEST_PATH: ${{ inputs.manifest_path }}
+        BOOTSTRAP_PATH: ${{ inputs.bootstrap_path }}
+        EVENT_PATH: ${{ inputs.event_path }}
+        POLICY_PATH: ${{ inputs.policy_path }}
+        PROJECT_PATH: ${{ inputs.project_path }}
+        FEATURE_ISSUE: ${{ inputs.feature_issue }}
+        PERSIST: ${{ inputs.persist }}
+        ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
+        DEFAULT_BRANCH: ${{ inputs.default_branch }}
+      run: |
+        set -euo pipefail
+        runtime_root="$(cd "$AI_SDLC_ACTION_PATH/../../.." && pwd)"
+        export PYTHONPATH="$runtime_root/scripts"
+
+        validate_relative_yaml() {
+          local value="$1"
+          local label="$2"
+          VALUE="$value" LABEL="$label" python - <<'PY'
+        import os
+        from pathlib import PurePosixPath
+        value = os.environ['VALUE']
+        label = os.environ['LABEL']
+        path = PurePosixPath(value)
+        if not value or path.is_absolute() or '..' in path.parts or path.suffix not in {'.yaml', '.yml'}:
+            raise SystemExit(f'{label} must be a repository-relative YAML path without parent traversal')
+        PY
+        }
+
+        protect_write_ref() {
+          if [[ -z "$DEFAULT_BRANCH" ]]; then
+            echo "default_branch is required for write operations"
+            return 1
+          fi
+          if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
+            echo "Refusing direct persistence to default branch without allow_default_branch=true"
+            return 1
+          fi
+        }
+
+        case "$OPERATION" in
+          plan)
+            python - <<'PY'
+        import os
+        from github_persistence import validate_manifest_path
+        error = validate_manifest_path(os.environ['MANIFEST_PATH'])
+        if error:
+            raise SystemExit(error)
+        PY
+            test -f "$MANIFEST_PATH"
+
+            policy_args=(--policy "$runtime_root/dispatch/default.yaml")
+            if [[ -n "$POLICY_PATH" ]]; then
+              validate_relative_yaml "$POLICY_PATH" policy_path
+              test -f "$POLICY_PATH"
+              policy_args=(--policy "$POLICY_PATH")
+            fi
+
+            project_args=()
+            if [[ -n "$PROJECT_PATH" && -f "$PROJECT_PATH" ]]; then
+              validate_relative_yaml "$PROJECT_PATH" project_path
+              project_args=(--project "$PROJECT_PATH" --project-ref "$PROJECT_PATH")
+            fi
+
+            set +e
+            python "$runtime_root/scripts/commander.py" plan "$MANIFEST_PATH" \
+              --repository "$REPOSITORY" \
+              "${policy_args[@]}" \
+              "${project_args[@]}" \
+              > commander-plan.json
+            code=$?
+            set -e
+
+            python "$runtime_root/scripts/github_commander_transport.py" commander-plan.json \
+              --summary commander-summary.md \
+              --prompts chatgpt-web-prompts.txt
+
+            echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+            echo "commander_plan_path=commander-plan.json" >> "$GITHUB_OUTPUT"
+            echo "summary_path=commander-summary.md" >> "$GITHUB_OUTPUT"
+            echo "prompts_path=chatgpt-web-prompts.txt" >> "$GITHUB_OUTPUT"
+            ;;
+
+          bootstrap)
+            validate_relative_yaml "$BOOTSTRAP_PATH" bootstrap_path
+            test -f "$BOOTSTRAP_PATH"
+            python - <<'PY'
+        import os
+        from github_persistence import validate_manifest_path
+        error = validate_manifest_path(os.environ['MANIFEST_PATH'])
+        if error:
+            raise SystemExit(error)
+        PY
+
+            set +e
+            python "$runtime_root/scripts/commander.py" bootstrap "$BOOTSTRAP_PATH" \
+              --output bootstrap-manifest.yaml \
+              > bootstrap-result.json
+            code=$?
+            set -e
+
+            if [[ "$code" == "0" ]]; then
+              python "$runtime_root/scripts/validate_feature_manifest.py" bootstrap-manifest.yaml
+              if [[ "$PERSIST" == "true" ]]; then
+                protect_write_ref
+                mkdir -p -- "$(dirname -- "$MANIFEST_PATH")"
+                cp -- bootstrap-manifest.yaml "$MANIFEST_PATH"
+                git config user.name "ai-sdlc[bot]"
+                git config user.email "ai-sdlc[bot]@users.noreply.github.com"
+                git add -- "$MANIFEST_PATH"
+                if ! git diff --cached --quiet; then
+                  git commit -m "chore(ai-sdlc): bootstrap feature manifest"
+                  git push origin "HEAD:$TARGET_REF"
+                fi
+              fi
+            fi
+
+            echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+            echo "bootstrap_manifest_path=bootstrap-manifest.yaml" >> "$GITHUB_OUTPUT"
+            ;;
+
+          persist)
+            validate_relative_yaml "$EVENT_PATH" event_path
+            test -f "$MANIFEST_PATH"
+            test -f "$EVENT_PATH"
+
+            args=(
+              "$MANIFEST_PATH"
+              "$EVENT_PATH"
+              --event-path "$EVENT_PATH"
+              --repository "$REPOSITORY"
+              --manifest-path "$MANIFEST_PATH"
+              --target-ref "$TARGET_REF"
+              --output persistence-plan.json
+            )
+            if [[ -n "$FEATURE_ISSUE" ]]; then
+              if [[ ! "$FEATURE_ISSUE" =~ ^[0-9]+$ ]]; then
+                echo "feature_issue must be numeric"
+                exit 1
+              fi
+              args+=(--issue "$FEATURE_ISSUE")
+            fi
+
+            set +e
+            python "$runtime_root/scripts/ingest_feature_event.py" "${args[@]}"
+            code=$?
+            set -e
+
+            if [[ "$code" == "0" ]]; then
+              MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        plan = json.loads(Path('persistence-plan.json').read_text(encoding='utf-8'))
+        if plan['outcome'] != 'PLANNED':
+            raise SystemExit('persistence plan was not PLANNED')
+        target = Path(os.environ['MANIFEST_PATH'])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
+        PY
+              python "$runtime_root/scripts/validate_feature_manifest.py" "$MANIFEST_PATH"
+
+              if [[ "$PERSIST" == "true" ]]; then
+                protect_write_ref
+                git config user.name "ai-sdlc[bot]"
+                git config user.email "ai-sdlc[bot]@users.noreply.github.com"
+                git add -- "$MANIFEST_PATH"
+                if ! git diff --cached --quiet; then
+                  git commit -m "chore(ai-sdlc): persist feature event"
+                  git push origin "HEAD:$TARGET_REF"
+                fi
+              fi
+            fi
+
+            echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+            echo "persistence_plan_path=persistence-plan.json" >> "$GITHUB_OUTPUT"
+            ;;
+
+          *)
+            echo "unsupported operation: $OPERATION"
+            exit 1
+            ;;
+        esac
