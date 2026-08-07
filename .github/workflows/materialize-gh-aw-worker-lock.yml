@@ -1,7 +1,6 @@
 name: Materialize AI-SDLC gh-aw Worker Locks
 
 # Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated lock files.
-# Trigger r2 materialization after gh-aw lock security compatibility merged.
 on:
   push:
     branches:
