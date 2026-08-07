@@ -6,12 +6,14 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from evaluate_gate import evaluate
+from render_task_package import build_package
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec"
 PROFILES = ROOT / "profiles"
 GATES = ROOT / "gates" / "core-gates.yaml"
 RUBRICS = ROOT / "gates" / "review-rubrics.yaml"
+TASK_EXAMPLES = ROOT / "examples" / "tasks"
 TASK_PACKAGE_EXAMPLES = ROOT / "examples" / "chatgpt-web"
 GATE_EXAMPLES = ROOT / "examples" / "gates"
 
@@ -24,6 +26,15 @@ def load_json(path: Path):
 def load_yaml(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def validate_with_schema(data, schema_path: Path, label: str):
+    errors = []
+    validator = Draft202012Validator(load_json(schema_path))
+    for error in validator.iter_errors(data):
+        location = ".".join(str(p) for p in error.absolute_path) or "<root>"
+        errors.append(f"{label}:{location}: {error.message}")
+    return errors
 
 
 def validate_schemas():
@@ -39,25 +50,35 @@ def validate_schemas():
 
 def validate_profiles():
     errors = []
-    schema = load_json(SPEC / "workflow.schema.json")
-    validator = Draft202012Validator(schema)
     for path in sorted(PROFILES.glob("*.yaml")):
-        data = load_yaml(path)
-        for error in validator.iter_errors(data):
-            location = ".".join(str(p) for p in error.absolute_path) or "<root>"
-            errors.append(f"{path.relative_to(ROOT)}:{location}: {error.message}")
+        errors += validate_with_schema(
+            load_yaml(path), SPEC / "workflow.schema.json", str(path.relative_to(ROOT))
+        )
     return errors
 
 
-def validate_task_packages():
+def validate_tasks_and_packages():
     errors = []
-    schema = load_json(SPEC / "task-package.schema.json")
-    validator = Draft202012Validator(schema)
+    task_schema = SPEC / "task.schema.json"
+    package_schema = SPEC / "task-package.schema.json"
+
+    for path in sorted(TASK_EXAMPLES.glob("*.yaml")):
+        task = load_yaml(path)
+        errors += validate_with_schema(task, task_schema, str(path.relative_to(ROOT)))
+        package = build_package(
+            task,
+            repository="example-org/example-repo",
+            read_refs=task.get("inputs", []),
+            project_rules=["AGENTS.md"],
+        )
+        errors += validate_with_schema(
+            package, package_schema, f"rendered:{path.relative_to(ROOT)}"
+        )
+
     for path in sorted(TASK_PACKAGE_EXAMPLES.glob("*.yaml")):
-        data = load_yaml(path)
-        for error in validator.iter_errors(data):
-            location = ".".join(str(p) for p in error.absolute_path) or "<root>"
-            errors.append(f"{path.relative_to(ROOT)}:{location}: {error.message}")
+        errors += validate_with_schema(
+            load_yaml(path), package_schema, str(path.relative_to(ROOT))
+        )
     return errors
 
 
@@ -114,7 +135,7 @@ def main():
     errors = (
         validate_schemas()
         + validate_profiles()
-        + validate_task_packages()
+        + validate_tasks_and_packages()
         + validate_gate_file()
         + validate_rubrics()
         + validate_gate_examples()
