@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   gemini-live-dogfood:
-    if: ${{ github.actor == github.repository_owner }}
+    if: ${{ startsWith(github.ref_name, 'dogfood/gh-aw-live-gemini-') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout dogfood target branch
@@ -55,8 +55,8 @@ jobs:
           }
           if trigger != expected:
               raise SystemExit(f'dogfood trigger must equal the reviewed contract: {expected}')
-          if not os.environ['TARGET_REF'].startswith('dogfood/gh-aw-live-'):
-              raise SystemExit('live dogfood must run on a dedicated non-default branch')
+          if not os.environ['TARGET_REF'].startswith('dogfood/gh-aw-live-gemini-'):
+              raise SystemExit('live Gemini dogfood must run on its dedicated branch namespace')
           if Path(expected['manifest_path']).exists():
               raise SystemExit('live dogfood is one-shot and requires a fresh branch without a Feature Manifest')
           PY
