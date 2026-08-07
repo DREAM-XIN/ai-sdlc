@@ -119,7 +119,8 @@ def build_dispatch_plan(
                 "ref": target_ref,
                 "inputs": {
                     "feature_id": manifest["feature"]["id"],
-                    "expected_revision": revision,
+                    # Execution reserves READY -> WORKING before dispatch, advancing revision once.
+                    "expected_revision": revision + 1,
                     "stage": action["stage"],
                     "role": action["role"],
                     "task_payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
@@ -135,6 +136,11 @@ def build_dispatch_plan(
         return {"outcome": "INVALID", "errors": errors}
     if not dispatches:
         return {"outcome": "NO_DISPATCH", "errors": ["Commander Plan contains no gh-aw/autonomous routes"]}
+    if len(dispatches) != 1:
+        return {
+            "outcome": "INVALID",
+            "errors": ["gh-aw runtime v0.1 supports exactly one autonomous dispatch per Feature revision"],
+        }
 
     plan = {
         "version": "0.1.0",
@@ -152,6 +158,28 @@ def build_dispatch_plan(
     return {"outcome": "PLANNED", "errors": [], "plan": plan}
 
 
+def start_event_for_plan(planned, occurred_at):
+    if planned.get("outcome") != "PLANNED" or "plan" not in planned:
+        return {"outcome": "INVALID", "errors": ["gh-aw START requires a PLANNED dispatch"]}
+    plan = planned["plan"]
+    dispatches = plan.get("dispatches", [])
+    if len(dispatches) != 1:
+        return {"outcome": "INVALID", "errors": ["gh-aw START requires exactly one dispatch"]}
+    dispatch = dispatches[0]
+    event = {
+        "version": "0.1.0",
+        "id": f"EVT-GHAW-{plan['feature_id']}-{plan['revision']}-START",
+        "feature_id": plan["feature_id"],
+        "expected_revision": plan["revision"],
+        "occurred_at": occurred_at,
+        "changes": [{"kind": "stage", "id": dispatch["stage"], "status": "WORKING"}],
+    }
+    errors = validate_event(event)
+    if errors:
+        return {"outcome": "INVALID", "errors": errors}
+    return {"outcome": "EVENT_READY", "errors": [], "event": event}
+
+
 def result_to_event(result):
     errors = validate_schema(result, RESULT_SCHEMA, "gh-aw-worker-result")
     if errors:
@@ -161,10 +189,10 @@ def result_to_event(result):
     for evidence in result.get("evidence", []):
         changes.append({"kind": "evidence", "record": dict(evidence)})
 
-    # A worker completing its assignment never self-approves the stage as DONE.
-    # It hands work to independent review. Blocked/failed execution blocks the stage.
+    # Completing a work stage is allowed; approving a Gate is not. Independent
+    # review stages and deterministic Gate evaluation remain separate lifecycle work.
     if result["status"] == "COMPLETED":
-        changes.append({"kind": "stage", "id": result["stage"], "status": "REVIEW"})
+        changes.append({"kind": "stage", "id": result["stage"], "status": "DONE"})
     else:
         changes.append(
             {
@@ -232,6 +260,11 @@ def main():
     plan.add_argument("--project-ref", default=".ai-sdlc/project.yaml")
     plan.add_argument("--output", type=Path)
 
+    start = subparsers.add_parser("start-event", help="Create the READY -> WORKING reservation event for a planned gh-aw dispatch")
+    start.add_argument("dispatch_plan", type=Path)
+    start.add_argument("--occurred-at", required=True)
+    start.add_argument("--output", type=Path)
+
     result_parser = subparsers.add_parser("result-to-event", help="Convert a validated gh-aw worker result into a proposed Feature Event")
     result_parser.add_argument("result", type=Path)
     result_parser.add_argument("--output", type=Path)
@@ -253,6 +286,17 @@ def main():
                 project_ref=args.project_ref,
             )
         write_output(result, args.output)
+        if result["outcome"] == "INVALID":
+            raise SystemExit(2)
+        return
+
+    if args.command == "start-event":
+        planned = json.loads(args.dispatch_plan.read_text(encoding="utf-8"))
+        result = start_event_for_plan(planned, args.occurred_at)
+        if result["outcome"] == "EVENT_READY" and args.output:
+            write_output(result["event"], args.output, yaml_output=True)
+        else:
+            write_output(result, None)
         if result["outcome"] == "INVALID":
             raise SystemExit(2)
         return
