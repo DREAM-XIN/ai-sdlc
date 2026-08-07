@@ -39,13 +39,17 @@ The new manifest can immediately be passed to `orchestrator_state.py` to obtain 
 
 ## Event identity and replay safety
 
-Every Feature Event contains a stable `id`.
+New Feature Events should contain a stable explicit `id`.
 
-After a successful transition, that id is appended to `applied_events` in the Feature Manifest. Applying the same id again returns `INVALID` before lifecycle state is modified.
+For backward compatibility with existing `0.1.x` documents, the core transition engine still accepts an event without `id`; it derives a deterministic `legacy-...` identity from the canonical event content. The derived identity is recorded exactly like an explicit identity and therefore also provides replay protection.
 
-This protects against repeated ChatGPT submissions, retried CI jobs, duplicated webhooks, and manual replay.
+After a successful transition, the effective identity is appended to `applied_events` in the Feature Manifest. Applying the same identity again returns `INVALID` before lifecycle state is modified.
+
+This protects against repeated ChatGPT submissions, retried CI jobs, duplicated webhooks, and manual replay without making existing valid `0.1.x` Feature Events invalid.
 
 ## Event inbox rules
+
+The repository Event Inbox is stricter than the generic Feature Event protocol: Inbox events must provide an explicit `id`.
 
 `ingest_feature_event.py` accepts only paths shaped as:
 
@@ -53,7 +57,7 @@ This protects against repeated ChatGPT submissions, retried CI jobs, duplicated 
 state/events/<feature-id>/<event-id>.yaml
 ```
 
-The directory Feature id must equal `event.feature_id`, and the filename stem must equal `event.id`.
+The directory Feature id must equal `event.feature_id`, and the filename stem must equal the explicit `event.id`.
 
 The inbox validator then delegates to the vendor-neutral Feature Event transition engine and GitHub Persistence Plan generator.
 
