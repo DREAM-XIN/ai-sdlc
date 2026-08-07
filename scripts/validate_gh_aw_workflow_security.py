@@ -44,6 +44,8 @@ def main():
 
     require("permissions:\n  contents: write" in result, "gh-aw result intake lacks explicit write envelope")
     require("actions: write" not in result, "gh-aw result intake unnecessarily has Actions write permission")
+    require("allow_default_branch" not in result, "gh-aw result intake exposes a default-branch write escape hatch")
+    require("gh-aw autonomous result persistence must target a non-default branch" in result, "gh-aw result intake lost default-branch denial")
     require("WORKER_RESULT_JSON: ${{ inputs.worker_result_json }}" in result, "worker result is not passed through a quoted environment boundary")
     require("gh_aw_adapter.py result-to-event" in result, "worker result bypasses runtime result contract")
     require("ingest_feature_event.py" in result, "worker result bypasses Event Inbox/revision validation")
