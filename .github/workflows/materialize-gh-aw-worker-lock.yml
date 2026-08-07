@@ -3,7 +3,7 @@ name: Materialize AI-SDLC gh-aw Worker Lock
 on:
   push:
     branches:
-      - feature/gh-aw-worker-dogfood
+      - 'gh-aw/compile-*'
     paths:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
