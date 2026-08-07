@@ -1,4 +1,4 @@
-name: Materialize AI-SDLC gh-aw Worker Lock
+name: Materialize AI-SDLC gh-aw Worker Locks
 
 # Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated lock files.
 on:
@@ -8,36 +8,67 @@ on:
     paths:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
+      - 'runtimes/gh-aw/engine-profiles.yaml'
+      - 'scripts/render_gh_aw_workers.py'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  materialize-lock:
+  materialize-locks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install renderer dependency
+        run: pip install 'PyYAML>=6.0,<7'
+      - name: Render all trusted engine workers
+        run: python scripts/render_gh_aw_workers.py --all
       - name: Install pinned gh-aw compiler
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: gh extension install github/gh-aw --pin v0.83.4 --force
-      - name: Compile worker with strict validation
+      - name: Strict-compile every engine profile
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
-        run: gh aw compile ai-sdlc-gh-aw-worker --strict
-      - name: Commit generated lock file
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/workers.txt
+          import yaml
+          data = yaml.safe_load(open('runtimes/gh-aw/engine-profiles.yaml'))
+          for cfg in data['profiles'].values():
+              source = cfg['worker_source'].split('/')[-1]
+              if not source.endswith('.md'):
+                  raise SystemExit('worker_source must end in .md')
+              print(source[:-3])
+          PY
+          while IFS= read -r worker; do
+            gh aw compile "$worker" --strict
+          done < /tmp/workers.txt
+      - name: Commit generated lock files only
         run: |
           set -euo pipefail
           git config user.name "ai-sdlc[bot]"
           git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          git add -- .github/workflows/ai-sdlc-gh-aw-worker.lock.yml
+          python - <<'PY' > /tmp/locks.txt
+          import yaml
+          data = yaml.safe_load(open('runtimes/gh-aw/engine-profiles.yaml'))
+          for cfg in data['profiles'].values():
+              print('.github/workflows/' + cfg['worker_workflow'])
+          PY
+          while IFS= read -r lock; do
+            test -f "$lock"
+            git add -- "$lock"
+          done < /tmp/locks.txt
           if git diff --cached --quiet; then
-            echo "Compiled lock file is already current."
+            echo "Compiled lock files are already current."
             exit 0
           fi
-          git commit -m "build(gh-aw): compile bounded worker"
+          git commit -m "build(gh-aw): compile trusted engine workers"
           git push origin "HEAD:${GITHUB_REF_NAME}"
