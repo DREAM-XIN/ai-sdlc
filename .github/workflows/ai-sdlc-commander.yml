@@ -20,11 +20,11 @@ on:
         required: true
         type: string
       bootstrap_path:
-        description: Bootstrap YAML path (required for bootstrap operation)
+        description: Repository-relative Bootstrap YAML path (required for bootstrap operation)
         required: false
         type: string
       policy_path:
-        description: Dispatch policy path
+        description: Repository-relative Dispatch Policy path
         required: true
         default: dispatch/default.yaml
         type: string
@@ -46,13 +46,46 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout trusted control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+      - name: Checkout target state
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
+          path: workspace
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements-dev.txt
+      - run: pip install -r runtime/requirements-dev.txt
+      - name: Validate repository input paths
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+        run: |
+          PYTHONPATH=runtime/scripts python - <<'PY'
+          import os
+          from pathlib import PurePosixPath
+          from github_persistence import validate_manifest_path
+
+          manifest = os.environ['MANIFEST_PATH']
+          error = validate_manifest_path(manifest)
+          if error:
+              raise SystemExit(error)
+
+          policy = PurePosixPath(os.environ['POLICY_PATH'])
+          if policy.is_absolute() or '..' in policy.parts:
+              raise SystemExit('policy_path must be repository-relative without parent traversal')
+          if len(policy.parts) < 2 or policy.parts[0] != 'dispatch' or policy.suffix not in {'.yaml', '.yml'}:
+              raise SystemExit('policy_path must be a YAML file under dispatch/')
+          PY
+          test -f "workspace/$MANIFEST_PATH"
+          test -f "workspace/$POLICY_PATH"
       - name: Build Commander Plan
         id: commander
         shell: bash
@@ -62,16 +95,16 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set +e
-          python scripts/commander.py plan "$MANIFEST_PATH" \
+          python runtime/scripts/commander.py plan "workspace/$MANIFEST_PATH" \
             --repository "$REPOSITORY" \
-            --policy "$POLICY_PATH" \
+            --policy "workspace/$POLICY_PATH" \
             > commander-plan.json
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
       - name: Render GitHub transport
         run: |
-          python scripts/github_commander_transport.py commander-plan.json \
+          python runtime/scripts/github_commander_transport.py commander-plan.json \
             --summary commander-summary.md \
             --prompts chatgpt-web-prompts.txt
           cat commander-summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -97,35 +130,53 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout trusted control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+      - name: Checkout target workspace
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
+          path: workspace
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements-dev.txt
+      - run: pip install -r runtime/requirements-dev.txt
       - name: Validate bootstrap inputs
         shell: bash
         env:
           BOOTSTRAP_PATH: ${{ inputs.bootstrap_path }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
         run: |
-          if [[ -z "$BOOTSTRAP_PATH" ]]; then
-            echo "bootstrap_path is required for bootstrap operation"
-            exit 1
-          fi
-          if [[ ! -f "$BOOTSTRAP_PATH" ]]; then
-            echo "bootstrap file does not exist: $BOOTSTRAP_PATH"
-            exit 1
-          fi
+          PYTHONPATH=runtime/scripts python - <<'PY'
+          import os
+          from pathlib import PurePosixPath
+          from github_persistence import validate_manifest_path
+
+          bootstrap_value = os.environ['BOOTSTRAP_PATH']
+          if not bootstrap_value:
+              raise SystemExit('bootstrap_path is required for bootstrap operation')
+          bootstrap = PurePosixPath(bootstrap_value)
+          if bootstrap.is_absolute() or '..' in bootstrap.parts or bootstrap.suffix not in {'.yaml', '.yml'}:
+              raise SystemExit('bootstrap_path must be a repository-relative YAML file without parent traversal')
+
+          error = validate_manifest_path(os.environ['MANIFEST_PATH'])
+          if error:
+              raise SystemExit(error)
+          PY
+          test -f "workspace/$BOOTSTRAP_PATH"
       - name: Bootstrap Feature Manifest
         shell: bash
         env:
           BOOTSTRAP_PATH: ${{ inputs.bootstrap_path }}
         run: |
-          python scripts/commander.py bootstrap "$BOOTSTRAP_PATH" \
+          python runtime/scripts/commander.py bootstrap "workspace/$BOOTSTRAP_PATH" \
             --output bootstrap-manifest.yaml
-          python scripts/validate_feature_manifest.py bootstrap-manifest.yaml
+          python runtime/scripts/validate_feature_manifest.py bootstrap-manifest.yaml
       - uses: actions/upload-artifact@v4
         with:
           name: ai-sdlc-bootstrap-manifest
@@ -143,21 +194,14 @@ jobs:
             echo "Refusing direct persistence to default branch without allow_default_branch=true"
             exit 1
           fi
-          MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
-          import os
-          from github_persistence import validate_manifest_path
-          error = validate_manifest_path(os.environ['MANIFEST_PATH'])
-          if error:
-              raise SystemExit(error)
-          PY
-          mkdir -p -- "$(dirname -- "$MANIFEST_PATH")"
-          cp -- bootstrap-manifest.yaml "$MANIFEST_PATH"
-          git config user.name "ai-sdlc[bot]"
-          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          git add -- "$MANIFEST_PATH"
-          if git diff --cached --quiet; then
+          mkdir -p -- "workspace/$(dirname -- "$MANIFEST_PATH")"
+          cp -- bootstrap-manifest.yaml "workspace/$MANIFEST_PATH"
+          git -C workspace config user.name "ai-sdlc[bot]"
+          git -C workspace config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git -C workspace add -- "$MANIFEST_PATH"
+          if git -C workspace diff --cached --quiet; then
             echo "No bootstrap changes to persist"
             exit 0
           fi
-          git commit -m "chore(ai-sdlc): bootstrap feature manifest"
-          git push origin "HEAD:$TARGET_REF"
+          git -C workspace commit -m "chore(ai-sdlc): bootstrap feature manifest"
+          git -C workspace push origin "HEAD:$TARGET_REF"
