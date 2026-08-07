@@ -11,6 +11,9 @@ workflow:
     - id: requirement
       status: DONE
       gate: requirement-gate
+    - id: requirement
+      status: DONE
+      gate: requirement-gate
     - id: verification
       status: TODO
       gate: verification-gate
