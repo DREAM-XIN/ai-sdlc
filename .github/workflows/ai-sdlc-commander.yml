@@ -24,9 +24,9 @@ on:
         required: false
         type: string
       policy_path:
-        description: Repository-relative Dispatch Policy path
-        required: true
-        default: dispatch/default.yaml
+        description: Optional target-repository Dispatch Policy override; empty uses trusted runtime default
+        required: false
+        default: ''
         type: string
       persist_bootstrap:
         description: Commit bootstrapped Manifest to target_ref
@@ -78,14 +78,20 @@ jobs:
           if error:
               raise SystemExit(error)
 
-          policy = PurePosixPath(os.environ['POLICY_PATH'])
-          if policy.is_absolute() or '..' in policy.parts:
-              raise SystemExit('policy_path must be repository-relative without parent traversal')
-          if len(policy.parts) < 2 or policy.parts[0] != 'dispatch' or policy.suffix not in {'.yaml', '.yml'}:
-              raise SystemExit('policy_path must be a YAML file under dispatch/')
+          policy_value = os.environ['POLICY_PATH']
+          if policy_value:
+              policy = PurePosixPath(policy_value)
+              if policy.is_absolute() or '..' in policy.parts:
+                  raise SystemExit('policy_path must be repository-relative without parent traversal')
+              if policy.suffix not in {'.yaml', '.yml'}:
+                  raise SystemExit('policy_path must be a YAML file')
+              if not policy.parts or policy.parts[0] not in {'dispatch', '.ai-sdlc'}:
+                  raise SystemExit('policy_path override must be under dispatch/ or .ai-sdlc/')
           PY
           test -f "workspace/$MANIFEST_PATH"
-          test -f "workspace/$POLICY_PATH"
+          if [[ -n "$POLICY_PATH" ]]; then
+            test -f "workspace/$POLICY_PATH"
+          fi
       - name: Build Commander Plan
         id: commander
         shell: bash
@@ -94,10 +100,21 @@ jobs:
           POLICY_PATH: ${{ inputs.policy_path }}
           REPOSITORY: ${{ github.repository }}
         run: |
+          policy_args=(--policy runtime/dispatch/default.yaml)
+          if [[ -n "$POLICY_PATH" ]]; then
+            policy_args=(--policy "workspace/$POLICY_PATH")
+          fi
+
+          project_args=()
+          if [[ -f workspace/.ai-sdlc/project.yaml ]]; then
+            project_args=(--project workspace/.ai-sdlc/project.yaml --project-ref .ai-sdlc/project.yaml)
+          fi
+
           set +e
           python runtime/scripts/commander.py plan "workspace/$MANIFEST_PATH" \
             --repository "$REPOSITORY" \
-            --policy "workspace/$POLICY_PATH" \
+            "${policy_args[@]}" \
+            "${project_args[@]}" \
             > commander-plan.json
           code=$?
           set -e
