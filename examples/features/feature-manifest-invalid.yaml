@@ -1,0 +1,29 @@
+protocol_version: 0.1.0
+feature:
+  id: F-BAD
+  title: Invalid manifest fixture
+  risk: medium
+workflow:
+  profile: standard-feature
+  status: DONE
+  current_stage: missing-stage
+  stages:
+    - id: requirement
+      status: DONE
+      gate: requirement-gate
+    - id: verification
+      status: TODO
+      gate: verification-gate
+tasks:
+  - id: TASK-1
+    status: DONE
+  - id: TASK-1
+    status: DONE
+gates:
+  - id: requirement-gate
+    status: FAIL
+    evidence: [EVID-MISSING]
+  - id: verification-gate
+    status: PENDING
+evidence: []
+updated_at: '2026-08-07T10:56:00Z'
