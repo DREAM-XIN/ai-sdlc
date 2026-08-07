@@ -1,0 +1,8 @@
+version: 0.1.0
+feature_id: F-GHAW-LIVE-0001
+engine_profile: gemini
+profile: small-change
+manifest_path: state/features/F-GHAW-LIVE-0001.yaml
+bootstrap_path: dogfood/gh-aw-live-bootstrap.yaml
+requirement_event_path: state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-DONE.yaml
+policy_path: runtimes/gh-aw/example-dispatch-policy.yaml
