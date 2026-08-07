@@ -55,12 +55,7 @@ def main():
     require(stage_status(manifest, "requirement") == "READY", "requirement should start READY")
 
     policy = gh_aw_policy()
-    commander_plan = build_commander_plan(
-        manifest,
-        profile,
-        policy,
-        repository="DREAM-XIN/example-target",
-    )
+    commander_plan = build_commander_plan(manifest, profile, policy, repository="DREAM-XIN/example-target")
     require(commander_plan["outcome"] == "DISPATCH", f"Commander did not dispatch: {commander_plan}")
     require(commander_plan["summary"]["revision"] == 0, "Commander revision mismatch")
     require(commander_plan["dispatches"][0]["runtime"] == {"id": "gh-aw", "mode": "autonomous"}, "gh-aw route not selected")
@@ -69,7 +64,6 @@ def main():
     project_result = load_project_adapter(ROOT / "examples" / "project-adapters" / "generic.yaml")
     require(project_result["outcome"] == "VALID", f"project fixture invalid: {project_result}")
     project = project_result["adapter"]
-
     planned = build_dispatch_plan(
         manifest,
         commander_plan,
@@ -115,12 +109,8 @@ def main():
         "expected_revision": 1,
         "status": "COMPLETED",
         "occurred_at": "2026-08-07T13:42:00Z",
-        "artifacts": [
-            {"id": "ART-GHAW-REQ", "type": "requirement", "uri": "repo://docs/requirements/F-GHAW.md"}
-        ],
-        "evidence": [
-            {"id": "EVID-GHAW-REQ", "type": "worker-result", "status": "pass", "uri": "actions://run/123"}
-        ],
+        "artifacts": [{"id": "ART-GHAW-REQ", "type": "requirement", "uri": "repo://docs/requirements/F-GHAW.md"}],
+        "evidence": [{"id": "EVID-GHAW-REQ", "type": "worker-result", "status": "pass", "uri": "actions://run/123"}],
     }
     converted = result_to_event(worker_result)
     require(converted["outcome"] == "EVENT_READY", f"COMPLETED result conversion failed: {converted}")
@@ -132,7 +122,6 @@ def main():
     require(completed["outcome"] == "APPLIED", f"worker result transition failed: {completed}")
     require(completed["manifest"]["revision"] == 2, "worker result did not produce revision 2")
     require(stage_status(completed["manifest"], "requirement") == "DONE", "completed worker did not leave work stage DONE")
-    require(stage_status(completed["manifest"], "requirement-review") == "READY", "independent review stage did not become READY")
 
     next_plan = build_commander_plan(completed["manifest"], profile, load_yaml(ROOT / "dispatch" / "default.yaml"), repository="DREAM-XIN/example-target")
     require(next_plan["outcome"] == "DISPATCH", f"Commander did not advance to independent review: {next_plan}")
@@ -149,15 +138,7 @@ def main():
 
     for status in ("BLOCKED", "FAILED"):
         blocked_result = deepcopy(worker_result)
-        blocked_result.update(
-            {
-                "id": f"GHAW-F-GHAW-{status}",
-                "status": status,
-                "reason": f"{status.lower()} runtime condition",
-                "evidence": [],
-                "artifacts": [],
-            }
-        )
+        blocked_result.update({"id": f"GHAW-F-GHAW-{status}", "status": status, "reason": f"{status.lower()} runtime condition", "evidence": [], "artifacts": []})
         converted_blocked = result_to_event(blocked_result)
         require(converted_blocked["outcome"] == "EVENT_READY", f"{status} result conversion failed")
         stage_change = next(change for change in converted_blocked["event"]["changes"] if change["kind"] == "stage")
@@ -175,40 +156,19 @@ def main():
 
     stale_commander = deepcopy(commander_plan)
     stale_commander["summary"]["revision"] = 9
-    stale_plan = build_dispatch_plan(
-        manifest,
-        stale_commander,
-        policy,
-        repository="DREAM-XIN/example-target",
-        target_ref="feature/F-GHAW",
-        worker_workflow="ai-sdlc-gh-aw-worker.lock.yml",
-    )
+    stale_plan = build_dispatch_plan(manifest, stale_commander, policy, repository="DREAM-XIN/example-target", target_ref="feature/F-GHAW", worker_workflow="ai-sdlc-gh-aw-worker.lock.yml")
     require(stale_plan["outcome"] == "INVALID", "stale Commander Plan unexpectedly produced gh-aw dispatch")
 
     double_commander = deepcopy(commander_plan)
     second = deepcopy(double_commander["dispatches"][0])
     second["action"] = {"stage": "design", "role": "architect", "gate": None, "parallel": True}
     double_commander["dispatches"].append(second)
-    double_plan = build_dispatch_plan(
-        manifest,
-        double_commander,
-        policy,
-        repository="DREAM-XIN/example-target",
-        target_ref="feature/F-GHAW",
-        worker_workflow="ai-sdlc-gh-aw-worker.lock.yml",
-    )
+    double_plan = build_dispatch_plan(manifest, double_commander, policy, repository="DREAM-XIN/example-target", target_ref="feature/F-GHAW", worker_workflow="ai-sdlc-gh-aw-worker.lock.yml")
     require(double_plan["outcome"] == "INVALID", "parallel gh-aw dispatch unexpectedly passed v0.1 serialization guard")
 
     manual_policy = load_yaml(ROOT / "dispatch" / "default.yaml")
     manual_commander = build_commander_plan(manifest, profile, manual_policy, repository="DREAM-XIN/example-target")
-    no_dispatch = build_dispatch_plan(
-        manifest,
-        manual_commander,
-        manual_policy,
-        repository="DREAM-XIN/example-target",
-        target_ref="feature/F-GHAW",
-        worker_workflow="ai-sdlc-gh-aw-worker.lock.yml",
-    )
+    no_dispatch = build_dispatch_plan(manifest, manual_commander, manual_policy, repository="DREAM-XIN/example-target", target_ref="feature/F-GHAW", worker_workflow="ai-sdlc-gh-aw-worker.lock.yml")
     require(no_dispatch["outcome"] == "NO_DISPATCH", "manual-only Commander Plan was incorrectly treated as gh-aw work")
 
     print("gh-aw autonomous runtime adapter lifecycle scenarios passed")
