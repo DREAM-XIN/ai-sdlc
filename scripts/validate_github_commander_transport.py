@@ -42,6 +42,7 @@ def main():
     require("chatgpt-web/manual" in rendered["summary"], "manual summary lacks runtime")
     require("===== requirement / product =====" in rendered["prompts"], "manual prompt artifact missing")
     require("Repository: DREAM-XIN/ai-sdlc" in rendered["prompts"], "manual prompt lacks repository")
+    require("expected_revision to 0" in rendered["prompts"], "manual prompt lacks revision precondition")
 
     future_policy = deepcopy(policy)
     future_policy["routes"].append(
@@ -64,6 +65,7 @@ def main():
         [{"kind": "stage", "id": "requirement", "status": "WORKING"}],
         "2026-08-07T11:39:00Z",
         event_id="EVT-F0045-REQ-START",
+        expected_revision=0,
     )
     start_result = commander_ingest(
         manifest,
@@ -74,13 +76,14 @@ def main():
         target_ref="feature/F-0045",
     )
     waiting_manifest = materialize(start_result)
+    require(waiting_manifest["revision"] == 1, "transport ingest did not advance revision")
     wait_plan = build_commander_plan(waiting_manifest, profile, policy, repository="DREAM-XIN/ai-sdlc")
     wait_rendered = render_transport(wait_plan)
     require("Outcome: **WAIT**" in wait_rendered["summary"], "WAIT summary missing")
     require("No runtime dispatch is available" in wait_rendered["summary"], "WAIT summary claims dispatch")
     require(wait_rendered["prompts"] == "", "WAIT state unexpectedly produced prompts")
 
-    print("GitHub-native Commander transport scenarios passed")
+    print("GitHub-native Commander revision-aware transport scenarios passed")
 
 
 if __name__ == "__main__":
