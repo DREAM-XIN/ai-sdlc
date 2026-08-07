@@ -35,10 +35,11 @@
           "ref": {"type": "string", "minLength": 1},
           "inputs": {
             "type": "object",
-            "required": ["feature_id", "expected_revision", "stage", "role", "task_payload"],
+            "required": ["feature_id", "expected_revision", "target_ref", "stage", "role", "task_payload"],
             "properties": {
               "feature_id": {"type": "string", "minLength": 1},
               "expected_revision": {"type": "integer", "minimum": 0},
+              "target_ref": {"type": "string", "minLength": 1},
               "stage": {"type": "string", "minLength": 1},
               "role": {"type": "string", "minLength": 1},
               "task_payload": {"type": "string", "minLength": 2}
