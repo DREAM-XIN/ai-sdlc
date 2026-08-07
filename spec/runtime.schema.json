@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/runtime.schema.json",
+  "title": "AI-SDLC Runtime",
+  "type": "object",
+  "required": ["id", "mode"],
+  "properties": {
+    "id": {"type": "string"},
+    "mode": {"enum": ["manual", "assisted", "autonomous"]},
+    "provider": {"type": "string"},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "requires_human_transport": {"type": "boolean", "default": false},
+    "supports_repository_write": {"type": "boolean", "default": false},
+    "supports_pr": {"type": "boolean", "default": false},
+    "config": {"type": "object"}
+  },
+  "additionalProperties": false
+}

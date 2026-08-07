@@ -1,0 +1,36 @@
+id: high-risk
+version: 0.1.0
+risk_profile: high
+stages:
+  - id: discovery
+    role: product
+  - id: requirement-review
+    role: reviewer
+    depends_on: [discovery]
+    gate: human-requirement-gate
+  - id: design
+    role: architect
+    depends_on: [requirement-review]
+  - id: design-review
+    role: reviewer
+    depends_on: [design]
+    gate: human-design-gate
+  - id: plan
+    role: orchestrator
+    depends_on: [design-review]
+  - id: implementation
+    role: developer
+    depends_on: [plan]
+    parallel: true
+  - id: adversarial-review
+    role: reviewer
+    depends_on: [implementation]
+    gate: code-gate
+  - id: verification
+    role: qa
+    depends_on: [adversarial-review]
+    gate: verification-gate
+  - id: acceptance
+    role: product
+    depends_on: [verification]
+    gate: human-release-gate

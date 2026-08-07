@@ -1,0 +1,36 @@
+id: standard-feature
+version: 0.1.0
+risk_profile: medium
+stages:
+  - id: requirement
+    role: product
+  - id: requirement-review
+    role: reviewer
+    depends_on: [requirement]
+    gate: requirement-gate
+  - id: design
+    role: architect
+    depends_on: [requirement-review]
+  - id: design-review
+    role: reviewer
+    depends_on: [design]
+    gate: design-gate
+  - id: plan
+    role: orchestrator
+    depends_on: [design-review]
+  - id: implementation
+    role: developer
+    depends_on: [plan]
+    parallel: true
+  - id: code-review
+    role: reviewer
+    depends_on: [implementation]
+    gate: code-gate
+  - id: verification
+    role: qa
+    depends_on: [code-review]
+    gate: verification-gate
+  - id: acceptance
+    role: product
+    depends_on: [verification]
+    gate: release-gate
