@@ -47,26 +47,40 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Protect default branch
         shell: bash
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
         run: |
-          if [[ "${{ inputs.target_ref }}" == "${{ github.event.repository.default_branch }}" && "${{ inputs.allow_default_branch }}" != "true" ]]; then
+          if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
             echo "Refusing direct persistence to default branch without allow_default_branch=true"
             exit 1
           fi
       - name: Build persistence plan
         shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          EVENT_PATH: ${{ inputs.event_path }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          FEATURE_ISSUE: ${{ inputs.feature_issue }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          ISSUE_ARG=""
-          if [[ -n "${{ inputs.feature_issue }}" ]]; then
-            ISSUE_ARG="--issue ${{ inputs.feature_issue }}"
-          fi
-          python scripts/github_persistence.py \
-            "${{ inputs.manifest_path }}" \
-            "${{ inputs.event_path }}" \
-            --repository "${{ github.repository }}" \
-            --manifest-path "${{ inputs.manifest_path }}" \
-            --target-ref "${{ inputs.target_ref }}" \
-            $ISSUE_ARG \
+          args=(
+            "$MANIFEST_PATH"
+            "$EVENT_PATH"
+            --repository "$REPOSITORY"
+            --manifest-path "$MANIFEST_PATH"
+            --target-ref "$TARGET_REF"
             --output persistence-plan.json
+          )
+          if [[ -n "$FEATURE_ISSUE" ]]; then
+            if [[ ! "$FEATURE_ISSUE" =~ ^[0-9]+$ ]]; then
+              echo "feature_issue must be numeric"
+              exit 1
+            fi
+            args+=(--issue "$FEATURE_ISSUE")
+          fi
+          python scripts/github_persistence.py "${args[@]}"
       - name: Materialize updated manifest
         shell: python
         run: |
@@ -80,7 +94,9 @@ jobs:
           target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
       - name: Validate materialized manifest
         shell: bash
-        run: python scripts/validate_feature_manifest.py "${{ inputs.manifest_path }}"
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+        run: python scripts/validate_feature_manifest.py "$MANIFEST_PATH"
       - uses: actions/upload-artifact@v4
         with:
           name: ai-sdlc-persistence-plan
@@ -88,13 +104,16 @@ jobs:
       - name: Commit and push
         if: ${{ !inputs.dry_run }}
         shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          TARGET_REF: ${{ inputs.target_ref }}
         run: |
           git config user.name "ai-sdlc[bot]"
           git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          git add "${{ inputs.manifest_path }}"
+          git add -- "$MANIFEST_PATH"
           if git diff --cached --quiet; then
             echo "No manifest changes to persist"
             exit 0
           fi
           git commit -m "chore(ai-sdlc): persist feature event"
-          git push origin "HEAD:${{ inputs.target_ref }}"
+          git push origin "HEAD:$TARGET_REF"
