@@ -24,15 +24,15 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.target_ref }}
           persist-credentials: false
 
-      # Pin this to an AI-SDLC release tag or full commit SHA for production use.
+      # Installer must replace this placeholder with a reviewed full AI-SDLC commit SHA.
       - name: Build AI-SDLC Commander Plan
         id: control
-        uses: DREAM-XIN/ai-sdlc/.github/actions/control@main
+        uses: DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA # ai-sdlc-install-placeholder
         with:
           operation: plan
           repository: ${{ github.repository }}
@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: cat "${{ steps.control.outputs.summary_path }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ always() && steps.control.outputs.commander_plan_path != '' }}
         with:
           name: ai-sdlc-commander-plan
