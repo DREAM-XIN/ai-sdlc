@@ -78,6 +78,12 @@ def apply_event(manifest, event):
             "outcome": "INVALID",
             "errors": [f"cannot apply event to terminal workflow: {workflow_status}"],
         }
+    applied_events = set(manifest.get("applied_events", []))
+    if event["id"] in applied_events:
+        return {
+            "outcome": "INVALID",
+            "errors": [f"event already applied: {event['id']}"],
+        }
 
     result = copy.deepcopy(manifest)
     stage_by_id = {stage["id"]: stage for stage in result["workflow"]["stages"]}
@@ -126,6 +132,7 @@ def apply_event(manifest, event):
             if refs:
                 gate["evidence"] = sorted(set(gate.get("evidence", [])) | set(refs))
 
+    result.setdefault("applied_events", []).append(event["id"])
     result["updated_at"] = event["occurred_at"]
     recompute_workflow(result)
     manifest_errors = validate_manifest(result)
