@@ -3,7 +3,7 @@
   "$id": "https://ai-sdlc.dev/schema/feature-event.schema.json",
   "title": "AI-SDLC Feature Event",
   "type": "object",
-  "required": ["version", "id", "feature_id", "occurred_at", "changes"],
+  "required": ["version", "feature_id", "occurred_at", "changes"],
   "properties": {
     "version": {"type": "string", "const": "0.1.0"},
     "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$"},
