@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec"
 PROFILES = ROOT / "profiles"
 GATES = ROOT / "gates" / "core-gates.yaml"
+RUBRICS = ROOT / "gates" / "review-rubrics.yaml"
 TASK_PACKAGE_EXAMPLES = ROOT / "examples" / "chatgpt-web"
 GATE_EXAMPLES = ROOT / "examples" / "gates"
 
@@ -76,6 +77,25 @@ def validate_gate_file():
     return errors
 
 
+def validate_rubrics():
+    errors = []
+    data = load_yaml(RUBRICS)
+    required_severities = {"BLOCKER", "MAJOR", "MINOR", "SUGGESTION"}
+    severities = set((data or {}).get("severities", {}))
+    missing = required_severities - severities
+    if missing:
+        errors.append(f"gates/review-rubrics.yaml: missing severities {sorted(missing)}")
+    rubrics = (data or {}).get("rubrics")
+    if not isinstance(rubrics, dict) or not rubrics:
+        return errors + ["gates/review-rubrics.yaml: at least one rubric is required"]
+    for rubric_id, rubric in rubrics.items():
+        if not rubric.get("dimensions"):
+            errors.append(f"gates/review-rubrics.yaml:{rubric_id}: dimensions are required")
+        if not rubric.get("blocker_rules"):
+            errors.append(f"gates/review-rubrics.yaml:{rubric_id}: blocker_rules are required")
+    return errors
+
+
 def validate_gate_examples():
     errors = []
     passing_fixture = GATE_EXAMPLES / "code-gate-pass.yaml"
@@ -96,6 +116,7 @@ def main():
         + validate_profiles()
         + validate_task_packages()
         + validate_gate_file()
+        + validate_rubrics()
         + validate_gate_examples()
     )
     if errors:
