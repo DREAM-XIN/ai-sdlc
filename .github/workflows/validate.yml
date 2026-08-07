@@ -32,3 +32,4 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
       - run: python scripts/validate.py
+      - run: python scripts/validate_feature_examples.py
