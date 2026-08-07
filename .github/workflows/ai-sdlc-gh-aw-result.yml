@@ -1,0 +1,152 @@
+name: AI-SDLC gh-aw Result
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Non-default Feature branch/ref that owns the authoritative Manifest
+        required: true
+        type: string
+      worker_result_json:
+        description: gh-aw-worker-result-v0.1 JSON payload
+        required: true
+        type: string
+      persist:
+        description: Commit the validated Feature Event and updated Manifest
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  result:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+      - name: Checkout target workspace
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.target_ref }}
+          path: workspace
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Validate target branch
+        shell: bash
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git -C workspace check-ref-format --branch "$TARGET_REF" >/dev/null
+          if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" ]]; then
+            echo "gh-aw autonomous result persistence must target a non-default branch" >&2
+            exit 2
+          fi
+
+      - name: Materialize and validate worker result
+        shell: bash
+        env:
+          WORKER_RESULT_JSON: ${{ inputs.worker_result_json }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload = json.loads(os.environ['WORKER_RESULT_JSON'])
+          Path('gh-aw-worker-result.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          python runtime/scripts/gh_aw_adapter.py result-to-event \
+            gh-aw-worker-result.json \
+            --output proposed-event.yaml
+
+      - name: Resolve canonical state paths
+        id: paths
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import yaml
+          event = yaml.safe_load(open('proposed-event.yaml'))
+          feature = event['feature_id']
+          event_id = event['id']
+          print(f'manifest_path=state/features/{feature}.yaml')
+          print(f'event_path=state/events/{feature}/{event_id}.yaml')
+          PY
+
+      - name: Build persistence plan
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.paths.outputs.event_path }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          test -f "workspace/$MANIFEST_PATH"
+          test ! -L "workspace/$MANIFEST_PATH"
+          python runtime/scripts/ingest_feature_event.py \
+            "workspace/$MANIFEST_PATH" proposed-event.yaml \
+            --event-path "$EVENT_PATH" \
+            --repository "$REPOSITORY" \
+            --manifest-path "$MANIFEST_PATH" \
+            --target-ref "$TARGET_REF" \
+            --output persistence-plan.json
+
+      - name: Materialize proposed Feature state
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.paths.outputs.event_path }}
+        run: |
+          mkdir -p -- "workspace/$(dirname -- "$EVENT_PATH")"
+          cp -- proposed-event.yaml "workspace/$EVENT_PATH"
+          MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path('persistence-plan.json').read_text(encoding='utf-8'))
+          target = Path('workspace') / os.environ['MANIFEST_PATH']
+          target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
+          PY
+          python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-result
+          path: |
+            gh-aw-worker-result.json
+            proposed-event.yaml
+            persistence-plan.json
+
+      - name: Persist validated result
+        if: ${{ inputs.persist }}
+        shell: bash
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.paths.outputs.event_path }}
+        run: |
+          python runtime/scripts/verify_git_write_precondition.py \
+            --repo-dir workspace \
+            --target-ref "$TARGET_REF" \
+            --default-branch "$DEFAULT_BRANCH"
+
+          git -C workspace config user.name "ai-sdlc[bot]"
+          git -C workspace config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git -C workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
+          if git -C workspace diff --cached --quiet; then
+            echo "No gh-aw result changes to persist"
+            exit 0
+          fi
+          git -C workspace commit -m "chore(ai-sdlc): ingest gh-aw worker result"
+          git -C workspace push origin "HEAD:$TARGET_REF"

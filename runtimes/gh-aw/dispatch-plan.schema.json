@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/runtime/gh-aw/dispatch-plan.schema.json",
+  "title": "AI-SDLC gh-aw Dispatch Plan",
+  "type": "object",
+  "required": ["version", "runtime", "repository", "target_ref", "feature_id", "revision", "worker_workflow", "dispatches"],
+  "properties": {
+    "version": {"type": "string", "const": "0.1.0"},
+    "runtime": {
+      "type": "object",
+      "required": ["id", "mode"],
+      "properties": {
+        "id": {"const": "gh-aw"},
+        "mode": {"const": "autonomous"}
+      },
+      "additionalProperties": false
+    },
+    "repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "target_ref": {"type": "string", "minLength": 1},
+    "feature_id": {"type": "string", "minLength": 1},
+    "revision": {"type": "integer", "minimum": 0},
+    "worker_workflow": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.ya?ml$"},
+    "dispatches": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["stage", "role", "task_id", "route_ids", "workflow", "ref", "inputs", "expected_result"],
+        "properties": {
+          "stage": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "minLength": 1},
+          "task_id": {"type": "string", "minLength": 1},
+          "route_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "workflow": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.ya?ml$"},
+          "ref": {"type": "string", "minLength": 1},
+          "inputs": {
+            "type": "object",
+            "required": ["feature_id", "expected_revision", "target_ref", "stage", "role", "task_payload"],
+            "properties": {
+              "feature_id": {"type": "string", "minLength": 1},
+              "expected_revision": {"type": "integer", "minimum": 0},
+              "target_ref": {"type": "string", "minLength": 1},
+              "stage": {"type": "string", "minLength": 1},
+              "role": {"type": "string", "minLength": 1},
+              "task_payload": {"type": "string", "minLength": 2}
+            },
+            "additionalProperties": false
+          },
+          "expected_result": {
+            "type": "object",
+            "required": ["contract", "event_path_prefix"],
+            "properties": {
+              "contract": {"const": "gh-aw-worker-result-v0.1"},
+              "event_path_prefix": {"type": "string", "pattern": "^state/events/[^/]+/$"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

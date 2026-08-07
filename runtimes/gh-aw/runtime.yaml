@@ -1,0 +1,20 @@
+version: 0.1.0
+id: gh-aw
+mode: autonomous
+transport: github-workflow-dispatch
+default_worker_workflow: ai-sdlc-gh-aw-worker.lock.yml
+required_inputs:
+  - feature_id
+  - expected_revision
+  - target_ref
+  - stage
+  - role
+  - task_payload
+result_contract: gh-aw-worker-result-v0.1
+result_schema: runtimes/gh-aw/worker-result.schema.json
+security:
+  worker_repository_permissions: read-only-by-default
+  write_boundary: gh-aw-safe-outputs
+  authoritative_manifest_write: forbidden
+  gate_self_approval: forbidden
+  default_branch_state_write: forbidden
