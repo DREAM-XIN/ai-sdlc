@@ -1,0 +1,60 @@
+name: AI-SDLC Plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch/ref containing the Feature Manifest
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest path under state/features/
+        required: true
+        type: string
+      policy_path:
+        description: Optional repository-local Dispatch Policy override
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          persist-credentials: false
+
+      # Pin this to an AI-SDLC release tag or full commit SHA for production use.
+      - name: Build AI-SDLC Commander Plan
+        id: control
+        uses: DREAM-XIN/ai-sdlc/.github/actions/control@main
+        with:
+          operation: plan
+          repository: ${{ github.repository }}
+          target_ref: ${{ inputs.target_ref }}
+          manifest_path: ${{ inputs.manifest_path }}
+          policy_path: ${{ inputs.policy_path }}
+
+      - name: Publish Commander summary
+        if: ${{ always() && steps.control.outputs.summary_path != '' }}
+        shell: bash
+        run: cat "${{ steps.control.outputs.summary_path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.control.outputs.commander_plan_path != '' }}
+        with:
+          name: ai-sdlc-commander-plan
+          path: |
+            ${{ steps.control.outputs.commander_plan_path }}
+            ${{ steps.control.outputs.summary_path }}
+            ${{ steps.control.outputs.prompts_path }}
+
+      - name: Propagate invalid Commander result
+        if: ${{ steps.control.outputs.exit_code != '0' }}
+        shell: bash
+        run: exit "${{ steps.control.outputs.exit_code }}"
