@@ -7,6 +7,8 @@ from jsonschema import Draft202012Validator
 
 from evaluate_gate import evaluate
 from render_task_package import build_package
+from validate_transition import validate_schema as validate_execution_schema
+from validate_transition import validate_transition
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec"
@@ -16,6 +18,7 @@ RUBRICS = ROOT / "gates" / "review-rubrics.yaml"
 TASK_EXAMPLES = ROOT / "examples" / "tasks"
 TASK_PACKAGE_EXAMPLES = ROOT / "examples" / "chatgpt-web"
 GATE_EXAMPLES = ROOT / "examples" / "gates"
+EXECUTION_EXAMPLES = ROOT / "examples" / "execution"
 
 
 def load_json(path: Path):
@@ -131,6 +134,57 @@ def validate_gate_examples():
     return errors
 
 
+def validate_execution_examples():
+    errors = []
+    schema = load_json(SPEC / "task-execution.schema.json")
+    ready = load_yaml(EXECUTION_EXAMPLES / "ready.yaml")
+    started = load_yaml(EXECUTION_EXAMPLES / "started.yaml")
+    submitted = load_yaml(EXECUTION_EXAMPLES / "submitted.yaml")
+    completed = load_yaml(EXECUTION_EXAMPLES / "completed.yaml")
+
+    for label, doc in (("ready", ready), ("started", started), ("submitted", submitted), ("completed", completed)):
+        try:
+            validate_execution_schema(doc, schema, label)
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    for before, after in ((ready, started), (started, submitted), (submitted, completed)):
+        try:
+            validate_transition(before, after)
+        except ValueError as exc:
+            errors.append(f"expected valid transition failed: {exc}")
+
+    try:
+        illegal = dict(completed)
+        illegal["previous_state"] = "READY"
+        validate_transition(ready, illegal)
+        errors.append("execution validator: illegal READY -> COMPLETED unexpectedly passed")
+    except ValueError:
+        pass
+
+    invalid_docs = [
+        {**started, "state": "BLOCKED", "previous_state": "STARTED"},
+        {**started, "state": "FAILED", "previous_state": "STARTED"},
+        {**submitted, "state": "COMPLETED", "previous_state": "SUBMITTED"},
+    ]
+    for index, doc in enumerate(invalid_docs):
+        try:
+            validate_execution_schema(doc, schema, f"invalid-{index}")
+            errors.append(f"execution schema: invalid state-specific fixture {index} unexpectedly passed")
+        except ValueError:
+            pass
+
+    identity_mutation = dict(started)
+    identity_mutation["task_id"] = "TASK-OTHER"
+    try:
+        validate_transition(ready, identity_mutation)
+        errors.append("execution validator: identity mutation unexpectedly passed")
+    except ValueError:
+        pass
+
+    return errors
+
+
 def main():
     errors = (
         validate_schemas()
@@ -139,6 +193,7 @@ def main():
         + validate_gate_file()
         + validate_rubrics()
         + validate_gate_examples()
+        + validate_execution_examples()
     )
     if errors:
         print("AI-SDLC validation failed:")
