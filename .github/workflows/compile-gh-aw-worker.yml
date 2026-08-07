@@ -1,6 +1,10 @@
 name: Compile AI-SDLC gh-aw Worker
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/ai-sdlc-gh-aw-worker.md'
+      - '.github/workflows/compile-gh-aw-worker.yml'
   push:
     branches:
       - feature/gh-aw-worker-dogfood
@@ -10,10 +14,33 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  compile:
+  validate-compile:
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned gh-aw compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw@v0.83.4 --force
+      - name: Compile worker with strict validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile ai-sdlc-gh-aw-worker --strict
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-worker-lock
+          path: .github/workflows/ai-sdlc-gh-aw-worker.lock.yml
+
+  materialize-lock:
+    if: ${{ github.event_name == 'push' && github.ref_name == 'feature/gh-aw-worker-dogfood' }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
