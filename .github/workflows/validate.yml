@@ -6,7 +6,8 @@ on:
       - 'spec/**'
       - 'profiles/**'
       - 'gates/**'
-      - 'scripts/validate.py'
+      - 'examples/**'
+      - 'scripts/**'
       - 'requirements-dev.txt'
   push:
     branches: [main]
@@ -14,7 +15,8 @@ on:
       - 'spec/**'
       - 'profiles/**'
       - 'gates/**'
-      - 'scripts/validate.py'
+      - 'examples/**'
+      - 'scripts/**'
       - 'requirements-dev.txt'
 
 permissions:
