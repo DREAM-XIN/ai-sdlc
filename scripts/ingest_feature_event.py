@@ -26,6 +26,11 @@ def ingest(manifest, event, event_path: str, repository: str, manifest_path: str
     event_errors = validate_event(event)
     if event_errors:
         return {"outcome": "INVALID", "errors": event_errors}
+    if event.get("expected_revision") is None:
+        return {
+            "outcome": "INVALID",
+            "errors": ["repository Event Inbox requires expected_revision"],
+        }
     path_error = validate_inbox_path(event_path, event)
     if path_error:
         return {"outcome": "INVALID", "errors": [path_error]}
