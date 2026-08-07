@@ -31,6 +31,7 @@ reference_entry_points:
   persistence: scripts/github_persistence.py
   project_adapter: scripts/project_adapter.py
   git_write_precondition: scripts/verify_git_write_precondition.py
+  gh_aw_adapter: scripts/gh_aw_adapter.py
 
 required_docs:
   - README.md
@@ -41,6 +42,8 @@ required_docs:
   - docs/optimistic-concurrency.md
   - docs/cross-repository-installation.md
   - docs/security-model.md
+  - docs/integrations/gh-aw.md
+  - runtimes/gh-aw/README.md
 
 required_ci_validators:
   - scripts/validate.py
@@ -57,19 +60,25 @@ required_ci_validators:
   - scripts/validate_cross_repo_transport.py
   - scripts/validate_git_write_precondition.py
   - scripts/validate_action_security.py
+  - scripts/validate_gh_aw_adapter.py
+  - scripts/validate_gh_aw_workflow_security.py
   - scripts/validate_release_readiness.py
 
 reference_runtimes:
   manual:
     - chatgpt-web
-  routing_only:
+  autonomous_reference:
     - gh-aw
+  routing_only:
     - agent-orchestrator
 
 known_release_blockers:
   - id: second-repository-dogfood
     issue: '#52'
     description: StarringV6Test cross-repository install must pass after private Actions Access is enabled.
+  - id: autonomous-runtime-dogfood
+    issue: '#6'
+    description: A real compiled gh-aw worker must execute one bounded work unit and return durable PR/evidence state before autonomous runtime support is declared complete.
 
 release_policy:
   publish_tag_after_blockers_clear: true
