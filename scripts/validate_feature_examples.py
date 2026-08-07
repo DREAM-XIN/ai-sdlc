@@ -31,6 +31,7 @@ def main():
         raise SystemExit(1)
 
     required_fragments = [
+        "duplicate stage id",
         "unknown current_stage",
         "duplicate task id",
         "is DONE but gate requirement-gate is FAIL",
