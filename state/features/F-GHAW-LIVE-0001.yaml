@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 0
+revision: 1
 feature:
   id: F-GHAW-LIVE-0001
   title: Live Gemini gh-aw bounded autonomous dogfood
@@ -11,7 +11,7 @@ workflow:
   current_stage: requirement
   stages:
   - id: requirement
-    status: READY
+    status: WORKING
   - id: implementation
     status: TODO
   - id: review
@@ -28,5 +28,6 @@ gates:
 - id: verification-gate
   status: PENDING
 evidence: []
-applied_events: []
-updated_at: '2026-08-07T16:50:00Z'
+applied_events:
+- EVT-F-GHAW-LIVE-REQ-START
+updated_at: '2026-08-07T16:51:00Z'
