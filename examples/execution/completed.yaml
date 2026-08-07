@@ -1,0 +1,11 @@
+id: EXEC-8-1
+feature_id: F-0008
+task_id: TASK-16
+runtime_id: chatgpt-web
+state: COMPLETED
+previous_state: SUBMITTED
+updated_at: '2026-08-07T10:10:00Z'
+evidence:
+  - github:pull/7
+  - github:actions/protocol-validation
+actor: reviewer
