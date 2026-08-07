@@ -1,0 +1,93 @@
+version: 0.1.0
+
+severities:
+  BLOCKER:
+    meaning: Must be fixed before the current gate can pass.
+  MAJOR:
+    meaning: Significant defect or risk; normally requires rework before pass.
+  MINOR:
+    meaning: Non-blocking quality issue; may be accepted with rationale.
+  SUGGESTION:
+    meaning: Optional improvement with no gate impact.
+
+rubrics:
+  requirement:
+    dimensions:
+      - problem-and-goal
+      - scope-and-non-goals
+      - user-scenarios
+      - business-rules
+      - acceptance-criteria
+      - edge-cases
+      - constraints
+      - open-questions
+    blocker_rules:
+      - Acceptance criteria are missing or not testable.
+      - Scope conflict remains unresolved.
+      - A required business decision is still unknown.
+
+  design:
+    dimensions:
+      - requirement-coverage
+      - component-boundaries
+      - contracts-and-interfaces
+      - data-model
+      - failure-handling
+      - security
+      - compatibility
+      - observability
+      - migration
+      - testability
+      - risks-and-alternatives
+    blocker_rules:
+      - Proposed design cannot satisfy an approved acceptance criterion.
+      - A high-impact interface or migration is undefined.
+      - Known correctness or security risk has no mitigation or explicit waiver.
+
+  code:
+    dimensions:
+      - requirement-compliance
+      - design-compliance
+      - correctness
+      - error-handling
+      - concurrency-and-idempotency
+      - security
+      - data-integrity
+      - compatibility
+      - maintainability
+      - scope-discipline
+      - test-adequacy
+    blocker_rules:
+      - Implementation violates an approved acceptance criterion.
+      - Change can corrupt data, bypass required authorization, or break a required contract.
+      - Required deterministic checks fail.
+
+  verification:
+    dimensions:
+      - acceptance-criteria-coverage
+      - regression-coverage
+      - negative-paths
+      - integration-boundaries
+      - environment-validity
+      - evidence-quality
+    blocker_rules:
+      - A required acceptance criterion has no passing evidence.
+      - Required regression or integration checks fail.
+      - Evidence is missing, stale, or cannot be traced to the candidate change.
+
+verdict_policy:
+  PASS:
+    blockers: 0
+    majors: 0
+  PASS_WITH_NOTES:
+    blockers: 0
+    majors: 0
+    minors_allowed: true
+  REWORK:
+    when:
+      - blockers > 0
+      - majors > 0
+  ESCALATE:
+    when:
+      - required decision is outside reviewer authority
+      - policy waiver is required
