@@ -18,12 +18,14 @@ AI-SDLC v0.1.0 is the first externally consumable baseline of the vendor-neutral
 - Added DAG/dependency-aware runnable-stage calculation and safe parallel work planning.
 - Added Gate/Evidence semantics and independent review rubrics.
 
-### Runtime routing and ChatGPT Web
+### Runtime routing and execution
 
 - Added configuration-driven Runtime Router.
 - Added ChatGPT Web/manual Runtime Task Packages and copy-ready prompts.
 - Added Reference Commander `bootstrap`, `plan` and `ingest` interface.
-- Kept unsupported/autonomous runtimes as honest routing decisions rather than pretending execution occurred.
+- Added a reference `gh-aw/autonomous` adapter with deterministic dispatch-plan and worker-result contracts, READY → WORKING reservation, revision-aware result ingestion and trusted GitHub workflow boundaries.
+- Autonomous worker completion closes only the assigned work stage and never self-approves a Gate, review, acceptance, release or merge.
+- Agent Orchestrator remains a routing/integration target until a concrete adapter is implemented.
 
 ### Feature lifecycle and persistence
 
@@ -45,6 +47,7 @@ AI-SDLC v0.1.0 is the first externally consumable baseline of the vendor-neutral
 - Repository Event Inbox now rejects stale Feature Events.
 - Persistence Plans expose source/result revision and hashes.
 - Write-capable GitHub transports compare local checkout SHA to the live remote target branch before push and fail closed on stale workspaces.
+- The v0.1 gh-aw reference adapter serializes authoritative autonomous result ingestion to one worker per Feature revision until parallel merge semantics are explicitly defined.
 
 ### Security
 
@@ -55,6 +58,7 @@ AI-SDLC v0.1.0 is the first externally consumable baseline of the vendor-neutral
 - Added formal threat model and Runtime Adapter security checklist.
 - Pinned external GitHub Actions to reviewed immutable full commit SHAs.
 - Added CI enforcement against mutable Action refs, `pull_request_target`, `workflow_run`, `write-all`, inherited secrets and PR-triggered contents writes.
+- Added gh-aw dispatch/result workflow security validation so trusted worker definitions and lifecycle write authority remain separated from target workspace data.
 
 ### Dogfooding lessons adopted
 
@@ -66,6 +70,7 @@ AI-SDLC v0.1.0 is the first externally consumable baseline of the vendor-neutral
 ### Known limitations / release blockers
 
 - ChatGPT Web remains a manual transport; AI-SDLC generates durable Task Packages/prompts but does not automate browser tabs.
-- `gh-aw` and Agent Orchestrator are routing/integration targets, not yet fully executable reference runtimes.
+- The gh-aw adapter and transport are executable reference boundaries, but autonomous-runtime support is not declared complete until a real compiled gh-aw worker executes one bounded work unit and returns durable PR/evidence state (Issue #6).
+- Agent Orchestrator remains routing-only.
 - Cross-repository private Action dogfood in `DREAM-XIN/StarringV6Test` is implemented but currently blocked by the one-time GitHub private Actions Access repository setting recorded in Issue #52.
-- A public GitHub Release/tag should not be published until that second-repository dogfood blocker is cleared.
+- A public GitHub Release/tag should not be published until the declared release blockers are cleared.
