@@ -50,7 +50,8 @@ jobs:
               'profile': 'small-change',
               'manifest_path': 'state/features/F-GHAW-LIVE-0001.yaml',
               'bootstrap_path': 'dogfood/gh-aw-live-bootstrap.yaml',
-              'requirement_event_path': 'state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-DONE.yaml',
+              'requirement_start_event_path': 'state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-START.yaml',
+              'requirement_done_event_path': 'state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-DONE.yaml',
               'policy_path': 'runtimes/gh-aw/example-dispatch-policy.yaml',
           }
           if trigger != expected:
@@ -90,8 +91,26 @@ jobs:
         run: |
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --hard "origin/${GITHUB_REF_NAME}"
-      - name: Persist operator-prepared requirement prerequisite
-        id: requirement
+      - name: Persist operator requirement START prerequisite
+        id: requirement_start
+        uses: ./runtime/.github/actions/control
+        with:
+          operation: persist
+          repository: ${{ github.repository }}
+          target_ref: ${{ github.ref_name }}
+          manifest_path: state/features/F-GHAW-LIVE-0001.yaml
+          event_path: state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-START.yaml
+          feature_issue: '6'
+          persist: 'true'
+          default_branch: ${{ github.event.repository.default_branch }}
+      - name: Verify requirement START persistence
+        run: test "${{ steps.requirement_start.outputs.exit_code }}" = '0'
+      - name: Refresh target after requirement START
+        run: |
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+      - name: Persist operator requirement DONE prerequisite
+        id: requirement_done
         uses: ./runtime/.github/actions/control
         with:
           operation: persist
@@ -102,8 +121,8 @@ jobs:
           feature_issue: '6'
           persist: 'true'
           default_branch: ${{ github.event.repository.default_branch }}
-      - name: Verify prerequisite persistence
-        run: test "${{ steps.requirement.outputs.exit_code }}" = '0'
+      - name: Verify requirement DONE persistence
+        run: test "${{ steps.requirement_done.outputs.exit_code }}" = '0'
       - name: Verify implementation is READY
         run: |
           git fetch origin "${GITHUB_REF_NAME}"
@@ -116,8 +135,8 @@ jobs:
               raise SystemExit(f"requirement prerequisite is not DONE: {stages}")
           if stages.get('implementation') != 'READY':
               raise SystemExit(f"implementation is not READY: {stages}")
-          if manifest.get('revision') != 1:
-              raise SystemExit(f"expected revision 1 before autonomous dispatch, got {manifest.get('revision')}")
+          if manifest.get('revision') != 2:
+              raise SystemExit(f"expected revision 2 before autonomous dispatch, got {manifest.get('revision')}")
           PY
       - name: Dispatch trusted Gemini profile
         env:
