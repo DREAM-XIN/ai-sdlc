@@ -1,0 +1,78 @@
+name: AI-SDLC gh-aw Runtime Preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_profile:
+        description: Trusted gh-aw engine profile to inspect
+        required: true
+        default: copilot
+        type: choice
+        options:
+          - copilot
+          - codex
+          - claude
+          - gemini
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install preflight dependency
+        run: pip install 'PyYAML>=6.0,<7'
+      - name: Determine credential presence without exposing secret values
+        id: credential
+        env:
+          PROFILE: ${{ inputs.engine_profile }}
+          HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
+          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_CODEX: ${{ secrets.CODEX_API_KEY != '' }}
+          HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI: ${{ secrets.GEMINI_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          case "$PROFILE" in
+            copilot) present="$HAS_COPILOT" ;;
+            codex)
+              if [[ "$HAS_OPENAI" == "true" || "$HAS_CODEX" == "true" ]]; then present=true; else present=false; fi
+              ;;
+            claude) present="$HAS_ANTHROPIC" ;;
+            gemini) present="$HAS_GEMINI" ;;
+            *) echo "unexpected trusted profile" >&2; exit 2 ;;
+          esac
+          printf 'present=%s\n' "$present" >> "$GITHUB_OUTPUT"
+      - name: Run non-invasive preflight
+        id: preflight
+        env:
+          PROFILE: ${{ inputs.engine_profile }}
+          CREDENTIAL_PRESENT: ${{ steps.credential.outputs.present }}
+        run: |
+          set -euo pipefail
+          result=$(python scripts/gh_aw_runtime_preflight.py "$PROFILE" --credential-present "$CREDENTIAL_PRESENT")
+          printf '%s\n' "$result" > gh-aw-preflight.json
+          status=$(python -c "import json; print(json.load(open('gh-aw-preflight.json'))['status'])")
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          {
+            echo '### gh-aw runtime preflight'
+            echo
+            echo '```json'
+            cat gh-aw-preflight.json
+            echo '```'
+            echo
+            echo '> `READY_FOR_ENTITLEMENT_PROBE` means the trusted lock and secret are present. It does not prove provider subscription, quota, billing, or API entitlement.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-preflight-${{ inputs.engine_profile }}
+          path: gh-aw-preflight.json
