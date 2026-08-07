@@ -1,0 +1,29 @@
+version: 0.1.0
+project:
+  id: my-project
+  name: My Project
+  description: Replace with a short project description.
+repository:
+  provider: github
+  full_name: owner/repository
+  default_branch: main
+defaults:
+  workflow_profile: standard-feature
+  runtime_policy: default
+  required_commands:
+    - test
+context:
+  rules:
+    - AGENTS.md
+  read:
+    - README.md
+commands:
+  - id: test
+    purpose: test
+    argv: [replace-with-test-command]
+    cwd: .
+ownership:
+  - id: application
+    role: developer
+    roots:
+      - src
