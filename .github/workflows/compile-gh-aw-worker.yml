@@ -1,0 +1,32 @@
+name: Validate AI-SDLC gh-aw Worker Compile
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ai-sdlc-gh-aw-worker.md'
+      - '.github/workflows/compile-gh-aw-worker.yml'
+      - '.github/workflows/materialize-gh-aw-worker-lock.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-compile:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned gh-aw compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v0.83.4 --force
+      - name: Compile worker with strict validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile ai-sdlc-gh-aw-worker --strict
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-worker-lock
+          path: .github/workflows/ai-sdlc-gh-aw-worker.lock.yml
