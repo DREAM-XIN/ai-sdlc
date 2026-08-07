@@ -1,0 +1,55 @@
+protocol_version: 0.1.0
+feature:
+  id: F-0028
+  title: Protocol hardening and lightweight feature state
+  risk: medium
+  issue: '#28'
+workflow:
+  profile: standard-feature
+  status: ACTIVE
+  current_stage: implementation
+  stages:
+    - id: requirement
+      status: DONE
+      gate: requirement-gate
+    - id: design
+      status: DONE
+      gate: design-gate
+    - id: implementation
+      status: WORKING
+    - id: verification
+      status: TODO
+      gate: verification-gate
+tasks:
+  - id: TASK-28-1
+    status: WORKING
+    issue: '#28'
+    runtime: chatgpt-web
+artifacts:
+  - id: ART-REQ-28
+    type: requirement
+    uri: docs/features/F-0028/requirement.md
+    status: approved
+  - id: ART-DES-28
+    type: design
+    uri: docs/features/F-0028/design.md
+    status: approved
+gates:
+  - id: requirement-gate
+    status: PASS
+    evidence: [EVID-REQ-28]
+  - id: design-gate
+    status: PASS
+    evidence: [EVID-DES-28]
+  - id: verification-gate
+    status: PENDING
+evidence:
+  - id: EVID-REQ-28
+    type: review
+    status: pass
+    uri: docs/features/F-0028/requirement-review.md
+  - id: EVID-DES-28
+    type: review
+    status: pass
+    uri: docs/features/F-0028/design-review.md
+updated_at: '2026-08-07T10:56:00Z'
