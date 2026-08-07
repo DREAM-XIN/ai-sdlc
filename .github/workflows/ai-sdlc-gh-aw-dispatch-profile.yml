@@ -1,0 +1,87 @@
+name: AI-SDLC gh-aw Profile Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_profile:
+        description: Trusted gh-aw engine profile
+        required: true
+        default: copilot
+        type: choice
+        options:
+          - copilot
+          - codex
+          - claude
+          - gemini
+      target_ref:
+        description: Non-default branch containing the Feature Manifest and runtime policy
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest under state/features/
+        required: true
+        type: string
+      policy_path:
+        description: Dispatch Policy containing a gh-aw/autonomous route
+        required: true
+        type: string
+      project_path:
+        description: Optional Project Adapter path
+        required: false
+        default: .ai-sdlc/project.yaml
+        type: string
+      dry_run:
+        description: Build the dispatch plan without reserving state or triggering the worker
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  resolve-and-dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install profile resolver dependency
+        run: pip install 'PyYAML>=6.0,<7'
+      - name: Resolve trusted engine profile
+        id: engine
+        env:
+          ENGINE_PROFILE: ${{ inputs.engine_profile }}
+        run: |
+          worker=$(python scripts/resolve_gh_aw_engine.py "$ENGINE_PROFILE")
+          printf 'worker_workflow=%s\n' "$worker" >> "$GITHUB_OUTPUT"
+          python scripts/resolve_gh_aw_engine.py "$ENGINE_PROFILE" --json >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify compiled worker is installed on trusted default branch
+        env:
+          WORKER_WORKFLOW: ${{ steps.engine.outputs.worker_workflow }}
+        run: test -f ".github/workflows/$WORKER_WORKFLOW"
+      - name: Dispatch core gh-aw runtime gateway
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKER_WORKFLOW: ${{ steps.engine.outputs.worker_workflow }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          gh workflow run ai-sdlc-gh-aw-dispatch.yml \
+            --ref "$DEFAULT_BRANCH" \
+            --field target_ref="$TARGET_REF" \
+            --field manifest_path="$MANIFEST_PATH" \
+            --field policy_path="$POLICY_PATH" \
+            --field project_path="$PROJECT_PATH" \
+            --field worker_workflow="$WORKER_WORKFLOW" \
+            --field dry_run="$DRY_RUN"
