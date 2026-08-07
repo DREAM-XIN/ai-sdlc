@@ -9,6 +9,7 @@ on:
       - 'dispatch/**'
       - 'examples/**'
       - 'scripts/**'
+      - 'state/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
   push:
@@ -20,6 +21,7 @@ on:
       - 'dispatch/**'
       - 'examples/**'
       - 'scripts/**'
+      - 'state/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
 
@@ -41,3 +43,4 @@ jobs:
       - run: python scripts/validate_dispatch_examples.py
       - run: python scripts/validate_feature_transition.py
       - run: python scripts/validate_github_persistence.py
+      - run: python scripts/validate_bootstrap_inbox.py
