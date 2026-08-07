@@ -71,6 +71,11 @@ def summary_from_manifest(manifest):
     }
 
 
+def commander_bootstrap(bootstrap, profile):
+    """Create the initial Feature Manifest using the existing bootstrap engine."""
+    return build_manifest(bootstrap, profile)
+
+
 def build_commander_plan(
     manifest,
     profile,
@@ -79,6 +84,7 @@ def build_commander_plan(
     manifest_ref="Feature Manifest",
     project_rules=None,
 ):
+    """Compute state, route all runnable actions, and enrich only supported manual runtimes."""
     identity = summary_from_manifest(manifest)
     state = compute_state(manifest, profile)
     plan = {
@@ -116,6 +122,8 @@ def build_commander_plan(
             "runtime": runtime,
         }
 
+        # The reference implementation knows how to prepare ChatGPT Web/manual
+        # work, but all other runtimes remain pure routing decisions for their adapters.
         if runtime == {"id": "chatgpt-web", "mode": "manual"}:
             template = policy.get("task_templates", {}).get(action["stage"])
             if not template:
@@ -161,10 +169,47 @@ def build_commander_plan(
     return plan
 
 
+def commander_ingest(
+    manifest,
+    event,
+    *,
+    event_path,
+    repository,
+    manifest_path,
+    target_ref,
+    issue=None,
+):
+    """Delegate event ingestion to the existing inbox + persistence pipeline."""
+    return ingest(
+        manifest,
+        event,
+        event_path=event_path,
+        repository=repository,
+        manifest_path=manifest_path,
+        target_ref=target_ref,
+        issue=issue,
+    )
+
+
+def invalid_cli_plan(manifest, message):
+    identity = summary_from_manifest(manifest)
+    return {
+        "version": "0.1.0",
+        "feature_id": identity["feature_id"],
+        "outcome": "INVALID",
+        "errors": [message],
+        "summary": identity["summary"],
+        "dispatches": [],
+    }
+
+
 def bootstrap_command(args):
     bootstrap = load_yaml(args.bootstrap)
-    profile = load_yaml(args.profile) if args.profile else load_bootstrap_profile(bootstrap["profile"])
-    result = build_manifest(bootstrap, profile)
+    try:
+        profile = load_yaml(args.profile) if args.profile else load_bootstrap_profile(bootstrap["profile"])
+    except (KeyError, FileNotFoundError, ValueError) as exc:
+        return {"outcome": "INVALID", "errors": [str(exc)]}, 2
+    result = commander_bootstrap(bootstrap, profile)
     if result["outcome"] == "INVALID":
         return result, 2
     text = (
@@ -181,8 +226,18 @@ def bootstrap_command(args):
 
 def plan_command(args):
     manifest = load_yaml(args.manifest)
-    profile = load_yaml(args.profile) if args.profile else load_profile(manifest["workflow"]["profile"])
-    policy = load_yaml(args.policy)
+    try:
+        if args.profile:
+            profile = load_yaml(args.profile)
+        else:
+            profile_id = manifest.get("workflow", {}).get("profile")
+            if not profile_id:
+                return invalid_cli_plan(manifest, "manifest does not declare a workflow profile"), 2
+            profile = load_profile(profile_id)
+        policy = load_yaml(args.policy)
+    except (FileNotFoundError, ValueError) as exc:
+        return invalid_cli_plan(manifest, str(exc)), 2
+
     plan = build_commander_plan(
         manifest,
         profile,
@@ -199,7 +254,7 @@ def plan_command(args):
 
 
 def ingest_command(args):
-    result = ingest(
+    result = commander_ingest(
         load_yaml(args.manifest),
         load_yaml(args.event),
         event_path=args.event_path,
