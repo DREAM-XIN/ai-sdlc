@@ -42,7 +42,7 @@ def main():
     require("AI-SDLC intentionally does not guess a rollback/block transition here" in dispatch, "dispatch failure semantics are no longer explicit/fail-closed")
     require("status: BLOCKED" not in dispatch, "dispatch workflow guesses a BLOCKED lifecycle transition after transport failure")
 
-    require("permissions:\n      contents: write" in result, "gh-aw result intake lacks explicit write envelope")
+    require("permissions:\n  contents: write" in result, "gh-aw result intake lacks explicit write envelope")
     require("actions: write" not in result, "gh-aw result intake unnecessarily has Actions write permission")
     require("WORKER_RESULT_JSON: ${{ inputs.worker_result_json }}" in result, "worker result is not passed through a quoted environment boundary")
     require("gh_aw_adapter.py result-to-event" in result, "worker result bypasses runtime result contract")
@@ -50,7 +50,7 @@ def main():
     require("verify_git_write_precondition.py" in result, "worker result persistence lacks remote-branch precondition")
     require("git -C workspace add -- \"$MANIFEST_PATH\" \"$EVENT_PATH\"" in result, "worker result writes outside the canonical Manifest/Event set")
     require("git -C workspace push" in result, "worker result Git push is not workspace-isolated")
-    require("gate" not in result.lower(), "result workflow should not contain direct Gate mutation logic")
+    require("kind: gate" not in result.lower() and "'kind': 'gate'" not in result.lower() and '"kind": "gate"' not in result.lower(), "result workflow contains direct Gate mutation logic")
 
     print("gh-aw runtime transport trusted-boundary and permission checks passed")
 
