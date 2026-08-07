@@ -9,6 +9,8 @@ on:
       - 'dispatch/**'
       - 'examples/**'
       - 'scripts/**'
+      - 'templates/**'
+      - 'docs/**'
       - 'state/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -21,6 +23,8 @@ on:
       - 'dispatch/**'
       - 'examples/**'
       - 'scripts/**'
+      - 'templates/**'
+      - 'docs/**'
       - 'state/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -47,3 +51,4 @@ jobs:
       - run: python scripts/validate_commander.py
       - run: python scripts/validate_github_commander_transport.py
       - run: python scripts/validate_github_workflow_security.py
+      - run: python scripts/validate_project_adapter.py
