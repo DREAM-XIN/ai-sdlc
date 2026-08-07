@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-GHAW-LIVE-0001
+  title: Live Gemini gh-aw bounded autonomous dogfood
+  risk: low
+  issue: '#6'
+profile: small-change
+created_at: '2026-08-07T16:45:00Z'
