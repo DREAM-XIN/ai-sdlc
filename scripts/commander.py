@@ -12,6 +12,7 @@ from bootstrap_feature import build_manifest, load_profile as load_bootstrap_pro
 from ingest_feature_event import ingest
 from manual_dispatch import build_task, schema_errors
 from orchestrator_state import compute_state, load_profile
+from project_adapter import load_project_adapter
 from render_task_package import build_package, render_prompt
 from runtime_router import load_yaml, select_runtime
 
@@ -20,11 +21,16 @@ COMMANDER_SCHEMA = ROOT / "spec" / "commander-plan.schema.json"
 TASK_SCHEMA = ROOT / "spec" / "task.schema.json"
 PACKAGE_SCHEMA = ROOT / "spec" / "task-package.schema.json"
 DEFAULT_POLICY = ROOT / "dispatch" / "default.yaml"
+DEFAULT_PROJECT_REF = ".ai-sdlc/project.yaml"
 
 
 def load_json_schema(path: Path):
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def unique(items):
+    return list(dict.fromkeys(item for item in items if item))
 
 
 def commander_plan_errors(plan):
@@ -83,8 +89,10 @@ def build_commander_plan(
     repository,
     manifest_ref="Feature Manifest",
     project_rules=None,
+    project_adapter=None,
+    project_ref=DEFAULT_PROJECT_REF,
 ):
-    """Compute state, route all runnable actions, and enrich only supported manual runtimes."""
+    """Compute state, route runnable actions, and enrich supported manual runtimes."""
     identity = summary_from_manifest(manifest)
     state = compute_state(manifest, profile)
     plan = {
@@ -105,7 +113,17 @@ def build_commander_plan(
         return plan
 
     risk = manifest["feature"]["risk"]
-    project_rules = project_rules or ["AGENTS.md"]
+    resolved_rules = list(project_rules or [])
+    project_read = []
+    required_commands = []
+    if project_adapter:
+        resolved_rules = project_adapter["context"]["rules"] + resolved_rules
+        project_read = [project_ref] + project_adapter["context"]["read"]
+        required_commands = project_adapter["defaults"]["required_commands"]
+    if not resolved_rules:
+        resolved_rules = ["AGENTS.md"]
+    resolved_rules = unique(resolved_rules)
+
     dispatches = []
     errors = []
 
@@ -136,9 +154,18 @@ def build_commander_plan(
                 errors.extend(task_problems)
                 continue
 
-            read_refs = [manifest_ref] + template.get("read", [])
-            package = build_package(task, repository, read_refs, project_rules)
+            read_refs = unique([manifest_ref] + project_read + template.get("read", []))
+            package = build_package(task, repository, read_refs, resolved_rules)
             package["transport"] = {"runtime": runtime["id"], "mode": runtime["mode"]}
+            if project_adapter:
+                package["instructions"]["execution"].append(
+                    "Read the Project Adapter ownership boundaries before modifying repository files."
+                )
+                if required_commands:
+                    package["instructions"]["execution"].append(
+                        "Use the Project Adapter required command set for deterministic verification when applicable: "
+                        + ", ".join(required_commands)
+                    )
             package_problems = schema_errors(package, PACKAGE_SCHEMA, f"package:{task['id']}")
             if package_problems:
                 errors.extend(package_problems)
@@ -191,13 +218,14 @@ def commander_ingest(
     )
 
 
-def invalid_cli_plan(manifest, message):
+def invalid_cli_plan(manifest, message_or_errors):
     identity = summary_from_manifest(manifest)
+    errors = message_or_errors if isinstance(message_or_errors, list) else [message_or_errors]
     return {
         "version": "0.1.0",
         "feature_id": identity["feature_id"],
         "outcome": "INVALID",
-        "errors": [message],
+        "errors": errors,
         "summary": identity["summary"],
         "dispatches": [],
     }
@@ -226,6 +254,13 @@ def bootstrap_command(args):
 
 def plan_command(args):
     manifest = load_yaml(args.manifest)
+    project = None
+    if args.project:
+        project_result = load_project_adapter(args.project)
+        if project_result["outcome"] == "INVALID":
+            return invalid_cli_plan(manifest, project_result["errors"]), 2
+        project = project_result["adapter"]
+
     try:
         if args.profile:
             profile = load_yaml(args.profile)
@@ -238,13 +273,24 @@ def plan_command(args):
     except (FileNotFoundError, ValueError) as exc:
         return invalid_cli_plan(manifest, str(exc)), 2
 
+    repository = args.repository
+    if not repository and project:
+        repository = (project.get("repository") or {}).get("full_name")
+    if not repository:
+        return invalid_cli_plan(
+            manifest,
+            "repository is required via --repository or project adapter repository.full_name",
+        ), 2
+
     plan = build_commander_plan(
         manifest,
         profile,
         policy,
-        repository=args.repository,
+        repository=repository,
         manifest_ref=args.manifest_ref,
-        project_rules=args.rule or ["AGENTS.md"],
+        project_rules=args.rule,
+        project_adapter=project,
+        project_ref=args.project_ref,
     )
     if args.format == "prompts" and plan["outcome"] == "DISPATCH":
         prompts = [dispatch["prompt"] for dispatch in plan["dispatches"] if "prompt" in dispatch]
@@ -286,7 +332,9 @@ def main():
 
     plan = subparsers.add_parser("plan", help="Compute next state and runtime dispatch decisions")
     plan.add_argument("manifest", type=Path)
-    plan.add_argument("--repository", required=True)
+    plan.add_argument("--repository")
+    plan.add_argument("--project", type=Path)
+    plan.add_argument("--project-ref", default=DEFAULT_PROJECT_REF)
     plan.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     plan.add_argument("--profile", type=Path)
     plan.add_argument("--manifest-ref", default="Feature Manifest")
