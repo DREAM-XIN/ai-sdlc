@@ -29,6 +29,7 @@ GATE_ALLOWED = {
 }
 COMPLETE_STAGE_STATES = {"DONE", "SKIPPED"}
 PASSING_GATE_STATES = {"PASS", "WAIVED"}
+TERMINAL_WORKFLOW_STATES = {"DONE", "CANCELLED"}
 
 
 def load_yaml(path: Path):
@@ -70,6 +71,12 @@ def apply_event(manifest, event):
         return {
             "outcome": "INVALID",
             "errors": [f"feature id mismatch: manifest={manifest['feature']['id']} event={event['feature_id']}"],
+        }
+    workflow_status = manifest["workflow"]["status"]
+    if workflow_status in TERMINAL_WORKFLOW_STATES:
+        return {
+            "outcome": "INVALID",
+            "errors": [f"cannot apply event to terminal workflow: {workflow_status}"],
         }
 
     result = copy.deepcopy(manifest)
