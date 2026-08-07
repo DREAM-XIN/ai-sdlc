@@ -1,0 +1,104 @@
+name: AI-SDLC gh-aw Worker Retry
+
+on:
+  push:
+    branches:
+      - 'dogfood/gh-aw-retry-*'
+    paths:
+      - 'dogfood/gh-aw-retry.yaml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout retry trigger branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+      - name: Checkout reserved target Feature branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: dogfood/gh-aw-live-gemini-0004
+          path: workspace
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+      - name: Validate exact recovery trigger and reserved state
+        run: |
+          python - <<'PY'
+          import yaml
+          trigger = yaml.safe_load(open('dogfood/gh-aw-retry.yaml'))
+          expected = {
+              'version': '0.1.0',
+              'feature_id': 'F-GHAW-LIVE-0001',
+              'target_ref': 'dogfood/gh-aw-live-gemini-0004',
+              'engine_profile': 'gemini',
+              'expected_revision': 3,
+          }
+          if trigger != expected:
+              raise SystemExit(f'retry trigger must equal {expected}')
+          manifest = yaml.safe_load(open('workspace/state/features/F-GHAW-LIVE-0001.yaml'))
+          stages = {s['id']: s['status'] for s in manifest['workflow']['stages']}
+          if manifest.get('revision') != 3 or stages.get('implementation') != 'WORKING':
+              raise SystemExit(f'Feature is not in reserved retry state: revision={manifest.get("revision")} stages={stages}')
+          if 'EVT-GHAW-F-GHAW-LIVE-0001-2-START' not in manifest.get('applied_events', []):
+              raise SystemExit('expected gh-aw START reservation is missing')
+          PY
+      - name: Rebuild original dispatch context without mutating durable state
+        run: |
+          python - <<'PY'
+          import copy, yaml
+          manifest = yaml.safe_load(open('workspace/state/features/F-GHAW-LIVE-0001.yaml'))
+          rebuilt = copy.deepcopy(manifest)
+          rebuilt['revision'] = 2
+          for stage in rebuilt['workflow']['stages']:
+              if stage['id'] == 'implementation':
+                  stage['status'] = 'TODO'
+          rebuilt['applied_events'] = [e for e in rebuilt.get('applied_events', []) if e != 'EVT-GHAW-F-GHAW-LIVE-0001-2-START']
+          rebuilt['updated_at'] = '2026-08-07T16:57:00Z'
+          yaml.safe_dump(rebuilt, open('/tmp/pre-start-manifest.yaml','w'), sort_keys=False)
+          PY
+          python runtime/scripts/commander.py plan /tmp/pre-start-manifest.yaml \
+            --repository "$GITHUB_REPOSITORY" \
+            --policy runtime/runtimes/gh-aw/example-dispatch-policy.yaml > /tmp/commander-plan.json
+          python runtime/scripts/gh_aw_adapter.py plan \
+            /tmp/pre-start-manifest.yaml /tmp/commander-plan.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --target-ref dogfood/gh-aw-live-gemini-0004 \
+            --worker-workflow ai-sdlc-gh-aw-worker-gemini.lock.yml \
+            --policy runtime/runtimes/gh-aw/example-dispatch-policy.yaml \
+            --output /tmp/dispatch-plan.json
+          python - <<'PY'
+          import json
+          plan = json.load(open('/tmp/dispatch-plan.json'))
+          if plan.get('outcome') != 'PLANNED':
+              raise SystemExit(plan)
+          dispatch = plan['plan']['dispatches'][0]
+          if dispatch['inputs']['expected_revision'] != 3:
+              raise SystemExit(f"retry expected_revision drifted: {dispatch['inputs']['expected_revision']}")
+          if dispatch['stage'] != 'implementation' or dispatch['role'] != 'developer':
+              raise SystemExit(f'unexpected retry assignment: {dispatch}')
+          PY
+      - name: Re-dispatch exact trusted Gemini worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          plan = json.load(open('/tmp/dispatch-plan.json'))['plan']
+          dispatch = plan['dispatches'][0]
+          cmd = ['gh','workflow','run',dispatch['workflow'],'--repo',os.environ['GITHUB_REPOSITORY'],'--ref',dispatch['ref']]
+          for key, value in dispatch['inputs'].items():
+              cmd.extend(['--field', f'{key}={value}'])
+          subprocess.run(cmd, check=True)
+          PY
