@@ -119,8 +119,8 @@ def build_dispatch_plan(
                 "ref": target_ref,
                 "inputs": {
                     "feature_id": manifest["feature"]["id"],
-                    # Execution reserves READY -> WORKING before dispatch, advancing revision once.
                     "expected_revision": revision + 1,
+                    "target_ref": target_ref,
                     "stage": action["stage"],
                     "role": action["role"],
                     "task_payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
@@ -189,8 +189,6 @@ def result_to_event(result):
     for evidence in result.get("evidence", []):
         changes.append({"kind": "evidence", "record": dict(evidence)})
 
-    # Completing a work stage is allowed; approving a Gate is not. Independent
-    # review stages and deterministic Gate evaluation remain separate lifecycle work.
     if result["status"] == "COMPLETED":
         changes.append({"kind": "stage", "id": result["stage"], "status": "DONE"})
     else:
