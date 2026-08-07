@@ -1,0 +1,85 @@
+version: 0.1.0
+routes:
+  - id: manual-product
+    priority: 10
+    match: {role: product}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-architect
+    priority: 10
+    match: {role: architect}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-orchestrator
+    priority: 10
+    match: {role: orchestrator}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-developer
+    priority: 10
+    match: {role: developer}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-reviewer
+    priority: 10
+    match: {role: reviewer}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-qa
+    priority: 10
+    match: {role: qa}
+    runtime: {id: chatgpt-web, mode: manual}
+
+task_templates:
+  requirement:
+    goal: Refine the feature into an approved, testable requirement artifact.
+    read: [Feature Issue, AGENTS.md]
+    expected_outputs: [requirement artifact]
+    definition_of_done: [Goals and non-goals are explicit, Acceptance criteria are testable, Open questions are resolved or recorded]
+  discovery:
+    goal: Produce a high-risk discovery and requirement artifact with explicit constraints and acceptance criteria.
+    read: [Feature Issue, AGENTS.md]
+    expected_outputs: [requirement artifact]
+    definition_of_done: [Problem and scope are explicit, Risks and constraints are recorded, Acceptance criteria are testable]
+  requirement-review:
+    goal: Independently review the requirement artifact against the requirement review rubric.
+    read: [Feature Issue, requirement artifact, gates/review-rubrics.yaml]
+    expected_outputs: [requirement review artifact]
+    definition_of_done: [BLOCKER and MAJOR findings are explicit, Verdict is recorded, Review is independent of implementation]
+  design:
+    goal: Produce a technical design that satisfies the approved requirement and is implementable and testable.
+    read: [Feature Issue, approved requirement, AGENTS.md]
+    expected_outputs: [design artifact]
+    definition_of_done: [Architecture and interfaces are explicit, Risks and compatibility are covered, Verification strategy is defined]
+  design-review:
+    goal: Independently review the design for correctness, requirement coverage, risk and testability.
+    read: [approved requirement, design artifact, gates/review-rubrics.yaml]
+    expected_outputs: [design review artifact]
+    definition_of_done: [BLOCKER and MAJOR findings are explicit, Requirement coverage is checked, Verdict is recorded]
+  plan:
+    goal: Decompose the approved design into bounded work units with dependencies, scope and deterministic Definition of Done.
+    read: [approved requirement, approved design, Workflow Profile]
+    expected_outputs: [work-unit plan]
+    definition_of_done: [Dependencies form a valid DAG, Work-unit scopes do not conflict, Each unit has deterministic DoD]
+  implementation:
+    goal: Implement the assigned work unit according to the approved requirement and design.
+    read: [Feature Issue, approved requirement, approved design, assigned work unit, AGENTS.md]
+    allowed_scope: [Only files explicitly permitted by the assigned work unit]
+    forbidden_scope: [Do not expand product or architecture scope without durable approval]
+    expected_outputs: [code changes, tests, implementation evidence]
+    definition_of_done: [Assigned work-unit DoD is satisfied, Required tests pass, Deviations from design are recorded]
+  code-review:
+    goal: Independently review implementation against approved requirement, design, scope and code-review rubric.
+    read: [approved requirement, approved design, implementation diff, test evidence, gates/review-rubrics.yaml]
+    expected_outputs: [code review artifact]
+    definition_of_done: [BLOCKER and MAJOR findings are explicit, Requirement and design compliance are checked, Verdict is recorded]
+  adversarial-review:
+    goal: Perform an independent adversarial review focused on correctness, security, edge cases and unsafe assumptions.
+    read: [approved requirement, approved design, implementation diff, test evidence, gates/review-rubrics.yaml]
+    expected_outputs: [adversarial review artifact]
+    definition_of_done: [Failure modes and edge cases are actively challenged, BLOCKER and MAJOR findings are explicit, Verdict is recorded]
+  verification:
+    goal: Verify the implementation using deterministic evidence and the approved acceptance criteria.
+    read: [approved requirement, approved design, implementation diff, review artifact, CI evidence]
+    expected_outputs: [verification report]
+    definition_of_done: [Required deterministic checks pass, Acceptance coverage is mapped to evidence, Remaining failures are explicit]
+  acceptance:
+    goal: Decide feature acceptance by mapping every acceptance criterion to durable evidence.
+    read: [approved requirement, verification report, review artifacts, CI evidence]
+    expected_outputs: [acceptance record]
+    definition_of_done: [Every acceptance criterion has evidence, PASS or FAIL is explicit, Release blockers are recorded]
