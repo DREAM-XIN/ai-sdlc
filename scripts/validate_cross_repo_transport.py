@@ -6,6 +6,7 @@ ACTION = ROOT / ".github" / "actions" / "control" / "action.yml"
 PLAN = ROOT / "templates" / "github" / "ai-sdlc-plan.yml"
 BOOTSTRAP = ROOT / "templates" / "github" / "ai-sdlc-bootstrap.yml"
 PERSIST = ROOT / "templates" / "github" / "ai-sdlc-persist.yml"
+CONTROL_PLACEHOLDER = "DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA"
 
 
 def require(condition, message):
@@ -35,21 +36,23 @@ def main():
     require("permissions:\n  contents: read" in plan, "plan caller is not read-only")
     require("contents: write" not in plan, "plan caller unexpectedly has write permission")
     require("persist-credentials: false" in plan, "plan checkout persists credentials")
-    require("DREAM-XIN/ai-sdlc/.github/actions/control@main" in plan, "plan caller does not use shared control action")
+    require(CONTROL_PLACEHOLDER in plan, "plan caller does not require explicit immutable AI-SDLC installation pin")
 
     for path in (BOOTSTRAP, PERSIST):
         text = path.read_text(encoding="utf-8")
         require("permissions:\n  contents: write" in text, f"{path.name}: write permission is not explicit")
-        require("DREAM-XIN/ai-sdlc/.github/actions/control@main" in text, f"{path.name}: shared control action missing")
+        require(CONTROL_PLACEHOLDER in text, f"{path.name}: immutable AI-SDLC install placeholder missing")
         require("default_branch: ${{ github.event.repository.default_branch }}" in text, f"{path.name}: caller default branch is not passed to write protection")
         require("allow_default_branch" in text, f"{path.name}: explicit default-branch override missing")
         require("secrets." not in text and "personal_access_token" not in text.lower(), f"{path.name}: template unexpectedly requires a PAT/secret")
 
     for path in (PLAN, BOOTSTRAP, PERSIST):
         text = path.read_text(encoding="utf-8")
-        require("Pin this to an AI-SDLC release tag or full commit SHA" in text, f"{path.name}: production pinning guidance missing")
+        require("REPLACE_WITH_AI_SDLC_FULL_SHA" in text, f"{path.name}: explicit install-time SHA placeholder missing")
+        require("ai-sdlc-install-placeholder" in text, f"{path.name}: install placeholder marker missing")
+        require("@main" not in text and "@v" not in text, f"{path.name}: mutable production reference remains")
 
-    print("Cross-repository GitHub transport optimistic-concurrency checks passed")
+    print("Cross-repository GitHub transport immutable-pinning checks passed")
 
 
 if __name__ == "__main__":
