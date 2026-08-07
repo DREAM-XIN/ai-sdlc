@@ -79,8 +79,9 @@ def main():
     require(len(plan["dispatches"]) == 1, "v0.1 gh-aw adapter must serialize autonomous dispatch")
     dispatch = plan["dispatches"][0]
     require(dispatch["inputs"]["expected_revision"] == 1, "worker result must target post-START revision 1")
+    require(dispatch["inputs"]["target_ref"] == "feature/F-GHAW", "worker target_ref input lost")
     require(dispatch["workflow"] == "ai-sdlc-gh-aw-worker.lock.yml", "worker workflow lost")
-    require(dispatch["ref"] == "feature/F-GHAW", "target ref lost")
+    require(dispatch["ref"] == "feature/F-GHAW", "workflow dispatch ref lost")
     payload = json.loads(dispatch["inputs"]["task_payload"])
     require(payload["contract"] == "ai-sdlc-task-v0.1", "runtime task contract missing")
     require(payload["task"]["feature_id"] == "F-GHAW", "runtime task feature identity missing")
