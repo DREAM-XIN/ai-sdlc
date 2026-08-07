@@ -157,15 +157,15 @@ runs:
         }
 
         protect_write_ref() {
-          if [[ -z "$DEFAULT_BRANCH" ]]; then
-            echo "default_branch is required for write operations"
-            return 1
+          args=(
+            --repo-dir .
+            --target-ref "$TARGET_REF"
+            --default-branch "$DEFAULT_BRANCH"
+          )
+          if [[ "$ALLOW_DEFAULT_BRANCH" == "true" ]]; then
+            args+=(--allow-default-branch)
           fi
-          git check-ref-format --branch "$TARGET_REF" >/dev/null
-          if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
-            echo "Refusing direct persistence to default branch without allow_default_branch=true"
-            return 1
-          fi
+          python "$runtime_root/scripts/verify_git_write_precondition.py" "${args[@]}"
         }
 
         case "$OPERATION" in
