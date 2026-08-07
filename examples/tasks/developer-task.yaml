@@ -1,0 +1,22 @@
+id: DEV-204
+feature_id: F-100
+role: developer
+goal: Implement refresh-token rotation without changing the published API contract.
+inputs:
+  - REQ-101
+  - DES-102
+allowed_scope:
+  - services/auth/**
+  - database/migrations/**
+forbidden_scope:
+  - apps/web/**
+  - billing/**
+expected_outputs:
+  - implementation-artifact
+  - pull-request
+  - test-evidence
+definition_of_done:
+  - Rotation behavior matches the approved design.
+  - Reuse of a rotated token is rejected.
+  - Required unit and integration tests pass.
+max_attempts: 3
