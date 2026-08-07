@@ -1,6 +1,7 @@
 name: Materialize AI-SDLC gh-aw Worker Lock
 
 # Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated lock files.
+# This compile branch validates the dedicated-token write path for the generated lock.
 on:
   push:
     branches:
