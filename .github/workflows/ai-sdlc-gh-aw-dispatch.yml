@@ -1,0 +1,181 @@
+name: AI-SDLC gh-aw Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch/ref containing the Feature Manifest and runtime policy
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest under state/features/
+        required: true
+        type: string
+      policy_path:
+        description: Dispatch Policy containing one or more gh-aw/autonomous routes
+        required: true
+        type: string
+      project_path:
+        description: Optional Project Adapter path
+        required: false
+        default: .ai-sdlc/project.yaml
+        type: string
+      worker_workflow:
+        description: Compiled gh-aw worker workflow filename
+        required: true
+        default: ai-sdlc-gh-aw-worker.lock.yml
+        type: string
+      dry_run:
+        description: Build the dispatch plan without triggering the gh-aw worker
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+      - name: Checkout target workspace
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.target_ref }}
+          path: workspace
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Validate runtime input paths
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          PYTHONPATH=runtime/scripts python - <<'PY'
+          import os, re
+          from pathlib import PurePosixPath
+          from github_persistence import validate_manifest_path
+
+          manifest = os.environ['MANIFEST_PATH']
+          error = validate_manifest_path(manifest)
+          if error:
+              raise SystemExit(error)
+
+          for label in ('POLICY_PATH', 'PROJECT_PATH'):
+              value = os.environ[label]
+              if not value and label == 'PROJECT_PATH':
+                  continue
+              path = PurePosixPath(value)
+              if path.is_absolute() or '..' in path.parts or path.suffix not in {'.yaml', '.yml'}:
+                  raise SystemExit(f'{label.lower()} must be a repository-relative YAML path without parent traversal')
+
+          worker = os.environ['WORKER_WORKFLOW']
+          if not re.fullmatch(r'[A-Za-z0-9._-]+\.ya?ml', worker):
+              raise SystemExit('worker_workflow must be a workflow filename, not an arbitrary path')
+          PY
+          git -C workspace check-ref-format --branch "$TARGET_REF" >/dev/null
+          test -f "workspace/$MANIFEST_PATH"
+          test -f "workspace/$POLICY_PATH"
+          if [[ -n "$PROJECT_PATH" && -e "workspace/$PROJECT_PATH" ]]; then
+            test -f "workspace/$PROJECT_PATH"
+            test ! -L "workspace/$PROJECT_PATH"
+          fi
+
+      - name: Build Commander Plan
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          project_args=()
+          if [[ -n "$PROJECT_PATH" && -f "workspace/$PROJECT_PATH" ]]; then
+            project_args=(--project "workspace/$PROJECT_PATH" --project-ref "$PROJECT_PATH")
+          fi
+          python runtime/scripts/commander.py plan "workspace/$MANIFEST_PATH" \
+            --repository "$REPOSITORY" \
+            --policy "workspace/$POLICY_PATH" \
+            "${project_args[@]}" \
+            > commander-plan.json
+
+      - name: Build gh-aw Dispatch Plan
+        id: adapter
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          project_args=()
+          if [[ -n "$PROJECT_PATH" && -f "workspace/$PROJECT_PATH" ]]; then
+            project_args=(--project "workspace/$PROJECT_PATH" --project-ref "$PROJECT_PATH")
+          fi
+          python runtime/scripts/gh_aw_adapter.py plan \
+            "workspace/$MANIFEST_PATH" commander-plan.json \
+            --repository "$REPOSITORY" \
+            --target-ref "$TARGET_REF" \
+            --worker-workflow "$WORKER_WORKFLOW" \
+            --policy "workspace/$POLICY_PATH" \
+            "${project_args[@]}" \
+            --output gh-aw-dispatch-plan.json
+
+          outcome=$(python - <<'PY'
+          import json
+          print(json.load(open('gh-aw-dispatch-plan.json'))['outcome'])
+          PY
+          )
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-dispatch-plan
+          path: |
+            commander-plan.json
+            gh-aw-dispatch-plan.json
+
+      - name: Dispatch compiled gh-aw workers
+        if: ${{ !inputs.dry_run && steps.adapter.outputs.outcome == 'PLANNED' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+
+          result = json.load(open('gh-aw-dispatch-plan.json'))
+          plan = result['plan']
+          for dispatch in plan['dispatches']:
+              cmd = [
+                  'gh', 'workflow', 'run', dispatch['workflow'],
+                  '--repo', plan['repository'],
+                  '--ref', dispatch['ref'],
+              ]
+              for key, value in dispatch['inputs'].items():
+                  cmd.extend(['--field', f'{key}={value}'])
+              print('Dispatching', dispatch['task_id'], 'to', dispatch['workflow'])
+              subprocess.run(cmd, check=True)
+          PY
+
+      - name: Report no gh-aw route
+        if: ${{ steps.adapter.outputs.outcome == 'NO_DISPATCH' }}
+        shell: bash
+        run: echo "Commander Plan contains no gh-aw/autonomous dispatch. Nothing was triggered." >> "$GITHUB_STEP_SUMMARY"
