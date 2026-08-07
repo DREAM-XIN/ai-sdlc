@@ -1,0 +1,163 @@
+name: AI-SDLC Commander
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Commander operation
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - bootstrap
+      target_ref:
+        description: Existing branch/ref containing AI-SDLC state/input files
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest path under state/features/
+        required: true
+        type: string
+      bootstrap_path:
+        description: Bootstrap YAML path (required for bootstrap operation)
+        required: false
+        type: string
+      policy_path:
+        description: Dispatch policy path
+        required: true
+        default: dispatch/default.yaml
+        type: string
+      persist_bootstrap:
+        description: Commit bootstrapped Manifest to target_ref
+        required: true
+        default: false
+        type: boolean
+      allow_default_branch:
+        description: Explicitly allow bootstrap persistence to the default branch
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  plan:
+    if: ${{ inputs.operation == 'plan' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Build Commander Plan
+        id: commander
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set +e
+          python scripts/commander.py plan "$MANIFEST_PATH" \
+            --repository "$REPOSITORY" \
+            --policy "$POLICY_PATH" \
+            > commander-plan.json
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+      - name: Render GitHub transport
+        run: |
+          python scripts/github_commander_transport.py commander-plan.json \
+            --summary commander-summary.md \
+            --prompts chatgpt-web-prompts.txt
+          cat commander-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-sdlc-commander-plan
+          path: |
+            commander-plan.json
+            commander-summary.md
+            chatgpt-web-prompts.txt
+      - name: Propagate invalid Commander result
+        if: ${{ steps.commander.outputs.exit_code != '0' }}
+        shell: bash
+        env:
+          COMMANDER_EXIT: ${{ steps.commander.outputs.exit_code }}
+        run: |
+          echo "Commander returned exit code $COMMANDER_EXIT"
+          exit "$COMMANDER_EXIT"
+
+  bootstrap:
+    if: ${{ inputs.operation == 'bootstrap' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Validate bootstrap inputs
+        shell: bash
+        env:
+          BOOTSTRAP_PATH: ${{ inputs.bootstrap_path }}
+        run: |
+          if [[ -z "$BOOTSTRAP_PATH" ]]; then
+            echo "bootstrap_path is required for bootstrap operation"
+            exit 1
+          fi
+          if [[ ! -f "$BOOTSTRAP_PATH" ]]; then
+            echo "bootstrap file does not exist: $BOOTSTRAP_PATH"
+            exit 1
+          fi
+      - name: Bootstrap Feature Manifest
+        shell: bash
+        env:
+          BOOTSTRAP_PATH: ${{ inputs.bootstrap_path }}
+        run: |
+          python scripts/commander.py bootstrap "$BOOTSTRAP_PATH" \
+            --output bootstrap-manifest.yaml
+          python scripts/validate_feature_manifest.py bootstrap-manifest.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-sdlc-bootstrap-manifest
+          path: bootstrap-manifest.yaml
+      - name: Persist bootstrapped Manifest
+        if: ${{ inputs.persist_bootstrap }}
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
+        run: |
+          if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
+            echo "Refusing direct persistence to default branch without allow_default_branch=true"
+            exit 1
+          fi
+          MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
+          import os
+          from github_persistence import validate_manifest_path
+          error = validate_manifest_path(os.environ['MANIFEST_PATH'])
+          if error:
+              raise SystemExit(error)
+          PY
+          mkdir -p -- "$(dirname -- "$MANIFEST_PATH")"
+          cp -- bootstrap-manifest.yaml "$MANIFEST_PATH"
+          git config user.name "ai-sdlc[bot]"
+          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git add -- "$MANIFEST_PATH"
+          if git diff --cached --quiet; then
+            echo "No bootstrap changes to persist"
+            exit 0
+          fi
+          git commit -m "chore(ai-sdlc): bootstrap feature manifest"
+          git push origin "HEAD:$TARGET_REF"
