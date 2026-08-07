@@ -2,7 +2,7 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -28,6 +28,17 @@ def validate_plan(plan):
     return errors
 
 
+def validate_manifest_path(value: str):
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        return "manifest path must be repository-relative without parent traversal"
+    if len(path.parts) < 3 or path.parts[:2] != ("state", "features"):
+        return "manifest path must be under state/features/"
+    if path.suffix not in {".yaml", ".yml"}:
+        return "manifest path must end in .yaml or .yml"
+    return None
+
+
 def conclusion_for(status: str) -> str:
     if status == "DONE":
         return "success"
@@ -37,6 +48,12 @@ def conclusion_for(status: str) -> str:
 
 
 def build_plan(manifest, event, repository: str, manifest_path: str, target_ref: str, issue: int | None = None):
+    path_error = validate_manifest_path(manifest_path)
+    if path_error:
+        return {"outcome": "INVALID", "errors": [path_error]}
+    if not repository.strip() or not target_ref.strip():
+        return {"outcome": "INVALID", "errors": ["repository and target_ref must be non-empty"]}
+
     applied = apply_event(manifest, event)
     if applied["outcome"] != "APPLIED":
         return {"outcome": "INVALID", "errors": applied["errors"]}
