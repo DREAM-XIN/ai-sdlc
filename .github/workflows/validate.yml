@@ -9,6 +9,7 @@ on:
       - 'dispatch/**'
       - 'examples/**'
       - 'scripts/**'
+      - '.github/workflows/**'
       - 'requirements-dev.txt'
   push:
     branches: [main]
@@ -19,6 +20,7 @@ on:
       - 'dispatch/**'
       - 'examples/**'
       - 'scripts/**'
+      - '.github/workflows/**'
       - 'requirements-dev.txt'
 
 permissions:
@@ -38,3 +40,4 @@ jobs:
       - run: python scripts/validate_orchestrator_examples.py
       - run: python scripts/validate_dispatch_examples.py
       - run: python scripts/validate_feature_transition.py
+      - run: python scripts/validate_github_persistence.py
