@@ -1,0 +1,70 @@
+name: AI-SDLC Persist Event
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch/ref containing the Feature Manifest and Event Inbox file
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest path under state/features/
+        required: true
+        type: string
+      event_path:
+        description: Event Inbox path under state/events/<feature-id>/
+        required: true
+        type: string
+      feature_issue:
+        description: Optional numeric Feature Issue
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: Validate/materialize without committing or pushing
+        required: true
+        default: true
+        type: boolean
+      allow_default_branch:
+        description: Explicitly permit persistence to the default branch
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  persist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      # Pin this to an AI-SDLC release tag or full commit SHA for production use.
+      - name: Apply AI-SDLC Feature Event
+        id: control
+        uses: DREAM-XIN/ai-sdlc/.github/actions/control@main
+        with:
+          operation: persist
+          repository: ${{ github.repository }}
+          target_ref: ${{ inputs.target_ref }}
+          manifest_path: ${{ inputs.manifest_path }}
+          event_path: ${{ inputs.event_path }}
+          feature_issue: ${{ inputs.feature_issue }}
+          persist: ${{ !inputs.dry_run }}
+          allow_default_branch: ${{ inputs.allow_default_branch }}
+          default_branch: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.control.outputs.persistence_plan_path != '' }}
+        with:
+          name: ai-sdlc-persistence-plan
+          path: ${{ steps.control.outputs.persistence_plan_path }}
+
+      - name: Propagate invalid persistence result
+        if: ${{ steps.control.outputs.exit_code != '0' }}
+        shell: bash
+        run: exit "${{ steps.control.outputs.exit_code }}"

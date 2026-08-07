@@ -1,0 +1,64 @@
+name: AI-SDLC Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Existing branch/ref to receive the Feature Manifest
+        required: true
+        type: string
+      bootstrap_path:
+        description: Repository-relative Feature Bootstrap YAML path
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest path under state/features/
+        required: true
+        type: string
+      persist:
+        description: Commit and push the generated Feature Manifest
+        required: true
+        default: false
+        type: boolean
+      allow_default_branch:
+        description: Explicitly permit persistence to the default branch
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      # Pin this to an AI-SDLC release tag or full commit SHA for production use.
+      - name: Bootstrap AI-SDLC Feature Manifest
+        id: control
+        uses: DREAM-XIN/ai-sdlc/.github/actions/control@main
+        with:
+          operation: bootstrap
+          repository: ${{ github.repository }}
+          target_ref: ${{ inputs.target_ref }}
+          manifest_path: ${{ inputs.manifest_path }}
+          bootstrap_path: ${{ inputs.bootstrap_path }}
+          persist: ${{ inputs.persist }}
+          allow_default_branch: ${{ inputs.allow_default_branch }}
+          default_branch: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.control.outputs.bootstrap_manifest_path != '' }}
+        with:
+          name: ai-sdlc-bootstrap-manifest
+          path: ${{ steps.control.outputs.bootstrap_manifest_path }}
+
+      - name: Propagate invalid bootstrap result
+        if: ${{ steps.control.outputs.exit_code != '0' }}
+        shell: bash
+        run: exit "${{ steps.control.outputs.exit_code }}"

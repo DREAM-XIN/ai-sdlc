@@ -12,6 +12,7 @@ on:
       - 'templates/**'
       - 'docs/**'
       - 'state/**'
+      - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
   push:
@@ -26,6 +27,7 @@ on:
       - 'templates/**'
       - 'docs/**'
       - 'state/**'
+      - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
 
@@ -52,3 +54,100 @@ jobs:
       - run: python scripts/validate_github_commander_transport.py
       - run: python scripts/validate_github_workflow_security.py
       - run: python scripts/validate_project_adapter.py
+      - run: python scripts/validate_cross_repo_transport.py
+
+  cross-repo-control:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare caller-repository Project Adapter
+        shell: bash
+        run: |
+          mkdir -p .ai-sdlc state/features state/events/F-0050
+          cp examples/project-adapters/generic.yaml .ai-sdlc/project.yaml
+
+      - name: Bootstrap through shared control action
+        id: bootstrap
+        uses: ./.github/actions/control
+        with:
+          operation: bootstrap
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+          bootstrap_path: examples/cross-repo-target/bootstrap.yaml
+          persist: 'false'
+          default_branch: main
+
+      - name: Materialize bootstrap artifact as caller state
+        shell: bash
+        run: |
+          test "${{ steps.bootstrap.outputs.exit_code }}" = "0"
+          cp "${{ steps.bootstrap.outputs.bootstrap_manifest_path }}" state/features/F-0050.yaml
+
+      - name: Plan through shared control action
+        id: first_plan
+        uses: ./.github/actions/control
+        with:
+          operation: plan
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+
+      - name: Verify manual Project Adapter dispatch
+        shell: bash
+        run: |
+          test "${{ steps.first_plan.outputs.exit_code }}" = "0"
+          grep -q '"outcome": "DISPATCH"' "${{ steps.first_plan.outputs.commander_plan_path }}"
+          grep -q '.ai-sdlc/project.yaml' "${{ steps.first_plan.outputs.prompts_path }}"
+          grep -q 'ownership boundaries' "${{ steps.first_plan.outputs.prompts_path }}"
+
+      - name: Create caller Feature Event
+        shell: bash
+        run: |
+          cat > state/events/F-0050/EVT-F0050-REQ-START.yaml <<'YAML'
+          version: 0.1.0
+          id: EVT-F0050-REQ-START
+          feature_id: F-0050
+          occurred_at: '2026-08-07T13:07:00Z'
+          changes:
+            - kind: stage
+              id: requirement
+              status: WORKING
+          YAML
+
+      - name: Persist event through shared control action in dry-run mode
+        id: persist
+        uses: ./.github/actions/control
+        with:
+          operation: persist
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+          event_path: state/events/F-0050/EVT-F0050-REQ-START.yaml
+          feature_issue: '50'
+          persist: 'false'
+          default_branch: main
+
+      - name: Verify persistence materialization
+        shell: bash
+        run: |
+          test "${{ steps.persist.outputs.exit_code }}" = "0"
+          test -f "${{ steps.persist.outputs.persistence_plan_path }}"
+          grep -q 'EVT-F0050-REQ-START' state/features/F-0050.yaml
+          grep -q 'status: WORKING' state/features/F-0050.yaml
+
+      - name: Re-plan working Feature through shared control action
+        id: wait_plan
+        uses: ./.github/actions/control
+        with:
+          operation: plan
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+
+      - name: Verify closed-loop WAIT state
+        shell: bash
+        run: |
+          test "${{ steps.wait_plan.outputs.exit_code }}" = "0"
+          grep -q '"outcome": "WAIT"' "${{ steps.wait_plan.outputs.commander_plan_path }}"
