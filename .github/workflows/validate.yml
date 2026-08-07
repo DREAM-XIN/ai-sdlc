@@ -7,11 +7,15 @@ on:
       - 'profiles/**'
       - 'gates/**'
       - 'dispatch/**'
+      - 'runtimes/**'
       - 'examples/**'
       - 'scripts/**'
       - 'templates/**'
       - 'docs/**'
       - 'state/**'
+      - 'release/**'
+      - 'VERSION'
+      - 'CHANGELOG.md'
       - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -22,11 +26,15 @@ on:
       - 'profiles/**'
       - 'gates/**'
       - 'dispatch/**'
+      - 'runtimes/**'
       - 'examples/**'
       - 'scripts/**'
       - 'templates/**'
       - 'docs/**'
       - 'state/**'
+      - 'release/**'
+      - 'VERSION'
+      - 'CHANGELOG.md'
       - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -57,6 +65,9 @@ jobs:
       - run: python scripts/validate_cross_repo_transport.py
       - run: python scripts/validate_git_write_precondition.py
       - run: python scripts/validate_action_security.py
+      - run: python scripts/validate_gh_aw_adapter.py
+      - run: python scripts/validate_gh_aw_workflow_security.py
+      - run: python scripts/validate_release_readiness.py
 
   cross-repo-control:
     runs-on: ubuntu-latest
