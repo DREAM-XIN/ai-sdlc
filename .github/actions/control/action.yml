@@ -119,11 +119,49 @@ runs:
         PY
         }
 
+        validate_workspace_path() {
+          local value="$1"
+          local label="$2"
+          local must_exist="$3"
+          VALUE="$value" LABEL="$label" MUST_EXIST="$must_exist" python - <<'PY'
+        import os
+        from pathlib import Path
+        value = os.environ['VALUE']
+        label = os.environ['LABEL']
+        must_exist = os.environ['MUST_EXIST'] == 'true'
+        workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+        candidate = (workspace / value)
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(workspace)
+        except ValueError:
+            raise SystemExit(f'{label} resolves outside GITHUB_WORKSPACE')
+        if must_exist:
+            if not candidate.exists() or not candidate.is_file():
+                raise SystemExit(f'{label} does not exist as a regular file: {value}')
+            if candidate.is_symlink():
+                raise SystemExit(f'{label} must not be a symlink: {value}')
+        PY
+        }
+
+        validate_manifest_path() {
+          local must_exist="$1"
+          python - <<'PY'
+        import os
+        from github_persistence import validate_manifest_path
+        error = validate_manifest_path(os.environ['MANIFEST_PATH'])
+        if error:
+            raise SystemExit(error)
+        PY
+          validate_workspace_path "$MANIFEST_PATH" manifest_path "$must_exist"
+        }
+
         protect_write_ref() {
           if [[ -z "$DEFAULT_BRANCH" ]]; then
             echo "default_branch is required for write operations"
             return 1
           fi
+          git check-ref-format --branch "$TARGET_REF" >/dev/null
           if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
             echo "Refusing direct persistence to default branch without allow_default_branch=true"
             return 1
@@ -132,26 +170,26 @@ runs:
 
         case "$OPERATION" in
           plan)
-            python - <<'PY'
-        import os
-        from github_persistence import validate_manifest_path
-        error = validate_manifest_path(os.environ['MANIFEST_PATH'])
-        if error:
-            raise SystemExit(error)
-        PY
-            test -f "$MANIFEST_PATH"
+            validate_manifest_path true
 
             policy_args=(--policy "$runtime_root/dispatch/default.yaml")
             if [[ -n "$POLICY_PATH" ]]; then
               validate_relative_yaml "$POLICY_PATH" policy_path
-              test -f "$POLICY_PATH"
+              validate_workspace_path "$POLICY_PATH" policy_path true
               policy_args=(--policy "$POLICY_PATH")
             fi
 
             project_args=()
-            if [[ -n "$PROJECT_PATH" && -f "$PROJECT_PATH" ]]; then
+            if [[ -n "$PROJECT_PATH" ]]; then
               validate_relative_yaml "$PROJECT_PATH" project_path
-              project_args=(--project "$PROJECT_PATH" --project-ref "$PROJECT_PATH")
+              validate_workspace_path "$PROJECT_PATH" project_path false
+              if [[ -f "$PROJECT_PATH" ]]; then
+                if [[ -L "$PROJECT_PATH" ]]; then
+                  echo "project_path must not be a symlink: $PROJECT_PATH"
+                  exit 1
+                fi
+                project_args=(--project "$PROJECT_PATH" --project-ref "$PROJECT_PATH")
+              fi
             fi
 
             set +e
@@ -175,14 +213,8 @@ runs:
 
           bootstrap)
             validate_relative_yaml "$BOOTSTRAP_PATH" bootstrap_path
-            test -f "$BOOTSTRAP_PATH"
-            python - <<'PY'
-        import os
-        from github_persistence import validate_manifest_path
-        error = validate_manifest_path(os.environ['MANIFEST_PATH'])
-        if error:
-            raise SystemExit(error)
-        PY
+            validate_workspace_path "$BOOTSTRAP_PATH" bootstrap_path true
+            validate_manifest_path false
 
             set +e
             python "$runtime_root/scripts/commander.py" bootstrap "$BOOTSTRAP_PATH" \
@@ -212,9 +244,9 @@ runs:
             ;;
 
           persist)
+            validate_manifest_path true
             validate_relative_yaml "$EVENT_PATH" event_path
-            test -f "$MANIFEST_PATH"
-            test -f "$EVENT_PATH"
+            validate_workspace_path "$EVENT_PATH" event_path true
 
             args=(
               "$MANIFEST_PATH"
