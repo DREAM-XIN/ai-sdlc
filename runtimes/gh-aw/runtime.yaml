@@ -6,6 +6,7 @@ default_worker_workflow: ai-sdlc-gh-aw-worker.lock.yml
 required_inputs:
   - feature_id
   - expected_revision
+  - target_ref
   - stage
   - role
   - task_payload
@@ -16,3 +17,4 @@ security:
   write_boundary: gh-aw-safe-outputs
   authoritative_manifest_write: forbidden
   gate_self_approval: forbidden
+  default_branch_state_write: forbidden
