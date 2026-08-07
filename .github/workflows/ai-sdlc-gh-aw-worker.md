@@ -63,6 +63,7 @@ safe-outputs:
             SUMMARY: ${{ inputs.summary }}
             PR_URL: ${{ needs.safe_outputs.outputs.created_pr_url }}
             RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           run: |
             set -euo pipefail
             test -n "$PR_URL"
@@ -100,7 +101,7 @@ safe-outputs:
             result=$(cat worker-result.json)
             gh workflow run ai-sdlc-gh-aw-result.yml \
               --repo "$GITHUB_REPOSITORY" \
-              --ref "$GITHUB_DEFAULT_BRANCH" \
+              --ref "$DEFAULT_BRANCH" \
               --field target_ref="$TARGET_REF" \
               --field worker_result_json="$result" \
               --field persist=true
