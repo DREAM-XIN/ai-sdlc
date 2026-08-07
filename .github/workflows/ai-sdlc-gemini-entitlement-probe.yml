@@ -1,0 +1,57 @@
+name: AI-SDLC Gemini Entitlement Probe
+
+on:
+  push:
+    branches:
+      - 'dogfood/gh-aw-gemini-probe-*'
+    paths:
+      - 'dogfood/gh-aw-gemini-probe.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    if: ${{ startsWith(github.ref_name, 'dogfood/gh-aw-gemini-probe-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Validate probe trigger
+        run: |
+          python - <<'PY'
+          import yaml
+          data = yaml.safe_load(open('dogfood/gh-aw-gemini-probe.yaml'))
+          expected = {'version': '0.1.0', 'model': 'gemini-3.5-flash-lite'}
+          if data != expected:
+              raise SystemExit(f'probe trigger must equal {expected}')
+          PY
+      - name: Probe Gemini free-tier inference
+        id: probe
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY"
+          status=$(curl --silent --show-error \
+            --output /tmp/gemini-response.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "x-goog-api-key: $GEMINI_API_KEY" \
+            --header 'Content-Type: application/json' \
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent' \
+            --data '{"contents":[{"parts":[{"text":"Reply with exactly OK."}]}],"generationConfig":{"maxOutputTokens":16}}')
+          if [[ "$status" == '200' ]]; then
+            result=READY
+          else
+            result=FAILED
+          fi
+          printf '{"version":"0.1.0","provider":"gemini","model":"gemini-3.5-flash-lite","status":"%s","http_status":%s}\n' \
+            "$result" "$status" > dogfood/gh-aw-gemini-probe-result.json
+          git config user.name 'ai-sdlc[bot]'
+          git config user.email 'ai-sdlc[bot]@users.noreply.github.com'
+          git add -- dogfood/gh-aw-gemini-probe-result.json
+          git commit -m 'dogfood: record Gemini entitlement probe'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          test "$status" = '200'
