@@ -6,6 +6,8 @@ on:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
       - '.github/workflows/compile-gh-aw-worker.yml'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
+      - 'runtimes/gh-aw/engine-profiles.yaml'
+      - 'scripts/render_gh_aw_workers.py'
   workflow_dispatch:
 
 permissions:
@@ -16,17 +18,44 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [copilot, codex, claude, gemini]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install renderer dependency
+        run: pip install 'PyYAML>=6.0,<7'
+      - name: Render trusted engine worker
+        run: python scripts/render_gh_aw_workers.py --profile '${{ matrix.profile }}'
       - name: Install pinned gh-aw compiler
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-aw --pin v0.83.4 --force
+      - name: Resolve worker source name
+        id: worker
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, yaml
+          data = yaml.safe_load(open('runtimes/gh-aw/engine-profiles.yaml'))
+          cfg = data['profiles'][os.environ['PROFILE']]
+          source = cfg['worker_source'].split('/')[-1]
+          assert source.endswith('.md')
+          print('name=' + source[:-3])
+          print('lock=' + cfg['worker_workflow'])
+          PY
       - name: Compile worker with strict validation
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh aw compile ai-sdlc-gh-aw-worker --strict
+        run: gh aw compile '${{ steps.worker.outputs.name }}' --strict
+      - name: Verify expected lock path
+        run: test -f ".github/workflows/${{ steps.worker.outputs.lock }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ai-sdlc-gh-aw-worker-lock
-          path: .github/workflows/ai-sdlc-gh-aw-worker.lock.yml
+          name: ai-sdlc-gh-aw-worker-${{ matrix.profile }}-lock
+          path: .github/workflows/${{ steps.worker.outputs.lock }}

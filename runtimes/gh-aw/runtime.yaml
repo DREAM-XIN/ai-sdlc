@@ -2,6 +2,8 @@ version: 0.1.0
 id: gh-aw
 mode: autonomous
 transport: github-workflow-dispatch
+engine_profile_registry: runtimes/gh-aw/engine-profiles.yaml
+default_engine_profile: copilot
 default_worker_workflow: ai-sdlc-gh-aw-worker.lock.yml
 required_inputs:
   - feature_id
@@ -18,3 +20,4 @@ security:
   authoritative_manifest_write: forbidden
   gate_self_approval: forbidden
   default_branch_state_write: forbidden
+  engine_selection: trusted-profile-default-with-legacy-worker-compatibility
