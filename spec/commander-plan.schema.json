@@ -6,15 +6,15 @@
   "required": ["version", "feature_id", "outcome", "errors", "summary", "dispatches"],
   "properties": {
     "version": {"type": "string", "const": "0.1.0"},
-    "feature_id": {"type": "string", "minLength": 1},
+    "feature_id": {"type": ["string", "null"]},
     "outcome": {"enum": ["DISPATCH", "WAIT", "BLOCKED", "COMPLETE", "INVALID"]},
     "errors": {"type": "array", "items": {"type": "string"}},
     "summary": {
       "type": "object",
       "required": ["workflow_status", "current_stage"],
       "properties": {
-        "workflow_status": {"enum": ["ACTIVE", "BLOCKED", "DONE", "CANCELLED"]},
-        "current_stage": {"type": "string", "minLength": 1}
+        "workflow_status": {"type": ["string", "null"], "enum": ["ACTIVE", "BLOCKED", "DONE", "CANCELLED", null]},
+        "current_stage": {"type": ["string", "null"]}
       },
       "additionalProperties": false
     },
