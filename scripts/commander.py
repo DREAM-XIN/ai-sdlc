@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 from jsonschema import Draft202012Validator
 
+from apply_feature_event import manifest_revision
 from bootstrap_feature import build_manifest, load_profile as load_bootstrap_profile
 from ingest_feature_event import ingest
 from manual_dispatch import build_task, schema_errors
@@ -68,11 +69,13 @@ def commander_plan_errors(plan):
 def summary_from_manifest(manifest):
     workflow = manifest.get("workflow") if isinstance(manifest, dict) else None
     feature = manifest.get("feature") if isinstance(manifest, dict) else None
+    revision = manifest_revision(manifest) if isinstance(manifest, dict) else None
     return {
         "feature_id": feature.get("id") if isinstance(feature, dict) else None,
         "summary": {
             "workflow_status": workflow.get("status") if isinstance(workflow, dict) else None,
             "current_stage": workflow.get("current_stage") if isinstance(workflow, dict) else None,
+            "revision": revision,
         },
     }
 
@@ -113,6 +116,7 @@ def build_commander_plan(
         return plan
 
     risk = manifest["feature"]["risk"]
+    revision = manifest_revision(manifest)
     resolved_rules = list(project_rules or [])
     project_read = []
     required_commands = []
@@ -157,6 +161,10 @@ def build_commander_plan(
             read_refs = unique([manifest_ref] + project_read + template.get("read", []))
             package = build_package(task, repository, read_refs, resolved_rules)
             package["transport"] = {"runtime": runtime["id"], "mode": runtime["mode"]}
+            package["instructions"]["execution"].append(
+                "When emitting a Feature Event for this work, set expected_revision to "
+                f"{revision}. If the Feature Manifest revision changes before submission, re-read state and regenerate the event."
+            )
             if project_adapter:
                 package["instructions"]["execution"].append(
                     "Read the Project Adapter ownership boundaries before modifying repository files."

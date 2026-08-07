@@ -22,6 +22,9 @@
       "required": ["feature_id", "sha256", "content"],
       "properties": {
         "feature_id": {"type": "string", "minLength": 1},
+        "source_revision": {"type": "integer", "minimum": 0},
+        "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "revision": {"type": "integer", "minimum": 1},
         "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "content": {"type": "string", "minLength": 1}
       },
@@ -39,6 +42,7 @@
               "kind": {"const": "update-file"},
               "path": {"type": "string"},
               "ref": {"type": "string"},
+              "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
             },
             "additionalProperties": false
@@ -73,6 +77,8 @@
       "properties": {
         "workflow_status": {"enum": ["ACTIVE", "BLOCKED", "DONE", "CANCELLED"]},
         "current_stage": {"type": "string", "minLength": 1},
+        "source_revision": {"type": "integer", "minimum": 0},
+        "revision": {"type": "integer", "minimum": 1},
         "message": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false

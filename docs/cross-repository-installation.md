@@ -108,7 +108,7 @@ permissions:
 
 Bootstrap can generate a Feature Manifest. Persistence is disabled by default and must be explicitly enabled.
 
-Direct writes to the caller default branch are rejected unless `allow_default_branch=true` is explicitly supplied.
+Direct writes to the caller default branch are rejected unless `allow_default_branch=true` is explicitly supplied. Immediately before a real write, the shared Action also verifies that the checked-out branch SHA still equals the live remote target-branch SHA.
 
 ### Persist
 
@@ -118,6 +118,8 @@ permissions:
 ```
 
 Persist validates a Feature Event through the Event Inbox and Transition Engine. It runs dry by default. A real commit/push happens only when `dry_run=false`.
+
+Inbox events must include the current Manifest `expected_revision`. The transition is rejected if another event has already advanced the Feature revision. A real Git push is additionally guarded by the remote target-branch SHA precondition.
 
 The called AI-SDLC Action cannot elevate `GITHUB_TOKEN` permissions. The caller workflow owns the token and its permission envelope.
 
@@ -154,11 +156,13 @@ Canonical state path:
 state/features/F-123.yaml
 ```
 
+A new Manifest starts at `revision: 0`.
+
 ### 4. Run `AI-SDLC Plan`
 
 The Plan workflow reads the Feature Manifest and automatically loads `.ai-sdlc/project.yaml` when present.
 
-For a ChatGPT Web/manual route, download or copy `chatgpt-web-prompts.txt` and give each dispatched prompt to the intended independent conversation/window.
+For a ChatGPT Web/manual route, download or copy `chatgpt-web-prompts.txt` and give each dispatched prompt to the intended independent conversation/window. The prompt contains the current revision that a resulting Feature Event must reference.
 
 ### 5. Worker writes durable outputs
 
@@ -168,13 +172,33 @@ The worker must not edit the Feature Manifest directly. It should write the requ
 state/events/F-123/EVT-F123-REQ-DONE.yaml
 ```
 
+Example event based on Manifest revision 0:
+
+```yaml
+version: 0.1.0
+id: EVT-F123-REQ-DONE
+feature_id: F-123
+expected_revision: 0
+occurred_at: '2026-08-07T13:10:00Z'
+changes:
+  - kind: stage
+    id: requirement
+    status: DONE
+```
+
+If another event changes the Manifest before this event is persisted, the stale event is rejected. Re-read the latest state and confirm that the result still applies before regenerating it with the new revision.
+
 ### 6. Run `AI-SDLC Persist Event`
 
-Run once with `dry_run=true` to inspect the Persistence Plan. Then run with `dry_run=false` to commit the validated Manifest transition to the Feature branch.
+Run once with `dry_run=true` to inspect the Persistence Plan. The plan records source/result revision and Manifest hash. Then run with `dry_run=false` to commit the validated transition to the Feature branch.
+
+Before the real push, AI-SDLC verifies that the checked-out branch has not advanced remotely. If it has, the write fails closed and the workflow must be rerun from refreshed state.
 
 ### 7. Run Plan again
 
-Commander computes the next runnable stage and produces the next runtime decision or ChatGPT Web prompt.
+Commander computes the next runnable stage, reports the new revision, and produces the next runtime decision or ChatGPT Web prompt.
+
+See `docs/optimistic-concurrency.md` for the complete concurrency model.
 
 ## Trust boundary
 
@@ -204,6 +228,8 @@ The composite Action:
 - validates Feature Manifest writes under `state/features/`;
 - validates write refs as branch names;
 - denies default-branch writes unless explicitly allowed;
+- rejects stale Feature revisions for Event Inbox persistence;
+- rejects a real write when the remote target branch has advanced since checkout;
 - does **not** execute the Project Adapter's build/test/lint commands.
 
 Project commands remain portable data until an execution Runtime with an explicit sandbox policy consumes them.

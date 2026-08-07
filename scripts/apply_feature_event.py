@@ -56,6 +56,11 @@ def effective_event_id(event):
     return "legacy-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
 
 
+def manifest_revision(manifest):
+    """Legacy v0.1 manifests without revision are treated as revision zero."""
+    return manifest.get("revision", 0)
+
+
 def recompute_workflow(manifest):
     stages = manifest["workflow"]["stages"]
     gates = manifest.get("gates", [])
@@ -81,18 +86,30 @@ def apply_event(manifest, event):
             "outcome": "INVALID",
             "errors": [f"feature id mismatch: manifest={manifest['feature']['id']} event={event['feature_id']}"],
         }
-    workflow_status = manifest["workflow"]["status"]
-    if workflow_status in TERMINAL_WORKFLOW_STATES:
-        return {
-            "outcome": "INVALID",
-            "errors": [f"cannot apply event to terminal workflow: {workflow_status}"],
-        }
+
     event_id = effective_event_id(event)
     applied_events = set(manifest.get("applied_events", []))
     if event_id in applied_events:
         return {
             "outcome": "INVALID",
             "errors": [f"event already applied: {event_id}"],
+        }
+
+    current_revision = manifest_revision(manifest)
+    expected_revision = event.get("expected_revision")
+    if expected_revision is not None and expected_revision != current_revision:
+        return {
+            "outcome": "INVALID",
+            "errors": [
+                f"stale event revision: manifest={current_revision} event_expected={expected_revision}"
+            ],
+        }
+
+    workflow_status = manifest["workflow"]["status"]
+    if workflow_status in TERMINAL_WORKFLOW_STATES:
+        return {
+            "outcome": "INVALID",
+            "errors": [f"cannot apply event to terminal workflow: {workflow_status}"],
         }
 
     result = copy.deepcopy(manifest)
@@ -143,12 +160,20 @@ def apply_event(manifest, event):
                 gate["evidence"] = sorted(set(gate.get("evidence", [])) | set(refs))
 
     result.setdefault("applied_events", []).append(event_id)
+    result["revision"] = current_revision + 1
     result["updated_at"] = event["occurred_at"]
     recompute_workflow(result)
     manifest_errors = validate_manifest(result)
     if manifest_errors:
         return {"outcome": "INVALID", "errors": manifest_errors}
-    return {"outcome": "APPLIED", "errors": [], "manifest": result, "event_id": event_id}
+    return {
+        "outcome": "APPLIED",
+        "errors": [],
+        "manifest": result,
+        "event_id": event_id,
+        "source_revision": current_revision,
+        "result_revision": result["revision"],
+    }
 
 
 def main():

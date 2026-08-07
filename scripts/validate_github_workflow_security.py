@@ -23,6 +23,14 @@ def main():
         require("pip install -r runtime/requirements-dev.txt" in text, f"{path.name}: dependencies are not loaded from trusted runtime")
         require("python scripts/" not in text, f"{path.name}: executes Python from checkout root/target ref")
         require("pip install -r requirements-dev.txt" not in text, f"{path.name}: installs dependencies from checkout root/target ref")
+        require(
+            "verify_git_write_precondition.py" in text,
+            f"{path.name}: write-capable transport lost optimistic remote-branch precondition",
+        )
+        require(
+            '--target-ref "$TARGET_REF"' in text and '--default-branch "$DEFAULT_BRANCH"' in text,
+            f"{path.name}: write precondition is missing target/default branch inputs",
+        )
 
     commander = WORKFLOWS[0].read_text(encoding="utf-8")
     require("permissions:\n      contents: read" in commander, "Commander plan job lost read-only permission")
@@ -35,12 +43,20 @@ def main():
         "workspace/.ai-sdlc/project.yaml" in commander and "--project workspace/.ai-sdlc/project.yaml" in commander,
         "Commander no longer loads the canonical target Project Adapter",
     )
+    require(
+        '--repo-dir workspace' in commander,
+        "Commander bootstrap persistence does not guard the checked-out workspace",
+    )
 
     persistence = WORKFLOWS[1].read_text(encoding="utf-8")
     require("python runtime/scripts/ingest_feature_event.py" in persistence, "Persistence does not execute trusted inbox code")
     require("git -C workspace push" in persistence, "Persistence does not isolate Git push to workspace")
+    require(
+        '--repo-dir workspace' in persistence,
+        "Persistence does not guard the checked-out workspace before push",
+    )
 
-    print("GitHub workflow trusted-runtime isolation checks passed")
+    print("GitHub workflow trusted-runtime and optimistic-write isolation checks passed")
 
 
 if __name__ == "__main__":

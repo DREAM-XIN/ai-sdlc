@@ -14,7 +14,8 @@
       "required": ["workflow_status", "current_stage"],
       "properties": {
         "workflow_status": {"type": ["string", "null"], "enum": ["ACTIVE", "BLOCKED", "DONE", "CANCELLED", null]},
-        "current_stage": {"type": ["string", "null"]}
+        "current_stage": {"type": ["string", "null"]},
+        "revision": {"type": ["integer", "null"], "minimum": 0}
       },
       "additionalProperties": false
     },

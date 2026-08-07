@@ -6,6 +6,7 @@
   "required": ["protocol_version", "feature", "workflow", "updated_at"],
   "properties": {
     "protocol_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "revision": {"type": "integer", "minimum": 0},
     "feature": {
       "type": "object",
       "required": ["id", "title", "risk"],

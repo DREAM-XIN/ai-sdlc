@@ -55,6 +55,7 @@ jobs:
       - run: python scripts/validate_github_workflow_security.py
       - run: python scripts/validate_project_adapter.py
       - run: python scripts/validate_cross_repo_transport.py
+      - run: python scripts/validate_git_write_precondition.py
 
   cross-repo-control:
     runs-on: ubuntu-latest
@@ -84,6 +85,7 @@ jobs:
         run: |
           test "${{ steps.bootstrap.outputs.exit_code }}" = "0"
           cp "${{ steps.bootstrap.outputs.bootstrap_manifest_path }}" state/features/F-0050.yaml
+          grep -q 'revision: 0' state/features/F-0050.yaml
 
       - name: Plan through shared control action
         id: first_plan
@@ -99,8 +101,10 @@ jobs:
         run: |
           test "${{ steps.first_plan.outputs.exit_code }}" = "0"
           grep -q '"outcome": "DISPATCH"' "${{ steps.first_plan.outputs.commander_plan_path }}"
+          grep -q '"revision": 0' "${{ steps.first_plan.outputs.commander_plan_path }}"
           grep -q '.ai-sdlc/project.yaml' "${{ steps.first_plan.outputs.prompts_path }}"
           grep -q 'ownership boundaries' "${{ steps.first_plan.outputs.prompts_path }}"
+          grep -q 'expected_revision to 0' "${{ steps.first_plan.outputs.prompts_path }}"
 
       - name: Create caller Feature Event
         shell: bash
@@ -109,6 +113,7 @@ jobs:
           version: 0.1.0
           id: EVT-F0050-REQ-START
           feature_id: F-0050
+          expected_revision: 0
           occurred_at: '2026-08-07T13:07:00Z'
           changes:
             - kind: stage
@@ -136,6 +141,9 @@ jobs:
           test -f "${{ steps.persist.outputs.persistence_plan_path }}"
           grep -q 'EVT-F0050-REQ-START' state/features/F-0050.yaml
           grep -q 'status: WORKING' state/features/F-0050.yaml
+          grep -q 'revision: 1' state/features/F-0050.yaml
+          grep -q '"source_revision": 0' "${{ steps.persist.outputs.persistence_plan_path }}"
+          grep -q '"revision": 1' "${{ steps.persist.outputs.persistence_plan_path }}"
 
       - name: Re-plan working Feature through shared control action
         id: wait_plan
@@ -151,3 +159,4 @@ jobs:
         run: |
           test "${{ steps.wait_plan.outputs.exit_code }}" = "0"
           grep -q '"outcome": "WAIT"' "${{ steps.wait_plan.outputs.commander_plan_path }}"
+          grep -q '"revision": 1' "${{ steps.wait_plan.outputs.commander_plan_path }}"

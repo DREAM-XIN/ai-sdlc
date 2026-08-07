@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 from jsonschema import Draft202012Validator
 
-from apply_feature_event import apply_event
+from apply_feature_event import apply_event, manifest_revision
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAN_SCHEMA = ROOT / "spec" / "github-persistence-plan.schema.json"
@@ -47,6 +47,11 @@ def conclusion_for(status: str) -> str:
     return "neutral"
 
 
+def manifest_content_and_hash(manifest):
+    content = yaml.safe_dump(manifest, sort_keys=False)
+    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def build_plan(manifest, event, repository: str, manifest_path: str, target_ref: str, issue: int | None = None):
     path_error = validate_manifest_path(manifest_path)
     if path_error:
@@ -54,23 +59,29 @@ def build_plan(manifest, event, repository: str, manifest_path: str, target_ref:
     if not repository.strip() or not target_ref.strip():
         return {"outcome": "INVALID", "errors": ["repository and target_ref must be non-empty"]}
 
+    source_revision = manifest_revision(manifest)
+    _, source_digest = manifest_content_and_hash(manifest)
     applied = apply_event(manifest, event)
     if applied["outcome"] != "APPLIED":
         return {"outcome": "INVALID", "errors": applied["errors"]}
 
     updated = applied["manifest"]
-    content = yaml.safe_dump(updated, sort_keys=False)
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    content, digest = manifest_content_and_hash(updated)
+    revision = updated["revision"]
     status = updated["workflow"]["status"]
     current_stage = updated["workflow"]["current_stage"]
     feature_id = updated["feature"]["id"]
-    message = f"{feature_id}: workflow={status}, current_stage={current_stage}"
+    message = (
+        f"{feature_id}: workflow={status}, current_stage={current_stage}, "
+        f"revision={source_revision}->{revision}"
+    )
 
     mutations = [
         {
             "kind": "update-file",
             "path": manifest_path,
             "ref": target_ref,
+            "source_sha256": source_digest,
             "sha256": digest,
         },
         {
@@ -99,6 +110,9 @@ def build_plan(manifest, event, repository: str, manifest_path: str, target_ref:
         },
         "manifest": {
             "feature_id": feature_id,
+            "source_revision": source_revision,
+            "source_sha256": source_digest,
+            "revision": revision,
             "sha256": digest,
             "content": content,
         },
@@ -106,6 +120,8 @@ def build_plan(manifest, event, repository: str, manifest_path: str, target_ref:
         "summary": {
             "workflow_status": status,
             "current_stage": current_stage,
+            "source_revision": source_revision,
+            "revision": revision,
             "message": message,
         },
     }

@@ -21,11 +21,7 @@ state/
 
 ## Bootstrap
 
-A bootstrap input identifies:
-
-- Feature id, title, risk, and optional system-of-record Issue;
-- Workflow Profile;
-- creation timestamp.
+A bootstrap input identifies the Feature id/title/risk, optional system-of-record Issue, Workflow Profile and creation timestamp.
 
 `bootstrap_feature.py` creates a Feature Manifest by:
 
@@ -33,23 +29,38 @@ A bootstrap input identifies:
 2. setting the first stage to `READY` and later stages to `TODO`;
 3. creating every referenced Gate in `PENDING`;
 4. initializing empty task/artifact/evidence/event ledgers;
-5. semantically validating the result.
+5. initializing `revision: 0`;
+6. semantically validating the result.
 
-The new manifest can immediately be passed to `orchestrator_state.py` to obtain the first `DISPATCH` action.
+The new manifest can immediately be passed to the Orchestrator to obtain the first `DISPATCH` action.
 
 ## Event identity and replay safety
 
 New Feature Events should contain a stable explicit `id`.
 
-For backward compatibility with existing `0.1.x` documents, the core transition engine still accepts an event without `id`; it derives a deterministic `legacy-...` identity from the canonical event content. The derived identity is recorded exactly like an explicit identity and therefore also provides replay protection.
+For backward compatibility with existing `0.1.x` documents, the core transition engine still accepts an event without `id`; it derives a deterministic `legacy-...` identity from canonical event content. The effective identity is appended to `applied_events`, and replaying the same identity returns `INVALID` before lifecycle state is modified.
 
-After a successful transition, the effective identity is appended to `applied_events` in the Feature Manifest. Applying the same identity again returns `INVALID` before lifecycle state is modified.
+## Revision and stale-event safety
 
-This protects against repeated ChatGPT submissions, retried CI jobs, duplicated webhooks, and manual replay without making existing valid `0.1.x` Feature Events invalid.
+A Feature Manifest has a monotonic integer `revision`. Commander exposes the current revision to workers.
+
+A repository Event Inbox event must declare the revision it was prepared against:
+
+```yaml
+expected_revision: 7
+```
+
+If the current Manifest revision is not 7, the event is stale and returns `INVALID` without modifying state. A valid event based on revision 7 produces revision 8.
+
+This is optimistic concurrency, not a distributed lock. Parallel engineering work remains allowed; only authoritative Feature-state mutations are serialized. A stale worker must re-read current state and confirm that its result is still valid before regenerating the event.
+
+The generic low-level Feature Event protocol keeps `expected_revision` optional for `0.1.x` compatibility. The repository Event Inbox requires it for persisted events.
+
+See `docs/optimistic-concurrency.md` for the complete model.
 
 ## Event inbox rules
 
-The repository Event Inbox is stricter than the generic Feature Event protocol: Inbox events must provide an explicit `id`.
+The repository Event Inbox is stricter than the generic Feature Event protocol: Inbox events must provide an explicit `id` and `expected_revision`.
 
 `ingest_feature_event.py` accepts only paths shaped as:
 
@@ -71,12 +82,15 @@ Instead it should write an event such as:
 version: 0.1.0
 id: EVT-F123-DESIGN-DONE
 feature_id: F-123
+expected_revision: 7
 occurred_at: '2026-08-07T12:00:00Z'
 changes:
   - kind: stage
     id: design
     status: DONE
 ```
+
+Before submitting, compare `expected_revision` with the latest Feature Manifest. If it changed, do not simply substitute the newer number: re-read state and confirm that the proposed change remains valid.
 
 Gate verdicts still require explicit Evidence in the same or prior event; a worker's self-report is not sufficient evidence by itself.
 
@@ -85,21 +99,23 @@ Gate verdicts still require explicit Evidence in the same or prior event; a work
 ```text
 Feature Bootstrap
       ↓
-Feature Manifest
+Feature Manifest (revision N)
       ↓
 Orchestrator → Runtime Router → Task Package
       ↓
-Worker
+Worker reads revision N
       ↓
-Feature Event in state/events/
+Feature Event expected_revision=N
       ↓
 Inbox validation
       ↓
 Transition Engine
       ↓
-Persistence Plan
+Persistence Plan N → N+1
       ↓
-Updated Feature Manifest
+Git remote-write precondition
+      ↓
+Updated Feature Manifest (revision N+1)
       ↓
 Next Orchestrator state
 ```

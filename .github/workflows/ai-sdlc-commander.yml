@@ -207,10 +207,16 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
         run: |
-          if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
-            echo "Refusing direct persistence to default branch without allow_default_branch=true"
-            exit 1
+          precondition_args=(
+            --repo-dir workspace
+            --target-ref "$TARGET_REF"
+            --default-branch "$DEFAULT_BRANCH"
+          )
+          if [[ "$ALLOW_DEFAULT_BRANCH" == "true" ]]; then
+            precondition_args+=(--allow-default-branch)
           fi
+          python runtime/scripts/verify_git_write_precondition.py "${precondition_args[@]}"
+
           mkdir -p -- "workspace/$(dirname -- "$MANIFEST_PATH")"
           cp -- bootstrap-manifest.yaml "workspace/$MANIFEST_PATH"
           git -C workspace config user.name "ai-sdlc[bot]"
