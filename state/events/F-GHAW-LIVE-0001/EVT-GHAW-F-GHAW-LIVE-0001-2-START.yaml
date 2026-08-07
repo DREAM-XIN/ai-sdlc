@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-GHAW-F-GHAW-LIVE-0001-2-START
+feature_id: F-GHAW-LIVE-0001
+expected_revision: 2
+occurred_at: '2026-08-07T16:50:27Z'
+changes:
+- kind: stage
+  id: implementation
+  status: WORKING
