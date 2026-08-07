@@ -1,0 +1,136 @@
+name: AI-SDLC gh-aw Live Dogfood
+
+on:
+  push:
+    branches:
+      - 'dogfood/gh-aw-live-*'
+    paths:
+      - 'dogfood/gh-aw-live.yaml'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ai-sdlc-gh-aw-live-dogfood
+  cancel-in-progress: false
+
+jobs:
+  gemini-live-dogfood:
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dogfood target branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install trusted runtime dependencies
+        run: pip install -r runtime/requirements-dev.txt
+      - name: Validate immutable one-shot dogfood trigger
+        env:
+          TARGET_REF: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, yaml
+          from pathlib import Path
+          trigger = yaml.safe_load(Path('dogfood/gh-aw-live.yaml').read_text(encoding='utf-8'))
+          expected = {
+              'version': '0.1.0',
+              'feature_id': 'F-GHAW-LIVE-0001',
+              'engine_profile': 'gemini',
+              'profile': 'small-change',
+              'manifest_path': 'state/features/F-GHAW-LIVE-0001.yaml',
+              'bootstrap_path': 'dogfood/gh-aw-live-bootstrap.yaml',
+              'requirement_event_path': 'state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-DONE.yaml',
+              'policy_path': 'runtimes/gh-aw/example-dispatch-policy.yaml',
+          }
+          if trigger != expected:
+              raise SystemExit(f'dogfood trigger must equal the reviewed contract: {expected}')
+          if not os.environ['TARGET_REF'].startswith('dogfood/gh-aw-live-'):
+              raise SystemExit('live dogfood must run on a dedicated non-default branch')
+          if Path(expected['manifest_path']).exists():
+              raise SystemExit('live dogfood is one-shot and requires a fresh branch without a Feature Manifest')
+          PY
+      - name: Run Gemini runtime preflight
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GEMINI_API_KEY" ]]; then
+            echo 'GEMINI_API_KEY is not configured' >&2
+            exit 2
+          fi
+          python runtime/scripts/gh_aw_runtime_preflight.py gemini \
+            --credential-present true \
+            --workflow-dir runtime/.github/workflows | tee gh-aw-preflight.json
+          grep -q '"status":"READY_FOR_ENTITLEMENT_PROBE"' gh-aw-preflight.json
+      - name: Bootstrap bounded dogfood Feature
+        id: bootstrap
+        uses: ./runtime/.github/actions/control
+        with:
+          operation: bootstrap
+          repository: ${{ github.repository }}
+          target_ref: ${{ github.ref_name }}
+          manifest_path: state/features/F-GHAW-LIVE-0001.yaml
+          bootstrap_path: dogfood/gh-aw-live-bootstrap.yaml
+          persist: 'true'
+          default_branch: ${{ github.event.repository.default_branch }}
+      - name: Verify bootstrap result
+        run: test "${{ steps.bootstrap.outputs.exit_code }}" = '0'
+      - name: Refresh target after bootstrap
+        run: |
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+      - name: Persist operator-prepared requirement prerequisite
+        id: requirement
+        uses: ./runtime/.github/actions/control
+        with:
+          operation: persist
+          repository: ${{ github.repository }}
+          target_ref: ${{ github.ref_name }}
+          manifest_path: state/features/F-GHAW-LIVE-0001.yaml
+          event_path: state/events/F-GHAW-LIVE-0001/EVT-F-GHAW-LIVE-REQ-DONE.yaml
+          feature_issue: '6'
+          persist: 'true'
+          default_branch: ${{ github.event.repository.default_branch }}
+      - name: Verify prerequisite persistence
+        run: test "${{ steps.requirement.outputs.exit_code }}" = '0'
+      - name: Verify implementation is READY
+        run: |
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+          python - <<'PY'
+          import yaml
+          manifest = yaml.safe_load(open('state/features/F-GHAW-LIVE-0001.yaml'))
+          stages = {item['id']: item['status'] for item in manifest['workflow']['stages']}
+          if stages.get('requirement') != 'DONE':
+              raise SystemExit(f"requirement prerequisite is not DONE: {stages}")
+          if stages.get('implementation') != 'READY':
+              raise SystemExit(f"implementation is not READY: {stages}")
+          if manifest.get('revision') != 1:
+              raise SystemExit(f"expected revision 1 before autonomous dispatch, got {manifest.get('revision')}")
+          PY
+      - name: Dispatch trusted Gemini profile
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_REF: ${{ github.ref_name }}
+        run: |
+          gh workflow run ai-sdlc-gh-aw-dispatch-profile.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field engine_profile=gemini \
+            --field target_ref="$TARGET_REF" \
+            --field manifest_path=state/features/F-GHAW-LIVE-0001.yaml \
+            --field policy_path=runtimes/gh-aw/example-dispatch-policy.yaml \
+            --field dry_run=false
+          echo 'Trusted Gemini profile dispatch submitted.' >> "$GITHUB_STEP_SUMMARY"
