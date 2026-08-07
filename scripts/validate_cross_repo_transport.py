@@ -23,8 +23,11 @@ def main():
     require("validate_manifest_path true" in action, "read/write operations no longer validate existing Feature Manifest paths")
     require("validate_manifest_path false" in action, "bootstrap no longer validates target Feature Manifest path")
     require("validate_workspace_path" in action, "control action lost workspace containment checks")
-    require("git check-ref-format --branch" in action, "write refs are not validated as branch names")
-    require("Refusing direct persistence to default branch" in action, "default-branch write protection missing")
+    require(
+        'python "$runtime_root/scripts/verify_git_write_precondition.py"' in action,
+        "shared Action no longer verifies remote target branch before writes",
+    )
+    require('--repo-dir .' in action, "shared Action does not guard the caller checkout")
     require("python scripts/" not in action, "control action executes caller-repository control code")
     require("pip install -r requirements-dev.txt" not in action, "control action installs caller-repository dependencies")
 
@@ -46,7 +49,7 @@ def main():
         text = path.read_text(encoding="utf-8")
         require("Pin this to an AI-SDLC release tag or full commit SHA" in text, f"{path.name}: production pinning guidance missing")
 
-    print("Cross-repository GitHub transport static checks passed")
+    print("Cross-repository GitHub transport optimistic-concurrency checks passed")
 
 
 if __name__ == "__main__":
