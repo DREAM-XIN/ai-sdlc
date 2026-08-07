@@ -13,6 +13,9 @@ on:
       - 'templates/**'
       - 'docs/**'
       - 'state/**'
+      - 'release/**'
+      - 'VERSION'
+      - 'CHANGELOG.md'
       - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -29,6 +32,9 @@ on:
       - 'templates/**'
       - 'docs/**'
       - 'state/**'
+      - 'release/**'
+      - 'VERSION'
+      - 'CHANGELOG.md'
       - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -61,6 +67,7 @@ jobs:
       - run: python scripts/validate_action_security.py
       - run: python scripts/validate_gh_aw_adapter.py
       - run: python scripts/validate_gh_aw_workflow_security.py
+      - run: python scripts/validate_release_readiness.py
 
   cross-repo-control:
     runs-on: ubuntu-latest
