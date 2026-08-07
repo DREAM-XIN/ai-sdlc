@@ -41,6 +41,15 @@ def main():
     require(replay["outcome"] == "INVALID", "replayed event unexpectedly passed")
     require("already applied" in "\n".join(replay["errors"]), f"replay rejection lacks detail: {replay}")
 
+    legacy_event = dict(start_event)
+    legacy_event.pop("id")
+    legacy_started = apply_event(initial, legacy_event)
+    require(legacy_started["outcome"] == "APPLIED", f"legacy event without id failed: {legacy_started}")
+    legacy_id = legacy_started.get("event_id")
+    require(legacy_id and legacy_id.startswith("legacy-"), f"legacy identity not derived: {legacy_started}")
+    legacy_replay = apply_event(legacy_started["manifest"], legacy_event)
+    require(legacy_replay["outcome"] == "INVALID", "legacy event replay unexpectedly passed")
+
     waiting = compute_state(started["manifest"], profile)
     require(waiting["outcome"] == "WAIT", f"working stage should wait: {waiting}")
 
