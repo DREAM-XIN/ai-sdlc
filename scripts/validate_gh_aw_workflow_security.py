@@ -29,14 +29,14 @@ def main():
     require("permissions:\n      contents: read" in dispatch, "gh-aw plan job is not read-only")
     require("contents: write\n      actions: write" in dispatch, "gh-aw execute job lacks explicit contents/actions write envelope")
     require(dispatch.count("actions: write") == 1, "actions: write must exist only on the execute job")
-    require("gh workflow run" in dispatch, "gh-aw execute path does not invoke workflow_dispatch")
+    require("'gh', 'workflow', 'run'" in dispatch, "gh-aw execute path does not invoke workflow_dispatch")
     require("gh_aw_adapter.py start-event" in dispatch, "gh-aw execute path does not reserve stage before worker dispatch")
     require("ingest_feature_event.py" in dispatch, "gh-aw START reservation bypasses Event Inbox validation")
     require("verify_git_write_precondition.py" in dispatch, "gh-aw START reservation lacks remote-branch write precondition")
     require("git -C workspace push" in dispatch, "gh-aw reservation is not isolated to target workspace")
     require("gh-aw autonomous dispatch must target a non-default branch" in dispatch, "gh-aw dispatch lost default-branch denial")
     require(
-        dispatch.index("git -C workspace push") < dispatch.index("gh', 'workflow', 'run"),
+        dispatch.index("git -C workspace push") < dispatch.index("'gh', 'workflow', 'run'"),
         "gh-aw worker may be dispatched before WORKING reservation is durably pushed",
     )
     require("AI-SDLC intentionally does not guess a rollback/block transition here" in dispatch, "dispatch failure semantics are no longer explicit/fail-closed")
@@ -50,7 +50,7 @@ def main():
     require("verify_git_write_precondition.py" in result, "worker result persistence lacks remote-branch precondition")
     require("git -C workspace add -- \"$MANIFEST_PATH\" \"$EVENT_PATH\"" in result, "worker result writes outside the canonical Manifest/Event set")
     require("git -C workspace push" in result, "worker result Git push is not workspace-isolated")
-    require("gate" not in result.lower() or "gate" not in result, "result workflow should not contain direct Gate mutation logic")
+    require("gate" not in result.lower(), "result workflow should not contain direct Gate mutation logic")
 
     print("gh-aw runtime transport trusted-boundary and permission checks passed")
 
