@@ -68,13 +68,17 @@ You may install only the workflows you need. For example, a repository that allo
 
 ### Pin the AI-SDLC version
 
-The templates use this development reference:
+The templates intentionally contain an invalid installation placeholder:
 
 ```yaml
-uses: DREAM-XIN/ai-sdlc/.github/actions/control@main
+uses: DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA # ai-sdlc-install-placeholder
 ```
 
-For production use, replace `main` with an AI-SDLC release tag or, for the strongest immutability, a full commit SHA.
+Before committing the workflow to a target repository, replace `REPLACE_WITH_AI_SDLC_FULL_SHA` with the reviewed 40-character commit SHA for the AI-SDLC revision you intend to run.
+
+Do **not** replace it with `main`, a release branch, or a moving version tag. A human-friendly release tag can identify a release, but the workflow should pin the commit SHA behind that reviewed release.
+
+The third-party official Actions already present in the templates are also pinned to reviewed commit SHAs. See `templates/github/README.md` and `docs/security-model.md`.
 
 The caller controls the exact Action version. A target repository cannot replace AI-SDLC runtime code by modifying its own Feature branch.
 
@@ -203,7 +207,7 @@ See `docs/optimistic-concurrency.md` for the complete concurrency model.
 ## Trust boundary
 
 ```text
-private AI-SDLC Action @ pinned ref
+private AI-SDLC Action @ full commit SHA
   ├── schemas
   ├── Commander
   ├── transition engine
@@ -242,7 +246,7 @@ This is why Plan, Bootstrap and Persist remain separate caller workflows instead
 
 ## Current limitations
 
-- The templates currently point to `@main` for development; a release tag/SHA should be used after the first release.
+- Caller workflow templates must have `REPLACE_WITH_AI_SDLC_FULL_SHA` substituted during installation.
 - Private Actions Access must be enabled manually in the `ai-sdlc` repository settings.
 - ChatGPT Web remains a manual transport: the workflow produces prompts but does not automate browser tabs.
 - Autonomous coding-agent runtimes are separate adapters and are not executed by this transport.
