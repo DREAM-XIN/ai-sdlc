@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       event_path:
-        description: Repository path to the Feature Event
+        description: Event inbox path: state/events/<feature-id>/<event-id>.yaml
         required: true
         type: string
       target_ref:
@@ -56,7 +56,7 @@ jobs:
             echo "Refusing direct persistence to default branch without allow_default_branch=true"
             exit 1
           fi
-      - name: Build persistence plan
+      - name: Validate inbox event and build persistence plan
         shell: bash
         env:
           MANIFEST_PATH: ${{ inputs.manifest_path }}
@@ -68,6 +68,7 @@ jobs:
           args=(
             "$MANIFEST_PATH"
             "$EVENT_PATH"
+            --event-path "$EVENT_PATH"
             --repository "$REPOSITORY"
             --manifest-path "$MANIFEST_PATH"
             --target-ref "$TARGET_REF"
@@ -80,7 +81,7 @@ jobs:
             fi
             args+=(--issue "$FEATURE_ISSUE")
           fi
-          python scripts/github_persistence.py "${args[@]}"
+          python scripts/ingest_feature_event.py "${args[@]}"
       - name: Materialize updated manifest
         shell: python
         run: |

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/feature-bootstrap.schema.json",
+  "title": "AI-SDLC Feature Bootstrap",
+  "type": "object",
+  "required": ["version", "feature", "profile", "created_at"],
+  "properties": {
+    "version": {"type": "string", "const": "0.1.0"},
+    "feature": {
+      "type": "object",
+      "required": ["id", "title", "risk"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "risk": {"enum": ["low", "medium", "high"]},
+        "issue": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "profile": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

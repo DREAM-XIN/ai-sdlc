@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 from copy import deepcopy
+import hashlib
+import json
 
 from apply_feature_event import apply_event
 from orchestrator_state import compute_state
@@ -11,8 +13,17 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def event(feature_id, changes, occurred_at="2026-08-07T11:11:00Z"):
-    return {"version": "0.1.0", "feature_id": feature_id, "occurred_at": occurred_at, "changes": changes}
+def event(feature_id, changes, occurred_at="2026-08-07T11:11:00Z", event_id=None):
+    if event_id is None:
+        signature = json.dumps({"feature_id": feature_id, "occurred_at": occurred_at, "changes": changes}, sort_keys=True)
+        event_id = "EVT-" + hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+    return {
+        "version": "0.1.0",
+        "id": event_id,
+        "feature_id": feature_id,
+        "occurred_at": occurred_at,
+        "changes": changes,
+    }
 
 
 def main():
@@ -22,8 +33,23 @@ def main():
     first = compute_state(initial, profile)
     require(first["outcome"] == "DISPATCH" and first["actions"][0]["stage"] == "design", f"unexpected initial state: {first}")
 
-    started = apply_event(initial, event("F-0030", [{"kind": "stage", "id": "design", "status": "WORKING"}]))
+    start_event = event("F-0030", [{"kind": "stage", "id": "design", "status": "WORKING"}])
+    started = apply_event(initial, start_event)
     require(started["outcome"] == "APPLIED", f"start event failed: {started}")
+    require(start_event["id"] in started["manifest"].get("applied_events", []), "event identity not recorded")
+    replay = apply_event(started["manifest"], start_event)
+    require(replay["outcome"] == "INVALID", "replayed event unexpectedly passed")
+    require("already applied" in "\n".join(replay["errors"]), f"replay rejection lacks detail: {replay}")
+
+    legacy_event = dict(start_event)
+    legacy_event.pop("id")
+    legacy_started = apply_event(initial, legacy_event)
+    require(legacy_started["outcome"] == "APPLIED", f"legacy event without id failed: {legacy_started}")
+    legacy_id = legacy_started.get("event_id")
+    require(legacy_id and legacy_id.startswith("legacy-"), f"legacy identity not derived: {legacy_started}")
+    legacy_replay = apply_event(legacy_started["manifest"], legacy_event)
+    require(legacy_replay["outcome"] == "INVALID", "legacy event replay unexpectedly passed")
+
     waiting = compute_state(started["manifest"], profile)
     require(waiting["outcome"] == "WAIT", f"working stage should wait: {waiting}")
 
