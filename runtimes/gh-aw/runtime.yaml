@@ -20,4 +20,4 @@ security:
   authoritative_manifest_write: forbidden
   gate_self_approval: forbidden
   default_branch_state_write: forbidden
-  engine_selection: trusted-profile-only
+  engine_selection: trusted-profile-default-with-legacy-worker-compatibility
