@@ -1,0 +1,60 @@
+version: 0.1.0
+project:
+  id: enterprise-web-app
+  name: Enterprise Web App
+  description: Java/Spring Boot backend with a Vue frontend.
+repository:
+  provider: github
+  full_name: example/enterprise-web-app
+  default_branch: main
+defaults:
+  workflow_profile: standard-feature
+  runtime_policy: default
+  required_commands:
+    - backend-test
+    - frontend-test
+    - frontend-build
+context:
+  rules:
+    - AGENTS.md
+    - CONTRIBUTING.md
+  read:
+    - README.md
+    - docs/architecture.md
+    - backend/README.md
+    - frontend/README.md
+commands:
+  - id: backend-build
+    purpose: build
+    argv: [./mvnw, -q, -DskipTests, package]
+    cwd: backend
+  - id: backend-test
+    purpose: test
+    argv: [./mvnw, test]
+    cwd: backend
+  - id: frontend-test
+    purpose: test
+    argv: [npm, test, --, --run]
+    cwd: frontend
+  - id: frontend-build
+    purpose: build
+    argv: [npm, run, build]
+    cwd: frontend
+  - id: frontend-lint
+    purpose: lint
+    argv: [npm, run, lint]
+    cwd: frontend
+ownership:
+  - id: backend
+    role: developer
+    roots:
+      - backend
+  - id: frontend
+    role: developer
+    roots:
+      - frontend
+  - id: shared-docs
+    role: architect
+    roots:
+      - docs
+    shared: true

@@ -27,6 +27,14 @@ def main():
     commander = WORKFLOWS[0].read_text(encoding="utf-8")
     require("permissions:\n      contents: read" in commander, "Commander plan job lost read-only permission")
     require("persist-credentials: false" in commander, "Commander read-only checkout persists credentials")
+    require(
+        "policy_args=(--policy runtime/dispatch/default.yaml)" in commander,
+        "Commander no longer defaults to the trusted runtime Dispatch Policy",
+    )
+    require(
+        "workspace/.ai-sdlc/project.yaml" in commander and "--project workspace/.ai-sdlc/project.yaml" in commander,
+        "Commander no longer loads the canonical target Project Adapter",
+    )
 
     persistence = WORKFLOWS[1].read_text(encoding="utf-8")
     require("python runtime/scripts/ingest_feature_event.py" in persistence, "Persistence does not execute trusted inbox code")

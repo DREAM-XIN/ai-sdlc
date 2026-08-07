@@ -1,0 +1,37 @@
+version: 0.1.0
+project:
+  id: sample-app
+  name: Sample App
+  description: Generic single-repository application example.
+repository:
+  provider: github
+  full_name: example/sample-app
+  default_branch: main
+defaults:
+  workflow_profile: standard-feature
+  runtime_policy: default
+  required_commands:
+    - test
+    - lint
+context:
+  rules:
+    - AGENTS.md
+    - CONTRIBUTING.md
+  read:
+    - README.md
+    - docs/architecture.md
+commands:
+  - id: test
+    purpose: test
+    argv: [python, -m, pytest]
+    cwd: .
+  - id: lint
+    purpose: lint
+    argv: [python, -m, ruff, check, .]
+    cwd: .
+ownership:
+  - id: application
+    role: developer
+    roots:
+      - src
+      - tests
