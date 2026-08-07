@@ -44,3 +44,4 @@ jobs:
       - run: python scripts/validate_feature_transition.py
       - run: python scripts/validate_github_persistence.py
       - run: python scripts/validate_bootstrap_inbox.py
+      - run: python scripts/validate_commander.py
