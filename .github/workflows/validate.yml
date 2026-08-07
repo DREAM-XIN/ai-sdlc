@@ -33,3 +33,4 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python scripts/validate.py
       - run: python scripts/validate_feature_examples.py
+      - run: python scripts/validate_orchestrator_examples.py
