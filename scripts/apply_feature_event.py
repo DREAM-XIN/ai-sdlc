@@ -87,6 +87,14 @@ def apply_event(manifest, event):
             "errors": [f"feature id mismatch: manifest={manifest['feature']['id']} event={event['feature_id']}"],
         }
 
+    event_id = effective_event_id(event)
+    applied_events = set(manifest.get("applied_events", []))
+    if event_id in applied_events:
+        return {
+            "outcome": "INVALID",
+            "errors": [f"event already applied: {event_id}"],
+        }
+
     current_revision = manifest_revision(manifest)
     expected_revision = event.get("expected_revision")
     if expected_revision is not None and expected_revision != current_revision:
@@ -102,13 +110,6 @@ def apply_event(manifest, event):
         return {
             "outcome": "INVALID",
             "errors": [f"cannot apply event to terminal workflow: {workflow_status}"],
-        }
-    event_id = effective_event_id(event)
-    applied_events = set(manifest.get("applied_events", []))
-    if event_id in applied_events:
-        return {
-            "outcome": "INVALID",
-            "errors": [f"event already applied: {event_id}"],
         }
 
     result = copy.deepcopy(manifest)
