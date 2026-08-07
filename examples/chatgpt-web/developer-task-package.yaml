@@ -1,0 +1,56 @@
+version: 0.1.0
+
+task:
+  id: DEV-204
+  feature_id: F-100
+  role: developer
+  goal: Implement refresh-token rotation without changing the published API contract.
+  allowed_scope:
+    - services/auth/**
+    - database/migrations/**
+  forbidden_scope:
+    - apps/web/**
+    - billing/**
+  definition_of_done:
+    - Rotation behavior matches the approved design.
+    - Reuse of a rotated token is rejected.
+    - Required unit and integration tests pass.
+
+context:
+  system_of_record: github
+  repository: example-org/example-repo
+  read:
+    - Issue #100 feature
+    - Issue #101 approved requirement
+    - Issue #102 approved design
+    - ADR-004 authentication token policy
+  project_rules:
+    - AGENTS.md
+    - CONTRIBUTING.md
+
+instructions:
+  role_contract: roles/developer.md
+  execution:
+    - Read all required context before modifying code.
+    - Stay inside allowed scope unless an explicit blocker is recorded.
+    - Implement the smallest change that satisfies the approved design.
+    - Run repository-defined deterministic checks.
+    - Create or update the task PR and write implementation notes.
+  escalation:
+    - If requirement and design conflict, stop and record BLOCKED.
+    - If scope expansion is necessary, request a design change instead of silently expanding scope.
+
+handoff:
+  write_back:
+    - Pull request linked to DEV-204
+    - Implementation artifact
+    - Test evidence
+  completion_detection:
+    - Pull request exists and references DEV-204
+    - Required CI checks pass
+    - Implementation artifact declares no unresolved blocker
+  blocked_format: "BLOCKED: <reason> | Evidence: <links> | Decision required: <question>"
+
+transport:
+  runtime: chatgpt-web
+  mode: manual

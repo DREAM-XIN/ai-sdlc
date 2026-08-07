@@ -1,0 +1,78 @@
+version: 0.1.0
+
+gates:
+  requirement-gate:
+    pass_policy: all-required
+    human_approval: false
+    checks:
+      - type: artifact
+        target: requirement:approved
+      - type: review
+        target: requirement:blockers=0
+
+  design-gate:
+    pass_policy: all-required
+    human_approval: false
+    checks:
+      - type: artifact
+        target: design:approved
+      - type: review
+        target: design:blockers=0
+
+  code-gate:
+    pass_policy: all-required
+    human_approval: false
+    checks:
+      - type: review
+        target: code:blockers=0
+      - type: ci
+        target: required-checks:pass
+
+  verification-gate:
+    pass_policy: all-required
+    human_approval: false
+    checks:
+      - type: test
+        target: required-tests:pass
+      - type: artifact
+        target: test-report:approved
+
+  release-gate:
+    pass_policy: all-required
+    human_approval: false
+    checks:
+      - type: approval
+        target: acceptance:pass
+      - type: ci
+        target: required-checks:pass
+
+  human-requirement-gate:
+    pass_policy: all-required
+    human_approval: true
+    checks:
+      - type: artifact
+        target: requirement:approved
+      - type: approval
+        target: human:requirement
+
+  human-design-gate:
+    pass_policy: all-required
+    human_approval: true
+    checks:
+      - type: artifact
+        target: design:approved
+      - type: review
+        target: design:blockers=0
+      - type: approval
+        target: human:design
+
+  human-release-gate:
+    pass_policy: all-required
+    human_approval: true
+    checks:
+      - type: test
+        target: required-tests:pass
+      - type: approval
+        target: acceptance:pass
+      - type: approval
+        target: human:release

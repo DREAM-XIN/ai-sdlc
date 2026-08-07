@@ -1,0 +1,38 @@
+name: AI-SDLC Feature
+about: Propose a feature to be developed through the AI-SDLC lifecycle
+title: "[Feature] "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable outcomes, not implementation details.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and risks
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Initial risk
+      options:
+        - low
+        - medium
+        - high
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Link related issues, repositories, designs or incidents.

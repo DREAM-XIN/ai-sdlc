@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/gate.schema.json",
+  "title": "AI-SDLC Gate",
+  "type": "object",
+  "required": ["id", "checks", "pass_policy"],
+  "properties": {
+    "id": {"type": "string"},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type", "target"],
+        "properties": {
+          "type": {"enum": ["artifact", "review", "ci", "test", "approval", "policy"]},
+          "target": {"type": "string"},
+          "required": {"type": "boolean", "default": true}
+        },
+        "additionalProperties": false
+      }
+    },
+    "pass_policy": {"enum": ["all-required", "all", "custom"]},
+    "human_approval": {"type": "boolean", "default": false},
+    "max_review_iterations": {"type": "integer", "minimum": 1, "default": 3}
+  },
+  "additionalProperties": false
+}

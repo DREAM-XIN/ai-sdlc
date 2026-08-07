@@ -1,0 +1,17 @@
+id: small-change
+version: 0.1.0
+risk_profile: low
+stages:
+  - id: requirement
+    role: product
+  - id: implementation
+    role: developer
+    depends_on: [requirement]
+  - id: review
+    role: reviewer
+    depends_on: [implementation]
+    gate: code-gate
+  - id: verification
+    role: qa
+    depends_on: [review]
+    gate: verification-gate

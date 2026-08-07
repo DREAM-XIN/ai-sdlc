@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/evidence.schema.json",
+  "title": "AI-SDLC Evidence",
+  "type": "object",
+  "required": ["id", "type", "status", "source"],
+  "properties": {
+    "id": {"type": "string"},
+    "type": {"enum": ["build", "lint", "typecheck", "unit-test", "integration-test", "e2e", "security-scan", "review", "approval", "manual-test", "other"]},
+    "status": {"enum": ["pass", "fail", "warning", "skipped", "unknown"]},
+    "source": {"type": "string"},
+    "uri": {"type": "string"},
+    "task_id": {"type": "string"},
+    "commit": {"type": "string"},
+    "summary": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

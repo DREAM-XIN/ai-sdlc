@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/artifact.schema.json",
+  "title": "AI-SDLC Artifact",
+  "type": "object",
+  "required": ["id", "type", "producer", "uri"],
+  "properties": {
+    "id": {"type": "string"},
+    "type": {"enum": ["requirement", "design", "plan", "implementation", "review", "test", "adr", "release", "other"]},
+    "producer": {"type": "string"},
+    "task_id": {"type": "string"},
+    "uri": {"type": "string"},
+    "revision": {"type": "string"},
+    "status": {"enum": ["draft", "review", "approved", "rejected", "superseded"]},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}
