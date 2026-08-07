@@ -126,13 +126,17 @@ def main():
     require(converted["outcome"] == "EVENT_READY", f"COMPLETED result conversion failed: {converted}")
     result_event = converted["event"]
     require(result_event["expected_revision"] == 1, "worker result event revision mismatch")
-    require(any(change.get("kind") == "stage" and change.get("status") == "REVIEW" for change in result_event["changes"]), "COMPLETED worker did not hand off to REVIEW")
-    require(not any(change.get("kind") == "stage" and change.get("status") == "DONE" for change in result_event["changes"]), "worker self-approved DONE")
+    require(any(change.get("kind") == "stage" and change.get("status") == "DONE" for change in result_event["changes"]), "COMPLETED worker did not complete its work stage")
     require(not any(change.get("kind") == "gate" for change in result_event["changes"]), "worker self-approved a Gate")
-    reviewed = apply_event(working, result_event)
-    require(reviewed["outcome"] == "APPLIED", f"worker result transition failed: {reviewed}")
-    require(reviewed["manifest"]["revision"] == 2, "worker result did not produce revision 2")
-    require(stage_status(reviewed["manifest"], "requirement") == "REVIEW", "completed worker did not leave stage in REVIEW")
+    completed = apply_event(working, result_event)
+    require(completed["outcome"] == "APPLIED", f"worker result transition failed: {completed}")
+    require(completed["manifest"]["revision"] == 2, "worker result did not produce revision 2")
+    require(stage_status(completed["manifest"], "requirement") == "DONE", "completed worker did not leave work stage DONE")
+    require(stage_status(completed["manifest"], "requirement-review") == "READY", "independent review stage did not become READY")
+
+    next_plan = build_commander_plan(completed["manifest"], profile, load_yaml(ROOT / "dispatch" / "default.yaml"), repository="DREAM-XIN/example-target")
+    require(next_plan["outcome"] == "DISPATCH", f"Commander did not advance to independent review: {next_plan}")
+    require(next_plan["dispatches"][0]["action"]["stage"] == "requirement-review", "next dispatch is not the independent review stage")
 
     stale_result = deepcopy(worker_result)
     stale_result["id"] = "GHAW-F-GHAW-STALE"
