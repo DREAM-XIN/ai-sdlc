@@ -40,6 +40,8 @@ def validate_manifest(doc):
 
     stages = doc["workflow"]["stages"]
     stage_ids = [stage["id"] for stage in stages]
+    for duplicate in duplicates(stage_ids):
+        errors.append(f"semantic: duplicate stage id: {duplicate}")
     stage_by_id = {stage["id"]: stage for stage in stages}
     current_stage = doc["workflow"]["current_stage"]
     if current_stage not in stage_by_id:
