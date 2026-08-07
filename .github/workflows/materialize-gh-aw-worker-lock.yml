@@ -20,13 +20,14 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          token: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
       - name: Install pinned gh-aw compiler
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: gh extension install github/gh-aw --pin v0.83.4 --force
       - name: Compile worker with strict validation
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: gh aw compile ai-sdlc-gh-aw-worker --strict
       - name: Commit generated lock file
         run: |
