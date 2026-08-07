@@ -67,6 +67,7 @@ jobs:
       - run: python scripts/validate_action_security.py
       - run: python scripts/validate_gh_aw_adapter.py
       - run: python scripts/validate_gh_aw_workflow_security.py
+      - run: python scripts/validate_gh_aw_engine_profiles.py
       - run: python scripts/validate_release_readiness.py
 
   cross-repo-control:
