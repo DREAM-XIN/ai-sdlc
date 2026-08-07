@@ -66,6 +66,7 @@ def build_manifest(bootstrap, profile):
 
     manifest = {
         "protocol_version": "0.1.0",
+        "revision": 0,
         "feature": dict(bootstrap["feature"]),
         "workflow": {
             "profile": profile["id"],
