@@ -16,7 +16,39 @@ def materialize(plan_result):
     return yaml.safe_load(plan_result["plan"]["manifest"]["content"])
 
 
+def bootstrap_doc(feature_id, profile_id, risk="medium"):
+    return {
+        "version": "0.1.0",
+        "feature": {
+            "id": feature_id,
+            "title": f"Bootstrap {profile_id}",
+            "risk": risk,
+            "issue": "#41",
+        },
+        "profile": profile_id,
+        "created_at": "2026-08-07T11:22:00Z",
+    }
+
+
 def main():
+    for profile_id, risk in [
+        ("standard-feature", "medium"),
+        ("small-change", "low"),
+        ("high-risk", "high"),
+    ]:
+        profile = load_profile(profile_id)
+        created = build_manifest(bootstrap_doc(f"F-{profile_id}", profile_id, risk), profile)
+        require(created["outcome"] == "BOOTSTRAPPED", f"{profile_id} bootstrap failed: {created}")
+        manifest = created["manifest"]
+        require(manifest["workflow"]["stages"][0]["status"] == "READY", f"{profile_id} first stage not READY")
+        require(all(stage["status"] == "TODO" for stage in manifest["workflow"]["stages"][1:]), f"{profile_id} later stages not TODO")
+        gate_ids = {stage.get("gate") for stage in profile["stages"] if stage.get("gate")}
+        require({gate["id"] for gate in manifest["gates"]} == gate_ids, f"{profile_id} gate initialization mismatch")
+        first_state = compute_state(manifest, profile)
+        require(first_state["outcome"] == "DISPATCH", f"{profile_id} did not yield first dispatch: {first_state}")
+        require(first_state["actions"][0]["stage"] == profile["stages"][0]["id"], f"{profile_id} wrong first stage")
+        require(first_state["actions"][0]["role"] == profile["stages"][0]["role"], f"{profile_id} wrong first role")
+
     profile = load_profile("standard-feature")
     bootstrap = {
         "version": "0.1.0",
@@ -33,7 +65,6 @@ def main():
     require(created["outcome"] == "BOOTSTRAPPED", f"bootstrap failed: {created}")
     manifest = created["manifest"]
     require(manifest["workflow"]["current_stage"] == "requirement", "wrong bootstrap current stage")
-    require(manifest["workflow"]["stages"][0]["status"] == "READY", "first stage not READY")
     require(not manifest["applied_events"], "bootstrap should start with empty event ledger")
 
     first = compute_state(manifest, profile)
@@ -110,6 +141,18 @@ def main():
         target_ref="feature/F-0041",
     )
     require(wrong_filename["outcome"] == "INVALID", "wrong inbox filename unexpectedly passed")
+
+    legacy = dict(start)
+    legacy.pop("id")
+    legacy_inbox = ingest(
+        manifest,
+        legacy,
+        event_path="state/events/F-0041/legacy.yaml",
+        repository="DREAM-XIN/ai-sdlc",
+        manifest_path="state/features/F-0041.yaml",
+        target_ref="feature/F-0041",
+    )
+    require(legacy_inbox["outcome"] == "INVALID", "Inbox accepted a legacy event without explicit id")
 
     print("Feature bootstrap and event inbox scenarios passed")
 
