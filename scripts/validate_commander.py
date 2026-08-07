@@ -43,6 +43,7 @@ def main():
     created = commander_bootstrap(bootstrap, profile)
     require(created["outcome"] == "BOOTSTRAPPED", f"Commander bootstrap failed: {created}")
     manifest = created["manifest"]
+    require(manifest["revision"] == 0, "Commander bootstrap did not initialize revision 0")
 
     first_plan = build_commander_plan(
         manifest,
@@ -52,6 +53,7 @@ def main():
         manifest_ref="state/features/F-0043.yaml",
     )
     require(first_plan["outcome"] == "DISPATCH", f"Commander first plan failed: {first_plan}")
+    require(first_plan["summary"]["revision"] == 0, "Commander Plan does not expose current revision")
     require(not commander_plan_errors(first_plan), f"Commander Plan did not validate: {first_plan}")
     first_dispatch = first_plan["dispatches"][0]
     require(first_dispatch["action"]["stage"] == "requirement", f"wrong first stage: {first_dispatch}")
@@ -60,9 +62,8 @@ def main():
     require("task" in first_dispatch and "package" in first_dispatch and "prompt" in first_dispatch, "manual dispatch lacks executable payload")
     require("Repository: DREAM-XIN/ai-sdlc" in first_dispatch["prompt"], "prompt lacks repository")
     require("## Definition of Done" in first_dispatch["prompt"], "prompt lacks DoD")
+    require("expected_revision to 0" in first_dispatch["prompt"], "manual prompt lacks revision precondition")
 
-    # A future autonomous runtime must remain a routing decision. Commander must
-    # not fabricate a Task Package or claim execution support it does not have.
     future_policy = deepcopy(policy)
     future_policy["routes"].append(
         {
@@ -89,6 +90,7 @@ def main():
         [{"kind": "stage", "id": "requirement", "status": "WORKING"}],
         "2026-08-07T11:32:00Z",
         event_id="EVT-F0043-REQ-START",
+        expected_revision=0,
     )
     start_result = commander_ingest(
         manifest,
@@ -101,8 +103,10 @@ def main():
     )
     require(start_result["outcome"] == "PLANNED", f"Commander ingest START failed: {start_result}")
     working = materialize(start_result)
+    require(working["revision"] == 1, "Commander START did not advance revision")
     wait_plan = build_commander_plan(working, profile, policy, repository="DREAM-XIN/ai-sdlc")
     require(wait_plan["outcome"] == "WAIT", f"Commander did not WAIT for working stage: {wait_plan}")
+    require(wait_plan["summary"]["revision"] == 1, "WAIT plan lost current revision")
     require(not wait_plan["dispatches"], "WAIT plan unexpectedly contains dispatches")
 
     done = event(
@@ -110,6 +114,7 @@ def main():
         [{"kind": "stage", "id": "requirement", "status": "DONE"}],
         "2026-08-07T11:33:00Z",
         event_id="EVT-F0043-REQ-DONE",
+        expected_revision=1,
     )
     done_result = commander_ingest(
         working,
@@ -122,16 +127,20 @@ def main():
     )
     require(done_result["outcome"] == "PLANNED", f"Commander ingest DONE failed: {done_result}")
     completed_requirement = materialize(done_result)
+    require(completed_requirement["revision"] == 2, "Commander DONE did not advance revision")
     next_plan = build_commander_plan(completed_requirement, profile, policy, repository="DREAM-XIN/ai-sdlc")
     require(next_plan["outcome"] == "DISPATCH", f"Commander did not dispatch next stage: {next_plan}")
+    require(next_plan["summary"]["revision"] == 2, "next Commander Plan lost revision")
     require([item["action"]["stage"] for item in next_plan["dispatches"]] == ["requirement-review"], f"wrong next Commander dispatch: {next_plan}")
     require(next_plan["dispatches"][0]["runtime"] == {"id": "chatgpt-web", "mode": "manual"}, "review stage not routed to manual web")
+    require("expected_revision to 2" in next_plan["dispatches"][0]["prompt"], "next prompt did not refresh revision")
 
     blocked_event = event(
         "F-0043",
         [{"kind": "stage", "id": "requirement", "status": "BLOCKED", "reason": "missing product decision"}],
         "2026-08-07T11:34:00Z",
         event_id="EVT-F0043-REQ-BLOCKED",
+        expected_revision=0,
     )
     blocked_result = commander_ingest(
         manifest,
@@ -160,7 +169,7 @@ def main():
     invalid_plan = build_commander_plan(manifest, profile, no_route_policy, repository="DREAM-XIN/ai-sdlc")
     require(invalid_plan["outcome"] == "INVALID" and not invalid_plan["dispatches"], f"missing route did not fail closed: {invalid_plan}")
 
-    print("Reference Commander end-to-end scenarios passed")
+    print("Reference Commander revision-aware end-to-end scenarios passed")
 
 
 if __name__ == "__main__":
