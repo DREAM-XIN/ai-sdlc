@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -47,6 +48,14 @@ def validate_event(event):
     return errors
 
 
+def effective_event_id(event):
+    explicit = event.get("id")
+    if explicit:
+        return explicit
+    canonical = json.dumps(event, sort_keys=True, separators=(",", ":"))
+    return "legacy-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
 def recompute_workflow(manifest):
     stages = manifest["workflow"]["stages"]
     gates = manifest.get("gates", [])
@@ -78,11 +87,12 @@ def apply_event(manifest, event):
             "outcome": "INVALID",
             "errors": [f"cannot apply event to terminal workflow: {workflow_status}"],
         }
+    event_id = effective_event_id(event)
     applied_events = set(manifest.get("applied_events", []))
-    if event["id"] in applied_events:
+    if event_id in applied_events:
         return {
             "outcome": "INVALID",
-            "errors": [f"event already applied: {event['id']}"],
+            "errors": [f"event already applied: {event_id}"],
         }
 
     result = copy.deepcopy(manifest)
@@ -132,13 +142,13 @@ def apply_event(manifest, event):
             if refs:
                 gate["evidence"] = sorted(set(gate.get("evidence", [])) | set(refs))
 
-    result.setdefault("applied_events", []).append(event["id"])
+    result.setdefault("applied_events", []).append(event_id)
     result["updated_at"] = event["occurred_at"]
     recompute_workflow(result)
     manifest_errors = validate_manifest(result)
     if manifest_errors:
         return {"outcome": "INVALID", "errors": manifest_errors}
-    return {"outcome": "APPLIED", "errors": [], "manifest": result}
+    return {"outcome": "APPLIED", "errors": [], "manifest": result, "event_id": event_id}
 
 
 def main():
