@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/project-adapter.schema.json",
+  "title": "AI-SDLC Project Adapter",
+  "type": "object",
+  "required": ["version", "project", "defaults", "context", "commands", "ownership"],
+  "properties": {
+    "version": {"type": "string", "const": "0.1.0"},
+    "project": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "properties": {
+        "provider": {"enum": ["github", "gitlab", "other"]},
+        "full_name": {"type": "string", "minLength": 1},
+        "default_branch": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "defaults": {
+      "type": "object",
+      "required": ["workflow_profile", "runtime_policy", "required_commands"],
+      "properties": {
+        "workflow_profile": {"type": "string", "minLength": 1},
+        "runtime_policy": {"type": "string", "minLength": 1},
+        "required_commands": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "required": ["rules", "read"],
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "read": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "purpose", "argv", "cwd"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "purpose": {"enum": ["build", "test", "lint", "typecheck", "format", "security", "package", "custom"]},
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "cwd": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "ownership": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "role", "roots"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "minLength": 1},
+          "roots": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "shared": {"type": "boolean", "default": false}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
