@@ -1,0 +1,41 @@
+name: Materialize AI-SDLC gh-aw Worker Lock
+
+on:
+  push:
+    branches:
+      - feature/gh-aw-worker-dogfood
+    paths:
+      - '.github/workflows/ai-sdlc-gh-aw-worker.md'
+      - '.github/workflows/materialize-gh-aw-worker-lock.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Install pinned gh-aw compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v0.83.4 --force
+      - name: Compile worker with strict validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile ai-sdlc-gh-aw-worker --strict
+      - name: Commit generated lock file
+        run: |
+          set -euo pipefail
+          git config user.name "ai-sdlc[bot]"
+          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git add -- .github/workflows/ai-sdlc-gh-aw-worker.lock.yml
+          if git diff --cached --quiet; then
+            echo "Compiled lock file is already current."
+            exit 0
+          fi
+          git commit -m "build(gh-aw): compile bounded worker"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
