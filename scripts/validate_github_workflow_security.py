@@ -55,6 +55,25 @@ def main():
         '--repo-dir workspace' in persistence,
         "Persistence does not guard the checked-out workspace before push",
     )
+    require("push:\n    paths:" in persistence, "Persistence automatic push trigger is missing")
+    require("'state/events/**/*.yaml'" in persistence, "Persistence push trigger is not bounded to YAML event inbox paths")
+    require("'state/events/**/*.yml'" in persistence, "Persistence push trigger is not bounded to YML event inbox paths")
+    require(
+        "runtime/scripts/resolve_feature_event_push.py" in persistence,
+        "Persistence automatic mode does not use the trusted push resolver",
+    )
+    require(
+        'echo "allow_default_branch=false"' in persistence,
+        "Persistence automatic mode may bypass default-branch protection",
+    )
+    require(
+        "expected_manifest = PurePosixPath('state', 'features', f'{event.parts[2]}.yaml').as_posix()" in persistence,
+        "Persistence does not bind an event path to its matching Feature Manifest path",
+    )
+    require(
+        "workflow_dispatch:" in persistence,
+        "Persistence lost the manual recovery workflow_dispatch entry point",
+    )
 
     print("GitHub workflow trusted-runtime and optimistic-write isolation checks passed")
 
