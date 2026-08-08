@@ -1,0 +1,55 @@
+name: AI-SDLC Resolve Feature Event Push
+
+description: Classify a caller repository Feature Event push as one persistence request or a provably idempotent archive no-op.
+
+inputs:
+  before_sha:
+    description: Full commit SHA before the push.
+    required: true
+  after_sha:
+    description: Full commit SHA after the push.
+    required: true
+
+outputs:
+  mode:
+    description: Either persist or noop.
+    value: ${{ steps.resolve.outputs.mode }}
+  event_path:
+    description: Single new Event path when mode=persist.
+    value: ${{ steps.resolve.outputs.event_path }}
+  manifest_path:
+    description: Matching Feature Manifest path when mode=persist.
+    value: ${{ steps.resolve.outputs.manifest_path }}
+  event_count:
+    description: Number of changed Feature Event files classified by the resolver.
+    value: ${{ steps.resolve.outputs.event_count }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.12'
+    - name: Install trusted AI-SDLC runtime dependencies
+      shell: bash
+      env:
+        AI_SDLC_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        runtime_root="$(cd "$AI_SDLC_ACTION_PATH/../../.." && pwd)"
+        pip install -r "$runtime_root/requirements-dev.txt"
+    - name: Resolve Feature Event push
+      id: resolve
+      shell: bash
+      env:
+        AI_SDLC_ACTION_PATH: ${{ github.action_path }}
+        BEFORE_SHA: ${{ inputs.before_sha }}
+        AFTER_SHA: ${{ inputs.after_sha }}
+      run: |
+        set -euo pipefail
+        runtime_root="$(cd "$AI_SDLC_ACTION_PATH/../../.." && pwd)"
+        export PYTHONPATH="$runtime_root/scripts"
+        python "$runtime_root/scripts/resolve_feature_event_push.py" \
+          --repo-dir "$GITHUB_WORKSPACE" \
+          --before "$BEFORE_SHA" \
+          --after "$AFTER_SHA" \
+          --github-output "$GITHUB_OUTPUT"

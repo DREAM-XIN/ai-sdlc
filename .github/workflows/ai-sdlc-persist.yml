@@ -77,8 +77,10 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          AUTO_MODE: ${{ steps.auto.outputs.mode }}
           AUTO_EVENT_PATH: ${{ steps.auto.outputs.event_path }}
           AUTO_MANIFEST_PATH: ${{ steps.auto.outputs.manifest_path }}
+          AUTO_EVENT_COUNT: ${{ steps.auto.outputs.event_count }}
           MANUAL_EVENT_PATH: ${{ inputs.event_path }}
           MANUAL_MANIFEST_PATH: ${{ inputs.manifest_path }}
           MANUAL_TARGET_REF: ${{ inputs.target_ref }}
@@ -89,25 +91,40 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "push" ]]; then
             {
+              echo "mode=$AUTO_MODE"
               echo "event_path=$AUTO_EVENT_PATH"
               echo "manifest_path=$AUTO_MANIFEST_PATH"
               echo "target_ref=$PUSH_REF"
               echo "feature_issue="
               echo "dry_run=false"
               echo "allow_default_branch=false"
+              echo "event_count=$AUTO_EVENT_COUNT"
             } >> "$GITHUB_OUTPUT"
           else
             {
+              echo "mode=persist"
               echo "event_path=$MANUAL_EVENT_PATH"
               echo "manifest_path=$MANUAL_MANIFEST_PATH"
               echo "target_ref=$MANUAL_TARGET_REF"
               echo "feature_issue=$MANUAL_FEATURE_ISSUE"
               echo "dry_run=$MANUAL_DRY_RUN"
               echo "allow_default_branch=$MANUAL_ALLOW_DEFAULT_BRANCH"
+              echo "event_count=1"
             } >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Report already-applied Feature Event archive
+        if: ${{ steps.request.outputs.mode == 'noop' }}
+        shell: bash
+        env:
+          EVENT_COUNT: ${{ steps.request.outputs.event_count }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
+        run: |
+          echo "No persistence mutation required."
+          echo "$EVENT_COUNT Feature Event file(s) changed on $TARGET_REF and every Event is already recorded at its exact applied revision slot."
+
       - name: Protect default branch and validate paths
+        if: ${{ steps.request.outputs.mode != 'noop' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
@@ -143,6 +160,7 @@ jobs:
           test -f "workspace/$EVENT_PATH"
 
       - name: Validate inbox event and build persistence plan
+        if: ${{ steps.request.outputs.mode != 'noop' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
@@ -169,6 +187,7 @@ jobs:
           fi
           python runtime/scripts/ingest_feature_event.py "${args[@]}"
       - name: Materialize updated manifest
+        if: ${{ steps.request.outputs.mode != 'noop' }}
         shell: python
         run: |
           import json
@@ -180,16 +199,18 @@ jobs:
           target.parent.mkdir(parents=True, exist_ok=True)
           target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
       - name: Validate materialized manifest
+        if: ${{ steps.request.outputs.mode != 'noop' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
         run: python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ steps.request.outputs.mode != 'noop' }}
         with:
           name: ai-sdlc-persistence-plan
           path: persistence-plan.json
       - name: Commit and push
-        if: ${{ steps.request.outputs.dry_run != 'true' }}
+        if: ${{ steps.request.outputs.mode != 'noop' && steps.request.outputs.dry_run != 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}

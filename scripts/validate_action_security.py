@@ -8,7 +8,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 USES = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#.*)?$")
-INSTALL_PLACEHOLDER = "DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA"
+INSTALL_PLACEHOLDERS = {
+    "DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA",
+    "DREAM-XIN/ai-sdlc/.github/actions/resolve-event-push@REPLACE_WITH_AI_SDLC_FULL_SHA",
+}
 PLACEHOLDER_MARKER = "ai-sdlc-install-placeholder"
 GHAW_LOCK = re.compile(r"^ai-sdlc-gh-aw-worker(?:-(?:codex|claude|gemini|deepseek))?\.lock\.yml$")
 GHAW_METADATA_PREFIX = "# gh-aw-metadata: "
@@ -76,7 +79,7 @@ def validate_uses(path: Path, text: str):
             errors.append(f"{path}:{line_number}: external action reference lacks @ref: {target}")
             continue
         action, ref = target.rsplit("@", 1)
-        if is_template(path) and target == INSTALL_PLACEHOLDER:
+        if is_template(path) and target in INSTALL_PLACEHOLDERS:
             if PLACEHOLDER_MARKER not in line:
                 errors.append(
                     f"{path}:{line_number}: AI-SDLC install placeholder must carry '# {PLACEHOLDER_MARKER}'"
