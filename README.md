@@ -93,19 +93,25 @@ See `docs/project-adapter.md` and `templates/project-adapter.yaml`.
 
 ## Status
 
-The v0.1 reference control plane currently includes:
+`0.1.0` remains the declared release baseline. The current `main` branch has moved into v0.2 stabilization and now includes the original v0.1 control-plane surface plus production-oriented autonomous and cross-repository execution capabilities.
 
-- Feature bootstrap and durable Feature Manifests;
-- deterministic workflow/DAG state calculation;
-- Runtime Router and ChatGPT Web manual Task Packages;
-- Gate/Evidence semantics and Feature Events;
-- replay-safe Event Inbox and GitHub persistence planning;
-- Reference Commander CLI;
-- model-free GitHub-native Commander transport;
-- trusted-runtime/workspace isolation for write-capable GitHub workflows;
-- Project Adapter support for stack-independent target repositories.
+Implemented and dogfooded capabilities include:
 
-The next major milestone is running the same protocol against real target repositories and adding autonomous runtime adapters without changing the control-plane contract.
+- Feature bootstrap, authoritative Feature Manifests, Feature Events, optimistic revisions, and deterministic persistence;
+- Runtime Router support for manual, assisted, and autonomous execution without granting providers lifecycle authority;
+- `gh-aw` autonomous workers with bounded Safe Output Draft PR creation and structured Worker Result ingestion;
+- Feature-specific execution context propagation, including linked Feature Issue context and exact required outputs;
+- automated PR review/verification collection and durable review-remediation tasks;
+- trusted Issue Comment commands for cross-repository Bootstrap, Plan, Persist, and autonomous dispatch;
+- artifact registration and evidence-backed artifact status transitions through Feature Events;
+- private cross-repository autonomous execution using exact-target, short-lived GitHub App credentials;
+- deterministic cross-repository dispatch identity, duplicate suppression, and exact run/receipt correlation;
+- provider-neutral runtime installation preflight and compiled-worker allowlisting;
+- a completed external Feature lifecycle in `DREAM-XIN/zhu-zhiliao-game`, including requirement, design, implementation, code review, verification, acceptance, and release Gates.
+
+The project is now stabilizing these capabilities for a formal v0.2 baseline. Remaining work is intentionally focused on closing the Feature-context dogfood with real green CI evidence, reconciling stale generated runtime PRs, and repeating the generic cross-repository lifecycle against materially different target stacks.
+
+See `docs/v0.2-stabilization.md` and `release/v0.2.0-draft.yaml` for the current stabilization boundary and release criteria.
 
 ## Design principle
 
