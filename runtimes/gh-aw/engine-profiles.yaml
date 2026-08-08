@@ -1,3 +1,4 @@
+# materialize: deterministic-result
 version: 0.1.0
 profiles:
   copilot:
