@@ -63,10 +63,13 @@ def engine_frontmatter(cfg: dict[str, str]) -> str:
 
     if protocol == "openai-compatible":
         validate_openai_compatible(cfg)
-        # BYOK custom models are passed through Copilot's provider environment, not engine.model.
+        # BYOK custom models need both model surfaces:
+        # - engine.model makes gh-aw run metadata / Safe Output report the effective model;
+        # - COPILOT_MODEL routes Copilot's OpenAI-compatible provider request to that same model.
         lines = [
             "engine:",
             "  id: copilot",
+            f"  model: {cfg['model']}",
             "  env:",
             f"    COPILOT_PROVIDER_BASE_URL: {cfg['base_url']}",
             f"    COPILOT_MODEL: {cfg['model']}",
