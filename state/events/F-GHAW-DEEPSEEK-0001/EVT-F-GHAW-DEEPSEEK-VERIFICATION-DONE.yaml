@@ -1,0 +1,21 @@
+version: 0.1.0
+id: EVT-F-GHAW-DEEPSEEK-VERIFICATION-DONE
+feature_id: F-GHAW-DEEPSEEK-0001
+expected_revision: 6
+occurred_at: '2026-08-08T05:41:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: EVID-GHAW-VERIFICATION-31241812708
+      type: verification
+      status: pass
+      uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31241812708
+  - kind: stage
+    id: verification
+    status: DONE
+  - kind: gate
+    id: verification-gate
+    status: PASS
+    evidence:
+      - EVID-GHAW-VERIFICATION-31241812708
+      - EVID-GHAW-CI-31241812708
