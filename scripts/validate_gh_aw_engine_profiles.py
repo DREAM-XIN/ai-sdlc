@@ -89,6 +89,19 @@ def main() -> int:
     if "needs.safe_outputs.outputs.created_pr_url" in canonical:
         fail("result handoff must not trust an implicit safe-output PR URL binding")
 
+    # Live dogfood proved that target_ref must never double as the PR head.
+    required_head_base_markers = [
+        "create and switch to a unique local work branch",
+        "PR base only",
+        "never use `${{ inputs.target_ref }}` as the local work branch or as `create_pull_request.branch`",
+        "Set its `branch` argument to exactly the current local work branch",
+        "Do not set or override the PR base",
+        "The head branch and `${{ inputs.target_ref }}` must be different",
+    ]
+    for marker in required_head_base_markers:
+        if marker not in canonical:
+            fail(f"canonical worker missing PR head/base separation marker: {marker}")
+
     gateway = GATEWAY.read_text(encoding="utf-8")
     if "worker_workflow:" in gateway.split("permissions:", 1)[0]:
         fail("profile gateway must not expose arbitrary worker_workflow input")
@@ -123,7 +136,7 @@ def main() -> int:
             if marker not in actual_source:
                 fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, PR-before-result contract, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
+    print("gh-aw trusted engine profile, PR head/base separation, PR-before-result contract, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
     return 0
 
 
