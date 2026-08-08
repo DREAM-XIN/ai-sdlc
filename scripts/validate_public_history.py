@@ -23,6 +23,7 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GitHub classic token", re.compile(r"gh" + r"p_[A-Za-z0-9]{30,}")),
     ("GitHub fine-grained token", re.compile(r"github" + r"_pat_[A-Za-z0-9_]{40,}")),
     ("OpenAI project API key", re.compile(r"sk" + r"-proj-[A-Za-z0-9_-]{20,}")),
+    ("OpenAI/DeepSeek-style API key", re.compile(r"sk" + r"-[A-Za-z0-9]{20,}")),
     ("Anthropic API key", re.compile(r"sk" + r"-ant-[A-Za-z0-9_-]{20,}")),
     ("Google API key", re.compile(r"AI" + r"za[0-9A-Za-z_-]{30,}")),
     ("AWS access key", re.compile(r"AK" + r"IA[0-9A-Z]{16}")),
@@ -57,35 +58,38 @@ def reachable_blobs() -> dict[str, set[str]]:
         return {}
 
     batch = ("\n".join(shas) + "\n").encode()
-    metadata = git("cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)", input_bytes=batch)
+    metadata = git("cat-file", "--batch-check=%(objectname) %(objecttype)", input_bytes=batch)
     blobs: dict[str, set[str]] = {}
     for line in metadata.decode().splitlines():
-        sha, object_type, size_text = line.split(" ", 2)
-        if object_type != "blob":
-            continue
-        size = int(size_text)
-        paths = candidates.get(sha, set())
-        if size > MAX_BLOB_BYTES and not any(Path(p).suffix.lower() in SENSITIVE_SUFFIXES for p in paths):
-            continue
-        blobs[sha] = paths
+        sha, object_type = line.split(" ", 1)
+        if object_type == "blob":
+            blobs[sha] = candidates.get(sha, set())
     return blobs
 
 
 def scan_blob(sha: str, paths: set[str]) -> list[dict[str, str | int]]:
     findings: list[dict[str, str | int]] = []
+    display_path = sorted(paths)[0] if paths else "<unknown>"
     for path in sorted(paths):
         if Path(path).suffix.lower() in SENSITIVE_SUFFIXES:
             findings.append({"blob": sha, "path": path, "line": 0, "kind": "historical sensitive key/certificate file"})
 
     size = int(git("cat-file", "-s", sha).decode().strip())
     if size > MAX_BLOB_BYTES:
+        findings.append(
+            {
+                "blob": sha,
+                "path": display_path,
+                "line": 0,
+                "kind": f"historical blob exceeds {MAX_BLOB_BYTES} bytes and was not scanned",
+            }
+        )
         return findings
 
     raw = git("cat-file", "blob", sha)
     if b"\0" in raw[:8192]:
         return findings
     text = raw.decode("utf-8", errors="ignore")
-    display_path = sorted(paths)[0] if paths else "<unknown>"
     for label, pattern in PATTERNS:
         match = pattern.search(text)
         if match:
