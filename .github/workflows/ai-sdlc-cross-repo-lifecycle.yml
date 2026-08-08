@@ -1,0 +1,231 @@
+name: AI-SDLC Cross-Repo Lifecycle
+run-name: "AI-SDLC lifecycle ${{ inputs.request_id != '' && inputs.request_id || github.run_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Trusted caller correlation id
+        required: false
+        default: ''
+        type: string
+      operation:
+        description: One of plan, bootstrap, persist
+        required: true
+        type: choice
+        options: [plan, bootstrap, persist]
+      target_repository:
+        description: Exact target repository in owner/repo form
+        required: true
+        type: string
+      target_ref:
+        description: Target branch/ref containing AI-SDLC state
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest path under state/features/
+        required: true
+        type: string
+      bootstrap_path:
+        description: Bootstrap YAML path when operation=bootstrap
+        required: false
+        default: ''
+        type: string
+      event_path:
+        description: Feature Event path when operation=persist
+        required: false
+        default: ''
+        type: string
+      feature_issue:
+        description: Optional numeric Feature Issue for persistence metadata
+        required: false
+        default: ''
+        type: string
+      project_path:
+        description: Canonical target Project Adapter path
+        required: false
+        default: .ai-sdlc/project.yaml
+        type: string
+      persist:
+        description: Commit bootstrap/persist changes to target_ref
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-sdlc-lifecycle-${{ inputs.target_repository }}-${{ inputs.target_ref }}
+  cancel-in-progress: false
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Resolve target identity and validate request paths
+        id: target
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          BOOTSTRAP_PATH: ${{ inputs.bootstrap_path }}
+          EVENT_PATH: ${{ inputs.event_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          set -euo pipefail
+          python runtime/scripts/gh_aw_cross_repo_runtime.py target "$TARGET_REPOSITORY" > target-identity.json
+          python - <<'PY'
+          import os
+          from pathlib import PurePosixPath
+
+          operation = os.environ['OPERATION']
+          ref = os.environ['TARGET_REF']
+          if not ref or '..' in ref.split('/'):
+              raise SystemExit('target_ref parent traversal is not allowed')
+
+          checks = [
+              ('MANIFEST_PATH', 'state/features/', True),
+              ('PROJECT_PATH', '.ai-sdlc/', False),
+          ]
+          if operation == 'bootstrap':
+              checks.append(('BOOTSTRAP_PATH', 'state/bootstrap/', True))
+          if operation == 'persist':
+              checks.append(('EVENT_PATH', 'state/events/', True))
+
+          for name, prefix, required in checks:
+              value = os.environ[name]
+              if not value and not required:
+                  continue
+              path = PurePosixPath(value)
+              if not value or path.is_absolute() or '..' in path.parts or not value.startswith(prefix) or path.suffix not in {'.yaml', '.yml'}:
+                  raise SystemExit(f'{name.lower()} is outside its allowed YAML path')
+          PY
+          git check-ref-format --branch "$TARGET_REF" >/dev/null
+          owner=$(python -c "import json; print(json.load(open('target-identity.json'))['owner'])")
+          repo_name=$(python -c "import json; print(json.load(open('target-identity.json'))['repo_name'])")
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
+
+      - name: Validate trusted Runtime App configuration
+        shell: bash
+        env:
+          HAS_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$HAS_CLIENT_ID" != "true" ]]; then
+            echo "::error::MISSING_RUNTIME_APP_CLIENT_ID: configure AI_SDLC_RUNTIME_APP_CLIENT_ID in the trusted control repository"
+            exit 2
+          fi
+          if [[ "$HAS_PRIVATE_KEY" != "true" ]]; then
+            echo "::error::MISSING_RUNTIME_APP_PRIVATE_KEY: configure AI_SDLC_RUNTIME_APP_PRIVATE_KEY in the trusted control repository"
+            exit 2
+          fi
+
+      - name: Mint exact-target read token
+        id: read_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: read
+          permission-metadata: read
+
+      - name: Mint exact-target write token
+        if: ${{ inputs.persist && inputs.operation != 'plan' }}
+        id: write_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Resolve target default branch
+        id: target_meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          OPERATION: ${{ inputs.operation }}
+          PERSIST: ${{ inputs.persist }}
+        run: |
+          set -euo pipefail
+          default_branch=$(gh api "repos/$TARGET_REPOSITORY" --jq '.default_branch')
+          test -n "$default_branch"
+          if [[ "$PERSIST" == "true" && "$OPERATION" != "plan" && "$TARGET_REF" == "$default_branch" ]]; then
+            echo "cross-repository lifecycle writes must target a non-default branch" >&2
+            exit 2
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact target workspace
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.target_repository }}
+          token: ${{ steps.write_token.outputs.token || steps.read_token.outputs.token }}
+          ref: ${{ inputs.target_ref }}
+          path: workspace
+          persist-credentials: ${{ inputs.persist && inputs.operation != 'plan' }}
+          fetch-depth: 0
+
+      - name: Run trusted lifecycle operation against exact target
+        id: control
+        uses: ./runtime/.github/actions/control
+        with:
+          operation: ${{ inputs.operation }}
+          repository: ${{ inputs.target_repository }}
+          target_ref: ${{ inputs.target_ref }}
+          manifest_path: ${{ inputs.manifest_path }}
+          bootstrap_path: ${{ inputs.bootstrap_path }}
+          event_path: ${{ inputs.event_path }}
+          project_path: ${{ inputs.project_path }}
+          workspace_path: workspace
+          feature_issue: ${{ inputs.feature_issue }}
+          persist: ${{ inputs.persist }}
+          allow_default_branch: false
+          default_branch: ${{ steps.target_meta.outputs.default_branch }}
+
+      - name: Upload Commander artifacts
+        if: ${{ inputs.operation == 'plan' && always() && steps.control.outputs.commander_plan_path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-cross-repo-plan
+          path: |
+            workspace/${{ steps.control.outputs.commander_plan_path }}
+            workspace/${{ steps.control.outputs.summary_path }}
+            workspace/${{ steps.control.outputs.prompts_path }}
+
+      - name: Upload bootstrap artifact
+        if: ${{ inputs.operation == 'bootstrap' && always() && steps.control.outputs.bootstrap_manifest_path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-cross-repo-bootstrap
+          path: workspace/${{ steps.control.outputs.bootstrap_manifest_path }}
+
+      - name: Upload persistence artifact
+        if: ${{ inputs.operation == 'persist' && always() && steps.control.outputs.persistence_plan_path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-cross-repo-persistence
+          path: workspace/${{ steps.control.outputs.persistence_plan_path }}
+
+      - name: Propagate invalid lifecycle result
+        if: ${{ steps.control.outputs.exit_code != '0' }}
+        shell: bash
+        run: exit "${{ steps.control.outputs.exit_code }}"

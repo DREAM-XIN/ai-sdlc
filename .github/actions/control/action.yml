@@ -1,16 +1,16 @@
 name: AI-SDLC Control
 
-description: Run trusted AI-SDLC plan/bootstrap/persist operations against the caller repository.
+description: Run trusted AI-SDLC plan/bootstrap/persist operations against an explicit repository workspace.
 
 inputs:
   operation:
     description: One of plan, bootstrap, persist.
     required: true
   repository:
-    description: Caller repository in owner/name form.
+    description: Target repository in owner/name form.
     required: true
   target_ref:
-    description: Caller branch/ref containing AI-SDLC state.
+    description: Target branch/ref containing AI-SDLC state.
     required: true
   manifest_path:
     description: Feature Manifest path under state/features/.
@@ -24,13 +24,17 @@ inputs:
     required: false
     default: ''
   policy_path:
-    description: Optional caller-repository Dispatch Policy override; empty uses the trusted runtime default.
+    description: Optional target-repository Dispatch Policy override; empty uses the trusted runtime default.
     required: false
     default: ''
   project_path:
-    description: Canonical caller Project Adapter path.
+    description: Canonical target Project Adapter path.
     required: false
     default: .ai-sdlc/project.yaml
+  workspace_path:
+    description: Repository workspace relative to GITHUB_WORKSPACE. Defaults to the caller workspace root.
+    required: false
+    default: '.'
   feature_issue:
     description: Optional numeric Feature Issue for persistence status metadata.
     required: false
@@ -40,11 +44,11 @@ inputs:
     required: false
     default: 'false'
   allow_default_branch:
-    description: Explicitly allow write operations directly to the caller default branch.
+    description: Explicitly allow write operations directly to the target default branch.
     required: false
     default: 'false'
   default_branch:
-    description: Caller repository default branch, required for write protection.
+    description: Target repository default branch, required for write protection.
     required: false
     default: ''
 
@@ -88,6 +92,7 @@ runs:
       shell: bash
       env:
         AI_SDLC_ACTION_PATH: ${{ github.action_path }}
+        AI_SDLC_WORKSPACE_PATH: ${{ inputs.workspace_path }}
         OPERATION: ${{ inputs.operation }}
         REPOSITORY: ${{ inputs.repository }}
         TARGET_REF: ${{ inputs.target_ref }}
@@ -104,6 +109,25 @@ runs:
         set -euo pipefail
         runtime_root="$(cd "$AI_SDLC_ACTION_PATH/../../.." && pwd)"
         export PYTHONPATH="$runtime_root/scripts"
+
+        AI_SDLC_WORKSPACE=$(python - <<'PY'
+        import os
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+        value = os.environ.get('AI_SDLC_WORKSPACE_PATH', '.') or '.'
+        candidate = root / value
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            raise SystemExit('workspace_path resolves outside GITHUB_WORKSPACE')
+        if not candidate.exists() or not candidate.is_dir() or candidate.is_symlink():
+            raise SystemExit('workspace_path must resolve to a real directory inside GITHUB_WORKSPACE')
+        print(resolved)
+        PY
+        )
+        export AI_SDLC_WORKSPACE
+        cd "$AI_SDLC_WORKSPACE"
 
         validate_relative_yaml() {
           local value="$1"
@@ -129,13 +153,13 @@ runs:
         value = os.environ['VALUE']
         label = os.environ['LABEL']
         must_exist = os.environ['MUST_EXIST'] == 'true'
-        workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
-        candidate = (workspace / value)
+        workspace = Path(os.environ['AI_SDLC_WORKSPACE']).resolve()
+        candidate = workspace / value
         resolved = candidate.resolve(strict=False)
         try:
             resolved.relative_to(workspace)
         except ValueError:
-            raise SystemExit(f'{label} resolves outside GITHUB_WORKSPACE')
+            raise SystemExit(f'{label} resolves outside target workspace')
         if must_exist:
             if not candidate.exists() or not candidate.is_file():
                 raise SystemExit(f'{label} does not exist as a regular file: {value}')
