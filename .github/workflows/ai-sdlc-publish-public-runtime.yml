@@ -1,0 +1,77 @@
+name: AI-SDLC Publish Public Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      destination_repository:
+        description: Public runtime distribution repository.
+        required: true
+        default: DREAM-XIN/ai-sdlc-runtime
+      destination_ref:
+        description: Protected destination branch.
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted private source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          path: source
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Validate central publisher credential
+        env:
+          HAS_TOKEN: ${{ secrets.AI_SDLC_RUNTIME_PUBLISH_TOKEN != '' }}
+        run: |
+          if [[ "$HAS_TOKEN" != "true" ]]; then
+            echo "::error::AI_SDLC_RUNTIME_PUBLISH_TOKEN must be configured only in the private control repository"
+            exit 2
+          fi
+
+      - name: Build and validate minimal runtime bundle
+        working-directory: source
+        run: |
+          pip install -r requirements-dev.txt
+          python scripts/validate_public_runtime_distribution.py
+          python scripts/build_public_runtime.py --output ../bundle
+
+      - name: Checkout public runtime destination
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.destination_repository }}
+          ref: ${{ inputs.destination_ref }}
+          token: ${{ secrets.AI_SDLC_RUNTIME_PUBLISH_TOKEN }}
+          persist-credentials: false
+          path: destination
+
+      - name: Replace destination with reviewed runtime bundle
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          DESTINATION_REF: ${{ inputs.destination_ref }}
+          GH_TOKEN: ${{ secrets.AI_SDLC_RUNTIME_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          rsync -a --delete --exclude='.git/' bundle/ destination/
+          cd destination
+          printf '%s\n' "$SOURCE_SHA" > SOURCE_AI_SDLC_COMMIT
+          git config user.name 'ai-sdlc-release[bot]'
+          git config user.email 'ai-sdlc-release[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'Public runtime already matches this source build.'
+            exit 0
+          fi
+          git commit -m "release(runtime): publish from ai-sdlc $SOURCE_SHA"
+          gh auth setup-git
+          git push origin "HEAD:$DESTINATION_REF"

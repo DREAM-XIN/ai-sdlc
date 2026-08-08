@@ -1,0 +1,44 @@
+name: Validate Public Runtime Distribution
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/control/**'
+      - '.github/workflows/ai-sdlc-publish-public-runtime.yml'
+      - '.github/workflows/validate-public-runtime.yml'
+      - 'dispatch/default.yaml'
+      - 'requirements-dev.txt'
+      - 'scripts/**'
+      - 'spec/**'
+      - 'VERSION'
+  push:
+    branches: [main]
+    paths:
+      - '.github/actions/control/**'
+      - '.github/workflows/ai-sdlc-publish-public-runtime.yml'
+      - '.github/workflows/validate-public-runtime.yml'
+      - 'dispatch/default.yaml'
+      - 'requirements-dev.txt'
+      - 'scripts/**'
+      - 'spec/**'
+      - 'VERSION'
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - run: python scripts/validate_public_runtime_distribution.py
+      - run: python scripts/build_public_runtime.py --output public-runtime
+      - name: Verify deterministic rebuild
+        run: |
+          cp public-runtime/runtime-manifest.json first-manifest.json
+          python scripts/build_public_runtime.py --output public-runtime
+          diff -u first-manifest.json public-runtime/runtime-manifest.json
