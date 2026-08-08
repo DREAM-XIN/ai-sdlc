@@ -53,6 +53,7 @@ jobs:
 
       - name: Dispatch trusted gh-aw control workflow
         id: dispatch
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,7 +76,24 @@ jobs:
             --field worker_workflow="$WORKER_WORKFLOW" \
             --field dry_run=false
 
+      - name: Post failure receipt
+        if: ${{ always() && steps.dispatch.outcome != 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          TARGET_REF: ${{ steps.command.outputs.target_ref }}
+          MANIFEST_PATH: ${{ steps.command.outputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          parent_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "AI-SDLC gh-aw dispatch command failed before a downstream run was confirmed — $parent_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+          exit 1
+
       - name: Resolve dispatched run and post receipt
+        if: ${{ steps.dispatch.outcome == 'success' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,8 +122,11 @@ jobs:
             fi
             sleep 2
           done
+          parent_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [[ -z "$run_json" ]]; then
-            echo "::error::Unable to resolve the downstream gh-aw dispatch run"
+            gh issue comment "$ISSUE_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "AI-SDLC gh-aw command dispatched the control workflow but could not resolve its run id — $parent_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
             exit 1
           fi
           run_id=$(jq -r '.databaseId' <<<"$run_json")
@@ -113,4 +134,4 @@ jobs:
           run_status=$(jq -r '.status' <<<"$run_json")
           gh issue comment "$ISSUE_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
-            --body "AI-SDLC gh-aw dispatch accepted: run $run_id ($run_status) — $run_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+            --body "AI-SDLC gh-aw dispatch accepted: run $run_id ($run_status) — $run_url\n\nCommand run: $parent_url\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
