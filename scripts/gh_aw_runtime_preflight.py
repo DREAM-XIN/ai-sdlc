@@ -59,6 +59,10 @@ def main() -> int:
     result = {
         "profile": args.profile,
         "engine": cfg["engine"],
+        "provider": cfg.get("provider", "native"),
+        "protocol": cfg.get("protocol", "native"),
+        "model": cfg.get("model"),
+        "maturity": cfg["maturity"],
         "credential": cfg["credential"],
         "worker_workflow": cfg["worker_workflow"],
         "credential_present": args.credential_present,
@@ -86,7 +90,7 @@ def main() -> int:
         return 0
 
     result["status"] = "READY_FOR_ENTITLEMENT_PROBE"
-    result["note"] = "Credential presence is confirmed; provider entitlement/API quota is intentionally not tested by preflight."
+    result["note"] = "Credential presence is confirmed; provider entitlement, quota, billing, model availability, and current rate-limit headroom are intentionally not tested by static preflight."
     print(json.dumps(result, separators=(",", ":")))
     return 0
 
