@@ -81,19 +81,31 @@ def main() -> int:
     if "pull-requests: read" not in canonical or "actions: write" not in canonical:
         fail("deterministic conclusion handoff must have only the required PR-read/actions-write permissions")
 
-    # Live dogfood proved that model-owned custom result safe jobs are not a
-    # reliable completion primitive: the model may omit the tool, and custom
-    # safe-job inputs are read from GH_AW_AGENT_OUTPUT rather than workflow
-    # expression inputs. Result persistence must therefore be deterministic.
+    # Same-repository Safe Output writes must use the ephemeral Actions token.
+    # A repository-level GH_AW_GITHUB_TOKEN is optional broader authentication;
+    # live dogfood proved that allowing it to win the default fallback chain can
+    # block PR creation when that PAT lacks Pull Requests permission.
+    safe_output_auth_markers = [
+        'github-token: ${{ secrets.GITHUB_TOKEN }}',
+        "fallback-as-issue: false",
+    ]
+    for marker in safe_output_auth_markers:
+        if marker not in canonical:
+            fail(f"canonical worker missing same-repo Safe Output auth marker: {marker}")
+
+    # Result persistence is deterministic, not a second model-owned Safe Output.
+    # The PR lookup deliberately accepts gh-aw's collision-avoidance salt while
+    # remaining scoped to this feature, run id, and reserved revision.
     deterministic_result_markers = [
         "jobs:\n  conclusion:",
         "pre-steps:",
         "Dispatch structured worker result after Draft PR",
-        'EXPECTED_HEAD="gh-aw/${FEATURE_ID}-${GITHUB_RUN_ID}"',
-        '--head "$EXPECTED_HEAD"',
+        'EXPECTED_HEAD_PREFIX="gh-aw/${FEATURE_ID}-${GITHUB_RUN_ID}-v${EXPECTED_REVISION}"',
+        "--json url,title,isDraft,headRefName",
+        '(.headRefName | startswith($prefix))',
         'test -n "$PR_URL"',
         "gh workflow run ai-sdlc-gh-aw-result.yml",
-        "The deterministic `conclusion` job will independently verify the exact Draft PR for this run",
+        "unique Draft PR whose remote head starts with this run/revision branch prefix",
         "Do not call any result-reporting tool",
     ]
     for marker in deterministic_result_markers:
@@ -106,17 +118,21 @@ def main() -> int:
         'test -n "$SUMMARY"',
         "Submission phase 2 is mandatory and ordered",
         "needs.safe_outputs.outputs.created_pr_url",
+        '--head "$EXPECTED_HEAD"',
     ]
     for marker in forbidden_result_markers:
         if marker in canonical:
-            fail(f"canonical worker must not retain model-owned result handoff marker: {marker}")
+            fail(f"canonical worker must not retain obsolete result handoff marker: {marker}")
 
-    # Live dogfood also proved that target_ref must never double as the PR head.
+    # target_ref is the authoritative Feature base, never the autonomous head.
+    # The requested local head contains the revision and gh-aw may salt the
+    # remote head for collision avoidance.
     required_head_base_markers = [
-        "create and switch to the exact local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}`",
+        "create and switch to the local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}`",
         "PR base only",
         "never use `${{ inputs.target_ref }}` as the local work branch or as `create_pull_request.branch`",
-        "Set its `branch` argument to exactly `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}`",
+        "Set its `branch` argument to exactly `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}`",
+        "gh-aw may append a collision-avoidance salt",
         "Do not set or override the PR base",
         "The head branch and `${{ inputs.target_ref }}` must be different",
     ]
@@ -138,8 +154,6 @@ def main() -> int:
     assert spec.loader
     spec.loader.exec_module(module)
 
-    # Pinned engine supply-chain settings must be part of the deterministic
-    # committed source, never selected implicitly by a mutable CLI default.
     pinned_profiles = set(PINNED_ENGINE_VERSIONS) | set(PINNED_ENGINE_MODELS)
     for profile in pinned_profiles:
         cfg = profiles[profile]
@@ -158,7 +172,7 @@ def main() -> int:
             if marker not in actual_source:
                 fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, deterministic conclusion handoff, exact PR head/base separation, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
+    print("gh-aw trusted engine profile, workflow-token Safe Output auth, deterministic salted-head conclusion handoff, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
     return 0
 
 
