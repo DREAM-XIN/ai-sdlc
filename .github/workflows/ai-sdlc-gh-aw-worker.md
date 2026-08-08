@@ -1,5 +1,6 @@
 ---
 name: AI-SDLC gh-aw Worker
+run-name: "AI-SDLC gh-aw ${{ inputs.dispatch_key != '' && inputs.dispatch_key || github.run_id }}"
 on:
   workflow_dispatch:
     inputs:
@@ -10,6 +11,11 @@ on:
       expected_revision:
         description: Feature revision reserved for this worker result
         required: true
+        type: string
+      dispatch_key:
+        description: Trusted deterministic dispatch identity; empty preserves same-repository compatibility
+        required: false
+        default: ''
         type: string
       target_repository:
         description: Target Feature repository in owner/repo form

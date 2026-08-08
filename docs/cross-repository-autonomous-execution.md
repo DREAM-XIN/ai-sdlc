@@ -40,6 +40,25 @@ A Feature may already be `WORKING` before autonomous execution is installed. The
 
 The adoption path does not write a second START event and does not mutate the Manifest. The Worker Result uses the current Manifest revision. This is a generic resume contract, not a Feature-specific recovery workflow.
 
+## Dispatch idempotency and receipts
+
+Cross-repository autonomous execution uses two different trusted correlation identities.
+
+The Issue Command Bridge creates a request id from the trusted caller workflow run identity. The target command cannot provide or override it. The profile gateway includes that request id in its GitHub Actions `run-name`, and the command receipt resolves the exact matching run instead of taking the newest workflow run after a timestamp. Concurrent commands therefore cannot steal each other's downstream receipt.
+
+After Commander/Runtime Router planning, the trusted cross-repository gateway computes a deterministic semantic dispatch key from:
+
+- target repository and Feature branch;
+- Feature id and work-unit/task id;
+- stage, role and work kind;
+- the worker result's expected Manifest revision.
+
+The source Manifest revision is deliberately not part of this key. A fresh dispatch planned at revision `N` reserves START and expects worker revision `N+1`; a later `WORKING` adoption of that same unit also expects `N+1`, so both resolve to the same semantic key.
+
+The gateway serializes requests for the same target Feature branch and checks existing gh-aw worker runs by the exact semantic run-name before minting a target write token or dispatching another worker. Queued, in-progress, or successful runs suppress the duplicate. Failed or cancelled runs remain retryable. After a new worker dispatch, the gateway resolves the exact worker run before completing so a queued duplicate request can observe the active lease.
+
+This idempotency mechanism is execution metadata in the trusted control plane; it does not add a new lifecycle authority or write a dispatch marker into the Feature Manifest.
+
 ## Repository identity
 
 The trusted gateway validates three identities before dispatch:
@@ -56,9 +75,9 @@ There are separate credentials for separate trust boundaries.
 
 ### Target -> control dispatch
 
-The target Issue Command Bridge uses `AI_SDLC_CONTROL_DISPATCH_TOKEN` only to start/read the trusted workflow in `DREAM-XIN/ai-sdlc`. Give this credential access only to the control repository and only the Actions/metadata permissions required to dispatch and resolve workflow runs. It does not need target-repository contents or pull-request write access.
+The target Issue Command Bridge uses `AI_SDLC_CONTROL_DISPATCH_TOKEN` only to start/read the trusted workflow in `DREAM-XIN/ai-sdlc`. Scope it to the single control repository. It needs only the control-repository Actions permissions required to dispatch and read workflow runs plus metadata access; it does not need target-repository contents or pull-request write access. If the chosen fine-grained credential requires repository contents read for workflow discovery, grant read only, never contents write.
 
-Prefer a dedicated GitHub App installation credential or a fine-grained token scoped to the single control repository. Do not use a classic broad PAT.
+Prefer a dedicated GitHub App installation credential or a fine-grained token scoped to the single control repository. Do not use a classic broad PAT. This credential is a transport credential, not a target source credential.
 
 ### Trusted control -> target repository
 

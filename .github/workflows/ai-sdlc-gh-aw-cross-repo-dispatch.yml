@@ -1,8 +1,14 @@
 name: AI-SDLC gh-aw Cross-Repo Dispatch
+run-name: "AI-SDLC gh-aw xrepo ${{ inputs.request_id != '' && inputs.request_id || github.run_id }}"
 
 on:
   workflow_dispatch:
     inputs:
+      request_id:
+        description: Trusted caller correlation id
+        required: false
+        default: ''
+        type: string
       target_repository:
         description: Target Feature repository in owner/repo form
         required: true
@@ -33,6 +39,12 @@ on:
 permissions:
   contents: read
   actions: write
+
+# A Feature branch is the autonomous execution serialization boundary. Duplicate
+# requests queue instead of cancelling the in-flight trusted handoff.
+concurrency:
+  group: ai-sdlc-gh-aw-xrepo-${{ inputs.target_repository }}-${{ inputs.target_ref }}
+  cancel-in-progress: false
 
 jobs:
   handoff:
@@ -149,7 +161,10 @@ jobs:
             --policy runtime/dispatch/gh-aw-developer.yaml --project "workspace/$PROJECT_PATH" --project-ref "$PROJECT_PATH" \
             "${extra[@]}" --output gh-aw-dispatch-plan.json
           test "$(python -c "import json; print(json.load(open('gh-aw-dispatch-plan.json'))['outcome'])")" = "PLANNED"
+          dispatch_key=$(python runtime/scripts/gh_aw_dispatch_identity.py key gh-aw-dispatch-plan.json)
           echo "reserve_required=$reserve" >> "$GITHUB_OUTPUT"
+          echo "dispatch_key=$dispatch_key" >> "$GITHUB_OUTPUT"
+          echo "worker_run_name=AI-SDLC gh-aw $dispatch_key" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -160,8 +175,31 @@ jobs:
             handoff.json
             gh-aw-dispatch-plan.json
 
-      - name: Mint exact-target write token
+      - name: Check semantic worker lease
         if: ${{ !inputs.dry_run }}
+        id: dedupe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_NAME: ${{ steps.plan.outputs.worker_run_name }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" > worker-runs.json
+          decision=$(python runtime/scripts/gh_aw_dispatch_identity.py check-runs worker-runs.json "$RUN_NAME")
+          suppress=$(jq -r '.suppress' <<<"$decision")
+          reason=$(jq -r '.reason' <<<"$decision")
+          existing_url=$(jq -r '.run.html_url // .run.url // ""' <<<"$decision")
+          if [[ "$suppress" == "true" ]]; then
+            echo "should_dispatch=false" >> "$GITHUB_OUTPUT"
+            echo "Duplicate semantic dispatch suppressed: $reason $existing_url" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
+            echo "Semantic dispatch is eligible: $reason" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "existing_url=$existing_url" >> "$GITHUB_OUTPUT"
+
+      - name: Mint exact-target write token
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
         id: write_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -173,7 +211,7 @@ jobs:
           permission-metadata: read
 
       - name: Re-checkout target with write capability
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.target_repository }}
@@ -183,7 +221,7 @@ jobs:
           fetch-depth: 0
 
       - name: Verify target did not move after planning
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
         shell: bash
         env:
           SOURCE_SHA: ${{ steps.plan.outputs.source_sha }}
@@ -199,7 +237,7 @@ jobs:
           python runtime/scripts/verify_git_write_precondition.py --repo-dir write-workspace --target-ref "$TARGET_REF" --default-branch "$DEFAULT_BRANCH"
 
       - name: Reserve fresh work unit through trusted Feature Event
-        if: ${{ !inputs.dry_run && steps.plan.outputs.reserve_required == 'true' }}
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' && steps.plan.outputs.reserve_required == 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ inputs.manifest_path }}
@@ -229,14 +267,19 @@ jobs:
           git -C write-workspace push origin "HEAD:$TARGET_REF"
 
       - name: Dispatch trusted compiled worker
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
+        id: worker_dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
           TARGET_REF: ${{ inputs.target_ref }}
+          DISPATCH_KEY: ${{ steps.plan.outputs.dispatch_key }}
         run: |
+          set -euo pipefail
+          dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
           python - <<'PY'
           import json, os, subprocess
           plan=json.load(open('gh-aw-dispatch-plan.json'))['plan']
@@ -249,5 +292,35 @@ jobs:
               raise SystemExit('worker input target identity drift before dispatch')
           cmd=['gh','workflow','run',dispatch['workflow'],'--repo',os.environ['GITHUB_REPOSITORY'],'--ref',os.environ['DEFAULT_BRANCH']]
           for key,value in dispatch['inputs'].items(): cmd.extend(['--field',f'{key}={value}'])
+          cmd.extend(['--field',f"dispatch_key={os.environ['DISPATCH_KEY']}"])
           subprocess.run(cmd,check=True)
           PY
+
+      - name: Resolve exact worker run lease
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_NAME: ${{ steps.plan.outputs.worker_run_name }}
+          DISPATCHED_AT: ${{ steps.worker_dispatch.outputs.dispatched_at }}
+        run: |
+          set -euo pipefail
+          worker_url=''
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=workflow_dispatch&per_page=100" > worker-runs-after-dispatch.json
+            worker_url=$(RUN_NAME="$RUN_NAME" DISPATCHED_AT="$DISPATCHED_AT" python - <<'PY'
+          import json, os
+          runs=json.load(open('worker-runs-after-dispatch.json')).get('workflow_runs', [])
+          matches=[r for r in runs if r.get('display_title') == os.environ['RUN_NAME'] and (r.get('created_at') or '') >= os.environ['DISPATCHED_AT']]
+          matches.sort(key=lambda r: (r.get('created_at') or '', int(r.get('id') or 0)), reverse=True)
+          print(matches[0].get('html_url','') if matches else '')
+          PY
+            )
+            [[ -n "$worker_url" ]] && break
+            sleep 2
+          done
+          if [[ -z "$worker_url" ]]; then
+            echo "Could not resolve exact worker run for trusted dispatch key $RUN_NAME" >&2
+            exit 1
+          fi
+          echo "Worker lease: $worker_url" >> "$GITHUB_STEP_SUMMARY"
