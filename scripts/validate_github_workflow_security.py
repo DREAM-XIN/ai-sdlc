@@ -6,6 +6,7 @@ WORKFLOWS = [
     ROOT / ".github" / "workflows" / "ai-sdlc-commander.yml",
     ROOT / ".github" / "workflows" / "ai-sdlc-persist.yml",
 ]
+PR_LIFECYCLE = ROOT / ".github" / "workflows" / "ai-sdlc-pr-lifecycle.yml"
 
 
 def require(condition, message):
@@ -74,6 +75,21 @@ def main():
         "workflow_dispatch:" in persistence,
         "Persistence lost the manual recovery workflow_dispatch entry point",
     )
+
+    lifecycle = PR_LIFECYCLE.read_text(encoding="utf-8")
+    require("pull_request_review:" in lifecycle, "PR lifecycle workflow lost the approved-review trigger")
+    require("contents: write" in lifecycle and "checks: read" in lifecycle, "PR lifecycle workflow permissions are incomplete")
+    require("Checkout trusted control plane" in lifecycle, "PR lifecycle workflow lost trusted default-branch checkout")
+    require("ref: ${{ github.event.repository.default_branch }}" in lifecycle, "PR lifecycle trusted runtime is not pinned to default branch")
+    require("persist-credentials: false" in lifecycle, "PR lifecycle trusted checkout persists credentials")
+    require("head_ref.startswith('gh-aw/')" in lifecycle, "PR lifecycle no longer limits privileged work PR heads to gh-aw/*")
+    require("head.get('repo')" in lifecycle and "fork/cross-repository PRs are not eligible" in lifecycle, "PR lifecycle lost same-repository enforcement")
+    require("base_ref == os.environ['DEFAULT_BRANCH']" in lifecycle, "PR lifecycle lost default-branch write rejection")
+    require("runtime/scripts/resolve_pr_lifecycle_context.py" in lifecycle, "PR lifecycle no longer uses trusted Feature/evidence resolution")
+    require(lifecycle.count("runtime/scripts/ingest_feature_event.py") == 2, "PR lifecycle must apply exactly review and verification Events through trusted ingest")
+    require(lifecycle.count("runtime/scripts/verify_git_write_precondition.py") == 2, "PR lifecycle must protect both writes with optimistic preconditions")
+    require("git -C workspace push origin \"HEAD:$BASE_REF\"" in lifecycle, "PR lifecycle writes outside the isolated Feature workspace")
+    require("pull_request_target:" not in lifecycle, "PR lifecycle must never use pull_request_target")
 
     print("GitHub workflow trusted-runtime and optimistic-write isolation checks passed")
 
