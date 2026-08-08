@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 5
+revision: 6
 feature:
   id: F-FEATURE-CONTEXT-0001
   title: Create exactly docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md from linked Feature
@@ -37,6 +37,22 @@ tasks:
   status: DONE
   runtime: gh-aw
   issue: '#128'
+- id: F-FEATURE-CONTEXT-0001-REMEDIATION-R4888564595
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: review
+  feedback: The linked-Issue read and exact one-file scope are now correct, but the
+    runtime audit metadata still reports `claude-sonnet-4.6` instead of the required
+    effective model `deepseek-chat`. This is a control-plane BYOK metadata defect,
+    not a Feature-content defect. After the trusted model-metadata fix is on `main`,
+    rerun the bounded DeepSeek remediation so the PR footer/runtime metadata reports
+    `deepseek-chat`. Preserve exactly `docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md`;
+    do not expand scope or advance review/Gates.
+  target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/140
+  status: TODO
+  runtime: gh-aw
+  issue: '#128'
 artifacts: []
 gates:
 - id: code-gate
@@ -58,10 +74,15 @@ evidence:
   status: pass
   type: runtime-run
   uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31250196843
+- id: EVID-PR-REVIEW-4888564595
+  type: pr-review
+  status: warning
+  uri: https://github.com/DREAM-XIN/ai-sdlc/pull/140#pullrequestreview-4888564595
 applied_events:
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-0-START
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31247475455
 - EVT-F-FEATURE-CONTEXT-0001-REMEDIATION-R4888527740
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-3-START
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31250196843
-updated_at: '2026-08-08T09:20:41Z'
+- EVT-F-FEATURE-CONTEXT-0001-REMEDIATION-R4888564595
+updated_at: '2026-08-08T09:31:59Z'
