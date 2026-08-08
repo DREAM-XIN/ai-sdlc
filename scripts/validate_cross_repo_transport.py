@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,10 +74,10 @@ def main():
     require("downstream_id" in command and "downstream_url" in command and "could not resolve the downstream run" in command, "durable command receipt evidence drifted")
     require("Downstream repository:" in command and "Target repository:" in command, "cross-repo receipt lacks repository identities")
 
-    # Local bootstrap/plan/persist still use only caller GITHUB_TOKEN. The sole new secret is a
-    # control-repository Actions dispatch credential; it must never be used as target source auth.
-    require("secrets.AI_SDLC_CONTROL_DISPATCH_TOKEN" in command, "autonomous control-dispatch credential is not explicit")
-    require(command.count("secrets.") == 1, "command bridge gained an unexpected second secret")
+    # Local bootstrap/plan/persist still use only caller GITHUB_TOKEN. The sole new secret name is a
+    # control-repository Actions dispatch credential; repeated references to that same secret are fine.
+    secret_names = set(re.findall(r"secrets\.([A-Z0-9_]+)", command))
+    require(secret_names == {"AI_SDLC_CONTROL_DISPATCH_TOKEN"}, f"command bridge secret set drifted: {sorted(secret_names)}")
     require("personal_access_token" not in command.lower(), "command bridge prescribes a broad PAT")
     require('--field target_repository="$GITHUB_REPOSITORY"' in command, "target repository identity is user-selectable instead of caller-bound")
 
