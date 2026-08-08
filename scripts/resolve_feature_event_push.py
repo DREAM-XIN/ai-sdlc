@@ -7,12 +7,13 @@ import argparse
 import re
 import subprocess
 from pathlib import Path, PurePosixPath
+from typing import NoReturn
 
 SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 ZERO_SHA = "0" * 40
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     raise SystemExit(message)
 
 
