@@ -20,6 +20,7 @@ EXPECTED = {
 }
 PINNED_ENGINE_VERSIONS = {"gemini": "0.39.1"}
 PINNED_ENGINE_MODELS = {"gemini": "gemini-3.5-flash-lite"}
+CANONICAL_MAX_TURN_CACHE_MISSES = 20
 
 
 def fail(message: str) -> None:
@@ -75,6 +76,8 @@ def main() -> int:
         fail("canonical worker must remain read-only")
     if "docs/gh-aw-dogfood/**" not in canonical:
         fail("canonical worker must retain bounded safe-output scope")
+    if f"max-turn-cache-misses: {CANONICAL_MAX_TURN_CACHE_MISSES}\n" not in canonical:
+        fail("canonical worker must retain the bounded cache-miss turn budget")
 
     gateway = GATEWAY.read_text(encoding="utf-8")
     if "worker_workflow:" in gateway.split("permissions:", 1)[0]:
@@ -110,7 +113,7 @@ def main() -> int:
             if marker not in actual_source:
                 fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, pinned-version/model, and renderer checks passed")
+    print("gh-aw trusted engine profile, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
     return 0
 
 
