@@ -1,0 +1,40 @@
+name: AI-SDLC Installation Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.ai-sdlc/**'
+      - 'AGENTS.md'
+      - '.github/workflows/ai-sdlc-*.yml'
+      - '.github/workflows/ai-sdlc-*.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-installation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate installed AI-SDLC target contract
+        id: installation
+        uses: DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA # ai-sdlc-install-placeholder
+        with:
+          operation: validate-installation
+          repository: ${{ github.repository }}
+          default_branch: ${{ github.event.repository.default_branch }}
+          project_path: .ai-sdlc/project.yaml
+
+      - name: Publish installation report
+        if: ${{ always() && steps.installation.outputs.installation_report_path != '' }}
+        shell: bash
+        run: cat "${{ steps.installation.outputs.installation_report_path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Propagate invalid installation result
+        if: ${{ steps.installation.outputs.exit_code != '0' }}
+        shell: bash
+        run: exit "${{ steps.installation.outputs.exit_code }}"
