@@ -1,6 +1,10 @@
 name: AI-SDLC Persist Feature Event
 
 on:
+  push:
+    paths:
+      - 'state/events/**/*.yaml'
+      - 'state/events/**/*.yml'
   workflow_dispatch:
     inputs:
       manifest_path:
@@ -46,21 +50,71 @@ jobs:
       - name: Checkout target workspace
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.target_ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || github.ref_name }}
           path: workspace
           fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Resolve automatic Feature Event push
+        id: auto
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          python runtime/scripts/resolve_feature_event_push.py \
+            --repo-dir workspace \
+            --before "$BEFORE_SHA" \
+            --after "$AFTER_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Resolve persistence request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          AUTO_EVENT_PATH: ${{ steps.auto.outputs.event_path }}
+          AUTO_MANIFEST_PATH: ${{ steps.auto.outputs.manifest_path }}
+          MANUAL_EVENT_PATH: ${{ inputs.event_path }}
+          MANUAL_MANIFEST_PATH: ${{ inputs.manifest_path }}
+          MANUAL_TARGET_REF: ${{ inputs.target_ref }}
+          MANUAL_FEATURE_ISSUE: ${{ inputs.feature_issue }}
+          MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+          MANUAL_ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
+          PUSH_REF: ${{ github.ref_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            {
+              echo "event_path=$AUTO_EVENT_PATH"
+              echo "manifest_path=$AUTO_MANIFEST_PATH"
+              echo "target_ref=$PUSH_REF"
+              echo "feature_issue="
+              echo "dry_run=false"
+              echo "allow_default_branch=false"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "event_path=$MANUAL_EVENT_PATH"
+              echo "manifest_path=$MANUAL_MANIFEST_PATH"
+              echo "target_ref=$MANUAL_TARGET_REF"
+              echo "feature_issue=$MANUAL_FEATURE_ISSUE"
+              echo "dry_run=$MANUAL_DRY_RUN"
+              echo "allow_default_branch=$MANUAL_ALLOW_DEFAULT_BRANCH"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Protect default branch and validate paths
         shell: bash
         env:
-          MANIFEST_PATH: ${{ inputs.manifest_path }}
-          EVENT_PATH: ${{ inputs.event_path }}
-          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.request.outputs.event_path }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
+          ALLOW_DEFAULT_BRANCH: ${{ steps.request.outputs.allow_default_branch }}
         run: |
           if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" && "$ALLOW_DEFAULT_BRANCH" != "true" ]]; then
             echo "Refusing direct persistence to default branch without allow_default_branch=true"
@@ -81,16 +135,20 @@ jobs:
               raise SystemExit('event_path must be repository-relative without parent traversal')
           if len(event.parts) != 4 or event.parts[:2] != ('state', 'events') or event.suffix not in {'.yaml', '.yml'}:
               raise SystemExit('event_path must match state/events/<feature-id>/<event-id>.yaml')
+          expected_manifest = PurePosixPath('state', 'features', f'{event.parts[2]}.yaml').as_posix()
+          if manifest != expected_manifest:
+              raise SystemExit(f'manifest_path must match event feature id: expected {expected_manifest}')
           PY
           test -f "workspace/$MANIFEST_PATH"
           test -f "workspace/$EVENT_PATH"
+
       - name: Validate inbox event and build persistence plan
         shell: bash
         env:
-          MANIFEST_PATH: ${{ inputs.manifest_path }}
-          EVENT_PATH: ${{ inputs.event_path }}
-          TARGET_REF: ${{ inputs.target_ref }}
-          FEATURE_ISSUE: ${{ inputs.feature_issue }}
+          MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.request.outputs.event_path }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
+          FEATURE_ISSUE: ${{ steps.request.outputs.feature_issue }}
           REPOSITORY: ${{ github.repository }}
         run: |
           args=(
@@ -124,20 +182,20 @@ jobs:
       - name: Validate materialized manifest
         shell: bash
         env:
-          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
         run: python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ai-sdlc-persistence-plan
           path: persistence-plan.json
       - name: Commit and push
-        if: ${{ !inputs.dry_run }}
+        if: ${{ steps.request.outputs.dry_run != 'true' }}
         shell: bash
         env:
-          MANIFEST_PATH: ${{ inputs.manifest_path }}
-          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ steps.request.outputs.manifest_path }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          ALLOW_DEFAULT_BRANCH: ${{ inputs.allow_default_branch }}
+          ALLOW_DEFAULT_BRANCH: ${{ steps.request.outputs.allow_default_branch }}
         run: |
           precondition_args=(
             --repo-dir workspace
