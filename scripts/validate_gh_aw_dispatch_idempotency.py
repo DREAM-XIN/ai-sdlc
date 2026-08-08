@@ -38,7 +38,9 @@ def main():
     require(identity["run_name"] == f"AI-SDLC gh-aw {identity['dispatch_key']}", "worker run-name is not derived from dispatch key")
     require(dispatch_identity(deepcopy(base))["dispatch_key"] == identity["dispatch_key"], "dispatch key is not deterministic")
 
-    # Fresh START reserves revision N and subsequent WORKING adoption sees the same N.
+    # Fresh START at source revision N expects worker revision N+1. A later
+    # WORKING adoption sees N+1 as current revision, so source revision must not
+    # affect the semantic execution identity.
     fresh_source_revision = deepcopy(base)
     fresh_source_revision["plan"]["revision"] = 9
     require(dispatch_identity(fresh_source_revision)["dispatch_key"] == identity["dispatch_key"], "source revision leaked into semantic key; fresh->WORKING adoption would drift")
@@ -69,8 +71,8 @@ def main():
 
     require("concurrency:" in gateway and "cancel-in-progress: false" in gateway, "cross-repo gateway must serialize without cancelling the active handoff")
     require("gh_aw_dispatch_identity.py key" in gateway and "gh_aw_dispatch_identity.py check-runs" in gateway, "gateway does not use trusted semantic dispatch identity")
-    require("dispatch_key=$dispatch_key" in gateway and '--field', "gateway dispatch key output missing")
-    require('cmd.extend([\'--field\',f"dispatch_key={os.environ[\'DISPATCH_KEY\']}"' in gateway, "gateway does not pass trusted dispatch key to worker")
+    require("dispatch_key=$dispatch_key" in gateway, "gateway dispatch key output missing")
+    require("dispatch_key={os.environ['DISPATCH_KEY']}" in gateway, "gateway does not pass trusted dispatch key to worker")
     require("Resolve exact worker run lease" in gateway and "display_title" in gateway, "gateway does not resolve exact worker lease before completion")
     require("permission-contents: write" in gateway, "trusted persistence write token disappeared")
     require("permission-pull-requests: write" not in gateway and "permission-actions: write" not in gateway, "dedupe hardening broadened target App token permissions")
