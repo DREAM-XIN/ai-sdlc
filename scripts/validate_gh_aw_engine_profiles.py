@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import importlib.util
-import tempfile
 from pathlib import Path
 import yaml
 
@@ -19,6 +18,7 @@ EXPECTED = {
     "claude": ("claude", "ANTHROPIC_API_KEY", "ai-sdlc-gh-aw-worker-claude.lock.yml"),
     "gemini": ("gemini", "GEMINI_API_KEY", "ai-sdlc-gh-aw-worker-gemini.lock.yml"),
 }
+PINNED_ENGINE_VERSIONS = {"gemini": "0.52.0"}
 
 
 def fail(message: str) -> None:
@@ -44,6 +44,14 @@ def main() -> int:
         source = cfg.get("worker_source", "")
         if not source.startswith(".github/workflows/") or not source.endswith(".md"):
             fail(f"{profile}: worker_source must be a workflow markdown path")
+        source_path = ROOT / source
+        if not source_path.is_file():
+            fail(f"{profile}: committed worker_source is missing: {source}")
+        expected_version = PINNED_ENGINE_VERSIONS.get(profile)
+        if expected_version is not None and cfg.get("engine_version") != expected_version:
+            fail(f"{profile}: engine_version must remain pinned to {expected_version}")
+        if expected_version is None and cfg.get("engine_version") is not None:
+            fail(f"{profile}: unexpected engine_version pin")
 
     runtime = yaml.safe_load(RUNTIME.read_text(encoding="utf-8"))
     if runtime.get("engine_profile_registry") != "runtimes/gh-aw/engine-profiles.yaml":
@@ -68,18 +76,25 @@ def main() -> int:
     if "scripts/resolve_gh_aw_engine.py" not in gateway:
         fail("profile gateway must use trusted resolver")
 
-    # Import renderer and prove a non-copilot render changes only workflow name + engine.
     spec = importlib.util.spec_from_file_location("ghaw_renderer", RENDERER)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader
     spec.loader.exec_module(module)
-    base = canonical
-    rendered = base.replace("name: AI-SDLC gh-aw Worker\n", "name: AI-SDLC gh-aw Worker (codex)\n", 1).replace("engine: copilot\n", "engine: codex\n", 1)
-    normalized = rendered.replace("name: AI-SDLC gh-aw Worker (codex)\n", "name: AI-SDLC gh-aw Worker\n", 1).replace("engine: codex\n", "engine: copilot\n", 1)
-    if normalized != base:
-        fail("provider worker rendering changed security/lifecycle content")
 
-    print("gh-aw trusted engine profile and renderer checks passed")
+    # Every provider source must exactly equal the deterministic render from the canonical worker.
+    for profile, cfg in profiles.items():
+        if profile == "copilot":
+            continue
+        expected_source = module.render_text(profile, cfg, canonical)
+        actual_source = (ROOT / cfg["worker_source"]).read_text(encoding="utf-8")
+        if actual_source != expected_source:
+            fail(f"{profile}: committed worker source drifted from deterministic renderer")
+
+    gemini_source = (ROOT / profiles["gemini"]["worker_source"]).read_text(encoding="utf-8")
+    if 'engine:\n  id: gemini\n  version: "0.52.0"\n' not in gemini_source:
+        fail("gemini: pinned CLI version is not materialized in worker frontmatter")
+
+    print("gh-aw trusted engine profile, version pin, and renderer checks passed")
     return 0
 
 
