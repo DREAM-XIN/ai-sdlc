@@ -1,0 +1,35 @@
+protocol_version: 0.1.0
+revision: 1
+feature:
+  id: F-PERSIST-ARCHIVE-NOOP-0001
+  title: Archive-noop persistence dogfood
+  risk: low
+  issue: '#125'
+workflow:
+  profile: small-change
+  status: ACTIVE
+  current_stage: implementation
+  stages:
+    - id: requirement
+      status: DONE
+    - id: implementation
+      status: WORKING
+    - id: review
+      status: TODO
+      gate: code-gate
+    - id: verification
+      status: TODO
+      gate: verification-gate
+tasks: []
+artifacts: []
+gates:
+  - id: code-gate
+    status: PENDING
+    evidence: []
+  - id: verification-gate
+    status: PENDING
+    evidence: []
+evidence: []
+applied_events:
+  - EVT-F-PERSIST-ARCHIVE-NOOP-0001-START
+updated_at: '2026-08-08T07:12:00Z'
