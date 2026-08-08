@@ -1,3 +1,4 @@
+# materialize trigger: trusted Gemini model pin
 version: 0.1.0
 profiles:
   copilot:
