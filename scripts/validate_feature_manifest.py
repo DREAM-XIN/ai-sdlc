@@ -66,6 +66,34 @@ def validate_manifest(doc):
                     f"semantic: stage {stage['id']} is DONE but gate {gate_id} is {gate['status']}"
                 )
 
+    for task in doc.get("tasks", []):
+        if task.get("kind") != "remediation":
+            continue
+        task_id = task["id"]
+        required = ["stage", "role", "source_stage", "feedback"]
+        missing = [field for field in required if not task.get(field)]
+        if missing:
+            errors.append(
+                f"semantic: remediation task {task_id} missing fields: {', '.join(missing)}"
+            )
+            continue
+        target_stage = task["stage"]
+        source_stage = task["source_stage"]
+        if target_stage not in stage_by_id:
+            errors.append(f"semantic: remediation task {task_id} references unknown stage {target_stage}")
+        elif stage_by_id[target_stage]["status"] != "DONE":
+            errors.append(
+                f"semantic: remediation task {task_id} targets stage {target_stage} which is not DONE"
+            )
+        if source_stage not in stage_by_id:
+            errors.append(
+                f"semantic: remediation task {task_id} references unknown source_stage {source_stage}"
+            )
+        elif stage_by_id[source_stage]["status"] in {"DONE", "SKIPPED"}:
+            errors.append(
+                f"semantic: remediation task {task_id} source_stage {source_stage} is already complete"
+            )
+
     for gate in doc.get("gates", []):
         for evidence_id in gate.get("evidence", []):
             if evidence_id not in evidence_ids:
@@ -82,6 +110,16 @@ def validate_manifest(doc):
         if unfinished:
             errors.append(
                 "semantic: workflow is DONE with unfinished stages: " + ", ".join(unfinished)
+            )
+        unfinished_remediations = [
+            task["id"]
+            for task in doc.get("tasks", [])
+            if task.get("kind") == "remediation" and task["status"] != "DONE"
+        ]
+        if unfinished_remediations:
+            errors.append(
+                "semantic: workflow is DONE with unfinished remediation tasks: "
+                + ", ".join(unfinished_remediations)
             )
         failing_gates = [
             gate["id"]
