@@ -145,6 +145,21 @@ The trusted gateway mints short-lived installation tokens scoped to exactly one 
 
 The autonomous agent workflow itself remains `permissions: read-all`. It does not receive direct lifecycle write authority. Source changes are published through gh-aw Safe Output, whose target repository and Draft PR base are fixed by trusted runtime configuration.
 
+### Run the cross-repository runtime preflight
+
+Before enabling the autonomous command on a private target repository, run the control-repository workflow **AI-SDLC gh-aw Cross-Repo Runtime Preflight** and provide only the target repository in `owner/repo` form.
+
+The preflight is provider-neutral and non-mutating. It checks that:
+
+- `AI_SDLC_RUNTIME_APP_CLIENT_ID` exists in the trusted control repository;
+- `AI_SDLC_RUNTIME_APP_PRIVATE_KEY` exists without exposing its value;
+- the Runtime GitHub App is installed where an exact-target installation token can be minted;
+- that token can read the exact repository metadata using only `contents: read` and `metadata: read`.
+
+A `READY` result proves only the control-to-target installation/read transport. It does not probe an AI provider, does not prove provider quota or entitlement, does not request target write permissions, and does not modify Feature state. The separate **AI-SDLC gh-aw Runtime Preflight** continues to validate engine lock/credential readiness.
+
+The real cross-repository gateway repeats the Runtime App credential-presence check before token mint. It also rejects any `worker_workflow` that is not one of the compiled workflows registered in `runtimes/gh-aw/engine-profiles.yaml`, even if some other workflow file with that name exists in the control repository.
+
 ## Worker security boundary
 
 The trusted worker must:
@@ -165,9 +180,10 @@ Worker Result handling stays in the trusted collector. The collector converts th
 2. Add a Feature Bootstrap input under `state/bootstrap/`.
 3. Run Bootstrap dry first, then persist the generated Manifest to `state/features/<feature>.yaml`.
 4. Run Plan. Commander reads `.ai-sdlc/project.yaml` when present.
-5. For manual work, use the generated task prompt and return a durable Feature Event. For an eligible Developer work unit, use the provider-neutral `dispatch-gh-aw` command instead.
-6. Persist lifecycle transitions only through the trusted Event Inbox / collector path.
-7. Re-run Plan after each durable transition; Code Review, remediation, Verification, Acceptance, and Gates remain independent lifecycle stages.
+5. Before the first autonomous dispatch for a private repository, run the cross-repository runtime preflight from the trusted control repository.
+6. For manual work, use the generated task prompt and return a durable Feature Event. For an eligible Developer work unit, use the provider-neutral `dispatch-gh-aw` command instead.
+7. Persist lifecycle transitions only through the trusted Event Inbox / collector path.
+8. Re-run Plan after each durable transition; Code Review, remediation, Verification, Acceptance, and Gates remain independent lifecycle stages.
 
 See `docs/optimistic-concurrency.md` for the state concurrency model.
 
@@ -198,5 +214,6 @@ The target Feature branch supplies project/Feature context but cannot replace Co
 - Caller lifecycle workflow templates require `REPLACE_WITH_AI_SDLC_FULL_SHA` substitution during installation.
 - Private Actions Access must be enabled in the `ai-sdlc` repository settings.
 - Autonomous execution additionally requires the least-privilege control-dispatch credential plus installation of the trusted runtime GitHub App on each opted-in private target repository.
+- The read-only cross-repository preflight proves Runtime App installation/read access but intentionally does not prove target write/PR permissions; those remain exercised only by the trusted execution path.
 - ChatGPT Web remains a manual transport.
 - Multi-repository central scheduling is a later layer; this installation supports generic target-initiated autonomous handoff today.
