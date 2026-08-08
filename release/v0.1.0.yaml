@@ -72,13 +72,21 @@ reference_runtimes:
   routing_only:
     - agent-orchestrator
 
-known_release_blockers:
-  - id: second-repository-dogfood
+known_release_blockers: []
+
+cleared_release_evidence:
+  second_repository_dogfood:
     issue: '#52'
-    description: StarringV6Test cross-repository install must pass after private Actions Access is enabled.
-  - id: autonomous-runtime-dogfood
+    run: '31184971098'
+    result: pass
+  autonomous_runtime_dogfood:
     issue: '#6'
-    description: A real compiled gh-aw worker must execute one bounded work unit and return durable PR/evidence state before autonomous runtime support is declared complete.
+    provider: deepseek
+    runtime_run: '31241252417'
+    verification_run: '31241812708'
+    feature: F-GHAW-DEEPSEEK-0001
+    final_revision: 7
+    result: pass
 
 release_policy:
   publish_tag_after_blockers_clear: true
