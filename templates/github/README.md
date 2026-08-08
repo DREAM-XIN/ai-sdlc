@@ -2,7 +2,7 @@
 
 These files are templates for installing AI-SDLC transport into a target repository.
 
-The Plan, Bootstrap and Persist templates reference the private AI-SDLC control repository and are not ready for production until their AI-SDLC self-reference is replaced.
+The Installation Check, Plan, Bootstrap and Persist templates reference the private AI-SDLC control repository and are not ready for production until their AI-SDLC self-reference is replaced.
 
 Those templates contain:
 
@@ -11,6 +11,17 @@ Those templates contain:
 ```
 
 Replace `REPLACE_WITH_AI_SDLC_FULL_SHA` with a reviewed 40-character commit SHA from `DREAM-XIN/ai-sdlc` before committing the workflow to a target repository. Do not replace it with `main`, a release branch, or a moving tag.
+
+Install `ai-sdlc-installation-check.yml` alongside the lifecycle callers and run it on the installation PR before the first Feature Bootstrap/Plan. The trusted `validate-installation` operation fails closed when:
+
+- `.ai-sdlc/project.yaml` fails schema or semantic validation;
+- `repository.full_name` or `repository.default_branch` disagrees with the live caller repository metadata supplied by the workflow;
+- a `context.rules` or `context.read` file is missing, not a regular file, or resolves outside the target workspace;
+- repository-wide `AGENTS.md` is missing or omitted from `context.rules`;
+- a configured command working directory does not exist;
+- an `ai-sdlc-*` caller workflow still contains `REPLACE_WITH_AI_SDLC_FULL_SHA` or references `DREAM-XIN/ai-sdlc` with anything other than a full 40-character commit SHA.
+
+`context.rules` and `context.read` are both required durable worker/Commander context for this installed cross-repository contract. If a document is optional, do not list it there until the Project Adapter schema gains an explicit optional-context representation.
 
 The optional `ai-sdlc-command.yml` template accepts exact trusted Issue Comment commands from an OWNER, MEMBER or COLLABORATOR. Bootstrap, Plan and Persist continue to dispatch the already-installed local caller workflows. Autonomous Developer execution uses the same Issue surface but hands off to the trusted control repository runtime gateway.
 
