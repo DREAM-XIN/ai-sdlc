@@ -44,13 +44,13 @@ def main() -> int:
         source = cfg.get("worker_source", "")
         if not source.startswith(".github/workflows/") or not source.endswith(".md"):
             fail(f"{profile}: worker_source must be a workflow markdown path")
-        source_path = ROOT / source
-        if not source_path.is_file():
-            fail(f"{profile}: committed worker_source is missing: {source}")
         expected_version = PINNED_ENGINE_VERSIONS.get(profile)
-        if expected_version is not None and cfg.get("engine_version") != expected_version:
-            fail(f"{profile}: engine_version must remain pinned to {expected_version}")
-        if expected_version is None and cfg.get("engine_version") is not None:
+        if expected_version is not None:
+            if cfg.get("engine_version") != expected_version:
+                fail(f"{profile}: engine_version must remain pinned to {expected_version}")
+            if not (ROOT / source).is_file():
+                fail(f"{profile}: pinned engine requires a durable committed worker_source: {source}")
+        elif cfg.get("engine_version") is not None:
             fail(f"{profile}: unexpected engine_version pin")
 
     runtime = yaml.safe_load(RUNTIME.read_text(encoding="utf-8"))
@@ -81,20 +81,19 @@ def main() -> int:
     assert spec.loader
     spec.loader.exec_module(module)
 
-    # Every provider source must exactly equal the deterministic render from the canonical worker.
-    for profile, cfg in profiles.items():
-        if profile == "copilot":
-            continue
+    # A pinned engine is part of the trusted runtime supply chain: its committed
+    # source must exactly equal the deterministic canonical render.
+    for profile, expected_version in PINNED_ENGINE_VERSIONS.items():
+        cfg = profiles[profile]
         expected_source = module.render_text(profile, cfg, canonical)
         actual_source = (ROOT / cfg["worker_source"]).read_text(encoding="utf-8")
         if actual_source != expected_source:
-            fail(f"{profile}: committed worker source drifted from deterministic renderer")
+            fail(f"{profile}: committed pinned worker source drifted from deterministic renderer")
+        marker = f'engine:\n  id: {cfg["engine"]}\n  version: "{expected_version}"\n'
+        if marker not in actual_source:
+            fail(f"{profile}: pinned CLI version is not materialized in worker frontmatter")
 
-    gemini_source = (ROOT / profiles["gemini"]["worker_source"]).read_text(encoding="utf-8")
-    if 'engine:\n  id: gemini\n  version: "0.52.0"\n' not in gemini_source:
-        fail("gemini: pinned CLI version is not materialized in worker frontmatter")
-
-    print("gh-aw trusted engine profile, version pin, and renderer checks passed")
+    print("gh-aw trusted engine profile, pinned-version, and renderer checks passed")
     return 0
 
 
