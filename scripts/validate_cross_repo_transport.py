@@ -7,6 +7,7 @@ RESOLVER_ACTION = ROOT / ".github" / "actions" / "resolve-event-push" / "action.
 PLAN = ROOT / "templates" / "github" / "ai-sdlc-plan.yml"
 BOOTSTRAP = ROOT / "templates" / "github" / "ai-sdlc-bootstrap.yml"
 PERSIST = ROOT / "templates" / "github" / "ai-sdlc-persist.yml"
+COMMAND = ROOT / "templates" / "github" / "ai-sdlc-command.yml"
 CONTROL_PLACEHOLDER = "DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA"
 RESOLVER_PLACEHOLDER = "DREAM-XIN/ai-sdlc/.github/actions/resolve-event-push@REPLACE_WITH_AI_SDLC_FULL_SHA"
 
@@ -63,13 +64,36 @@ def main():
     require("steps.request.outputs.mode != 'noop'" in persist, "persist caller does not skip writes for proven archive no-ops")
     require("steps.auto.outputs.event_count" in persist, "persist caller does not propagate archive Event count")
 
+    command = COMMAND.read_text(encoding="utf-8")
+    require("issue_comment:" in command, "command bridge is not driven by durable Issue comments")
+    require("types: [created]" in command, "command bridge accepts mutable comment updates")
+    require("github.event.comment.author_association == 'OWNER'" in command, "command bridge does not require trusted author association")
+    require("github.event.comment.author_association == 'MEMBER'" in command, "command bridge does not allow repository members")
+    require("github.event.comment.author_association == 'COLLABORATOR'" in command, "command bridge does not allow collaborators")
+    require("permissions:\n  actions: write\n  contents: read\n  issues: write" in command, "command bridge permission envelope drifted")
+    require("contents: write" not in command, "command bridge must not write repository contents directly")
+    require("workflow = 'ai-sdlc-bootstrap.yml'" in command, "command bridge does not bind bootstrap to the installed caller")
+    require("workflow = 'ai-sdlc-plan.yml'" in command, "command bridge does not bind plan to the installed caller")
+    require('gh workflow run "$WORKFLOW"' in command, "command bridge does not delegate through workflow_dispatch")
+    require("--field persist=true" in command, "trusted bootstrap command does not request durable persistence")
+    require("--field allow_default_branch=false" in command, "trusted bootstrap command lost default-branch denial")
+    require("AI-SDLC bootstrap command cannot persist to the default branch" in command, "command parser lost default-branch denial")
+    require("state/bootstrap/" in command and "state/features/" in command, "command parser does not constrain durable state paths")
+    require("parent traversal is not allowed" in command, "command parser lost parent-traversal denial")
+    require("gh run list" in command and "--event workflow_dispatch" in command, "command bridge does not resolve the downstream run")
+    require("downstream_id" in command and "downstream_url" in command, "command receipt does not identify downstream evidence")
+    require("could not resolve the downstream run" in command, "command bridge does not fail closed when downstream evidence is missing")
+    require("secrets." not in command and "personal_access_token" not in command.lower(), "command bridge unexpectedly requires a PAT/secret")
+    for forbidden in ("engine_profile", "worker_workflow", "provider", "model", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        require(forbidden not in command, f"command bridge leaks execution-plane selector or credential: {forbidden}")
+
     for path in (PLAN, BOOTSTRAP, PERSIST):
         text = path.read_text(encoding="utf-8")
         require("REPLACE_WITH_AI_SDLC_FULL_SHA" in text, f"{path.name}: explicit install-time SHA placeholder missing")
         require("ai-sdlc-install-placeholder" in text, f"{path.name}: install placeholder marker missing")
         require("@main" not in text and "@v" not in text, f"{path.name}: mutable production reference remains")
 
-    print("Cross-repository GitHub transport immutable-pinning and archive-aware resolver checks passed")
+    print("Cross-repository GitHub transport immutable-pinning, archive-aware resolver, and trusted comment-bridge checks passed")
 
 
 if __name__ == "__main__":
