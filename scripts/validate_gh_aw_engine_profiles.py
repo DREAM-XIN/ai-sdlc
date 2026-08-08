@@ -146,17 +146,24 @@ def main() -> int:
             fail(f"canonical worker must not retain obsolete result handoff marker: {marker}")
 
     required_head_base_markers = [
-        "create and switch to the local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}`",
-        "PR base only",
-        "never use `${{ inputs.target_ref }}` as the local work branch or as `create_pull_request.branch`",
+        "create and switch to the local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}` **from the fetched trusted ancestry base `origin/${{ inputs.target_ref }}`**",
+        "git switch -c gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }} origin/${{ inputs.target_ref }}",
+        "git merge-base --is-ancestor origin/${{ inputs.target_ref }} HEAD",
+        "git diff --name-only origin/${{ inputs.target_ref }}...HEAD",
+        "trusted ancestry base, and PR base",
+        "never use it as the local work branch name or as `create_pull_request.branch`",
+        "Review the diff against `origin/${{ inputs.target_ref }}` before finishing",
         "Set its `branch` argument to exactly `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}`",
         "gh-aw may append a collision-avoidance salt",
         "Do not set or override the PR base",
         "The head branch and `${{ inputs.target_ref }}` must be different",
+        "stop rather than falling back to `main`",
     ]
     for marker in required_head_base_markers:
         if marker not in canonical:
-            fail(f"canonical worker missing PR head/base separation marker: {marker}")
+            fail(f"canonical worker missing target-based PR ancestry marker: {marker}")
+    if "PR base only" in canonical:
+        fail("canonical worker must not describe target_ref as PR-base-only; it is also the trusted ancestry base")
 
     gateway = GATEWAY.read_text(encoding="utf-8")
     if "worker_workflow:" in gateway.split("permissions:", 1)[0]:
@@ -198,7 +205,7 @@ def main() -> int:
                 if marker not in actual_source:
                     fail(f"{profile}: rendered BYOK worker missing marker: {marker.strip()}")
 
-    print("gh-aw native and OpenAI-compatible profiles, target-base prefetch, Safe Output auth, deterministic result handoff, provider isolation, and renderer checks passed")
+    print("gh-aw native and OpenAI-compatible profiles, target-based work-branch ancestry, target-base prefetch, Safe Output auth, deterministic result handoff, provider isolation, and renderer checks passed")
     return 0
 
 
