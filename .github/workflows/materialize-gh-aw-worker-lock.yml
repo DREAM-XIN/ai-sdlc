@@ -7,6 +7,7 @@ on:
       - 'gh-aw/compile-*'
     paths:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
+      - '.github/workflows/ai-sdlc-gh-aw-worker-deepseek.md'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
       - 'runtimes/gh-aw/engine-profiles.yaml'
       - 'scripts/render_gh_aw_workers.py'
