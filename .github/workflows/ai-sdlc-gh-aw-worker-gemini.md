@@ -32,6 +32,10 @@ engine:
   version: "0.39.1"
   model: gemini-3.5-flash-lite
 permissions: read-all
+# Same-repository read tools stay on the job-scoped token so optional PAT secrets cannot override this boundary.
+tools:
+  github:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 max-turn-cache-misses: 20
 checkout:
   fetch-depth: 0
