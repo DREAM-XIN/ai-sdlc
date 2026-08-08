@@ -29,6 +29,9 @@ on:
         type: string
 engine: copilot
 permissions: read-all
+tools:
+  github:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 max-turn-cache-misses: 20
 checkout:
   fetch-depth: 0
