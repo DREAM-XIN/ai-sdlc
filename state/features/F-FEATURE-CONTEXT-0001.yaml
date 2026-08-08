@@ -1,8 +1,9 @@
 protocol_version: 0.1.0
-revision: 0
+revision: 1
 feature:
   id: F-FEATURE-CONTEXT-0001
-  title: Create exactly docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md from linked Feature Issue context
+  title: Create exactly docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md from linked Feature
+    Issue context
   risk: low
   issue: '#128'
 workflow:
@@ -10,25 +11,26 @@ workflow:
   status: ACTIVE
   current_stage: implementation
   stages:
-    - id: requirement
-      status: DONE
-    - id: implementation
-      status: READY
-    - id: review
-      status: TODO
-      gate: code-gate
-    - id: verification
-      status: TODO
-      gate: verification-gate
+  - id: requirement
+    status: DONE
+  - id: implementation
+    status: WORKING
+  - id: review
+    status: TODO
+    gate: code-gate
+  - id: verification
+    status: TODO
+    gate: verification-gate
 tasks: []
 artifacts: []
 gates:
-  - id: code-gate
-    status: PENDING
-    evidence: []
-  - id: verification-gate
-    status: PENDING
-    evidence: []
+- id: code-gate
+  status: PENDING
+  evidence: []
+- id: verification-gate
+  status: PENDING
+  evidence: []
 evidence: []
-applied_events: []
-updated_at: '2026-08-08T07:20:30Z'
+applied_events:
+- EVT-GHAW-F-FEATURE-CONTEXT-0001-0-START
+updated_at: '2026-08-08T07:23:54Z'

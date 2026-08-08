@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-GHAW-F-FEATURE-CONTEXT-0001-0-START
+feature_id: F-FEATURE-CONTEXT-0001
+expected_revision: 0
+occurred_at: '2026-08-08T07:23:54Z'
+changes:
+- kind: stage
+  id: implementation
+  status: WORKING
