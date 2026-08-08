@@ -13,6 +13,32 @@ AI-SDLC defines a portable protocol for coordinating humans, ChatGPT Web, coding
 - Reuse existing infrastructure instead of rebuilding GitHub or coding-agent runtimes.
 - Support manual, assisted and autonomous execution modes.
 
+## Execution model
+
+AI providers are optional execution backends, not control-plane dependencies.
+
+AI-SDLC owns lifecycle state, orchestration, routing, Gates, Evidence, and persistence. Models, coding agents, web assistants, IDE agents, CLI tools, and human operators are replaceable workers connected through runtime contracts.
+
+A deployment therefore does not need a particular model provider to use the AI-SDLC protocol:
+
+- `manual` execution can hand a portable Task Package to a human or web AI;
+- `assisted` execution can combine an interactive runtime with deterministic GitHub automation;
+- `autonomous` execution can dispatch bounded work to API/CLI/CI-backed agents without human initiation of each task.
+
+Provider diversity exists to make autonomous workers routable by capability, availability, cost, and policy. It must not move provider-specific inference calls or credentials into Commander, lifecycle state transitions, or Gate authority.
+
+Conceptually:
+
+```text
+AI-SDLC control plane
+        |
+        +--> runtime: ChatGPT Web / human / IDE / CLI / gh-aw / external agent
+                         |
+                         +--> optional provider/model selection
+```
+
+Runtime, provider, and model are separate concerns. For example, `gh-aw` is a runtime, DeepSeek is a provider, and `deepseek-chat` is a model.
+
 ## Reference architecture
 
 AI-SDLC is designed to integrate with:
