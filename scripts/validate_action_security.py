@@ -10,7 +10,7 @@ FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 USES = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#.*)?$")
 INSTALL_PLACEHOLDER = "DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA"
 PLACEHOLDER_MARKER = "ai-sdlc-install-placeholder"
-GHAW_LOCK = re.compile(r"^ai-sdlc-gh-aw-worker(?:-(?:codex|claude|gemini))?\.lock\.yml$")
+GHAW_LOCK = re.compile(r"^ai-sdlc-gh-aw-worker(?:-(?:codex|claude|gemini|deepseek))?\.lock\.yml$")
 GHAW_METADATA_PREFIX = "# gh-aw-metadata: "
 PINNED_GHAW_COMPILER = "v0.83.4"
 
