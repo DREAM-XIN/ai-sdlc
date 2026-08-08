@@ -64,6 +64,7 @@ jobs:
       - run: python scripts/validate_github_commander_transport.py
       - run: python scripts/validate_github_workflow_security.py
       - run: python scripts/validate_project_adapter.py
+      - run: python scripts/validate_target_installation_examples.py
       - run: python scripts/validate_cross_repo_transport.py
       - run: python scripts/validate_cross_repo_gh_aw_dispatch.py
       - run: python scripts/validate_git_write_precondition.py
@@ -81,6 +82,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Prepare installation-preflight target workspace
+        shell: bash
+        run: |
+          mkdir -p tmp-install/.ai-sdlc tmp-install/.github/workflows tmp-install/docs
+          cp examples/project-adapters/generic.yaml tmp-install/.ai-sdlc/project.yaml
+          printf '# Agent rules\n' > tmp-install/AGENTS.md
+          printf '# Contributing\n' > tmp-install/CONTRIBUTING.md
+          printf '# Sample app\n' > tmp-install/README.md
+          printf '# Architecture\n' > tmp-install/docs/architecture.md
+          cat > tmp-install/.github/workflows/ai-sdlc-plan.yml <<'YAML'
+          name: fixture
+          jobs:
+            plan:
+              steps:
+                - uses: DREAM-XIN/ai-sdlc/.github/actions/control@0123456789abcdef0123456789abcdef01234567
+          YAML
+
+      - name: Validate target installation through shared control action
+        id: installation
+        uses: ./.github/actions/control
+        with:
+          operation: validate-installation
+          repository: example/sample-app
+          default_branch: main
+          workspace_path: tmp-install
+
+      - name: Verify installation preflight result
+        shell: bash
+        run: |
+          test "${{ steps.installation.outputs.exit_code }}" = "0"
+          test -f "tmp-install/${{ steps.installation.outputs.installation_report_path }}"
+          grep -q '"outcome": "READY"' "tmp-install/${{ steps.installation.outputs.installation_report_path }}"
 
       - name: Prepare caller-repository Project Adapter
         shell: bash
