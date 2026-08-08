@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/gh_aw_runtime_preflight.py"
 WORKFLOW = ROOT / ".github/workflows/ai-sdlc-gh-aw-preflight.yml"
-PROFILES = ("copilot", "codex", "claude", "gemini")
+PROFILES = ("copilot", "codex", "claude", "gemini", "deepseek")
 
 
 def run(profile: str, present: bool) -> dict:
@@ -42,6 +42,11 @@ def main() -> int:
             fail(f"{profile}: preflight must verify pinned strict compiler metadata")
         if present.get("entitlement_verified") is not False:
             fail(f"{profile}: credential presence must not imply provider entitlement")
+        if profile == "deepseek":
+            if present.get("provider") != "deepseek" or present.get("protocol") != "openai-compatible":
+                fail("deepseek: preflight must expose provider/protocol identity")
+            if present.get("maturity") != "experimental":
+                fail("deepseek: preflight must not overstate live maturity")
 
     text = WORKFLOW.read_text(encoding="utf-8")
     if "permissions:\n  contents: read" not in text:
@@ -49,10 +54,13 @@ def main() -> int:
     for forbidden in ("gh workflow run ai-sdlc-gh-aw-dispatch", "contents: write", "state/features/", "state/events/"):
         if forbidden in text:
             fail(f"preflight workflow contains forbidden mutation/dispatch marker: {forbidden}")
-    if "secrets.COPILOT_GITHUB_TOKEN != ''" not in text:
-        fail("preflight workflow must test credential presence without exposing secret values")
+    for marker in ("secrets.COPILOT_GITHUB_TOKEN != ''", "secrets.DEEPSEEK_API_KEY != ''"):
+        if marker not in text:
+            fail(f"preflight workflow must test credential presence without exposing values: {marker}")
     if "READY_FOR_ENTITLEMENT_PROBE" not in text:
         fail("preflight workflow must explain entitlement remains unverified")
+    if "rate-limit headroom" not in text:
+        fail("preflight workflow must not imply static checks prove provider rate-limit capacity")
 
     print("gh-aw provider-neutral runtime preflight checks passed")
     return 0
