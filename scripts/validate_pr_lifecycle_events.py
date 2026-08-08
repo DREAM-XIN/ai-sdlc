@@ -9,6 +9,7 @@ import yaml
 
 from pr_lifecycle_event import build_review_event, build_verification_event
 from resolve_pr_lifecycle_context import resolve
+from validate_pr_remediation_event import main as validate_remediation_collector
 
 
 def require(condition, message):
@@ -120,7 +121,8 @@ def main():
     require(verification["expected_revision"] == 5, "verification event revision mismatch")
     require(any(c.get("id") == "verification-gate" and c.get("status") == "PASS" for c in verification["changes"]), "verification event does not pass verification-gate")
 
-    print("Trusted PR lifecycle context and Feature Event boundary checks passed")
+    validate_remediation_collector()
+    print("Trusted PR lifecycle context, remediation, and Feature Event boundary checks passed")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,121 @@
+name: AI-SDLC PR Remediation
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  remediation:
+    if: ${{ github.event.review.state == 'changes_requested' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve trusted Feature base ref
+        id: preflight
+        shell: python
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          import json, os
+          from pathlib import Path
+          event = json.loads(Path(os.environ['EVENT_PATH']).read_text(encoding='utf-8'))
+          review = event.get('review') or {}
+          pr = event.get('pull_request') or {}
+          head = pr.get('head') or {}
+          base = pr.get('base') or {}
+          if str(review.get('state', '')).lower() != 'changes_requested':
+              raise SystemExit('only CHANGES_REQUESTED reviews are eligible')
+          if (head.get('repo') or {}).get('full_name') != os.environ['REPOSITORY']:
+              raise SystemExit('fork/cross-repository PRs are not eligible')
+          if not str(head.get('ref', '')).startswith('gh-aw/'):
+              raise SystemExit('eligible PR head must start with gh-aw/')
+          base_ref = str(base.get('ref', ''))
+          if not base_ref or base_ref == os.environ['DEFAULT_BRANCH']:
+              raise SystemExit('eligible PR must target a non-default Feature branch')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f'base_ref={base_ref}\n')
+
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Checkout Feature base workspace
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.preflight.outputs.base_ref }}
+          path: workspace
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Build trusted remediation Event
+        id: context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python runtime/scripts/pr_remediation_event.py \
+            --event "$GITHUB_EVENT_PATH" \
+            --workspace workspace \
+            --runtime-root runtime \
+            --repository "$GITHUB_REPOSITORY" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --output remediation-event.yaml \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Persist remediation Event and derived Manifest
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.context.outputs.manifest_path }}
+          FEATURE_ID: ${{ steps.context.outputs.feature_id }}
+          EVENT_ID: ${{ steps.context.outputs.event_id }}
+          BASE_REF: ${{ steps.context.outputs.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          EVENT_PATH="state/events/$FEATURE_ID/$EVENT_ID.yaml"
+          python runtime/scripts/ingest_feature_event.py \
+            "workspace/$MANIFEST_PATH" remediation-event.yaml \
+            --event-path "$EVENT_PATH" \
+            --repository "$REPOSITORY" \
+            --manifest-path "$MANIFEST_PATH" \
+            --target-ref "$BASE_REF" \
+            --output remediation-plan.json
+          mkdir -p "workspace/$(dirname "$EVENT_PATH")"
+          cp remediation-event.yaml "workspace/$EVENT_PATH"
+          MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path('remediation-plan.json').read_text(encoding='utf-8'))
+          target = Path('workspace') / os.environ['MANIFEST_PATH']
+          target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
+          PY
+          python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
+          python runtime/scripts/verify_git_write_precondition.py \
+            --repo-dir workspace --target-ref "$BASE_REF" --default-branch "$DEFAULT_BRANCH"
+          git -C workspace config user.name "ai-sdlc[bot]"
+          git -C workspace config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git -C workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
+          git -C workspace commit -m "chore(ai-sdlc): persist trusted PR remediation event"
+          git -C workspace push origin "HEAD:$BASE_REF"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: ai-sdlc-pr-remediation-evidence
+          path: |
+            remediation-event.yaml
+            remediation-plan.json
+          if-no-files-found: ignore
