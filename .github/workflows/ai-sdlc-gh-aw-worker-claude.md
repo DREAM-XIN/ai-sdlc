@@ -29,6 +29,7 @@ on:
         type: string
 engine: claude
 permissions: read-all
+max-turn-cache-misses: 20
 safe-outputs:
   create-pull-request:
     draft: true
