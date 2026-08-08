@@ -1,0 +1,39 @@
+version: 0.1.0
+routes:
+  - id: gh-aw-autonomous-developer
+    priority: 100
+    match: {role: developer}
+    runtime: {id: gh-aw, mode: autonomous}
+  - id: manual-product
+    priority: 10
+    match: {role: product}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-architect
+    priority: 10
+    match: {role: architect}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-orchestrator
+    priority: 10
+    match: {role: orchestrator}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-developer
+    priority: 10
+    match: {role: developer}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-reviewer
+    priority: 10
+    match: {role: reviewer}
+    runtime: {id: chatgpt-web, mode: manual}
+  - id: manual-qa
+    priority: 10
+    match: {role: qa}
+    runtime: {id: chatgpt-web, mode: manual}
+
+task_templates:
+  implementation:
+    goal: Implement the assigned work unit according to the approved requirement and design.
+    read: [Feature Issue, approved requirement, approved design, assigned work unit, AGENTS.md]
+    allowed_scope: [Only files explicitly permitted by the assigned work unit]
+    forbidden_scope: [Do not expand product or architecture scope without durable approval]
+    expected_outputs: [code changes, tests, implementation evidence]
+    definition_of_done: [Assigned work-unit DoD is satisfied, Required tests pass, Deviations from design are recorded]
