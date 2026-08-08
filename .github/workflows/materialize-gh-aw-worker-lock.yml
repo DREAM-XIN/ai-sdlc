@@ -1,6 +1,6 @@
 name: Materialize AI-SDLC gh-aw Worker Locks
 
-# Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated lock files.
+# Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated worker sources and lock files.
 on:
   push:
     branches:
@@ -51,24 +51,28 @@ jobs:
           while IFS= read -r worker; do
             gh aw compile "$worker" --strict
           done < /tmp/workers.txt
-      - name: Commit generated lock files only
+      - name: Commit rendered sources and generated lock files
         run: |
           set -euo pipefail
           git config user.name "ai-sdlc[bot]"
           git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          python - <<'PY' > /tmp/locks.txt
+          python - <<'PY' > /tmp/generated.txt
           import yaml
           data = yaml.safe_load(open('runtimes/gh-aw/engine-profiles.yaml'))
-          for cfg in data['profiles'].values():
-              print('.github/workflows/' + cfg['worker_workflow'])
+          for profile, cfg in data['profiles'].items():
+              source = cfg['worker_source']
+              lock = '.github/workflows/' + cfg['worker_workflow']
+              if profile != 'copilot':
+                  print(source)
+              print(lock)
           PY
-          while IFS= read -r lock; do
-            test -f "$lock"
-            git add -- "$lock"
-          done < /tmp/locks.txt
+          while IFS= read -r generated; do
+            test -f "$generated"
+            git add -- "$generated"
+          done < /tmp/generated.txt
           if git diff --cached --quiet; then
-            echo "Compiled lock files are already current."
+            echo "Rendered worker sources and compiled lock files are already current."
             exit 0
           fi
-          git commit -m "build(gh-aw): compile trusted engine workers"
+          git commit -m "build(gh-aw): materialize trusted engine workers"
           git push origin "HEAD:${GITHUB_REF_NAME}"
