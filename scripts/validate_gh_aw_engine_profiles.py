@@ -17,9 +17,22 @@ EXPECTED = {
     "codex": ("codex", "OPENAI_API_KEY", "ai-sdlc-gh-aw-worker-codex.lock.yml"),
     "claude": ("claude", "ANTHROPIC_API_KEY", "ai-sdlc-gh-aw-worker-claude.lock.yml"),
     "gemini": ("gemini", "GEMINI_API_KEY", "ai-sdlc-gh-aw-worker-gemini.lock.yml"),
+    "deepseek": ("copilot", "DEEPSEEK_API_KEY", "ai-sdlc-gh-aw-worker-deepseek.lock.yml"),
 }
 PINNED_ENGINE_VERSIONS = {"gemini": "0.39.1"}
-PINNED_ENGINE_MODELS = {"gemini": "gemini-3.5-flash-lite"}
+PINNED_NATIVE_MODELS = {"gemini": "gemini-3.5-flash-lite"}
+OPENAI_COMPATIBLE = {
+    "deepseek": {
+        "provider": "deepseek",
+        "protocol": "openai-compatible",
+        "provider_type": "openai",
+        "wire_api": "completions",
+        "base_url": "https://api.deepseek.com",
+        "network_host": "api.deepseek.com",
+        "model": "deepseek-chat",
+        "maturity": "experimental",
+    }
+}
 CANONICAL_MAX_TURN_CACHE_MISSES = 20
 
 
@@ -46,22 +59,30 @@ def main() -> int:
         source = cfg.get("worker_source", "")
         if not source.startswith(".github/workflows/") or not source.endswith(".md"):
             fail(f"{profile}: worker_source must be a workflow markdown path")
+        if not (ROOT / source).is_file():
+            fail(f"{profile}: committed worker_source is missing: {source}")
+
         expected_version = PINNED_ENGINE_VERSIONS.get(profile)
         if expected_version is not None:
             if cfg.get("engine_version") != expected_version:
                 fail(f"{profile}: engine_version must remain pinned to {expected_version}")
-            if not (ROOT / source).is_file():
-                fail(f"{profile}: pinned engine requires a durable committed worker_source: {source}")
         elif cfg.get("engine_version") is not None:
             fail(f"{profile}: unexpected engine_version pin")
-        expected_model = PINNED_ENGINE_MODELS.get(profile)
-        if expected_model is not None:
-            if cfg.get("model") != expected_model:
-                fail(f"{profile}: model must remain pinned to {expected_model}")
-            if not (ROOT / source).is_file():
-                fail(f"{profile}: pinned model requires a durable committed worker_source: {source}")
-        elif cfg.get("model") is not None:
-            fail(f"{profile}: unexpected model pin")
+
+        if profile in OPENAI_COMPATIBLE:
+            expected_provider = OPENAI_COMPATIBLE[profile]
+            for key, expected_value in expected_provider.items():
+                if cfg.get(key) != expected_value:
+                    fail(f"{profile}: {key} must remain {expected_value!r}")
+        else:
+            if cfg.get("protocol") is not None or cfg.get("provider") is not None:
+                fail(f"{profile}: native profile must not declare provider protocol overrides")
+            expected_model = PINNED_NATIVE_MODELS.get(profile)
+            if expected_model is not None:
+                if cfg.get("model") != expected_model:
+                    fail(f"{profile}: model must remain pinned to {expected_model}")
+            elif cfg.get("model") is not None:
+                fail(f"{profile}: unexpected native model pin")
 
     runtime = yaml.safe_load(RUNTIME.read_text(encoding="utf-8"))
     if runtime.get("engine_profile_registry") != "runtimes/gh-aw/engine-profiles.yaml":
@@ -81,9 +102,6 @@ def main() -> int:
     if "pull-requests: read" not in canonical or "actions: write" not in canonical:
         fail("deterministic conclusion handoff must have only the required PR-read/actions-write permissions")
 
-    # Safe Output patch generation runs after agent credentials have been scrubbed.
-    # Prefetch the complete branch graph while checkout still has a transient token so
-    # any trusted target_ref is already present as origin/<target_ref> for merge-base.
     required_checkout_markers = [
         "checkout:\n  fetch-depth: 0\n  fetch:\n    - \"*\"\n",
     ]
@@ -91,10 +109,6 @@ def main() -> int:
         if marker not in canonical:
             fail(f"canonical worker missing safe-output base prefetch marker: {marker!r}")
 
-    # Same-repository Safe Output writes must use the ephemeral Actions token.
-    # A repository-level GH_AW_GITHUB_TOKEN is optional broader authentication;
-    # live dogfood proved that allowing it to win the default fallback chain can
-    # block PR creation when that PAT lacks Pull Requests permission.
     safe_output_auth_markers = [
         'github-token: ${{ secrets.GITHUB_TOKEN }}',
         "fallback-as-issue: false",
@@ -103,9 +117,6 @@ def main() -> int:
         if marker not in canonical:
             fail(f"canonical worker missing same-repo Safe Output auth marker: {marker}")
 
-    # Result persistence is deterministic, not a second model-owned Safe Output.
-    # The PR lookup deliberately accepts gh-aw's collision-avoidance salt while
-    # remaining scoped to this feature, run id, and reserved revision.
     deterministic_result_markers = [
         "jobs:\n  conclusion:",
         "pre-steps:",
@@ -134,9 +145,6 @@ def main() -> int:
         if marker in canonical:
             fail(f"canonical worker must not retain obsolete result handoff marker: {marker}")
 
-    # target_ref is the authoritative Feature base, never the autonomous head.
-    # The requested local head contains the revision and gh-aw may salt the
-    # remote head for collision avoidance.
     required_head_base_markers = [
         "create and switch to the local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}`",
         "PR base only",
@@ -164,25 +172,33 @@ def main() -> int:
     assert spec.loader
     spec.loader.exec_module(module)
 
-    pinned_profiles = set(PINNED_ENGINE_VERSIONS) | set(PINNED_ENGINE_MODELS)
-    for profile in pinned_profiles:
+    rendered_profiles = (set(PINNED_ENGINE_VERSIONS) | set(PINNED_NATIVE_MODELS) | set(OPENAI_COMPATIBLE)) - {"copilot"}
+    for profile in rendered_profiles:
         cfg = profiles[profile]
         expected_source = module.render_text(profile, cfg, canonical)
         actual_source = (ROOT / cfg["worker_source"]).read_text(encoding="utf-8")
         if actual_source != expected_source:
-            fail(f"{profile}: committed pinned worker source drifted from deterministic renderer")
+            fail(f"{profile}: committed worker source drifted from deterministic renderer")
         expected_version = PINNED_ENGINE_VERSIONS.get(profile)
         if expected_version is not None:
             marker = f'  version: "{expected_version}"\n'
             if marker not in actual_source:
                 fail(f"{profile}: pinned CLI version is not materialized in worker frontmatter")
-        expected_model = PINNED_ENGINE_MODELS.get(profile)
-        if expected_model is not None:
-            marker = f"  model: {expected_model}\n"
-            if marker not in actual_source:
-                fail(f"{profile}: pinned model is not materialized in worker frontmatter")
+        if profile in OPENAI_COMPATIBLE:
+            provider_markers = [
+                "  id: copilot\n",
+                f"    COPILOT_PROVIDER_BASE_URL: {cfg['base_url']}\n",
+                f"    COPILOT_MODEL: {cfg['model']}\n",
+                f"    COPILOT_PROVIDER_API_KEY: ${{{{ secrets.{cfg['credential']} }}}}\n",
+                "    COPILOT_PROVIDER_TYPE: openai\n",
+                f"    COPILOT_PROVIDER_WIRE_API: {cfg['wire_api']}\n",
+                f"    - {cfg['network_host']}\n",
+            ]
+            for marker in provider_markers:
+                if marker not in actual_source:
+                    fail(f"{profile}: rendered BYOK worker missing marker: {marker.strip()}")
 
-    print("gh-aw trusted engine profile, full-history target-base prefetch, workflow-token Safe Output auth, deterministic salted-head conclusion handoff, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
+    print("gh-aw native and OpenAI-compatible profiles, target-base prefetch, Safe Output auth, deterministic result handoff, provider isolation, and renderer checks passed")
     return 0
 
 
