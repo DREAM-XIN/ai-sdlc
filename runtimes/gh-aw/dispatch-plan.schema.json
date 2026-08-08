@@ -9,10 +9,7 @@
     "runtime": {
       "type": "object",
       "required": ["id", "mode"],
-      "properties": {
-        "id": {"const": "gh-aw"},
-        "mode": {"const": "autonomous"}
-      },
+      "properties": {"id": {"const": "gh-aw"}, "mode": {"const": "autonomous"}},
       "additionalProperties": false
     },
     "repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
@@ -36,10 +33,13 @@
           "ref": {"type": "string", "minLength": 1},
           "inputs": {
             "type": "object",
-            "required": ["feature_id", "expected_revision", "target_ref", "stage", "role", "task_payload"],
+            "required": ["feature_id", "expected_revision", "target_repository", "target_owner", "target_repo_name", "target_ref", "stage", "role", "task_payload"],
             "properties": {
               "feature_id": {"type": "string", "minLength": 1},
               "expected_revision": {"type": "integer", "minimum": 0},
+              "target_repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+              "target_owner": {"type": "string", "minLength": 1},
+              "target_repo_name": {"type": "string", "minLength": 1},
               "target_ref": {"type": "string", "minLength": 1},
               "stage": {"type": "string", "minLength": 1},
               "role": {"type": "string", "minLength": 1},
