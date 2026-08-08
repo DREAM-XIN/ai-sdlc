@@ -33,7 +33,14 @@ def validate_schema(data, schema_path: Path, label: str):
     return errors
 
 
-def build_feature_context(manifest):
+def split_repository(repository: str):
+    parts = repository.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ValueError("repository must be owner/repo")
+    return parts[0], parts[1]
+
+
+def build_feature_context(manifest, repository=None):
     feature = manifest["feature"]
     feature_id = feature["id"]
     context = {
@@ -42,6 +49,8 @@ def build_feature_context(manifest):
         "risk": feature["risk"],
         "manifest_ref": f"state/features/{feature_id}.yaml",
     }
+    if repository:
+        context["repository"] = repository
     if feature.get("issue"):
         context["issue"] = feature["issue"]
 
@@ -52,16 +61,8 @@ def build_feature_context(manifest):
         record = {
             key: item[key]
             for key in (
-                "id",
-                "kind",
-                "stage",
-                "role",
-                "source_stage",
-                "feedback",
-                "target_pr",
-                "status",
-                "issue",
-                "runtime",
+                "id", "kind", "stage", "role", "source_stage", "feedback",
+                "target_pr", "status", "issue", "runtime",
             )
             if key in item
         }
@@ -84,11 +85,11 @@ def build_feature_context(manifest):
     return context
 
 
-def build_runtime_payload(task, manifest, project=None, project_ref=".ai-sdlc/project.yaml"):
+def build_runtime_payload(task, manifest, repository=None, project=None, project_ref=".ai-sdlc/project.yaml"):
     payload = {
         "contract": "ai-sdlc-task-v0.1",
         "task": task,
-        "feature_context": build_feature_context(manifest),
+        "feature_context": build_feature_context(manifest, repository=repository),
         "worker_rules": [
             "Do not edit the authoritative Feature Manifest.",
             "Return structured runtime result data; lifecycle persistence is handled by AI-SDLC.",
@@ -120,24 +121,24 @@ def build_dispatch_plan(
     worker_workflow: str,
     project=None,
     project_ref=".ai-sdlc/project.yaml",
+    reserve_required=True,
 ):
     if commander_plan.get("outcome") != "DISPATCH":
-        return {
-            "outcome": "NO_DISPATCH",
-            "errors": [f"Commander outcome is {commander_plan.get('outcome')}, not DISPATCH"],
-        }
-
+        return {"outcome": "NO_DISPATCH", "errors": [f"Commander outcome is {commander_plan.get('outcome')}, not DISPATCH"]}
     if commander_plan.get("feature_id") != manifest.get("feature", {}).get("id"):
         return {"outcome": "INVALID", "errors": ["Commander Plan and Feature Manifest feature ids differ"]}
+
+    try:
+        target_owner, target_repo_name = split_repository(repository)
+    except ValueError as exc:
+        return {"outcome": "INVALID", "errors": [str(exc)]}
 
     revision = manifest.get("revision", 0)
     plan_revision = commander_plan.get("summary", {}).get("revision")
     if plan_revision is not None and plan_revision != revision:
-        return {
-            "outcome": "INVALID",
-            "errors": [f"Commander Plan revision {plan_revision} != Manifest revision {revision}"],
-        }
+        return {"outcome": "INVALID", "errors": [f"Commander Plan revision {plan_revision} != Manifest revision {revision}"]}
 
+    result_revision = revision + (1 if reserve_required else 0)
     dispatches = []
     errors = []
     for dispatch in commander_plan.get("dispatches", []):
@@ -149,59 +150,51 @@ def build_dispatch_plan(
         if not template:
             errors.append(f"no task template for gh-aw stage: {action['stage']}")
             continue
-
         try:
             task = build_task(manifest, action, template, runtime)
         except ValueError as exc:
             errors.append(str(exc))
             continue
         if project:
-            task["inputs"] = unique(
-                [project_ref]
-                + project["context"]["rules"]
-                + project["context"]["read"]
-                + task.get("inputs", [])
-            )
+            task["inputs"] = unique([project_ref] + project["context"]["rules"] + project["context"]["read"] + task.get("inputs", []))
         problems = schema_errors(task, TASK_SCHEMA, task["id"])
         if problems:
             errors.extend(problems)
             continue
 
-        payload = build_runtime_payload(task, manifest, project=project, project_ref=project_ref)
+        payload = build_runtime_payload(task, manifest, repository=repository, project=project, project_ref=project_ref)
         work_kind = task.get("kind", "stage")
-        dispatches.append(
-            {
+        dispatches.append({
+            "stage": action["stage"],
+            "role": action["role"],
+            "task_id": task["id"],
+            "work_kind": work_kind,
+            "route_ids": dispatch["route_ids"],
+            "workflow": worker_workflow,
+            "ref": target_ref,
+            "inputs": {
+                "feature_id": manifest["feature"]["id"],
+                "expected_revision": result_revision,
+                "target_repository": repository,
+                "target_owner": target_owner,
+                "target_repo_name": target_repo_name,
+                "target_ref": target_ref,
                 "stage": action["stage"],
                 "role": action["role"],
-                "task_id": task["id"],
-                "work_kind": work_kind,
-                "route_ids": dispatch["route_ids"],
-                "workflow": worker_workflow,
-                "ref": target_ref,
-                "inputs": {
-                    "feature_id": manifest["feature"]["id"],
-                    "expected_revision": revision + 1,
-                    "target_ref": target_ref,
-                    "stage": action["stage"],
-                    "role": action["role"],
-                    "task_payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
-                },
-                "expected_result": {
-                    "contract": "gh-aw-worker-result-v0.1",
-                    "event_path_prefix": f"state/events/{manifest['feature']['id']}/",
-                },
-            }
-        )
+                "task_payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            },
+            "expected_result": {
+                "contract": "gh-aw-worker-result-v0.1",
+                "event_path_prefix": f"state/events/{manifest['feature']['id']}/",
+            },
+        })
 
     if errors:
         return {"outcome": "INVALID", "errors": errors}
     if not dispatches:
         return {"outcome": "NO_DISPATCH", "errors": ["Commander Plan contains no gh-aw/autonomous routes"]}
     if len(dispatches) != 1:
-        return {
-            "outcome": "INVALID",
-            "errors": ["gh-aw runtime v0.1 supports exactly one autonomous dispatch per Feature revision"],
-        }
+        return {"outcome": "INVALID", "errors": ["gh-aw runtime v0.1 supports exactly one autonomous dispatch per Feature revision"]}
 
     plan = {
         "version": "0.1.0",
@@ -249,55 +242,27 @@ def result_to_event(result):
     errors = validate_schema(result, RESULT_SCHEMA, "gh-aw-worker-result")
     if errors:
         return {"outcome": "INVALID", "errors": errors}
-
-    changes = []
-    for evidence in result.get("evidence", []):
-        changes.append({"kind": "evidence", "record": dict(evidence)})
-
+    changes = [{"kind": "evidence", "record": dict(e)} for e in result.get("evidence", [])]
     work_kind = result.get("work_kind", "stage")
     if work_kind == "remediation":
         if result["status"] == "COMPLETED":
             changes.append({"kind": "task", "id": result["task_id"], "status": "DONE"})
         else:
-            changes.append(
-                {
-                    "kind": "task",
-                    "id": result["task_id"],
-                    "status": "FAILED" if result["status"] == "FAILED" else "BLOCKED",
-                    "reason": result["reason"],
-                }
-            )
+            changes.append({"kind": "task", "id": result["task_id"], "status": "FAILED" if result["status"] == "FAILED" else "BLOCKED", "reason": result["reason"]})
     elif result["status"] == "COMPLETED":
         changes.append({"kind": "stage", "id": result["stage"], "status": "DONE"})
     else:
-        changes.append(
-            {
-                "kind": "stage",
-                "id": result["stage"],
-                "status": "BLOCKED",
-                "reason": result["reason"],
-            }
-        )
+        changes.append({"kind": "stage", "id": result["stage"], "status": "BLOCKED", "reason": result["reason"]})
 
     event_id = f"EVT-{result['id']}"
     feature_event = {
-        "version": "0.1.0",
-        "id": event_id,
-        "feature_id": result["feature_id"],
-        "expected_revision": result["expected_revision"],
-        "occurred_at": result["occurred_at"],
-        "changes": changes,
+        "version": "0.1.0", "id": event_id, "feature_id": result["feature_id"],
+        "expected_revision": result["expected_revision"], "occurred_at": result["occurred_at"], "changes": changes,
     }
     event_errors = validate_event(feature_event)
     if event_errors:
         return {"outcome": "INVALID", "errors": event_errors}
-    return {
-        "outcome": "EVENT_READY",
-        "errors": [],
-        "event": feature_event,
-        "event_path": f"state/events/{result['feature_id']}/{event_id}.yaml",
-        "artifacts": result.get("artifacts", []),
-    }
+    return {"outcome": "EVENT_READY", "errors": [], "event": feature_event, "event_path": f"state/events/{result['feature_id']}/{event_id}.yaml", "artifacts": result.get("artifacts", [])}
 
 
 def load_optional_project(path: Path | None):
@@ -310,10 +275,7 @@ def load_optional_project(path: Path | None):
 
 
 def write_output(value, path: Path | None, *, yaml_output=False):
-    if yaml_output:
-        text = yaml.safe_dump(value, sort_keys=False)
-    else:
-        text = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    text = yaml.safe_dump(value, sort_keys=False) if yaml_output else json.dumps(value, indent=2, sort_keys=True) + "\n"
     if path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -324,7 +286,6 @@ def write_output(value, path: Path | None, *, yaml_output=False):
 def main():
     parser = argparse.ArgumentParser(description="AI-SDLC gh-aw runtime adapter")
     subparsers = parser.add_subparsers(dest="command", required=True)
-
     plan = subparsers.add_parser("plan", help="Convert Commander gh-aw routes into workflow-dispatch inputs")
     plan.add_argument("manifest", type=Path)
     plan.add_argument("commander_plan", type=Path)
@@ -334,13 +295,13 @@ def main():
     plan.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     plan.add_argument("--project", type=Path)
     plan.add_argument("--project-ref", default=".ai-sdlc/project.yaml")
+    plan.add_argument("--no-reservation", action="store_true", help="Use current manifest revision for an already-WORKING adopted work unit")
     plan.add_argument("--output", type=Path)
 
     start = subparsers.add_parser("start-event", help="Create the READY -> WORKING reservation event for a planned gh-aw dispatch")
     start.add_argument("dispatch_plan", type=Path)
     start.add_argument("--occurred-at", required=True)
     start.add_argument("--output", type=Path)
-
     result_parser = subparsers.add_parser("result-to-event", help="Convert a validated gh-aw worker result into a proposed Feature Event")
     result_parser.add_argument("result", type=Path)
     result_parser.add_argument("--output", type=Path)
@@ -352,20 +313,14 @@ def main():
             result = {"outcome": "INVALID", "errors": project_errors}
         else:
             result = build_dispatch_plan(
-                load_yaml(args.manifest),
-                json.loads(args.commander_plan.read_text(encoding="utf-8")),
-                load_yaml(args.policy),
-                repository=args.repository,
-                target_ref=args.target_ref,
-                worker_workflow=args.worker_workflow,
-                project=project,
-                project_ref=args.project_ref,
+                load_yaml(args.manifest), json.loads(args.commander_plan.read_text(encoding="utf-8")), load_yaml(args.policy),
+                repository=args.repository, target_ref=args.target_ref, worker_workflow=args.worker_workflow,
+                project=project, project_ref=args.project_ref, reserve_required=not args.no_reservation,
             )
         write_output(result, args.output)
         if result["outcome"] == "INVALID":
             raise SystemExit(2)
         return
-
     if args.command == "start-event":
         planned = json.loads(args.dispatch_plan.read_text(encoding="utf-8"))
         result = start_event_for_plan(planned, args.occurred_at)
@@ -376,7 +331,6 @@ def main():
         if result["outcome"] == "INVALID":
             raise SystemExit(2)
         return
-
     result = result_to_event(load_yaml(args.result))
     if result["outcome"] == "EVENT_READY" and args.output:
         write_output(result["event"], args.output, yaml_output=True)

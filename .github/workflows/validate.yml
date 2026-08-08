@@ -65,6 +65,7 @@ jobs:
       - run: python scripts/validate_github_workflow_security.py
       - run: python scripts/validate_project_adapter.py
       - run: python scripts/validate_cross_repo_transport.py
+      - run: python scripts/validate_cross_repo_gh_aw_dispatch.py
       - run: python scripts/validate_git_write_precondition.py
       - run: python scripts/validate_action_security.py
       - run: python scripts/validate_gh_aw_adapter.py

@@ -25,77 +25,50 @@ jobs:
           COMMAND: ${{ github.event.comment.body }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          import os
-          import re
-
+          import os, re
           command = os.environ['COMMAND'].strip()
           default_branch = os.environ['DEFAULT_BRANCH']
+          bootstrap = re.fullmatch(r'/ai-sdlc bootstrap target_ref=([A-Za-z0-9._/-]+) bootstrap=(state/bootstrap/[A-Za-z0-9._/-]+\.ya?ml) manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml)', command)
+          plan = re.fullmatch(r'/ai-sdlc plan target_ref=([A-Za-z0-9._/-]+) manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml)', command)
+          persist = re.fullmatch(r'/ai-sdlc persist target_ref=([A-Za-z0-9._/-]+) manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml) event=(state/events/[A-Za-z0-9._/-]+/[A-Za-z0-9._:-]+\.ya?ml)', command)
+          gh_aw = re.fullmatch(r'/ai-sdlc dispatch-gh-aw target_ref=([A-Za-z0-9._/-]+) manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml)', command)
 
-          bootstrap = re.fullmatch(
-              r'/ai-sdlc bootstrap '
-              r'target_ref=([A-Za-z0-9._/-]+) '
-              r'bootstrap=(state/bootstrap/[A-Za-z0-9._/-]+\.ya?ml) '
-              r'manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml)',
-              command,
-          )
-          plan = re.fullmatch(
-              r'/ai-sdlc plan '
-              r'target_ref=([A-Za-z0-9._/-]+) '
-              r'manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml)',
-              command,
-          )
-          persist = re.fullmatch(
-              r'/ai-sdlc persist '
-              r'target_ref=([A-Za-z0-9._/-]+) '
-              r'manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml) '
-              r'event=(state/events/[A-Za-z0-9._/-]+/[A-Za-z0-9._:-]+\.ya?ml)',
-              command,
-          )
-
-          event_path = ''
+          bootstrap_path = event_path = ''
+          control_repo = ''
           if bootstrap:
-              operation = 'bootstrap'
-              workflow = 'ai-sdlc-bootstrap.yml'
+              operation, workflow = 'bootstrap', 'ai-sdlc-bootstrap.yml'
               target_ref, bootstrap_path, manifest_path = bootstrap.groups()
-              if target_ref == default_branch:
-                  raise SystemExit('AI-SDLC bootstrap command cannot persist to the default branch')
+              if target_ref == default_branch: raise SystemExit('AI-SDLC bootstrap command cannot persist to the default branch')
           elif plan:
-              operation = 'plan'
-              workflow = 'ai-sdlc-plan.yml'
+              operation, workflow = 'plan', 'ai-sdlc-plan.yml'
               target_ref, manifest_path = plan.groups()
-              bootstrap_path = ''
           elif persist:
-              operation = 'persist'
-              workflow = 'ai-sdlc-persist.yml'
+              operation, workflow = 'persist', 'ai-sdlc-persist.yml'
               target_ref, manifest_path, event_path = persist.groups()
-              bootstrap_path = ''
-              if target_ref == default_branch:
-                  raise SystemExit('AI-SDLC persist command cannot write to the default branch')
+              if target_ref == default_branch: raise SystemExit('AI-SDLC persist command cannot write to the default branch')
+          elif gh_aw:
+              operation, workflow = 'dispatch-gh-aw', 'ai-sdlc-gh-aw-dispatch-profile.yml'
+              target_ref, manifest_path = gh_aw.groups()
+              control_repo = 'DREAM-XIN/ai-sdlc'
+              if target_ref == default_branch: raise SystemExit('AI-SDLC gh-aw command cannot target the default branch')
           else:
-              raise SystemExit(
-                  'command must be exactly one of:\n'
-                  '/ai-sdlc bootstrap target_ref=<branch> bootstrap=state/bootstrap/<file>.yaml manifest=state/features/<file>.yaml\n'
-                  '/ai-sdlc plan target_ref=<branch> manifest=state/features/<file>.yaml\n'
-                  '/ai-sdlc persist target_ref=<branch> manifest=state/features/<file>.yaml event=state/events/<feature-id>/<file>.yaml'
-              )
+              raise SystemExit('unsupported AI-SDLC command; autonomous form is: /ai-sdlc dispatch-gh-aw target_ref=<branch> manifest=state/features/<file>.yaml')
 
           for value in (target_ref, bootstrap_path, manifest_path, event_path):
-              if value and '..' in value.split('/'):
-                  raise SystemExit('parent traversal is not allowed')
+              if value and '..' in value.split('/'): raise SystemExit('parent traversal is not allowed')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as h:
+              for key, value in {
+                  'operation': operation, 'workflow': workflow, 'target_ref': target_ref,
+                  'bootstrap_path': bootstrap_path, 'manifest_path': manifest_path,
+                  'event_path': event_path, 'control_repo': control_repo,
+              }.items(): h.write(f'{key}={value}\n')
 
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
-              handle.write(f'operation={operation}\n')
-              handle.write(f'workflow={workflow}\n')
-              handle.write(f'target_ref={target_ref}\n')
-              handle.write(f'bootstrap_path={bootstrap_path}\n')
-              handle.write(f'manifest_path={manifest_path}\n')
-              handle.write(f'event_path={event_path}\n')
-
-      - name: Dispatch installed AI-SDLC caller workflow
+      - name: Dispatch installed or trusted control workflow
         id: dispatch
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          CALLER_TOKEN: ${{ github.token }}
+          CONTROL_TOKEN: ${{ secrets.AI_SDLC_CONTROL_DISPATCH_TOKEN }}
           OPERATION: ${{ steps.command.outputs.operation }}
           WORKFLOW: ${{ steps.command.outputs.workflow }}
           TARGET_REF: ${{ steps.command.outputs.target_ref }}
@@ -104,42 +77,39 @@ jobs:
           EVENT_PATH: ${{ steps.command.outputs.event_path }}
           FEATURE_ISSUE: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CONTROL_REPO: ${{ steps.command.outputs.control_repo }}
         run: |
           set -euo pipefail
           dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
-          if [[ "$OPERATION" == "bootstrap" ]]; then
-            gh workflow run "$WORKFLOW" \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$DEFAULT_BRANCH" \
+          if [[ "$OPERATION" == "dispatch-gh-aw" ]]; then
+            if [[ -z "${CONTROL_TOKEN:-}" ]]; then
+              echo "AI_SDLC_CONTROL_DISPATCH_TOKEN is required for cross-repository autonomous dispatch" >&2
+              exit 2
+            fi
+            GH_TOKEN="$CONTROL_TOKEN" gh workflow run "$WORKFLOW" \
+              --repo "$CONTROL_REPO" --ref main \
+              --field target_repository="$GITHUB_REPOSITORY" \
               --field target_ref="$TARGET_REF" \
-              --field bootstrap_path="$BOOTSTRAP_PATH" \
               --field manifest_path="$MANIFEST_PATH" \
-              --field persist=true \
-              --field allow_default_branch=false
+              --field project_path=.ai-sdlc/project.yaml \
+              --field dry_run=false
+          elif [[ "$OPERATION" == "bootstrap" ]]; then
+            GH_TOKEN="$CALLER_TOKEN" gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+              --field target_ref="$TARGET_REF" --field bootstrap_path="$BOOTSTRAP_PATH" --field manifest_path="$MANIFEST_PATH" --field persist=true --field allow_default_branch=false
           elif [[ "$OPERATION" == "persist" ]]; then
-            gh workflow run "$WORKFLOW" \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$DEFAULT_BRANCH" \
-              --field target_ref="$TARGET_REF" \
-              --field manifest_path="$MANIFEST_PATH" \
-              --field event_path="$EVENT_PATH" \
-              --field feature_issue="$FEATURE_ISSUE" \
-              --field dry_run=false \
-              --field allow_default_branch=false
+            GH_TOKEN="$CALLER_TOKEN" gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+              --field target_ref="$TARGET_REF" --field manifest_path="$MANIFEST_PATH" --field event_path="$EVENT_PATH" --field feature_issue="$FEATURE_ISSUE" --field dry_run=false --field allow_default_branch=false
           else
-            gh workflow run "$WORKFLOW" \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$DEFAULT_BRANCH" \
-              --field target_ref="$TARGET_REF" \
-              --field manifest_path="$MANIFEST_PATH" \
-              --field policy_path=
+            GH_TOKEN="$CALLER_TOKEN" gh workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+              --field target_ref="$TARGET_REF" --field manifest_path="$MANIFEST_PATH" --field policy_path=
           fi
 
       - name: Resolve downstream run and post durable receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          CALLER_TOKEN: ${{ github.token }}
+          CONTROL_TOKEN: ${{ secrets.AI_SDLC_CONTROL_DISPATCH_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           OPERATION: ${{ steps.command.outputs.operation }}
           WORKFLOW: ${{ steps.command.outputs.workflow }}
@@ -147,43 +117,29 @@ jobs:
           TARGET_REF: ${{ steps.command.outputs.target_ref }}
           MANIFEST_PATH: ${{ steps.command.outputs.manifest_path }}
           EVENT_PATH: ${{ steps.command.outputs.event_path }}
+          CONTROL_REPO: ${{ steps.command.outputs.control_repo }}
         run: |
           set -euo pipefail
+          downstream_repo="$GITHUB_REPOSITORY"
+          read_token="$CALLER_TOKEN"
+          if [[ "$OPERATION" == "dispatch-gh-aw" ]]; then downstream_repo="$CONTROL_REPO"; read_token="$CONTROL_TOKEN"; fi
           run_json=''
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            run_json=$(gh run list \
-              --repo "$GITHUB_REPOSITORY" \
-              --workflow "$WORKFLOW" \
-              --event workflow_dispatch \
-              --limit 20 \
-              --json databaseId,createdAt,url,status,conclusion | \
-              jq -c --arg dispatched_at "$DISPATCHED_AT" '
-                map(select(.createdAt >= $dispatched_at)) |
-                sort_by(.createdAt) |
-                reverse |
-                .[0] // empty
-              ')
-            if [[ -n "$run_json" ]]; then
-              break
-            fi
+            run_json=$(GH_TOKEN="$read_token" gh run list --repo "$downstream_repo" --workflow "$WORKFLOW" --event workflow_dispatch --limit 20 \
+              --json databaseId,createdAt,url,status,conclusion | jq -c --arg dispatched_at "$DISPATCHED_AT" 'map(select(.createdAt >= $dispatched_at)) | sort_by(.createdAt) | reverse | .[0] // empty')
+            [[ -n "$run_json" ]] && break
             sleep 2
           done
-
           command_run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          detail="Target: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
-          if [[ -n "$EVENT_PATH" ]]; then
-            detail="$detail\nEvent: \`$EVENT_PATH\`"
-          fi
+          detail="Target repository: \`$GITHUB_REPOSITORY\`\nTarget ref: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+          [[ -n "$EVENT_PATH" ]] && detail="$detail\nEvent: \`$EVENT_PATH\`"
           if [[ -z "$run_json" ]]; then
-            gh issue comment "$ISSUE_NUMBER" \
-              --repo "$GITHUB_REPOSITORY" \
+            GH_TOKEN="$CALLER_TOKEN" gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --body "AI-SDLC command dispatched \`$OPERATION\` but could not resolve the downstream run — $command_run\n\n$detail"
             exit 1
           fi
-
           downstream_id=$(jq -r '.databaseId' <<<"$run_json")
           downstream_url=$(jq -r '.url' <<<"$run_json")
           downstream_status=$(jq -r '.status' <<<"$run_json")
-          gh issue comment "$ISSUE_NUMBER" \
-            --repo "$GITHUB_REPOSITORY" \
-            --body "AI-SDLC command accepted: \`$OPERATION\` → run $downstream_id ($downstream_status) — $downstream_url\n\nCommand run: $command_run\n$detail"
+          GH_TOKEN="$CALLER_TOKEN" gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "AI-SDLC command accepted: \`$OPERATION\` → run $downstream_id ($downstream_status) — $downstream_url\n\nDownstream repository: \`$downstream_repo\`\nCommand run: $command_run\n$detail"
