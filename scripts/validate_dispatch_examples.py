@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from manual_dispatch import build_dispatches
+from manual_dispatch import build_dispatches, resolve_task_template
 from runtime_router import select_runtime
 from validate_orchestrator_examples import base_manifest, load_profile
 
@@ -19,6 +19,30 @@ def load_policy():
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def small_change_manifest(current_stage, statuses, code_gate="PENDING", verification_gate="PENDING"):
+    return {
+        "protocol_version": "0.1.0",
+        "revision": 2,
+        "feature": {"id": "F-SMALL", "title": "Small change", "risk": "low"},
+        "workflow": {
+            "profile": "small-change",
+            "status": "ACTIVE",
+            "current_stage": current_stage,
+            "stages": [
+                {"id": "requirement", "status": statuses["requirement"]},
+                {"id": "implementation", "status": statuses["implementation"]},
+                {"id": "review", "status": statuses["review"], "gate": "code-gate"},
+                {"id": "verification", "status": statuses["verification"], "gate": "verification-gate"},
+            ],
+        },
+        "gates": [
+            {"id": "code-gate", "status": code_gate},
+            {"id": "verification-gate", "status": verification_gate},
+        ],
+        "updated_at": "2026-08-08T14:42:00Z",
+    }
 
 
 def main():
@@ -43,9 +67,10 @@ def main():
     ambiguous = select_runtime({"stage": "design", "role": "architect"}, "medium", ambiguous_policy)
     require(ambiguous["outcome"] == "INVALID", f"ambiguous route unexpectedly passed: {ambiguous}")
 
+    standard_profile = load_profile("standard-feature")
     single = build_dispatches(
         base_manifest(),
-        load_profile("standard-feature"),
+        standard_profile,
         policy,
         "example-org/example-repo",
         manifest_ref="features/F-0030/manifest.yaml",
@@ -65,6 +90,59 @@ def main():
         "## Write back",
     ):
         require(fragment in one["prompt"], f"prompt missing {fragment!r}")
+
+    standard_implementation = resolve_task_template(standard_profile, policy, "implementation")
+    require("approved design" in standard_implementation["read"], "standard implementation lost approved design context")
+    require("assigned work unit" in standard_implementation["read"], "standard implementation lost assigned work-unit context")
+
+    small_profile = load_profile("small-change")
+    small_implementation = build_dispatches(
+        small_change_manifest(
+            "implementation",
+            {"requirement": "DONE", "implementation": "READY", "review": "TODO", "verification": "TODO"},
+        ),
+        small_profile,
+        policy,
+        "example-org/small-repo",
+    )
+    require(small_implementation["outcome"] == "DISPATCH", f"small-change implementation failed: {small_implementation}")
+    small_impl_dispatch = small_implementation["dispatches"][0]
+    require(small_impl_dispatch["action"]["stage"] == "implementation", f"wrong small-change stage: {small_impl_dispatch}")
+    require("requirement artifact" in small_impl_dispatch["task"]["inputs"], "small-change implementation lacks requirement context")
+    require("approved design" not in small_impl_dispatch["task"]["inputs"], "small-change implementation incorrectly requires design")
+    require("assigned work unit" not in small_impl_dispatch["task"]["inputs"], "small-change implementation incorrectly requires work unit")
+    require("approved design" not in small_impl_dispatch["prompt"], "small-change prompt still references approved design")
+    require("assigned work unit" not in small_impl_dispatch["prompt"], "small-change prompt still references assigned work unit")
+
+    small_review = build_dispatches(
+        small_change_manifest(
+            "review",
+            {"requirement": "DONE", "implementation": "DONE", "review": "READY", "verification": "TODO"},
+        ),
+        small_profile,
+        policy,
+        "example-org/small-repo",
+    )
+    require(small_review["outcome"] == "DISPATCH", f"small-change review failed: {small_review}")
+    small_review_dispatch = small_review["dispatches"][0]
+    require(small_review_dispatch["action"]["stage"] == "review", f"wrong small-change review stage: {small_review_dispatch}")
+    require(small_review_dispatch["task"]["role"] == "reviewer", f"wrong small-change review role: {small_review_dispatch}")
+    require("approved design" not in small_review_dispatch["task"]["inputs"], "small-change review incorrectly requires design")
+
+    small_verification = build_dispatches(
+        small_change_manifest(
+            "verification",
+            {"requirement": "DONE", "implementation": "DONE", "review": "DONE", "verification": "READY"},
+            code_gate="PASS",
+        ),
+        small_profile,
+        policy,
+        "example-org/small-repo",
+    )
+    require(small_verification["outcome"] == "DISPATCH", f"small-change verification failed: {small_verification}")
+    small_verify_dispatch = small_verification["dispatches"][0]
+    require(small_verify_dispatch["action"]["stage"] == "verification", f"wrong small-change verification stage: {small_verify_dispatch}")
+    require("approved design" not in small_verify_dispatch["task"]["inputs"], "small-change verification incorrectly requires design")
 
     parallel_profile = {
         "id": "parallel-dispatch-test",

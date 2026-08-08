@@ -25,6 +25,30 @@ def materialize(persistence_result):
     return yaml.safe_load(persistence_result["plan"]["manifest"]["content"])
 
 
+def small_change_manifest(current_stage, statuses, code_gate="PENDING", verification_gate="PENDING"):
+    return {
+        "protocol_version": "0.1.0",
+        "revision": 2,
+        "feature": {"id": "F-SMALL-COMMANDER", "title": "Small Commander change", "risk": "low"},
+        "workflow": {
+            "profile": "small-change",
+            "status": "ACTIVE",
+            "current_stage": current_stage,
+            "stages": [
+                {"id": "requirement", "status": statuses["requirement"]},
+                {"id": "implementation", "status": statuses["implementation"]},
+                {"id": "review", "status": statuses["review"], "gate": "code-gate"},
+                {"id": "verification", "status": statuses["verification"], "gate": "verification-gate"},
+            ],
+        },
+        "gates": [
+            {"id": "code-gate", "status": code_gate},
+            {"id": "verification-gate", "status": verification_gate},
+        ],
+        "updated_at": "2026-08-08T14:42:00Z",
+    }
+
+
 def main():
     profile = load_profile("standard-feature")
     policy = load_yaml(__import__("pathlib").Path(ROOT_POLICY))
@@ -63,6 +87,82 @@ def main():
     require("Repository: DREAM-XIN/ai-sdlc" in first_dispatch["prompt"], "prompt lacks repository")
     require("## Definition of Done" in first_dispatch["prompt"], "prompt lacks DoD")
     require("expected_revision to 0" in first_dispatch["prompt"], "manual prompt lacks revision precondition")
+
+    standard_implementation_manifest = deepcopy(manifest)
+    standard_implementation_manifest["revision"] = 6
+    standard_implementation_manifest["workflow"]["current_stage"] = "implementation"
+    standard_stage_statuses = {
+        "requirement": "DONE",
+        "requirement-review": "DONE",
+        "design": "DONE",
+        "design-review": "DONE",
+        "plan": "DONE",
+        "implementation": "READY",
+        "code-review": "TODO",
+        "verification": "TODO",
+        "acceptance": "TODO",
+    }
+    for stage in standard_implementation_manifest["workflow"]["stages"]:
+        stage["status"] = standard_stage_statuses[stage["id"]]
+    for gate in standard_implementation_manifest["gates"]:
+        gate["status"] = "PASS" if gate["id"] in {"requirement-gate", "design-gate"} else "PENDING"
+    standard_impl_plan = build_commander_plan(
+        standard_implementation_manifest,
+        profile,
+        policy,
+        repository="DREAM-XIN/ai-sdlc",
+    )
+    require(standard_impl_plan["outcome"] == "DISPATCH", f"standard implementation plan failed: {standard_impl_plan}")
+    standard_impl_inputs = standard_impl_plan["dispatches"][0]["task"]["inputs"]
+    require("approved design" in standard_impl_inputs, "standard implementation lost approved design")
+    require("assigned work unit" in standard_impl_inputs, "standard implementation lost assigned work unit")
+
+    small_profile = load_profile("small-change")
+    small_impl_plan = build_commander_plan(
+        small_change_manifest(
+            "implementation",
+            {"requirement": "DONE", "implementation": "READY", "review": "TODO", "verification": "TODO"},
+        ),
+        small_profile,
+        policy,
+        repository="DREAM-XIN/example-small-change",
+    )
+    require(small_impl_plan["outcome"] == "DISPATCH", f"small-change implementation plan failed: {small_impl_plan}")
+    require(not commander_plan_errors(small_impl_plan), f"small-change implementation plan invalid: {small_impl_plan}")
+    small_impl_dispatch = small_impl_plan["dispatches"][0]
+    require(small_impl_dispatch["action"]["stage"] == "implementation", f"wrong small-change implementation stage: {small_impl_dispatch}")
+    require("requirement artifact" in small_impl_dispatch["task"]["inputs"], "small-change implementation lacks requirement artifact")
+    require("approved design" not in small_impl_dispatch["task"]["inputs"], "small-change implementation requires nonexistent design")
+    require("assigned work unit" not in small_impl_dispatch["task"]["inputs"], "small-change implementation requires nonexistent work unit")
+    require("approved design" not in small_impl_dispatch["prompt"], "small-change implementation prompt references nonexistent design")
+    require("assigned work unit" not in small_impl_dispatch["prompt"], "small-change implementation prompt references nonexistent work unit")
+
+    small_review_plan = build_commander_plan(
+        small_change_manifest(
+            "review",
+            {"requirement": "DONE", "implementation": "DONE", "review": "READY", "verification": "TODO"},
+        ),
+        small_profile,
+        policy,
+        repository="DREAM-XIN/example-small-change",
+    )
+    require(small_review_plan["outcome"] == "DISPATCH", f"small-change review plan failed: {small_review_plan}")
+    require(not commander_plan_errors(small_review_plan), f"small-change review plan invalid: {small_review_plan}")
+    require(small_review_plan["dispatches"][0]["action"]["stage"] == "review", "small-change review stage did not resolve")
+    require(small_review_plan["dispatches"][0]["task"]["role"] == "reviewer", "small-change review role did not resolve")
+
+    small_verification_plan = build_commander_plan(
+        small_change_manifest(
+            "verification",
+            {"requirement": "DONE", "implementation": "DONE", "review": "DONE", "verification": "READY"},
+            code_gate="PASS",
+        ),
+        small_profile,
+        policy,
+        repository="DREAM-XIN/example-small-change",
+    )
+    require(small_verification_plan["outcome"] == "DISPATCH", f"small-change verification plan failed: {small_verification_plan}")
+    require("approved design" not in small_verification_plan["dispatches"][0]["task"]["inputs"], "small-change verification requires nonexistent design")
 
     future_policy = deepcopy(policy)
     future_policy["routes"].append(

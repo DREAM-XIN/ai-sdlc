@@ -41,19 +41,30 @@
     "task_templates": {
       "type": "object",
       "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/task_template"}
+    },
+    "profile_task_templates": {
+      "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["goal", "read", "expected_outputs", "definition_of_done"],
-        "properties": {
-          "goal": {"type": "string", "minLength": 1},
-          "read": {"type": "array", "items": {"type": "string"}},
-          "allowed_scope": {"type": "array", "items": {"type": "string"}},
-          "forbidden_scope": {"type": "array", "items": {"type": "string"}},
-          "expected_outputs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-          "definition_of_done": {"type": "array", "minItems": 1, "items": {"type": "string"}}
-        },
-        "additionalProperties": false
+        "minProperties": 1,
+        "additionalProperties": {"$ref": "#/$defs/task_template"}
       }
+    }
+  },
+  "$defs": {
+    "task_template": {
+      "type": "object",
+      "required": ["goal", "read", "expected_outputs", "definition_of_done"],
+      "properties": {
+        "goal": {"type": "string", "minLength": 1},
+        "read": {"type": "array", "items": {"type": "string"}},
+        "allowed_scope": {"type": "array", "items": {"type": "string"}},
+        "forbidden_scope": {"type": "array", "items": {"type": "string"}},
+        "expected_outputs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "definition_of_done": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

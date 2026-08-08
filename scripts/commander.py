@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator
 from apply_feature_event import manifest_revision
 from bootstrap_feature import build_manifest, load_profile as load_bootstrap_profile
 from ingest_feature_event import ingest
-from manual_dispatch import build_task, schema_errors
+from manual_dispatch import build_task, resolve_task_template, schema_errors
 from orchestrator_state import compute_state, load_profile
 from project_adapter import load_project_adapter
 from render_task_package import build_package, render_prompt
@@ -147,9 +147,11 @@ def build_commander_plan(
         # The reference implementation knows how to prepare ChatGPT Web/manual
         # work, but all other runtimes remain pure routing decisions for their adapters.
         if runtime == {"id": "chatgpt-web", "mode": "manual"}:
-            template = policy.get("task_templates", {}).get(action["stage"])
+            template = resolve_task_template(profile, policy, action["stage"])
             if not template:
-                errors.append(f"no task template for chatgpt-web stage: {action['stage']}")
+                errors.append(
+                    f"no task template for chatgpt-web stage: {action['stage']} (profile: {profile.get('id', '<unknown>')})"
+                )
                 continue
 
             task = build_task(manifest, action, template, runtime)
