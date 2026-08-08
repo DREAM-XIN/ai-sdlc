@@ -22,6 +22,10 @@ def stage_status(manifest, stage_id):
     return next(stage["status"] for stage in manifest["workflow"]["stages"] if stage["id"] == stage_id)
 
 
+def task_status(manifest, task_id):
+    return next(task["status"] for task in manifest.get("tasks", []) if task["id"] == task_id)
+
+
 def gh_aw_policy():
     policy = deepcopy(load_yaml(ROOT / "dispatch" / "default.yaml"))
     policy["routes"].append(
@@ -78,6 +82,7 @@ def main():
     require(plan["revision"] == 0, "dispatch plan source revision mismatch")
     require(len(plan["dispatches"]) == 1, "v0.1 gh-aw adapter must serialize autonomous dispatch")
     dispatch = plan["dispatches"][0]
+    require(dispatch["work_kind"] == "stage", "ordinary stage dispatch lost stage work kind")
     require(dispatch["inputs"]["expected_revision"] == 1, "worker result must target post-START revision 1")
     require(dispatch["inputs"]["target_ref"] == "feature/F-GHAW", "worker target_ref input lost")
     require(dispatch["workflow"] == "ai-sdlc-gh-aw-worker.lock.yml", "worker workflow lost")
@@ -128,6 +133,94 @@ def main():
     require(next_plan["outcome"] == "DISPATCH", f"Commander did not advance to independent review: {next_plan}")
     require(next_plan["dispatches"][0]["action"]["stage"] == "requirement-review", "next dispatch is not the independent review stage")
 
+    # Independent review feedback creates a durable remediation task without reopening requirement.
+    remediation_create_event = {
+        "version": "0.1.0",
+        "id": "EVT-F-GHAW-REMEDIATION-CREATE",
+        "feature_id": "F-GHAW",
+        "expected_revision": 2,
+        "occurred_at": "2026-08-07T13:42:10Z",
+        "changes": [{
+            "kind": "task-record",
+            "record": {
+                "id": "F-GHAW-REMEDIATION-1",
+                "kind": "remediation",
+                "stage": "requirement",
+                "role": "product",
+                "source_stage": "requirement-review",
+                "feedback": "Address the specific independent review feedback without approving the review stage.",
+                "target_pr": "https://github.com/DREAM-XIN/example-target/pull/10",
+                "status": "TODO",
+                "runtime": "gh-aw",
+            },
+        }],
+    }
+    remediation_created = apply_event(completed["manifest"], remediation_create_event)
+    require(remediation_created["outcome"] == "APPLIED", f"remediation task creation failed: {remediation_created}")
+    remediation_manifest = remediation_created["manifest"]
+    require(stage_status(remediation_manifest, "requirement") == "DONE", "remediation reopened requirement stage")
+    require(stage_status(remediation_manifest, "requirement-review") != "DONE", "remediation incorrectly completed independent review")
+    require(task_status(remediation_manifest, "F-GHAW-REMEDIATION-1") == "TODO", "remediation task was not persisted")
+
+    remediation_commander = build_commander_plan(remediation_manifest, profile, policy, repository="DREAM-XIN/example-target")
+    require(remediation_commander["outcome"] == "DISPATCH", f"Commander did not dispatch remediation: {remediation_commander}")
+    remediation_action = remediation_commander["dispatches"][0]["action"]
+    require(remediation_action["kind"] == "remediation" and remediation_action["task_id"] == "F-GHAW-REMEDIATION-1", f"Commander lost remediation identity: {remediation_action}")
+    require(remediation_action["stage"] == "requirement" and remediation_action["role"] == "product", f"Commander remediation routing drifted: {remediation_action}")
+
+    remediation_planned = build_dispatch_plan(
+        remediation_manifest,
+        remediation_commander,
+        policy,
+        repository="DREAM-XIN/example-target",
+        target_ref="feature/F-GHAW",
+        worker_workflow="ai-sdlc-gh-aw-worker.lock.yml",
+        project=project,
+    )
+    require(remediation_planned["outcome"] == "PLANNED", f"gh-aw remediation plan failed: {remediation_planned}")
+    remediation_dispatch = remediation_planned["plan"]["dispatches"][0]
+    require(remediation_dispatch["work_kind"] == "remediation", "remediation work kind was not carried to gh-aw")
+    require(remediation_dispatch["task_id"] == "F-GHAW-REMEDIATION-1", "remediation task id drifted")
+    require(remediation_dispatch["inputs"]["expected_revision"] == 4, "remediation worker must target post-START revision 4")
+    remediation_payload = json.loads(remediation_dispatch["inputs"]["task_payload"])
+    require(remediation_payload["task"]["kind"] == "remediation", "remediation task kind missing from payload")
+    require("independent review feedback" in remediation_payload["task"]["goal"], "remediation feedback missing from task goal")
+    require("https://github.com/DREAM-XIN/example-target/pull/10" in remediation_payload["task"]["inputs"], "target PR missing from remediation inputs")
+
+    remediation_start = start_event_for_plan(remediation_planned, "2026-08-07T13:42:20Z")
+    require(remediation_start["outcome"] == "EVENT_READY", f"remediation START failed: {remediation_start}")
+    require(remediation_start["event"]["changes"] == [{"kind": "task", "id": "F-GHAW-REMEDIATION-1", "status": "WORKING"}], "remediation START mutated a lifecycle stage")
+    remediation_working = apply_event(remediation_manifest, remediation_start["event"])
+    require(remediation_working["outcome"] == "APPLIED", f"remediation START transition failed: {remediation_working}")
+    require(task_status(remediation_working["manifest"], "F-GHAW-REMEDIATION-1") == "WORKING", "remediation task did not become WORKING")
+    require(stage_status(remediation_working["manifest"], "requirement") == "DONE", "remediation START reopened requirement")
+
+    remediation_result = {
+        "version": "0.1.0",
+        "id": "GHAW-F-GHAW-REMEDIATION-1",
+        "feature_id": "F-GHAW",
+        "task_id": "F-GHAW-REMEDIATION-1",
+        "stage": "requirement",
+        "work_kind": "remediation",
+        "expected_revision": 4,
+        "status": "COMPLETED",
+        "occurred_at": "2026-08-07T13:42:30Z",
+        "artifacts": [{"id": "ART-GHAW-REMEDIATION", "type": "pull-request", "uri": "https://github.com/DREAM-XIN/example-target/pull/11"}],
+        "evidence": [{"id": "EVID-GHAW-REMEDIATION", "type": "runtime-run", "status": "pass", "uri": "actions://run/456"}],
+    }
+    remediation_converted = result_to_event(remediation_result)
+    require(remediation_converted["outcome"] == "EVENT_READY", f"remediation result conversion failed: {remediation_converted}")
+    require(any(change.get("kind") == "task" and change.get("id") == "F-GHAW-REMEDIATION-1" and change.get("status") == "DONE" for change in remediation_converted["event"]["changes"]), "remediation result did not complete task")
+    require(not any(change.get("kind") in {"stage", "gate"} for change in remediation_converted["event"]["changes"]), "remediation result changed review or Gate authority")
+    remediation_completed = apply_event(remediation_working["manifest"], remediation_converted["event"])
+    require(remediation_completed["outcome"] == "APPLIED", f"remediation result transition failed: {remediation_completed}")
+    require(task_status(remediation_completed["manifest"], "F-GHAW-REMEDIATION-1") == "DONE", "remediation result did not persist DONE")
+    require(stage_status(remediation_completed["manifest"], "requirement") == "DONE", "remediation completion changed work stage")
+    require(stage_status(remediation_completed["manifest"], "requirement-review") != "DONE", "remediation completion self-approved review")
+    require(not any(gate["status"] == "PASS" for gate in remediation_completed["manifest"].get("gates", [])), "remediation completion self-approved a Gate")
+    review_resumes = build_commander_plan(remediation_completed["manifest"], profile, load_yaml(ROOT / "dispatch" / "default.yaml"), repository="DREAM-XIN/example-target")
+    require(review_resumes["outcome"] == "DISPATCH" and review_resumes["dispatches"][0]["action"]["stage"] == "requirement-review", f"independent review did not resume after remediation: {review_resumes}")
+
     stale_result = deepcopy(worker_result)
     stale_result["id"] = "GHAW-F-GHAW-STALE"
     stale_result["expected_revision"] = 0
@@ -162,7 +255,7 @@ def main():
 
     double_commander = deepcopy(commander_plan)
     second = deepcopy(double_commander["dispatches"][0])
-    second["action"] = {"stage": "design", "role": "architect", "gate": None, "parallel": True}
+    second["action"] = {"stage": "design", "role": "architect", "gate": None, "parallel": True, "kind": "stage"}
     double_commander["dispatches"].append(second)
     double_plan = build_dispatch_plan(manifest, double_commander, policy, repository="DREAM-XIN/example-target", target_ref="feature/F-GHAW", worker_workflow="ai-sdlc-gh-aw-worker.lock.yml")
     require(double_plan["outcome"] == "INVALID", "parallel gh-aw dispatch unexpectedly passed v0.1 serialization guard")
@@ -172,7 +265,7 @@ def main():
     no_dispatch = build_dispatch_plan(manifest, manual_commander, manual_policy, repository="DREAM-XIN/example-target", target_ref="feature/F-GHAW", worker_workflow="ai-sdlc-gh-aw-worker.lock.yml")
     require(no_dispatch["outcome"] == "NO_DISPATCH", "manual-only Commander Plan was incorrectly treated as gh-aw work")
 
-    print("gh-aw autonomous runtime adapter lifecycle scenarios passed")
+    print("gh-aw autonomous runtime adapter lifecycle and remediation scenarios passed")
 
 
 if __name__ == "__main__":
