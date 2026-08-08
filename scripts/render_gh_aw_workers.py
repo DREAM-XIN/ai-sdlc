@@ -66,9 +66,9 @@ def engine_frontmatter(cfg: dict[str, str]) -> str:
         lines = [
             "engine:",
             "  id: copilot",
+            f"  model: {cfg['model']}",
             "  env:",
             f"    COPILOT_PROVIDER_BASE_URL: {cfg['base_url']}",
-            f"    COPILOT_MODEL: {cfg['model']}",
             f"    COPILOT_PROVIDER_API_KEY: ${{{{ secrets.{cfg['credential']} }}}}",
             "    COPILOT_PROVIDER_TYPE: openai",
             f"    COPILOT_PROVIDER_WIRE_API: {cfg.get('wire_api', 'completions')}",
