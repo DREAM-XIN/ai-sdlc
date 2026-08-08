@@ -58,6 +58,7 @@ jobs:
       - run: python scripts/validate_feature_transition.py
       - run: python scripts/validate_github_persistence.py
       - run: python scripts/validate_feature_event_push_resolution.py
+      - run: python scripts/validate_pr_lifecycle_events.py
       - run: python scripts/validate_bootstrap_inbox.py
       - run: python scripts/validate_commander.py
       - run: python scripts/validate_github_commander_transport.py

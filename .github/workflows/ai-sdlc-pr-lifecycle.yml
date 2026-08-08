@@ -1,0 +1,198 @@
+name: AI-SDLC PR Lifecycle
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: read
+  checks: read
+
+jobs:
+  lifecycle:
+    if: ${{ github.event.review.state == 'approved' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Validate trusted PR boundary and resolve base ref
+        id: preflight
+        shell: python
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_OUTPUT_PATH: ${{ github.output }}
+        run: |
+          import json, os
+          from pathlib import Path
+          event = json.loads(Path(os.environ['EVENT_PATH']).read_text(encoding='utf-8'))
+          review = event.get('review') or {}
+          pr = event.get('pull_request') or {}
+          head = pr.get('head') or {}
+          base = pr.get('base') or {}
+          if str(review.get('state', '')).lower() != 'approved':
+              raise SystemExit('only APPROVED reviews are eligible')
+          if (head.get('repo') or {}).get('full_name') != os.environ['REPOSITORY']:
+              raise SystemExit('fork/cross-repository PRs are not eligible')
+          head_ref = str(head.get('ref', ''))
+          base_ref = str(base.get('ref', ''))
+          if not head_ref.startswith('gh-aw/'):
+              raise SystemExit('eligible PR head must start with gh-aw/')
+          if not base_ref or base_ref == os.environ['DEFAULT_BRANCH']:
+              raise SystemExit('eligible PR must target a non-default Feature branch')
+          output = os.environ['GITHUB_OUTPUT']
+          with open(output, 'a', encoding='utf-8') as handle:
+              handle.write(f'base_ref={base_ref}\n')
+              handle.write(f'head_sha={head.get("sha", "")}\n')
+
+      - name: Checkout Feature base workspace
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.preflight.outputs.base_ref }}
+          path: workspace
+          fetch-depth: 0
+
+      - name: Fetch trusted check evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.preflight.outputs.head_sha }}
+          REPOSITORY: ${{ github.repository }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$API_URL/repos/$REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100" \
+            > check-runs.json
+
+      - name: Resolve Feature and evidence
+        id: context
+        shell: bash
+        run: |
+          python runtime/scripts/resolve_pr_lifecycle_context.py \
+            --event "$GITHUB_EVENT_PATH" \
+            --checks check-runs.json \
+            --workspace workspace \
+            --repository "$GITHUB_REPOSITORY" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --required-check validate \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Persist review completion Event
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.context.outputs.manifest_path }}
+          FEATURE_ID: ${{ steps.context.outputs.feature_id }}
+          BASE_REF: ${{ steps.context.outputs.base_ref }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PR_URL: ${{ steps.context.outputs.pr_url }}
+          REVIEW_URL: ${{ steps.context.outputs.review_url }}
+          CI_URL: ${{ steps.context.outputs.ci_url }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python runtime/scripts/pr_lifecycle_event.py "workspace/$MANIFEST_PATH" \
+            --phase review \
+            --pr-number "$PR_NUMBER" \
+            --pr-url "$PR_URL" \
+            --review-url "$REVIEW_URL" \
+            --ci-url "$CI_URL" \
+            --output review-event.yaml
+          EVENT_ID="$(python -c "import yaml; print(yaml.safe_load(open('review-event.yaml'))['id'])")"
+          EVENT_PATH="state/events/$FEATURE_ID/$EVENT_ID.yaml"
+          python runtime/scripts/ingest_feature_event.py \
+            "workspace/$MANIFEST_PATH" review-event.yaml \
+            --event-path "$EVENT_PATH" \
+            --repository "$REPOSITORY" \
+            --manifest-path "$MANIFEST_PATH" \
+            --target-ref "$BASE_REF" \
+            --output review-plan.json
+          mkdir -p "workspace/$(dirname "$EVENT_PATH")"
+          cp review-event.yaml "workspace/$EVENT_PATH"
+          MANIFEST_PATH="$MANIFEST_PATH" PLAN=review-plan.json python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ['PLAN']).read_text(encoding='utf-8'))
+          target = Path('workspace') / os.environ['MANIFEST_PATH']
+          target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
+          PY
+          python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
+          python runtime/scripts/verify_git_write_precondition.py \
+            --repo-dir workspace --target-ref "$BASE_REF" --default-branch "$DEFAULT_BRANCH"
+          git -C workspace config user.name "ai-sdlc[bot]"
+          git -C workspace config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git -C workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
+          git -C workspace commit -m "chore(ai-sdlc): persist trusted PR review event"
+          git -C workspace push origin "HEAD:$BASE_REF"
+
+      - name: Persist verification completion Event
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.context.outputs.manifest_path }}
+          FEATURE_ID: ${{ steps.context.outputs.feature_id }}
+          BASE_REF: ${{ steps.context.outputs.base_ref }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PR_URL: ${{ steps.context.outputs.pr_url }}
+          CI_URL: ${{ steps.context.outputs.ci_url }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python runtime/scripts/pr_lifecycle_event.py "workspace/$MANIFEST_PATH" \
+            --phase verification \
+            --pr-number "$PR_NUMBER" \
+            --pr-url "$PR_URL" \
+            --ci-url "$CI_URL" \
+            --output verification-event.yaml
+          EVENT_ID="$(python -c "import yaml; print(yaml.safe_load(open('verification-event.yaml'))['id'])")"
+          EVENT_PATH="state/events/$FEATURE_ID/$EVENT_ID.yaml"
+          python runtime/scripts/ingest_feature_event.py \
+            "workspace/$MANIFEST_PATH" verification-event.yaml \
+            --event-path "$EVENT_PATH" \
+            --repository "$REPOSITORY" \
+            --manifest-path "$MANIFEST_PATH" \
+            --target-ref "$BASE_REF" \
+            --output verification-plan.json
+          mkdir -p "workspace/$(dirname "$EVENT_PATH")"
+          cp verification-event.yaml "workspace/$EVENT_PATH"
+          MANIFEST_PATH="$MANIFEST_PATH" PLAN=verification-plan.json python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ['PLAN']).read_text(encoding='utf-8'))
+          target = Path('workspace') / os.environ['MANIFEST_PATH']
+          target.write_text(plan['plan']['manifest']['content'], encoding='utf-8')
+          PY
+          python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
+          python runtime/scripts/verify_git_write_precondition.py \
+            --repo-dir workspace --target-ref "$BASE_REF" --default-branch "$DEFAULT_BRANCH"
+          git -C workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
+          git -C workspace commit -m "chore(ai-sdlc): persist trusted PR verification event"
+          git -C workspace push origin "HEAD:$BASE_REF"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: ai-sdlc-pr-lifecycle-evidence
+          path: |
+            check-runs.json
+            review-event.yaml
+            review-plan.json
+            verification-event.yaml
+            verification-plan.json
+          if-no-files-found: ignore
