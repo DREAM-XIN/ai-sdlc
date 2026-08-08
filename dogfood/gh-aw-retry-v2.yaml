@@ -1,0 +1,5 @@
+version: 0.1.0
+feature_id: F-GHAW-LIVE-0001
+target_ref: dogfood/gh-aw-live-gemini-0004
+engine_profile: gemini
+expected_revision: 3
