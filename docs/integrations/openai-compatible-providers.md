@@ -2,6 +2,28 @@
 
 AI-SDLC keeps provider choice in the execution plane. The lifecycle protocol, Feature Manifest, revision rules, Gates, Evidence, Safe Outputs, and persistence remain provider-neutral.
 
+## Architectural boundary
+
+AI providers are optional execution backends, not AI-SDLC control-plane dependencies.
+
+The control plane owns durable lifecycle state and authority. A runtime adapter executes bounded work. A provider supplies inference to a runtime when that runtime needs a model. These are distinct layers:
+
+```text
+AI-SDLC control plane
+  -> runtime adapter
+  -> optional provider
+  -> optional model
+```
+
+Examples:
+
+- `ChatGPT Web` can be used as a manual runtime without AI-SDLC directly calling an OpenAI API.
+- `gh-aw` is a runtime; `deepseek` is a provider profile used by that runtime; `deepseek-chat` is the selected model.
+- A future IDE runtime may use Cursor, Windsurf, Copilot, Claude, or another agent while preserving the same Task Package, Evidence, and lifecycle contracts.
+- A human can also satisfy a bounded worker contract without any model provider.
+
+Provider integrations exist primarily to enable unattended execution and routing by capability, availability, cost, and policy. Adding a provider must not give that provider lifecycle authority or introduce provider-specific dependencies into Commander, Feature state, Gate evaluation, or persistence.
+
 ## Reference architecture
 
 The first OpenAI-compatible reference profile is `deepseek`. It reuses the pinned `github/gh-aw` Copilot engine in BYOK mode instead of adding provider-specific HTTP calls to Commander or Runtime Router.
