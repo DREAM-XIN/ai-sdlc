@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 1
+revision: 2
 feature:
   id: F-PR-LIFECYCLE-0001
   title: Add only docs/gh-aw-dogfood/F-PR-LIFECYCLE-0001.md as the v0.2 PR lifecycle
@@ -9,12 +9,12 @@ feature:
 workflow:
   profile: small-change
   status: ACTIVE
-  current_stage: implementation
+  current_stage: review
   stages:
   - id: requirement
     status: DONE
   - id: implementation
-    status: WORKING
+    status: DONE
   - id: review
     status: TODO
     gate: code-gate
@@ -30,7 +30,12 @@ gates:
 - id: verification-gate
   status: PENDING
   evidence: []
-evidence: []
+evidence:
+- id: EVID-GHAW-RUN-31244694396
+  status: pass
+  type: runtime-run
+  uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31244694396
 applied_events:
 - EVT-GHAW-F-PR-LIFECYCLE-0001-0-START
-updated_at: '2026-08-08T06:29:57Z'
+- EVT-GHAW-F-PR-LIFECYCLE-0001-implementation-31244694396
+updated_at: '2026-08-08T06:51:05Z'
