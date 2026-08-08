@@ -31,6 +31,11 @@ TASK_ALLOWED = {
     "FAILED": {"READY", "WORKING"},
     "DONE": set(),
 }
+ARTIFACT_ALLOWED = {
+    "draft": {"approved", "superseded"},
+    "approved": {"superseded"},
+    "superseded": set(),
+}
 GATE_ALLOWED = {
     "PENDING": {"PASS", "FAIL", "WAIVED"},
     "FAIL": {"PENDING"},
@@ -99,19 +104,14 @@ def apply_event(manifest, event):
     event_id = effective_event_id(event)
     applied_events = set(manifest.get("applied_events", []))
     if event_id in applied_events:
-        return {
-            "outcome": "INVALID",
-            "errors": [f"event already applied: {event_id}"],
-        }
+        return {"outcome": "INVALID", "errors": [f"event already applied: {event_id}"]}
 
     current_revision = manifest_revision(manifest)
     expected_revision = event.get("expected_revision")
     if expected_revision is not None and expected_revision != current_revision:
         return {
             "outcome": "INVALID",
-            "errors": [
-                f"stale event revision: manifest={current_revision} event_expected={expected_revision}"
-            ],
+            "errors": [f"stale event revision: manifest={current_revision} event_expected={expected_revision}"],
         }
 
     workflow_status = manifest["workflow"]["status"]
@@ -125,11 +125,16 @@ def apply_event(manifest, event):
     stage_by_id = {stage["id"]: stage for stage in result["workflow"]["stages"]}
     tasks = result.setdefault("tasks", [])
     task_by_id = {task["id"]: task for task in tasks}
+    artifacts = result.setdefault("artifacts", [])
+    artifact_by_id = {artifact["id"]: artifact for artifact in artifacts}
     gate_by_id = {gate["id"]: gate for gate in result.setdefault("gates", [])}
     evidence = result.setdefault("evidence", [])
     evidence_ids = {item["id"] for item in evidence}
+    added_artifact_ids = set()
 
-    # Durable records are appended first so status/gate changes in the same event may reference them.
+    # Durable records are appended first so later changes in the same Event may
+    # reference evidence/task records. Artifact approval is deliberately excluded
+    # from same-Event creation below to preserve an independent review revision.
     for change in event["changes"]:
         if change["kind"] == "evidence":
             record = change["record"]
@@ -143,10 +148,17 @@ def apply_event(manifest, event):
                 return {"outcome": "INVALID", "errors": [f"duplicate task id: {record['id']}"]}
             tasks.append(copy.deepcopy(record))
             task_by_id[record["id"]] = tasks[-1]
+        elif change["kind"] == "artifact-record":
+            record = change["record"]
+            if record["id"] in artifact_by_id:
+                return {"outcome": "INVALID", "errors": [f"duplicate artifact id: {record['id']}"]}
+            artifacts.append(copy.deepcopy(record))
+            artifact_by_id[record["id"]] = artifacts[-1]
+            added_artifact_ids.add(record["id"])
 
     for change in event["changes"]:
         kind = change["kind"]
-        if kind in {"evidence", "task-record"}:
+        if kind in {"evidence", "task-record", "artifact-record"}:
             continue
         if kind == "stage":
             stage = stage_by_id.get(change["id"])
@@ -167,6 +179,26 @@ def apply_event(manifest, event):
             if target not in allowed:
                 return {"outcome": "INVALID", "errors": [f"illegal task transition: {change['id']} {source} -> {target}"]}
             task["status"] = target
+        elif kind == "artifact":
+            artifact = artifact_by_id.get(change["id"])
+            if not artifact:
+                return {"outcome": "INVALID", "errors": [f"unknown artifact: {change['id']}"]}
+            if change["id"] in added_artifact_ids:
+                return {
+                    "outcome": "INVALID",
+                    "errors": [f"artifact {change['id']} cannot be registered and approved/superseded in the same event"],
+                }
+            source = artifact.get("status", "draft")
+            target = change["status"]
+            if target not in ARTIFACT_ALLOWED.get(source, set()):
+                return {"outcome": "INVALID", "errors": [f"illegal artifact transition: {change['id']} {source} -> {target}"]}
+            refs = change.get("evidence", [])
+            if target == "approved" and not refs:
+                return {"outcome": "INVALID", "errors": [f"artifact {change['id']} approved requires evidence"]}
+            unknown = sorted(set(refs) - evidence_ids)
+            if unknown:
+                return {"outcome": "INVALID", "errors": [f"artifact {change['id']} references unknown evidence: {', '.join(unknown)}"]}
+            artifact["status"] = target
         elif kind == "gate":
             gate = gate_by_id.get(change["id"])
             if not gate:
