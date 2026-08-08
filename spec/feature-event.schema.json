@@ -70,6 +70,39 @@
           },
           {
             "type": "object",
+            "required": ["kind", "record"],
+            "properties": {
+              "kind": {"const": "artifact-record"},
+              "record": {
+                "type": "object",
+                "required": ["id", "type", "uri", "status"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "type": {"type": "string", "minLength": 1},
+                  "uri": {"type": "string", "minLength": 1},
+                  "status": {"const": "draft"}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["kind", "id", "status"],
+            "properties": {
+              "kind": {"const": "artifact"},
+              "id": {"type": "string", "minLength": 1},
+              "status": {"enum": ["approved", "superseded"]},
+              "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+            },
+            "allOf": [
+              {"if": {"properties": {"status": {"const": "approved"}}}, "then": {"required": ["evidence"], "properties": {"evidence": {"minItems": 1}}}}
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
             "required": ["kind", "id", "status"],
             "properties": {
               "kind": {"const": "gate"},
