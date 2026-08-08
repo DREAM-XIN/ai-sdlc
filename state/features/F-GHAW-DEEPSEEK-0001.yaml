@@ -1,0 +1,61 @@
+protocol_version: 0.1.0
+revision: 7
+feature:
+  id: F-GHAW-DEEPSEEK-0001
+  title: Live DeepSeek gh-aw bounded autonomous dogfood
+  risk: low
+  issue: '#6'
+workflow:
+  profile: small-change
+  status: DONE
+  current_stage: verification
+  stages:
+  - id: requirement
+    status: DONE
+  - id: implementation
+    status: DONE
+  - id: review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: DONE
+    gate: verification-gate
+tasks: []
+artifacts: []
+gates:
+- id: code-gate
+  status: PASS
+  evidence:
+  - EVID-GHAW-CI-31241812708
+  - EVID-GHAW-PR110-REVIEW
+- id: verification-gate
+  status: PASS
+  evidence:
+  - EVID-GHAW-CI-31241812708
+  - EVID-GHAW-VERIFICATION-31241812708
+evidence:
+- id: EVID-GHAW-RUN-31241252417
+  status: pass
+  type: runtime-run
+  uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31241252417
+- id: EVID-GHAW-PR110-REVIEW
+  type: code-review
+  status: pass
+  uri: https://github.com/DREAM-XIN/ai-sdlc/pull/110#pullrequestreview-4888201425
+- id: EVID-GHAW-CI-31241812708
+  type: ci-run
+  status: pass
+  uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31241812708
+- id: EVID-GHAW-VERIFICATION-31241812708
+  type: verification
+  status: pass
+  uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31241812708
+applied_events:
+- EVT-F-GHAW-DEEPSEEK-REQ-START
+- EVT-F-GHAW-DEEPSEEK-REQ-DONE
+- EVT-GHAW-F-GHAW-DEEPSEEK-0001-2-START
+- EVT-GHAW-F-GHAW-DEEPSEEK-0001-implementation-31241252417
+- EVT-F-GHAW-DEEPSEEK-REVIEW-START
+- EVT-F-GHAW-DEEPSEEK-REVIEW-DONE
+- EVT-F-GHAW-DEEPSEEK-VERIFICATION-DONE
+updated_at: '2026-08-08T05:41:00Z'
