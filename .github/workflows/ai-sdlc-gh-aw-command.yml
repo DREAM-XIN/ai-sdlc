@@ -1,0 +1,72 @@
+name: AI-SDLC gh-aw Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: >-
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      startsWith(github.event.comment.body, '/ai-sdlc dispatch-gh-aw ')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse trusted dispatch command
+        id: command
+        shell: python
+        env:
+          COMMAND: ${{ github.event.comment.body }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          import os, re
+          command = os.environ['COMMAND'].strip()
+          pattern = re.compile(
+              r'/ai-sdlc dispatch-gh-aw '
+              r'target_ref=([A-Za-z0-9._/-]+) '
+              r'manifest=(state/features/[A-Za-z0-9._/-]+\.ya?ml) '
+              r'policy=(dispatch/[A-Za-z0-9._/-]+\.ya?ml) '
+              r'worker=([A-Za-z0-9._-]+\.ya?ml)'
+          )
+          match = pattern.fullmatch(command)
+          if not match:
+              raise SystemExit(
+                  'command must be exactly: /ai-sdlc dispatch-gh-aw target_ref=<branch> '
+                  'manifest=state/features/<file>.yaml policy=dispatch/<file>.yaml worker=<workflow>.yml'
+              )
+          target_ref, manifest_path, policy_path, worker_workflow = match.groups()
+          if target_ref == os.environ['DEFAULT_BRANCH']:
+              raise SystemExit('gh-aw dispatch command cannot target the default branch')
+          if '..' in target_ref.split('/') or '..' in manifest_path.split('/') or '..' in policy_path.split('/'):
+              raise SystemExit('parent traversal is not allowed')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f'target_ref={target_ref}\n')
+              handle.write(f'manifest_path={manifest_path}\n')
+              handle.write(f'policy_path={policy_path}\n')
+              handle.write(f'worker_workflow={worker_workflow}\n')
+
+      - name: Dispatch trusted gh-aw control workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_REF: ${{ steps.command.outputs.target_ref }}
+          MANIFEST_PATH: ${{ steps.command.outputs.manifest_path }}
+          POLICY_PATH: ${{ steps.command.outputs.policy_path }}
+          WORKER_WORKFLOW: ${{ steps.command.outputs.worker_workflow }}
+        run: |
+          set -euo pipefail
+          gh workflow run ai-sdlc-gh-aw-dispatch.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field target_ref="$TARGET_REF" \
+            --field manifest_path="$MANIFEST_PATH" \
+            --field policy_path="$POLICY_PATH" \
+            --field project_path=.ai-sdlc/project.yaml \
+            --field worker_workflow="$WORKER_WORKFLOW" \
+            --field dry_run=false
