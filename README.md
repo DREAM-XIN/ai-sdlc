@@ -113,6 +113,20 @@ The project is now stabilizing these capabilities for a formal v0.2 baseline. Re
 
 See `docs/v0.2-stabilization.md` and `release/v0.2.0-draft.yaml` for the current stabilization boundary and release criteria.
 
+## Public repository readiness
+
+The repository includes a deterministic current-tree credential scan for Public-release preparation:
+
+```bash
+python scripts/validate_public_readiness.py
+```
+
+Changing repository visibility also exposes historical repository data, so the current-tree scan is not sufficient by itself. Follow `docs/public-release-readiness.md` for the required Git-history, Actions-log/artifact, repository-protection, and transport migration checks before changing visibility.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See `LICENSE`.
+
 ## Design principle
 
 > Agents are replaceable workers. Artifacts, evidence and workflow state are durable facts.
