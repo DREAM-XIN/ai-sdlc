@@ -26,3 +26,16 @@ profiles:
     worker_workflow: ai-sdlc-gh-aw-worker-gemini.lock.yml
     credential: GEMINI_API_KEY
     maturity: reference
+  deepseek:
+    engine: copilot
+    provider: deepseek
+    protocol: openai-compatible
+    provider_type: openai
+    wire_api: completions
+    base_url: https://api.deepseek.com
+    network_host: api.deepseek.com
+    model: deepseek-chat
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-deepseek.md
+    worker_workflow: ai-sdlc-gh-aw-worker-deepseek.lock.yml
+    credential: DEEPSEEK_API_KEY
+    maturity: experimental

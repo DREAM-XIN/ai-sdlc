@@ -1,0 +1,60 @@
+name: AI-SDLC DeepSeek Entitlement Probe
+
+on:
+  push:
+    branches:
+      - 'dogfood/gh-aw-deepseek-probe-*'
+    paths:
+      - 'dogfood/gh-aw-deepseek-probe.yaml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    if: ${{ startsWith(github.ref_name, 'dogfood/gh-aw-deepseek-probe-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Validate probe trigger
+        run: |
+          python - <<'PY'
+          import yaml
+          data = yaml.safe_load(open('dogfood/gh-aw-deepseek-probe.yaml'))
+          expected = {'version': '0.1.0', 'provider': 'deepseek', 'model': 'deepseek-chat'}
+          if data != expected:
+              raise SystemExit(f'probe trigger must equal {expected}')
+          PY
+      - name: Probe DeepSeek inference without exposing response content
+        id: probe
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$DEEPSEEK_API_KEY"
+          status=$(curl --silent --show-error \
+            --output /tmp/deepseek-response.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer $DEEPSEEK_API_KEY" \
+            --header 'Content-Type: application/json' \
+            'https://api.deepseek.com/chat/completions' \
+            --data '{"model":"deepseek-chat","messages":[{"role":"user","content":"Reply with exactly OK."}],"max_tokens":8,"stream":false}')
+          case "$status" in
+            200) result=READY ;;
+            401|403) result=AUTH_FAILED ;;
+            402) result=QUOTA_OR_BILLING_BLOCKED ;;
+            429) result=RATE_LIMITED ;;
+            404) result=MODEL_OR_ENDPOINT_UNAVAILABLE ;;
+            *) result=FAILED ;;
+          esac
+          printf '{"version":"0.1.0","provider":"deepseek","protocol":"openai-compatible","model":"deepseek-chat","status":"%s","http_status":%s}\n' \
+            "$result" "$status" > dogfood/gh-aw-deepseek-probe-result.json
+          git config user.name 'ai-sdlc[bot]'
+          git config user.email 'ai-sdlc[bot]@users.noreply.github.com'
+          git add -- dogfood/gh-aw-deepseek-probe-result.json
+          git commit -m 'dogfood: record DeepSeek entitlement probe'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          test "$status" = '200'

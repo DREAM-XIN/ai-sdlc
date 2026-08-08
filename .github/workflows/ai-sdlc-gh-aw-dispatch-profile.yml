@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       engine_profile:
-        description: Trusted gh-aw engine profile
+        description: Trusted gh-aw engine/provider profile
         required: true
         default: copilot
         type: choice
@@ -13,6 +13,7 @@ on:
           - codex
           - claude
           - gemini
+          - deepseek
       target_ref:
         description: Non-default branch containing the Feature Manifest and runtime policy
         required: true

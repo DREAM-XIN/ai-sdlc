@@ -1,12 +1,13 @@
 name: Materialize AI-SDLC gh-aw Worker Locks
 
-# Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated worker sources and lock files; pushing a trusted source change here is the supported one-shot materialization path.
+# Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated worker sources and lock files; pushing a trusted source/provider change here is the supported one-shot materialization path.
 on:
   push:
     branches:
       - 'gh-aw/compile-*'
     paths:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
+      - '.github/workflows/ai-sdlc-gh-aw-worker-deepseek.md'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
       - 'runtimes/gh-aw/engine-profiles.yaml'
       - 'scripts/render_gh_aw_workers.py'
