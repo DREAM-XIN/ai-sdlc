@@ -27,7 +27,9 @@ on:
         description: Compact ai-sdlc-task-v0.1 JSON payload
         required: true
         type: string
-engine: gemini
+engine:
+  id: gemini
+  version: "0.52.0"
 permissions: read-all
 safe-outputs:
   create-pull-request:

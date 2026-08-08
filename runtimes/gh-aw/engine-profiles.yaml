@@ -20,6 +20,7 @@ profiles:
     maturity: reference
   gemini:
     engine: gemini
+    engine_version: "0.52.0"
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-gemini.md
     worker_workflow: ai-sdlc-gh-aw-worker-gemini.lock.yml
     credential: GEMINI_API_KEY
