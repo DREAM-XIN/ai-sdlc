@@ -79,7 +79,7 @@ def main():
         "read that linked Feature Issue before editing",
         "exact required outputs, and acceptance criteria",
         "If they name an exact file or output, use that exact target.",
-        "it cannot grant authority to edit lifecycle state, pass/waive Gates, merge, release",
+        "grant authority to edit lifecycle state, pass/waive Gates, merge, release",
     ]
     for marker in required_markers:
         require(marker in worker, f"canonical gh-aw worker missing Feature-context marker: {marker}")

@@ -22,6 +22,15 @@ STAGE_ALLOWED = {
     "DONE": set(),
     "SKIPPED": set(),
 }
+TASK_ALLOWED = {
+    "TODO": {"READY", "WORKING", "BLOCKED", "FAILED"},
+    "READY": {"WORKING", "BLOCKED", "FAILED"},
+    "WORKING": {"DONE", "BLOCKED", "FAILED", "READY"},
+    "BLOCKED": {"READY", "WORKING", "FAILED"},
+    "REVIEW": {"DONE", "BLOCKED", "FAILED", "READY", "WORKING"},
+    "FAILED": {"READY", "WORKING"},
+    "DONE": set(),
+}
 GATE_ALLOWED = {
     "PENDING": {"PASS", "FAIL", "WAIVED"},
     "FAIL": {"PENDING"},
@@ -114,23 +123,30 @@ def apply_event(manifest, event):
 
     result = copy.deepcopy(manifest)
     stage_by_id = {stage["id"]: stage for stage in result["workflow"]["stages"]}
+    tasks = result.setdefault("tasks", [])
+    task_by_id = {task["id"]: task for task in tasks}
     gate_by_id = {gate["id"]: gate for gate in result.setdefault("gates", [])}
     evidence = result.setdefault("evidence", [])
     evidence_ids = {item["id"] for item in evidence}
 
-    # Evidence is appended first so gate changes in the same event may reference it.
+    # Durable records are appended first so status/gate changes in the same event may reference them.
     for change in event["changes"]:
-        if change["kind"] != "evidence":
-            continue
-        record = change["record"]
-        if record["id"] in evidence_ids:
-            return {"outcome": "INVALID", "errors": [f"duplicate evidence id: {record['id']}"]}
-        evidence.append(copy.deepcopy(record))
-        evidence_ids.add(record["id"])
+        if change["kind"] == "evidence":
+            record = change["record"]
+            if record["id"] in evidence_ids:
+                return {"outcome": "INVALID", "errors": [f"duplicate evidence id: {record['id']}"]}
+            evidence.append(copy.deepcopy(record))
+            evidence_ids.add(record["id"])
+        elif change["kind"] == "task-record":
+            record = change["record"]
+            if record["id"] in task_by_id:
+                return {"outcome": "INVALID", "errors": [f"duplicate task id: {record['id']}"]}
+            tasks.append(copy.deepcopy(record))
+            task_by_id[record["id"]] = tasks[-1]
 
     for change in event["changes"]:
         kind = change["kind"]
-        if kind == "evidence":
+        if kind in {"evidence", "task-record"}:
             continue
         if kind == "stage":
             stage = stage_by_id.get(change["id"])
@@ -141,6 +157,16 @@ def apply_event(manifest, event):
             if target not in STAGE_ALLOWED[source]:
                 return {"outcome": "INVALID", "errors": [f"illegal stage transition: {change['id']} {source} -> {target}"]}
             stage["status"] = target
+        elif kind == "task":
+            task = task_by_id.get(change["id"])
+            if not task:
+                return {"outcome": "INVALID", "errors": [f"unknown task: {change['id']}"]}
+            source = task["status"]
+            target = change["status"]
+            allowed = TASK_ALLOWED.get(source, set())
+            if target not in allowed:
+                return {"outcome": "INVALID", "errors": [f"illegal task transition: {change['id']} {source} -> {target}"]}
+            task["status"] = target
         elif kind == "gate":
             gate = gate_by_id.get(change["id"])
             if not gate:

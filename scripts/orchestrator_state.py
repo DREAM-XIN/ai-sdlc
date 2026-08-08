@@ -17,6 +17,18 @@ def load_yaml(path: Path):
         return yaml.safe_load(f)
 
 
+def remediation_action(task):
+    return {
+        "stage": task["stage"],
+        "role": task["role"],
+        "gate": None,
+        "parallel": False,
+        "kind": "remediation",
+        "task_id": task["id"],
+        "source_stage": task["source_stage"],
+    }
+
+
 def compute_state(manifest, profile):
     errors = validate_manifest(manifest)
     if errors:
@@ -55,6 +67,31 @@ def compute_state(manifest, profile):
             "blocked_stages": blocked,
         }
 
+    # Review remediation is first-class work but does not reopen a completed stage.
+    # Serialize it ahead of further review dispatch so review/Gate authority remains independent.
+    remediations = [task for task in manifest.get("tasks", []) if task.get("kind") == "remediation"]
+    for task in remediations:
+        state = task["status"]
+        if state == "DONE":
+            continue
+        action = remediation_action(task)
+        if state in {"TODO", "READY"}:
+            return {"outcome": "DISPATCH", "errors": [], "actions": [action]}
+        if state == "WORKING":
+            return {"outcome": "WAIT", "errors": [], "actions": [action]}
+        if state in {"BLOCKED", "FAILED"}:
+            return {
+                "outcome": "BLOCKED",
+                "errors": [],
+                "actions": [],
+                "blocked_tasks": [task["id"]],
+            }
+        return {
+            "outcome": "INVALID",
+            "errors": [f"unsupported remediation task state: {task['id']}={state}"],
+            "actions": [],
+        }
+
     dispatch = []
     waiting = []
     dependency_blocks = []
@@ -80,6 +117,7 @@ def compute_state(manifest, profile):
             "role": stage["role"],
             "gate": stage.get("gate"),
             "parallel": bool(stage.get("parallel", False)),
+            "kind": "stage",
         }
         if state in {"TODO", "READY"}:
             dispatch.append(action)

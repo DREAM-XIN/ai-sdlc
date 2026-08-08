@@ -6,6 +6,7 @@
   "required": ["id", "role", "goal", "definition_of_done"],
   "properties": {
     "id": {"type": "string"},
+    "kind": {"enum": ["stage", "remediation"], "default": "stage"},
     "feature_id": {"type": "string"},
     "role": {"type": "string"},
     "goal": {"type": "string", "minLength": 1},

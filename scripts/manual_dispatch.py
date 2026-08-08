@@ -30,9 +30,44 @@ def schema_errors(data, path, label):
     return errors
 
 
+def remediation_record(manifest, action):
+    task_id = action.get("task_id")
+    if action.get("kind") != "remediation" or not task_id:
+        return None
+    matches = [task for task in manifest.get("tasks", []) if task.get("id") == task_id]
+    if len(matches) != 1 or matches[0].get("kind") != "remediation":
+        raise ValueError(f"remediation action references invalid task: {task_id}")
+    return matches[0]
+
+
 def build_task(manifest, action, template, runtime):
     feature_id = manifest["feature"]["id"]
     stage = action["stage"]
+    remediation = remediation_record(manifest, action)
+    if remediation:
+        inputs = list(template.get("read", []))
+        if remediation.get("target_pr"):
+            inputs.append(remediation["target_pr"])
+        if remediation.get("issue"):
+            inputs.append(remediation["issue"])
+        return {
+            "id": remediation["id"],
+            "kind": "remediation",
+            "feature_id": feature_id,
+            "role": action["role"],
+            "goal": "Address independent review feedback without changing lifecycle or Gate authority: "
+            + remediation["feedback"],
+            "inputs": list(dict.fromkeys(inputs)),
+            "allowed_scope": template.get("allowed_scope", []),
+            "forbidden_scope": template.get("forbidden_scope", []),
+            "expected_outputs": template["expected_outputs"],
+            "definition_of_done": [
+                "The review feedback is addressed in a bounded corrective change.",
+                "Required verification passes for the corrective change.",
+                "The remediation task completes without approving review, Gate, merge, or release state.",
+            ],
+            "runtime": runtime["id"],
+        }
     return {
         "id": f"{slug(feature_id)}-{slug(stage)}",
         "feature_id": feature_id,
@@ -74,7 +109,11 @@ def build_dispatches(manifest, profile, policy, repository, manifest_ref="Featur
             errors.append(f"no task template for dispatchable stage: {action['stage']}")
             continue
 
-        task = build_task(manifest, action, template, runtime)
+        try:
+            task = build_task(manifest, action, template, runtime)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
         task_problems = schema_errors(task, TASK_SCHEMA, task["id"])
         if task_problems:
             errors.extend(task_problems)
