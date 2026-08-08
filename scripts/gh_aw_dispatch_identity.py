@@ -7,6 +7,8 @@ import hashlib
 import json
 from pathlib import Path
 
+RETRYABLE_CONCLUSIONS = {"failure", "cancelled", "timed_out", "startup_failure"}
+
 
 def dispatch_identity(plan_document: dict) -> dict:
     if plan_document.get("outcome") != "PLANNED" or "plan" not in plan_document:
@@ -41,19 +43,39 @@ def dispatch_identity(plan_document: dict) -> dict:
     }
 
 
+def _newest(runs: list[dict]) -> dict:
+    return sorted(
+        runs,
+        key=lambda run: (run.get("created_at") or "", int(run.get("id") or 0)),
+        reverse=True,
+    )[0]
+
+
 def should_suppress(existing_runs: list[dict], run_name: str) -> dict:
     matches = [run for run in existing_runs if run.get("display_title") == run_name]
-    matches.sort(key=lambda run: (run.get("created_at") or "", int(run.get("id") or 0)), reverse=True)
     if not matches:
         return {"suppress": False, "reason": "no-existing-run", "run": None}
-    run = matches[0]
-    status = run.get("status")
-    conclusion = run.get("conclusion")
-    if status != "completed":
-        return {"suppress": True, "reason": f"existing-{status or 'active'}", "run": run}
-    if conclusion == "success":
-        return {"suppress": True, "reason": "existing-success", "run": run}
-    return {"suppress": False, "reason": f"retry-after-{conclusion or 'unknown'}", "run": run}
+
+    # Success is terminal for one semantic work unit even if somebody later
+    # manually creates a failed run with the same trusted key.
+    successful = [run for run in matches if run.get("status") == "completed" and run.get("conclusion") == "success"]
+    if successful:
+        return {"suppress": True, "reason": "existing-success", "run": _newest(successful)}
+
+    # Any queued/in-progress run owns the execution lease. Do not race it.
+    active = [run for run in matches if run.get("status") != "completed"]
+    if active:
+        run = _newest(active)
+        return {"suppress": True, "reason": f"existing-{run.get('status') or 'active'}", "run": run}
+
+    latest = _newest(matches)
+    conclusion = latest.get("conclusion")
+    if conclusion in RETRYABLE_CONCLUSIONS:
+        return {"suppress": False, "reason": f"retry-after-{conclusion}", "run": latest}
+
+    # Unknown/neutral/skipped/stale completed states are fail-closed. A human
+    # can inspect them instead of risking another implementation side effect.
+    return {"suppress": True, "reason": f"existing-nonretryable-{conclusion or 'unknown'}", "run": latest}
 
 
 def main() -> None:
