@@ -30,6 +30,7 @@ on:
 engine:
   id: gemini
   version: "0.52.0"
+  model: gemini-3.5-flash-lite
 permissions: read-all
 safe-outputs:
   create-pull-request:

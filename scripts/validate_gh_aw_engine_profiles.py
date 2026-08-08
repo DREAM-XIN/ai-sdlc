@@ -19,6 +19,7 @@ EXPECTED = {
     "gemini": ("gemini", "GEMINI_API_KEY", "ai-sdlc-gh-aw-worker-gemini.lock.yml"),
 }
 PINNED_ENGINE_VERSIONS = {"gemini": "0.52.0"}
+PINNED_ENGINE_MODELS = {"gemini": "gemini-3.5-flash-lite"}
 
 
 def fail(message: str) -> None:
@@ -52,6 +53,14 @@ def main() -> int:
                 fail(f"{profile}: pinned engine requires a durable committed worker_source: {source}")
         elif cfg.get("engine_version") is not None:
             fail(f"{profile}: unexpected engine_version pin")
+        expected_model = PINNED_ENGINE_MODELS.get(profile)
+        if expected_model is not None:
+            if cfg.get("model") != expected_model:
+                fail(f"{profile}: model must remain pinned to {expected_model}")
+            if not (ROOT / source).is_file():
+                fail(f"{profile}: pinned model requires a durable committed worker_source: {source}")
+        elif cfg.get("model") is not None:
+            fail(f"{profile}: unexpected model pin")
 
     runtime = yaml.safe_load(RUNTIME.read_text(encoding="utf-8"))
     if runtime.get("engine_profile_registry") != "runtimes/gh-aw/engine-profiles.yaml":
@@ -81,19 +90,27 @@ def main() -> int:
     assert spec.loader
     spec.loader.exec_module(module)
 
-    # A pinned engine is part of the trusted runtime supply chain: its committed
-    # source must exactly equal the deterministic canonical render.
-    for profile, expected_version in PINNED_ENGINE_VERSIONS.items():
+    # Pinned engine supply-chain settings must be part of the deterministic
+    # committed source, never selected implicitly by a mutable CLI default.
+    pinned_profiles = set(PINNED_ENGINE_VERSIONS) | set(PINNED_ENGINE_MODELS)
+    for profile in pinned_profiles:
         cfg = profiles[profile]
         expected_source = module.render_text(profile, cfg, canonical)
         actual_source = (ROOT / cfg["worker_source"]).read_text(encoding="utf-8")
         if actual_source != expected_source:
             fail(f"{profile}: committed pinned worker source drifted from deterministic renderer")
-        marker = f'engine:\n  id: {cfg["engine"]}\n  version: "{expected_version}"\n'
-        if marker not in actual_source:
-            fail(f"{profile}: pinned CLI version is not materialized in worker frontmatter")
+        expected_version = PINNED_ENGINE_VERSIONS.get(profile)
+        if expected_version is not None:
+            marker = f'  version: "{expected_version}"\n'
+            if marker not in actual_source:
+                fail(f"{profile}: pinned CLI version is not materialized in worker frontmatter")
+        expected_model = PINNED_ENGINE_MODELS.get(profile)
+        if expected_model is not None:
+            marker = f"  model: {expected_model}\n"
+            if marker not in actual_source:
+                fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, pinned-version, and renderer checks passed")
+    print("gh-aw trusted engine profile, pinned-version/model, and renderer checks passed")
     return 0
 
 
