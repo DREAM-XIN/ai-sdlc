@@ -10,6 +10,7 @@
     "feature_id": {"type": "string", "minLength": 1},
     "task_id": {"type": "string", "minLength": 1},
     "stage": {"type": "string", "minLength": 1},
+    "work_kind": {"enum": ["stage", "remediation"]},
     "expected_revision": {"type": "integer", "minimum": 0},
     "status": {"enum": ["COMPLETED", "BLOCKED", "FAILED"]},
     "reason": {"type": "string", "minLength": 1},
