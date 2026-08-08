@@ -121,11 +121,14 @@ def main() -> int:
         "jobs:\n  conclusion:",
         "pre-steps:",
         "Dispatch structured worker result after Draft PR",
+        'GH_TOKEN: ${{ github.token }}',
+        'TRIGGER_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}',
+        'if [ -z "${TRIGGER_TOKEN:-}" ]',
         'EXPECTED_HEAD_PREFIX="gh-aw/${FEATURE_ID}-${GITHUB_RUN_ID}-v${EXPECTED_REVISION}"',
         "--json url,title,isDraft,headRefName",
         '(.headRefName | startswith($prefix))',
         'test -n "$PR_URL"',
-        "gh workflow run ai-sdlc-gh-aw-result.yml",
+        'GH_TOKEN="$TRIGGER_TOKEN" gh workflow run ai-sdlc-gh-aw-result.yml',
         "unique Draft PR whose remote head starts with this run/revision branch prefix",
         "Do not call any result-reporting tool",
     ]
@@ -140,10 +143,11 @@ def main() -> int:
         "Submission phase 2 is mandatory and ordered",
         "needs.safe_outputs.outputs.created_pr_url",
         '--head "$EXPECTED_HEAD"',
+        'GH_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}',
     ]
     for marker in forbidden_result_markers:
         if marker in canonical:
-            fail(f"canonical worker must not retain obsolete result handoff marker: {marker}")
+            fail(f"canonical worker must not retain obsolete or over-broad result handoff marker: {marker}")
 
     required_head_base_markers = [
         "create and switch to the local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}-v${{ inputs.expected_revision }}` **from the fetched trusted ancestry base `origin/${{ inputs.target_ref }}`**",
@@ -205,7 +209,7 @@ def main() -> int:
                 if marker not in actual_source:
                     fail(f"{profile}: rendered BYOK worker missing marker: {marker.strip()}")
 
-    print("gh-aw native and OpenAI-compatible profiles, target-based work-branch ancestry, target-base prefetch, Safe Output auth, deterministic result handoff, provider isolation, and renderer checks passed")
+    print("gh-aw native and OpenAI-compatible profiles, target-based work-branch ancestry, target-base prefetch, Safe Output auth, split conclusion credentials, deterministic result handoff, provider isolation, and renderer checks passed")
     return 0
 
 
