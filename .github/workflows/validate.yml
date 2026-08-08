@@ -16,6 +16,8 @@ on:
       - 'release/**'
       - 'VERSION'
       - 'CHANGELOG.md'
+      - 'README.md'
+      - 'LICENSE'
       - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -35,6 +37,8 @@ on:
       - 'release/**'
       - 'VERSION'
       - 'CHANGELOG.md'
+      - 'README.md'
+      - 'LICENSE'
       - '.github/actions/**'
       - '.github/workflows/**'
       - 'requirements-dev.txt'
@@ -51,6 +55,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
+      - run: python scripts/validate_public_readiness.py
       - run: python scripts/validate.py
       - run: python scripts/validate_feature_examples.py
       - run: python scripts/validate_orchestrator_examples.py
