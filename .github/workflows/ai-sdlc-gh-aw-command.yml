@@ -7,6 +7,7 @@ on:
 permissions:
   actions: write
   contents: read
+  issues: write
 
 jobs:
   dispatch:
@@ -51,6 +52,7 @@ jobs:
               handle.write(f'worker_workflow={worker_workflow}\n')
 
       - name: Dispatch trusted gh-aw control workflow
+        id: dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,6 +63,8 @@ jobs:
           WORKER_WORKFLOW: ${{ steps.command.outputs.worker_workflow }}
         run: |
           set -euo pipefail
+          dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
           gh workflow run ai-sdlc-gh-aw-dispatch.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$DEFAULT_BRANCH" \
@@ -70,3 +74,43 @@ jobs:
             --field project_path=.ai-sdlc/project.yaml \
             --field worker_workflow="$WORKER_WORKFLOW" \
             --field dry_run=false
+
+      - name: Resolve dispatched run and post receipt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
+          TARGET_REF: ${{ steps.command.outputs.target_ref }}
+          MANIFEST_PATH: ${{ steps.command.outputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          run_json=''
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            run_json=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow ai-sdlc-gh-aw-dispatch.yml \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,createdAt,url,status,conclusion,headBranch | \
+              jq -c --arg dispatched_at "$DISPATCHED_AT" '
+                map(select(.createdAt >= $dispatched_at)) |
+                sort_by(.createdAt) |
+                reverse |
+                .[0] // empty
+              ')
+            if [[ -n "$run_json" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          if [[ -z "$run_json" ]]; then
+            echo "::error::Unable to resolve the downstream gh-aw dispatch run"
+            exit 1
+          fi
+          run_id=$(jq -r '.databaseId' <<<"$run_json")
+          run_url=$(jq -r '.url' <<<"$run_json")
+          run_status=$(jq -r '.status' <<<"$run_json")
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "AI-SDLC gh-aw dispatch accepted: run $run_id ($run_status) — $run_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
