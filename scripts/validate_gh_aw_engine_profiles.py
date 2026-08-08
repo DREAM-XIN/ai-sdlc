@@ -198,8 +198,9 @@ def main() -> int:
         if profile in OPENAI_COMPATIBLE:
             provider_markers = [
                 "  id: copilot\n",
-                f"  model: {cfg['model']}\n",
+                "  env:\n",
                 f"    COPILOT_PROVIDER_BASE_URL: {cfg['base_url']}\n",
+                f"    COPILOT_MODEL: {cfg['model']}\n",
                 f"    COPILOT_PROVIDER_API_KEY: ${{{{ secrets.{cfg['credential']} }}}}\n",
                 "    COPILOT_PROVIDER_TYPE: openai\n",
                 f"    COPILOT_PROVIDER_WIRE_API: {cfg['wire_api']}\n",
@@ -208,8 +209,8 @@ def main() -> int:
             for marker in provider_markers:
                 if marker not in actual_source:
                     fail(f"{profile}: rendered BYOK worker missing marker: {marker.strip()}")
-            if f"    COPILOT_MODEL: {cfg['model']}\n" in actual_source:
-                fail(f"{profile}: provider model must be pinned with engine.model, not env-only COPILOT_MODEL")
+            if f"  model: {cfg['model']}\n" in actual_source:
+                fail(f"{profile}: provider model must be pinned with engine.env COPILOT_MODEL, not engine.model")
 
     print("gh-aw native and OpenAI-compatible profiles, authoritative BYOK model pins, target-based work-branch ancestry, target-base prefetch, Safe Output auth, split conclusion credentials, deterministic result handoff, provider isolation, and renderer checks passed")
     return 0
