@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve a trusted gh-aw engine profile to its compiled worker workflow."""
+"""Resolve a trusted gh-aw engine/provider profile to its compiled worker workflow."""
 from __future__ import annotations
 
 import argparse
@@ -26,6 +26,9 @@ def main() -> int:
     result = {
         "profile": args.profile,
         "engine": cfg["engine"],
+        "provider": cfg.get("provider", "native"),
+        "protocol": cfg.get("protocol", "native"),
+        "model": cfg.get("model"),
         "worker_workflow": cfg["worker_workflow"],
         "credential": cfg["credential"],
         "maturity": cfg["maturity"],
