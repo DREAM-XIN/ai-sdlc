@@ -30,6 +30,10 @@ on:
 engine: codex
 permissions: read-all
 max-turn-cache-misses: 20
+checkout:
+  fetch-depth: 0
+  fetch:
+    - "*"
 safe-outputs:
   create-pull-request:
     draft: true
