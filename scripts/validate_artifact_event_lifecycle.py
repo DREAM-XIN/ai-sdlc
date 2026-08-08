@@ -19,6 +19,7 @@ def manifest():
             "stages": [
                 {"id": "requirement", "status": "READY"},
                 {"id": "requirement-review", "status": "TODO", "gate": "requirement-gate"},
+                {"id": "design", "status": "TODO"},
             ],
         },
         "tasks": [],
@@ -141,6 +142,7 @@ def main():
     require(artifact["status"] == "approved", f"artifact was not approved: {artifact}")
     gate = approved["manifest"]["gates"][0]
     require(gate["status"] == "PASS" and gate["evidence"] == ["EVID-REQ-REVIEW"], f"review Gate evidence drifted: {gate}")
+    require(approved["manifest"]["workflow"]["status"] == "ACTIVE", "fixture unexpectedly became terminal before supersede check")
 
     superseded = apply_event(
         approved["manifest"],
