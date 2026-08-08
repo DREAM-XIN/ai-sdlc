@@ -34,6 +34,17 @@ def make_implementation_working():
             stage["status"] = "WORKING"
         else:
             stage["status"] = "TODO"
+    for gate in manifest.get("gates", []):
+        if gate["id"] in {"requirement-gate", "design-gate"}:
+            gate["status"] = "PASS"
+            gate["evidence"] = [f"EVID-{gate['id']}"]
+        else:
+            gate["status"] = "PENDING"
+            gate.pop("evidence", None)
+    manifest["evidence"] = [
+        {"id": "EVID-requirement-gate", "type": "review", "status": "pass", "uri": "docs/requirement-review.md"},
+        {"id": "EVID-design-gate", "type": "review", "status": "pass", "uri": "docs/design-review.md"},
+    ]
     manifest["workflow"]["current_stage"] = "implementation"
     manifest["revision"] = 10
     return manifest, profile
@@ -49,7 +60,7 @@ def main():
     project["repository"]["default_branch"] = "main"
 
     commander = build_commander_plan(manifest, profile, policy, repository="DREAM-XIN/example-target", project_adapter=project)
-    require(commander["outcome"] == "WAIT", "WORKING stage must remain Commander WAIT")
+    require(commander["outcome"] == "WAIT", f"WORKING stage must remain Commander WAIT, got {commander['outcome']}: {commander.get('errors')}")
 
     handoff = prepare_handoff(manifest, commander, policy, repository="DREAM-XIN/example-target", target_ref="feature/F-XREPO", default_branch="main", project=project)
     require(handoff["outcome"] == "READY", f"resume handoff failed: {handoff}")
@@ -81,8 +92,9 @@ def main():
     result = (ROOT / ".github/workflows/ai-sdlc-gh-aw-result.yml").read_text(encoding="utf-8")
 
     require('/ai-sdlc dispatch-gh-aw target_ref=' in command, "target command surface missing autonomous dispatch")
+    gh_aw_syntax = next(line for line in command.splitlines() if "gh_aw = re.fullmatch" in line)
     for forbidden in ("provider=", "model=", "engine_profile=", "worker_workflow=", "policy="):
-        require(forbidden not in command.split("elif gh_aw:", 1)[0] or forbidden == "policy=", "provider/worker selector leaked into target command")
+        require(forbidden not in gh_aw_syntax, f"provider/worker selector leaked into target command: {forbidden}")
     require('--field target_repository="$GITHUB_REPOSITORY"' in command, "caller repository identity must be implicit, not user-selected")
     require("Downstream repository:" in command and "Target repository:" in command, "durable receipt must record downstream and target repositories")
     require("AI_SDLC_CONTROL_DISPATCH_TOKEN" in command, "cross-repo transport credential is not explicit")
@@ -91,6 +103,8 @@ def main():
     require("permission-contents: read" in gateway and "permission-contents: write" in gateway, "read/write target token phases are missing")
     require("permission-pull-requests: write" not in gateway and "permission-actions: write" not in gateway, "gateway target token is over-permissioned")
     require("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" in gateway, "GitHub App token action must be SHA-pinned")
+    require("target Feature branch advanced after trusted planning" in gateway, "plan/execute target SHA binding is missing")
+    require("target repository identity drift before worker dispatch" in gateway, "final repository binding does not fail closed")
 
     require("target-repo: ${{ inputs.target_repository }}" in worker, "Safe Output target repository is not fixed")
     require("base-branch: ${{ inputs.target_ref }}" in worker, "Safe Output Feature base is not fixed")
@@ -100,6 +114,7 @@ def main():
     require("Do not merge or release" in worker, "worker merge/release prohibition missing")
     require("state/features/**" in worker and "state/events/**" in worker, "worker state paths are not explicitly forbidden")
     require("contents: write" not in worker.split("---", 2)[1], "agent workflow must not receive contents:write permission")
+    require("confirm its `revision` equals `${{ inputs.expected_revision }}`" in worker, "worker does not reject stale Feature revision")
 
     require("target_repository:" in result, "trusted result collector lacks target repository identity")
     require("permission-contents: write" in result, "result collector target token must be explicitly contents:write")
