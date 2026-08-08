@@ -98,6 +98,10 @@ def main():
     require("AI-SDLC lifecycle" in command and "downstream-runs.json" in command, "command bridge cannot resolve control-repository lifecycle receipts")
     require("downstream_id" in command and "downstream_url" in command and "could not resolve the downstream run" in command, "durable command receipt evidence drifted")
     require("Downstream repository:" in command and "Target repository:" in command, "cross-repo receipt lacks repository identities")
+    require("continue-on-error: true" in command, "command bridge cannot report dispatch failures before the job aborts")
+    require("error_kind=missing-control-token" in command, "missing control credential is not classified")
+    require("steps.dispatch.outcome == 'failure'" in command and "AI-SDLC command failed before downstream execution" in command, "dispatch failures are not durably reported to the Feature Issue")
+    require("steps.dispatch.outcome == 'success'" in command, "downstream receipt resolution is not gated on successful dispatch")
 
     secret_names = set(re.findall(r"secrets\.([A-Z0-9_]+)", command))
     require(secret_names == {"AI_SDLC_CONTROL_DISPATCH_TOKEN"}, f"command bridge secret set drifted: {sorted(secret_names)}")
@@ -112,7 +116,7 @@ def main():
         require("REPLACE_WITH_AI_SDLC_FULL_SHA" in text and "ai-sdlc-install-placeholder" in text, f"{path.name}: immutable install placeholder missing")
         require("@main" not in text and "@v" not in text, f"{path.name}: mutable production Action reference remains")
 
-    print("Cross-repository GitHub transport private installed-action and public control-initiated lifecycle checks passed")
+    print("Cross-repository GitHub transport private installed-action, public control-initiated lifecycle, and command failure receipt checks passed")
 
 
 if __name__ == "__main__":
