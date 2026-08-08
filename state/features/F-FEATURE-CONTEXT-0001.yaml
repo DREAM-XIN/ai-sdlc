@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 7
+revision: 8
 feature:
   id: F-FEATURE-CONTEXT-0001
   title: Create exactly docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md from linked Feature
@@ -50,7 +50,7 @@ tasks:
     `deepseek-chat`. Preserve exactly `docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md`;
     do not expand scope or advance review/Gates.
   target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/140
-  status: WORKING
+  status: DONE
   runtime: gh-aw
   issue: '#128'
 artifacts: []
@@ -78,6 +78,10 @@ evidence:
   type: pr-review
   status: warning
   uri: https://github.com/DREAM-XIN/ai-sdlc/pull/140#pullrequestreview-4888564595
+- id: EVID-GHAW-RUN-31250873419
+  status: pass
+  type: runtime-run
+  uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31250873419
 applied_events:
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-0-START
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31247475455
@@ -86,4 +90,5 @@ applied_events:
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31250196843
 - EVT-F-FEATURE-CONTEXT-0001-REMEDIATION-R4888564595
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-6-START
-updated_at: '2026-08-08T09:34:19Z'
+- EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31250873419
+updated_at: '2026-08-08T09:39:51Z'
