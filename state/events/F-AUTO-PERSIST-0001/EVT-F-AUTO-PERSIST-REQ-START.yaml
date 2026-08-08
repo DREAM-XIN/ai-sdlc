@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-AUTO-PERSIST-REQ-START
+feature_id: F-AUTO-PERSIST-0001
+expected_revision: 0
+occurred_at: '2026-08-08T06:18:00Z'
+changes:
+  - kind: stage
+    id: requirement
+    status: WORKING
