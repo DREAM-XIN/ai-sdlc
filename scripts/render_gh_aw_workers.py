@@ -63,6 +63,7 @@ def engine_frontmatter(cfg: dict[str, str]) -> str:
 
     if protocol == "openai-compatible":
         validate_openai_compatible(cfg)
+        # BYOK custom models are passed through Copilot's provider environment, not engine.model.
         lines = [
             "engine:",
             "  id: copilot",
