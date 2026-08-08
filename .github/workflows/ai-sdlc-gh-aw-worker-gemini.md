@@ -48,6 +48,7 @@ safe-outputs:
       - docs/gh-aw-dogfood/**
     protected-files: blocked
     max: 1
+# Result workflow dispatch crosses an Actions permission boundary, so use the dedicated trigger credential rather than github.token.
 jobs:
   conclusion:
     permissions:
@@ -57,7 +58,7 @@ jobs:
     pre-steps:
       - name: Dispatch structured worker result after Draft PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}
           FEATURE_ID: ${{ inputs.feature_id }}
           EXPECTED_REVISION: ${{ inputs.expected_revision }}
           TARGET_REF: ${{ inputs.target_ref }}
@@ -67,6 +68,10 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::MISSING_TRIGGER_CREDENTIAL: GH_AW_CI_TRIGGER_TOKEN is required to dispatch ai-sdlc-gh-aw-result.yml"
+            exit 1
+          fi
           EXPECTED_HEAD_PREFIX="gh-aw/${FEATURE_ID}-${GITHUB_RUN_ID}-v${EXPECTED_REVISION}"
           PR_URL=$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
