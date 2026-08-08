@@ -90,6 +90,8 @@ jobs:
           test -f "workspace/$POLICY_PATH"
           test ! -L "workspace/$MANIFEST_PATH"
           test ! -L "workspace/$POLICY_PATH"
+          test -f "runtime/.github/workflows/$WORKER_WORKFLOW"
+          test ! -L "runtime/.github/workflows/$WORKER_WORKFLOW"
           if [[ -n "$PROJECT_PATH" && -e "workspace/$PROJECT_PATH" ]]; then
             test -f "workspace/$PROJECT_PATH"
             test ! -L "workspace/$PROJECT_PATH"
@@ -178,6 +180,7 @@ jobs:
           TARGET_REF: ${{ inputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MANIFEST_PATH: ${{ inputs.manifest_path }}
+          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
         run: |
           printf '%s' "$PLAN_B64" | base64 -d > gh-aw-dispatch-plan.json
           git -C workspace check-ref-format --branch "$TARGET_REF" >/dev/null
@@ -186,6 +189,8 @@ jobs:
             exit 2
           fi
           test -f "workspace/$MANIFEST_PATH"
+          test -f "runtime/.github/workflows/$WORKER_WORKFLOW"
+          test ! -L "runtime/.github/workflows/$WORKER_WORKFLOW"
           python - <<'PY'
           import json, os
           result = json.load(open('gh-aw-dispatch-plan.json'))
@@ -194,6 +199,8 @@ jobs:
           plan = result['plan']
           if plan['target_ref'] != os.environ['TARGET_REF']:
               raise SystemExit('dispatch plan target_ref changed between jobs')
+          if plan['worker_workflow'] != os.environ['WORKER_WORKFLOW']:
+              raise SystemExit('dispatch plan worker_workflow changed between jobs')
           if len(plan['dispatches']) != 1:
               raise SystemExit('v0.1 execute job requires exactly one gh-aw dispatch')
           PY
@@ -250,21 +257,23 @@ jobs:
             gh-aw-dispatch-plan.json
             start-event.yaml
             start-persistence-plan.json
-      - name: Dispatch compiled gh-aw worker
+      - name: Dispatch compiled gh-aw worker from trusted default branch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           python - <<'PY'
           import json
+          import os
           import subprocess
           result = json.load(open('gh-aw-dispatch-plan.json'))
           plan = result['plan']
           dispatch = plan['dispatches'][0]
-          cmd = ['gh', 'workflow', 'run', dispatch['workflow'], '--repo', plan['repository'], '--ref', dispatch['ref']]
+          cmd = ['gh', 'workflow', 'run', dispatch['workflow'], '--repo', plan['repository'], '--ref', os.environ['DEFAULT_BRANCH']]
           for key, value in dispatch['inputs'].items():
               cmd.extend(['--field', f'{key}={value}'])
-          print('Dispatching', dispatch['task_id'], 'to', dispatch['workflow'])
+          print('Dispatching', dispatch['task_id'], 'to trusted', dispatch['workflow'], 'on', os.environ['DEFAULT_BRANCH'])
           subprocess.run(cmd, check=True)
           PY
           # If dispatch fails after START persistence, the Feature intentionally remains WORKING.
