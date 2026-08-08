@@ -32,7 +32,10 @@
               "stage": {"type": "string", "minLength": 1},
               "role": {"type": "string", "minLength": 1},
               "gate": {"type": ["string", "null"]},
-              "parallel": {"type": "boolean"}
+              "parallel": {"type": "boolean"},
+              "kind": {"enum": ["stage", "remediation"]},
+              "task_id": {"type": "string", "minLength": 1},
+              "source_stage": {"type": "string", "minLength": 1}
             },
             "additionalProperties": false
           },
