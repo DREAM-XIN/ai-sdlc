@@ -2,13 +2,31 @@ name: Public Release Audit
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/validate_public_history.py'
+      - 'scripts/audit_public_actions_history.py'
+      - 'scripts/validate_public_release_audit_examples.py'
+      - '.github/workflows/public-release-audit.yml'
+      - 'docs/public-release-readiness.md'
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  regression:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python scripts/validate_public_release_audit_examples.py
+
   audit:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
