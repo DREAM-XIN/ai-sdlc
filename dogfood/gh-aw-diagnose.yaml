@@ -1,0 +1,3 @@
+version: 0.1.0
+workflow: ai-sdlc-gh-aw-worker-gemini.lock.yml
+ref: main
