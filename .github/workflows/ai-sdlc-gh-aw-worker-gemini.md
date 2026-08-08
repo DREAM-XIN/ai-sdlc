@@ -44,15 +44,16 @@ safe-outputs:
     max: 1
   jobs:
     report-result:
-      description: Return the completed bounded-work result to the AI-SDLC result gateway after the pull request is created.
+      description: Request result handoff only after requesting create_pull_request earlier in the same run. The deterministic job will fail closed unless a real AI-SDLC gh-aw Draft PR exists for the reserved target branch.
       needs: safe_outputs
       runs-on: ubuntu-latest
       permissions:
         actions: write
         contents: read
+        pull-requests: read
       inputs:
         summary:
-          description: Short completion summary
+          description: Concise factual completion summary. This does not prove completion; the post-safe-output job independently requires the real Draft PR.
           required: true
           type: string
       steps:
@@ -65,11 +66,19 @@ safe-outputs:
             STAGE: ${{ inputs.stage }}
             TASK_PAYLOAD: ${{ inputs.task_payload }}
             SUMMARY: ${{ inputs.summary }}
-            PR_URL: ${{ needs.safe_outputs.outputs.created_pr_url }}
             RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           run: |
             set -euo pipefail
+            test -n "$SUMMARY"
+            PR_URL=$(gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --base "$TARGET_REF" \
+              --search 'is:draft in:title "[ai-sdlc gh-aw]"' \
+              --limit 2 \
+              --json url,title,isDraft \
+              --jq 'map(select(.isDraft == true and (.title | startswith("[ai-sdlc gh-aw] ")))) | if length == 1 then .[0].url else empty end')
             test -n "$PR_URL"
             task_id=$(python - <<'PY'
             import json, os
@@ -78,7 +87,7 @@ safe-outputs:
             PY
             )
             occurred_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            TASK_ID="$task_id" OCCURRED_AT="$occurred_at" python - <<'PY' > worker-result.json
+            TASK_ID="$task_id" OCCURRED_AT="$occurred_at" PR_URL="$PR_URL" python - <<'PY' > worker-result.json
             import json, os
             print(json.dumps({
               'version': '0.1.0',
@@ -121,7 +130,7 @@ Your job for this reference dogfood is deliberately narrow:
 3. Create or update files **only under `docs/gh-aw-dogfood/`**. Do not modify source code, schemas, workflows, manifests, dependency files, security configuration, or any other path.
 4. Produce one small documentation artifact that records the bounded task goal, what was changed, and how the change was verified. Keep it factual and concise.
 5. Review the diff before finishing. If anything outside `docs/gh-aw-dogfood/` changed, revert it.
-6. Use the `create_pull_request` safe-output tool to submit the change as a draft PR targeting `${{ inputs.target_ref }}`.
-7. After requesting the PR, call the `report_result` safe-output tool with a concise completion summary. This deterministic post-safe-output job will send the structured Worker Result back to AI-SDLC.
+6. **Submission phase 1 is mandatory:** call the `create_pull_request` safe-output tool with the bounded diff. The requested PR must be a Draft PR targeting `${{ inputs.target_ref }}`. Do not claim completion, emit `noop`, or call `report_result` before requesting this PR.
+7. **Submission phase 2 is mandatory and ordered:** only after the `create_pull_request` request has been emitted, call the `report_result` safe-output tool with a non-empty concise completion summary. The deterministic post-safe-output job independently verifies that exactly one matching open Draft PR exists before it can dispatch a COMPLETED Worker Result.
 
-Do not edit `state/features/**` or `state/events/**`. Do not pass or waive any Gate. Do not merge the PR. Independent AI-SDLC review remains a later stage.
+If you cannot request the Draft PR, do not report completion. Do not edit `state/features/**` or `state/events/**`. Do not pass or waive any Gate. Do not merge the PR. Independent AI-SDLC review remains a later stage.

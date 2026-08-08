@@ -78,6 +78,16 @@ def main() -> int:
         fail("canonical worker must retain bounded safe-output scope")
     if f"max-turn-cache-misses: {CANONICAL_MAX_TURN_CACHE_MISSES}\n" not in canonical:
         fail("canonical worker must retain the bounded cache-miss turn budget")
+    if "pull-requests: read" not in canonical:
+        fail("result handoff must have read-only PR discovery permission")
+    if "Submission phase 1 is mandatory" not in canonical or "Submission phase 2 is mandatory and ordered" not in canonical:
+        fail("canonical worker must explicitly require PR-before-result ordering")
+    if "gh pr list" not in canonical or "test -n \"$PR_URL\"" not in canonical:
+        fail("result handoff must independently verify a real Draft PR")
+    if 'test -n "$SUMMARY"' not in canonical:
+        fail("result handoff must reject an empty completion summary")
+    if "needs.safe_outputs.outputs.created_pr_url" in canonical:
+        fail("result handoff must not trust an implicit safe-output PR URL binding")
 
     gateway = GATEWAY.read_text(encoding="utf-8")
     if "worker_workflow:" in gateway.split("permissions:", 1)[0]:
@@ -113,7 +123,7 @@ def main() -> int:
             if marker not in actual_source:
                 fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
+    print("gh-aw trusted engine profile, PR-before-result contract, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
     return 0
 
 
