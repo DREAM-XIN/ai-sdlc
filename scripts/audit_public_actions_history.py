@@ -16,6 +16,7 @@ import sys
 import urllib.error
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ API_ROOT = "https://api.github.com"
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 MAX_ENTRY_BYTES = 16 * 1024 * 1024
 MAX_NESTED_ZIP_DEPTH = 2
+MAX_WORKERS = 6
 SENSITIVE_SUFFIXES = {".key", ".p12", ".pfx", ".pem"}
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GitHub classic token", re.compile(r"gh" + r"p_[A-Za-z0-9]{30,}")),
@@ -139,6 +141,35 @@ def scan_zip_bytes(data: bytes, location: str, depth: int = 0) -> list[dict[str,
     return findings
 
 
+def scan_run_log(repository: str, token: str, run_id: int) -> tuple[int, int, list[dict[str, str | int]]]:
+    location = f"run:{run_id}:logs"
+    try:
+        data = download_github_archive(repository, token, f"/actions/runs/{run_id}/logs")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
+        return 0, 0, [{"location": location, "line": 0, "kind": f"log audit error: {type(error).__name__}"}]
+    if data is None:
+        return 0, 1, []
+    return 1, 0, scan_zip_bytes(data, location)
+
+
+def scan_artifact(repository: str, token: str, artifact: dict[str, Any]) -> tuple[int, int, list[dict[str, str | int]]]:
+    artifact_id = int(artifact["id"])
+    name = str(artifact.get("name", artifact_id))
+    location = f"artifact:{artifact_id}:{name}"
+    if artifact.get("expired"):
+        return 0, 1, []
+    size = int(artifact.get("size_in_bytes", 0))
+    if size > MAX_DOWNLOAD_BYTES:
+        return 0, 0, [{"location": location, "line": 0, "kind": f"artifact exceeds {MAX_DOWNLOAD_BYTES} bytes and was not scanned"}]
+    try:
+        data = download_github_archive(repository, token, f"/actions/artifacts/{artifact_id}/zip")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
+        return 0, 0, [{"location": location, "line": 0, "kind": f"artifact audit error: {type(error).__name__}"}]
+    if data is None:
+        return 0, 1, []
+    return 1, 0, scan_zip_bytes(data, location)
+
+
 def write_markdown(path: Path, report: dict[str, Any]) -> None:
     lines = [
         "# Public release historical Actions audit",
@@ -179,48 +210,24 @@ def main() -> int:
     runs = paged_items(repository, token, "/actions/runs", "workflow_runs")
     logs_scanned = 0
     logs_unavailable = 0
-    for run in runs:
-        run_id = int(run["id"])
-        try:
-            data = download_github_archive(repository, token, f"/actions/runs/{run_id}/logs")
-        except ValueError as error:
-            findings.append({"location": f"run:{run_id}:logs", "line": 0, "kind": str(error)})
-            continue
-        if data is None:
-            logs_unavailable += 1
-            continue
-        logs_scanned += 1
-        findings.extend(scan_zip_bytes(data, f"run:{run_id}:logs"))
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in runs]
+        for future in as_completed(futures):
+            scanned, unavailable, run_findings = future.result()
+            logs_scanned += scanned
+            logs_unavailable += unavailable
+            findings.extend(run_findings)
 
     artifacts = paged_items(repository, token, "/actions/artifacts", "artifacts")
     artifacts_scanned = 0
     artifacts_expired = 0
-    for artifact in artifacts:
-        artifact_id = int(artifact["id"])
-        name = str(artifact.get("name", artifact_id))
-        if artifact.get("expired"):
-            artifacts_expired += 1
-            continue
-        size = int(artifact.get("size_in_bytes", 0))
-        if size > MAX_DOWNLOAD_BYTES:
-            findings.append(
-                {
-                    "location": f"artifact:{artifact_id}:{name}",
-                    "line": 0,
-                    "kind": f"artifact exceeds {MAX_DOWNLOAD_BYTES} bytes and was not scanned",
-                }
-            )
-            continue
-        try:
-            data = download_github_archive(repository, token, f"/actions/artifacts/{artifact_id}/zip")
-        except ValueError as error:
-            findings.append({"location": f"artifact:{artifact_id}:{name}", "line": 0, "kind": str(error)})
-            continue
-        if data is None:
-            artifacts_expired += 1
-            continue
-        artifacts_scanned += 1
-        findings.extend(scan_zip_bytes(data, f"artifact:{artifact_id}:{name}"))
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in artifacts]
+        for future in as_completed(futures):
+            scanned, expired, artifact_findings = future.result()
+            artifacts_scanned += scanned
+            artifacts_expired += expired
+            findings.extend(artifact_findings)
 
     report: dict[str, Any] = {
         "outcome": "BLOCKED" if findings else "PASS",
