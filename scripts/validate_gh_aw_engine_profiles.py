@@ -18,7 +18,7 @@ EXPECTED = {
     "claude": ("claude", "ANTHROPIC_API_KEY", "ai-sdlc-gh-aw-worker-claude.lock.yml"),
     "gemini": ("gemini", "GEMINI_API_KEY", "ai-sdlc-gh-aw-worker-gemini.lock.yml"),
 }
-PINNED_ENGINE_VERSIONS = {"gemini": "0.52.0"}
+PINNED_ENGINE_VERSIONS = {"gemini": "0.39.1"}
 PINNED_ENGINE_MODELS = {"gemini": "gemini-3.5-flash-lite"}
 
 
