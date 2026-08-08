@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 2
+revision: 3
 feature:
   id: F-GHAW-DEEPSEEK-0001
   title: Live DeepSeek gh-aw bounded autonomous dogfood
@@ -13,7 +13,7 @@ workflow:
   - id: requirement
     status: DONE
   - id: implementation
-    status: TODO
+    status: WORKING
   - id: review
     status: TODO
     gate: code-gate
@@ -31,4 +31,5 @@ evidence: []
 applied_events:
 - EVT-F-GHAW-DEEPSEEK-REQ-START
 - EVT-F-GHAW-DEEPSEEK-REQ-DONE
-updated_at: '2026-08-08T04:12:00Z'
+- EVT-GHAW-F-GHAW-DEEPSEEK-0001-2-START
+updated_at: '2026-08-08T04:10:48Z'
