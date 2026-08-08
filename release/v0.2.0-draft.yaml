@@ -20,25 +20,69 @@ candidate_capabilities:
   - exact-command-and-worker-receipts
   - runtime-app-least-privilege-delegation
   - cross-repository-runtime-installation-preflight
+  - target-installation-contract-preflight
+  - workflow-profile-aware-task-context
   - compiled-worker-allowlist
+  - gemini-engine-0.52.0-materialization
+
+implemented_stabilization_fixes:
+  - id: target-installation-contract-preflight
+    issue: '#162'
+    pull_request: '#168'
+    merge_commit: d6eb9199f825d8d6dbc9eae9d88d06b5e48168ae
+    evidence:
+      - protocol-ci: '31264982213'
+      - smartclipboard-installation-check: '31265132438'
+      - password-manager-installation-check: '31265139969'
+  - id: workflow-profile-aware-task-context
+    issue: '#163'
+    pull_request: '#164'
+    merge_commit: 6b8540eedc5274b52fa2c1b83c62851074600244
+    evidence:
+      - protocol-ci: '31262874139'
+  - id: gemini-0.52-current-main-rematerialization
+    supersedes_pull_request: '#81'
+    pull_request: '#170'
+    merge_commit: 6e1ff19141ceda35db3c912e0739d0d8f9afeb62
+    evidence:
+      - protocol-ci: '31265718779'
+      - strict-worker-compile: '31265719113'
 
 current_blockers:
   - id: feature-context-dogfood
     issue: '#128'
     feature: F-FEATURE-CONTEXT-0001
+    pull_request: '#144'
     description: >-
-      Current remediation content is reviewed, but repository validation must
-      produce real green GitHub Actions evidence and the review/verification
-      lifecycle must reach DONE.
-  - id: repeated-cross-repository-dogfood
+      Current remediation content is reviewed and has the correct one-file
+      scope plus deepseek-chat metadata, but repository validation run
+      31251058250 remains action_required with no green job result. Review and
+      verification lifecycle state must reach DONE after normal CI evidence.
+  - id: smartclipboard-repeated-dogfood
+    repository: DREAM-XIN/SmartClipboard
+    issue: '#3'
+    feature: F-SMARTCLIPBOARD-CI-BASELINE-0001
+    revision: 5
+    stage: review
     description: >-
-      Complete the generic lifecycle against at least two materially different
-      repositories before declaring the v0.2 release candidate.
-  - id: stale-generated-runtime-prs
-    pull_request: '#81'
+      Requirement and implementation are DONE with green repository validation
+      evidence. Independent review/code-gate and verification remain before the
+      small-change workflow can reach DONE.
+  - id: password-manager-repeated-dogfood
+    repository: DREAM-XIN/password-manager
+    baseline_issue: '#2'
+    baseline_feature: F-PASSWORD-MANAGER-CI-BASELINE-0001
+    baseline_revision: 4
+    baseline_stage: implementation
+    crypto_issue: '#7'
+    crypto_feature: F-PASSWORD-MANAGER-CRYPTO-COMPAT-0001
+    crypto_revision: 2
+    crypto_stage: requirement-review
     description: >-
-      Reconcile the old Gemini materialization branch against current main;
-      never merge the branch as-is.
+      The low-risk CI-baseline Feature correctly failed closed when backend
+      compilation exposed security-sensitive Argon2 API incompatibility. That
+      work is split to a high-risk standard-feature with a completed
+      requirement awaiting independent requirement review.
 
 repeated_dogfood_candidates:
   - repository: DREAM-XIN/SmartClipboard
@@ -49,6 +93,8 @@ repeated_dogfood_candidates:
       - typescript-shared-packages
       - supabase
       - native-build-verification
+    current_feature: F-SMARTCLIPBOARD-CI-BASELINE-0001
+    current_state: review-ready
   - repository: DREAM-XIN/password-manager
     default_branch: develop
     characteristics:
@@ -59,6 +105,8 @@ repeated_dogfood_candidates:
       - mysql8
       - docker-compose
       - security-sensitive
+    current_feature: F-PASSWORD-MANAGER-CRYPTO-COMPAT-0001
+    current_state: requirement-review-ready
 
 release_invariants:
   lifecycle_authority:
@@ -69,11 +117,16 @@ release_invariants:
     - target-command-surface-remains-provider-neutral
     - target-runtime-credentials-are-repository-scoped
     - default-branch-autonomous-targets-are-rejected
+  installation:
+    - target-project-adapter-and-required-context-are-validated-before-first-feature
+    - ai-sdlc-caller-workflows-use-full-immutable-control-plane-shas
+    - runtime-app-access-preflight-remains-separate-from-target-contract-preflight
   persistence:
     - lifecycle-mutations-use-feature-events-and-trusted-persist
     - expected-revision-remains-an-optimistic-write-precondition
   execution:
     - arbitrary-worker-workflow-selection-is-rejected
+    - task-context-is-compatible-with-the-active-workflow-profile
     - duplicate-semantic-dispatch-does-not-create-duplicate-pr-side-effects
 
 release_policy:
