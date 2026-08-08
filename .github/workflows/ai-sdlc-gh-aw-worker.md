@@ -45,6 +45,7 @@ safe-outputs:
       - docs/gh-aw-dogfood/**
     protected-files: blocked
     max: 1
+# Result workflow dispatch crosses an Actions permission boundary, so use the dedicated trigger credential rather than github.token.
 jobs:
   conclusion:
     permissions:
