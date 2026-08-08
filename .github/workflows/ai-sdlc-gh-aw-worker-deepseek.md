@@ -29,9 +29,9 @@ on:
         type: string
 engine:
   id: copilot
-  model: deepseek-chat
   env:
     COPILOT_PROVIDER_BASE_URL: https://api.deepseek.com
+    COPILOT_MODEL: deepseek-chat
     COPILOT_PROVIDER_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     COPILOT_PROVIDER_TYPE: openai
     COPILOT_PROVIDER_WIRE_API: completions
