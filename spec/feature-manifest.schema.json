@@ -49,6 +49,12 @@
         "required": ["id", "status"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["stage", "remediation"]},
+          "stage": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "minLength": 1},
+          "source_stage": {"type": "string", "minLength": 1},
+          "feedback": {"type": "string", "minLength": 1},
+          "target_pr": {"type": "string", "minLength": 1},
           "status": {"enum": ["TODO", "READY", "WORKING", "BLOCKED", "REVIEW", "DONE", "FAILED"]},
           "issue": {"type": "string"},
           "runtime": {"type": "string"}
