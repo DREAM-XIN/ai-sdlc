@@ -2,17 +2,20 @@
 """Render provider-specific gh-aw worker sources from the canonical worker.
 
 The canonical worker owns the lifecycle/security contract. Engine profiles are
-allowed to vary only the workflow name and the gh-aw engine id.
+allowed to vary only the workflow name, gh-aw engine id, and an optional pinned
+engine CLI version declared by the trusted profile registry.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / ".github/workflows/ai-sdlc-gh-aw-worker.md"
 PROFILES = ROOT / "runtimes/gh-aw/engine-profiles.yaml"
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def load_profiles() -> dict[str, dict[str, str]]:
@@ -22,26 +25,41 @@ def load_profiles() -> dict[str, dict[str, str]]:
     return data["profiles"]
 
 
-def render(profile: str, cfg: dict[str, str]) -> Path:
+def engine_frontmatter(cfg: dict[str, str]) -> str:
     engine = cfg["engine"]
+    version = cfg.get("engine_version")
+    if version is None:
+        return f"engine: {engine}\n"
+    if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+        raise SystemExit(f"invalid pinned engine_version for {engine}: {version!r}")
+    return f"engine:\n  id: {engine}\n  version: \"{version}\"\n"
+
+
+def render_text(profile: str, cfg: dict[str, str], base: str) -> str:
+    engine = cfg["engine"]
+    if base.count("name: AI-SDLC gh-aw Worker\n") != 1:
+        raise SystemExit("canonical worker name marker changed")
+    if base.count("engine: copilot\n") != 1:
+        raise SystemExit("canonical worker engine marker changed")
+    return base.replace(
+        "name: AI-SDLC gh-aw Worker\n",
+        f"name: AI-SDLC gh-aw Worker ({engine})\n",
+        1,
+    ).replace("engine: copilot\n", engine_frontmatter(cfg), 1)
+
+
+def render(profile: str, cfg: dict[str, str]) -> Path:
     source = ROOT / cfg["worker_source"]
     base = CANONICAL.read_text(encoding="utf-8")
 
     if profile == "copilot":
         if source != CANONICAL:
             raise SystemExit("copilot profile must point at the canonical worker")
+        if cfg.get("engine_version") is not None:
+            raise SystemExit("canonical copilot profile cannot inject an engine version")
         return CANONICAL
 
-    if base.count("name: AI-SDLC gh-aw Worker\n") != 1:
-        raise SystemExit("canonical worker name marker changed")
-    if base.count("engine: copilot\n") != 1:
-        raise SystemExit("canonical worker engine marker changed")
-
-    rendered = base.replace(
-        "name: AI-SDLC gh-aw Worker\n",
-        f"name: AI-SDLC gh-aw Worker ({engine})\n",
-        1,
-    ).replace("engine: copilot\n", f"engine: {engine}\n", 1)
+    rendered = render_text(profile, cfg, base)
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(rendered, encoding="utf-8")
     return source
@@ -62,7 +80,8 @@ def main() -> int:
         if profile not in profiles:
             raise SystemExit(f"unknown gh-aw engine profile: {profile}")
         path = render(profile, profiles[profile])
-        print(f"{profile}\t{profiles[profile]['engine']}\t{path.relative_to(ROOT)}")
+        version = profiles[profile].get("engine_version", "default")
+        print(f"{profile}\t{profiles[profile]['engine']}\t{version}\t{path.relative_to(ROOT)}")
     return 0
 
 
