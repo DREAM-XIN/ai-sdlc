@@ -1,0 +1,21 @@
+version: 0.1.0
+id: EVT-F-PR-LIFECYCLE-0001-PR121-VERIFICATION-DONE
+feature_id: F-PR-LIFECYCLE-0001
+expected_revision: 3
+occurred_at: '2026-08-08T06:53:49Z'
+changes:
+- kind: evidence
+  record:
+    id: EVID-PR121-VERIFICATION
+    type: verification
+    status: pass
+    uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31244897859/job/93071769058
+- kind: stage
+  id: verification
+  status: DONE
+- kind: gate
+  id: verification-gate
+  status: PASS
+  evidence:
+  - EVID-PR121-VERIFICATION
+  - EVID-PR121-CI
