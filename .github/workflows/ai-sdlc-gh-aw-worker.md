@@ -49,7 +49,7 @@ tools:
       client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
       private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
       owner: ${{ inputs.target_owner }}
-      repositories: [${{ inputs.target_repo_name }}]
+      repositories: ["${{ inputs.target_repo_name }}"]
 max-turn-cache-misses: 20
 checkout:
   repository: ${{ inputs.target_repository }}
@@ -62,18 +62,18 @@ checkout:
     client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
     private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
     owner: ${{ inputs.target_owner }}
-    repositories: [${{ inputs.target_repo_name }}]
+    repositories: ["${{ inputs.target_repo_name }}"]
   safe-outputs-github-app:
     client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
     private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
     owner: ${{ inputs.target_owner }}
-    repositories: [${{ inputs.target_repo_name }}]
+    repositories: ["${{ inputs.target_repo_name }}"]
 safe-outputs:
   github-app:
     client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
     private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
     owner: ${{ inputs.target_owner }}
-    repositories: [${{ inputs.target_repo_name }}]
+    repositories: ["${{ inputs.target_repo_name }}"]
   create-pull-request:
     draft: true
     title-prefix: "[ai-sdlc gh-aw] "
