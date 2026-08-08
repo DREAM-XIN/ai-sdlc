@@ -32,6 +32,7 @@ engine:
   version: "0.39.1"
   model: gemini-3.5-flash-lite
 permissions: read-all
+max-turn-cache-misses: 20
 safe-outputs:
   create-pull-request:
     draft: true
