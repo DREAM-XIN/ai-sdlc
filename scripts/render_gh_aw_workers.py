@@ -69,7 +69,7 @@ def engine_frontmatter(cfg: dict[str, str]) -> str:
         lines = [
             "engine:",
             "  id: copilot",
-            f"  model: {cfg['model']}",
+            f'  model: "{cfg["model"]}"',
             "  env:",
             f"    COPILOT_PROVIDER_BASE_URL: {cfg['base_url']}",
             f"    COPILOT_MODEL: {cfg['model']}",
