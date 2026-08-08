@@ -1,0 +1,33 @@
+version: 0.1.0
+id: EVT-F-PR-LIFECYCLE-0001-PR121-REVIEW-DONE
+feature_id: F-PR-LIFECYCLE-0001
+expected_revision: 2
+occurred_at: '2026-08-08T06:53:47Z'
+changes:
+- kind: evidence
+  record:
+    id: EVID-PR121-REVIEW
+    type: code-review
+    status: pass
+    uri: https://github.com/DREAM-XIN/ai-sdlc/pull/121#pullrequestreview-4888354762
+- kind: evidence
+  record:
+    id: EVID-PR121-CI
+    type: ci-run
+    status: pass
+    uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31244897859/job/93071769058
+- kind: stage
+  id: review
+  status: WORKING
+- kind: stage
+  id: review
+  status: DONE
+- kind: gate
+  id: code-gate
+  status: PASS
+  evidence:
+  - EVID-PR121-REVIEW
+  - EVID-PR121-CI
+- kind: stage
+  id: verification
+  status: WORKING
