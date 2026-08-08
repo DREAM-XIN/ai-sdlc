@@ -71,6 +71,7 @@ jobs:
 
       - name: Dispatch installed or trusted control workflow
         id: dispatch
+        continue-on-error: true
         shell: bash
         env:
           CALLER_TOKEN: ${{ github.token }}
@@ -94,6 +95,7 @@ jobs:
 
           if [[ -n "$CONTROL_REPO" ]]; then
             if [[ -z "${CONTROL_TOKEN:-}" ]]; then
+              echo "error_kind=missing-control-token" >> "$GITHUB_OUTPUT"
               echo "AI_SDLC_CONTROL_DISPATCH_TOKEN is required for trusted control-repository dispatch" >&2
               exit 2
             fi
@@ -133,7 +135,30 @@ jobs:
               --field target_ref="$TARGET_REF" --field manifest_path="$MANIFEST_PATH" --field policy_path=
           fi
 
+      - name: Report command dispatch failure
+        if: ${{ steps.dispatch.outcome == 'failure' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          OPERATION: ${{ steps.command.outputs.operation }}
+          ERROR_KIND: ${{ steps.dispatch.outputs.error_kind }}
+          TARGET_REF: ${{ steps.command.outputs.target_ref }}
+          MANIFEST_PATH: ${{ steps.command.outputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          command_run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [[ "$ERROR_KIND" == "missing-control-token" ]]; then
+            reason="missing repository secret \`AI_SDLC_CONTROL_DISPATCH_TOKEN\` required to dispatch the private AI-SDLC control repository"
+          else
+            reason="trusted workflow dispatch failed; verify \`AI_SDLC_CONTROL_DISPATCH_TOKEN\` can run and read Actions in \`DREAM-XIN/ai-sdlc\`"
+          fi
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "AI-SDLC command failed before downstream execution: \`$OPERATION\` — $reason. Command run: $command_run\n\nTarget ref: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+          exit 1
+
       - name: Resolve downstream run and post durable receipt
+        if: ${{ steps.dispatch.outcome == 'success' }}
         shell: bash
         env:
           CALLER_TOKEN: ${{ github.token }}
