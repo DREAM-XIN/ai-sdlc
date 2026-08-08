@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-GHAW-F-FEATURE-CONTEXT-0001-3-START
+feature_id: F-FEATURE-CONTEXT-0001
+expected_revision: 3
+occurred_at: '2026-08-08T09:16:02Z'
+changes:
+- kind: task
+  id: F-FEATURE-CONTEXT-0001-REMEDIATION-R4888527740
+  status: WORKING
