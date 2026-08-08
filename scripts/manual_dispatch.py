@@ -30,6 +30,17 @@ def schema_errors(data, path, label):
     return errors
 
 
+def resolve_task_template(profile, policy, stage):
+    """Resolve a stage task template with an optional workflow-profile override."""
+    profile_id = profile.get("id") if isinstance(profile, dict) else None
+    overrides = policy.get("profile_task_templates", {})
+    if profile_id:
+        profile_templates = overrides.get(profile_id, {})
+        if stage in profile_templates:
+            return profile_templates[stage]
+    return policy.get("task_templates", {}).get(stage)
+
+
 def remediation_record(manifest, action):
     task_id = action.get("task_id")
     if action.get("kind") != "remediation" or not task_id:
@@ -104,9 +115,11 @@ def build_dispatches(manifest, profile, policy, repository, manifest_ref="Featur
             )
             continue
 
-        template = policy.get("task_templates", {}).get(action["stage"])
+        template = resolve_task_template(profile, policy, action["stage"])
         if not template:
-            errors.append(f"no task template for dispatchable stage: {action['stage']}")
+            errors.append(
+                f"no task template for dispatchable stage: {action['stage']} (profile: {profile.get('id', '<unknown>')})"
+            )
             continue
 
         try:
