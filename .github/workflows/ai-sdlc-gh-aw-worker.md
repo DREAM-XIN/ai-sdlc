@@ -29,6 +29,7 @@ on:
         type: string
 engine: copilot
 permissions: read-all
+max-turn-cache-misses: 20
 safe-outputs:
   create-pull-request:
     draft: true
