@@ -1,0 +1,59 @@
+name: Recover v0.2 PR Lifecycle Dogfood Worker
+
+on:
+  push:
+    branches:
+      - recovery/v0.2-pr-lifecycle-worker-0001
+    paths:
+      - .github/workflows/recover-v0.2-pr-lifecycle-worker.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  recover:
+    if: ${{ github.repository == 'DREAM-XIN/ai-sdlc' && github.ref_name == 'recovery/v0.2-pr-lifecycle-worker-0001' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reserved Feature state
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: dogfood/v0.2-pr-lifecycle-0001
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install 'PyYAML>=6.0,<7'
+      - name: Verify exact reservation before recovery
+        shell: python
+        run: |
+          import yaml
+          manifest = yaml.safe_load(open('state/features/F-PR-LIFECYCLE-0001.yaml', encoding='utf-8'))
+          assert manifest['feature']['id'] == 'F-PR-LIFECYCLE-0001'
+          assert manifest['revision'] == 1
+          assert manifest['workflow']['current_stage'] == 'implementation'
+          stages = {item['id']: item for item in manifest['workflow']['stages']}
+          assert stages['implementation']['status'] == 'WORKING'
+          assert stages['review']['status'] == 'TODO'
+          assert stages['verification']['status'] == 'TODO'
+          assert manifest['applied_events'] == ['EVT-GHAW-F-PR-LIFECYCLE-0001-0-START']
+      - name: Dispatch fixed DeepSeek worker without a second START
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TASK_PAYLOAD=$(cat <<'JSON'
+          {"contract":"ai-sdlc-task-v0.1","task":{"allowed_scope":["Only files explicitly permitted by the assigned work unit"],"definition_of_done":["Assigned work-unit DoD is satisfied","Required tests pass","Deviations are recorded"],"expected_outputs":["code changes","tests","implementation evidence"],"feature_id":"F-PR-LIFECYCLE-0001","forbidden_scope":["Do not expand product or architecture scope without durable approval"],"goal":"Implement the assigned work unit according to the approved requirement and design.","id":"F-PR-LIFECYCLE-0001-IMPLEMENTATION","inputs":["Feature Issue","approved requirement","approved design","assigned work unit","AGENTS.md"],"role":"developer","runtime":"gh-aw"},"worker_rules":["Do not edit the authoritative Feature Manifest.","Return structured runtime result data; lifecycle persistence is handled by AI-SDLC.","Do not self-approve any Gate.","Stay inside the assigned task and repository scope."]}
+          JSON
+          )
+          gh workflow run ai-sdlc-gh-aw-worker-deepseek.lock.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            --field feature_id=F-PR-LIFECYCLE-0001 \
+            --field expected_revision=1 \
+            --field target_ref=dogfood/v0.2-pr-lifecycle-0001 \
+            --field stage=implementation \
+            --field role=developer \
+            --field task_payload="$TASK_PAYLOAD"
