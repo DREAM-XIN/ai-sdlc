@@ -1,0 +1,84 @@
+version: 0.2.0
+status: stabilization-draft
+base_version: 0.1.0
+
+release_intent: >-
+  Stabilize autonomous and cross-repository execution without changing the
+  durable lifecycle authority model established by v0.1.
+
+candidate_capabilities:
+  - feature-context-propagation
+  - automated-pr-review-and-verification-lifecycle
+  - durable-review-remediation
+  - provider-runtime-model-separation
+  - effective-model-audit-metadata
+  - trusted-issue-command-bridge
+  - feature-event-artifact-lifecycle
+  - explicit-event-persist-command
+  - cross-repository-autonomous-gh-aw-dispatch
+  - semantic-dispatch-idempotency
+  - exact-command-and-worker-receipts
+  - runtime-app-least-privilege-delegation
+  - cross-repository-runtime-installation-preflight
+  - compiled-worker-allowlist
+
+current_blockers:
+  - id: feature-context-dogfood
+    issue: '#128'
+    feature: F-FEATURE-CONTEXT-0001
+    description: >-
+      Current remediation content is reviewed, but repository validation must
+      produce real green GitHub Actions evidence and the review/verification
+      lifecycle must reach DONE.
+  - id: repeated-cross-repository-dogfood
+    description: >-
+      Complete the generic lifecycle against at least two materially different
+      repositories before declaring the v0.2 release candidate.
+  - id: stale-generated-runtime-prs
+    pull_request: '#81'
+    description: >-
+      Reconcile the old Gemini materialization branch against current main;
+      never merge the branch as-is.
+
+repeated_dogfood_candidates:
+  - repository: DREAM-XIN/SmartClipboard
+    default_branch: main
+    characteristics:
+      - tauri-react-desktop
+      - flutter-mobile
+      - typescript-shared-packages
+      - supabase
+      - native-build-verification
+  - repository: DREAM-XIN/password-manager
+    default_branch: develop
+    characteristics:
+      - java21-spring-boot
+      - vue3-vite
+      - browser-extension
+      - capacitor-mobile
+      - mysql8
+      - docker-compose
+      - security-sensitive
+
+release_invariants:
+  lifecycle_authority:
+    - workers-cannot-edit-authoritative-feature-manifests
+    - workers-cannot-pass-or-waive-gates
+    - workers-cannot-merge-or-release
+  transport:
+    - target-command-surface-remains-provider-neutral
+    - target-runtime-credentials-are-repository-scoped
+    - default-branch-autonomous-targets-are-rejected
+  persistence:
+    - lifecycle-mutations-use-feature-events-and-trusted-persist
+    - expected-revision-remains-an-optimistic-write-precondition
+  execution:
+    - arbitrary-worker-workflow-selection-is-rejected
+    - duplicate-semantic-dispatch-does-not-create-duplicate-pr-side-effects
+
+release_policy:
+  change_version_file_only_when_candidate_is_ready: true
+  production_caller_pin: full-commit-sha
+  forbid_feature_specific_recovery_workflows: true
+  require_green_repository_validation: true
+  require_repeated_cross_repo_dogfood: true
