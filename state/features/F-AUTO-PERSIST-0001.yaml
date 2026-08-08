@@ -1,0 +1,34 @@
+protocol_version: 0.1.0
+revision: 0
+feature:
+  id: F-AUTO-PERSIST-0001
+  title: Automatic Feature Event persistence dogfood
+  risk: low
+  issue: '#113'
+workflow:
+  profile: small-change
+  status: ACTIVE
+  current_stage: requirement
+  stages:
+  - id: requirement
+    status: TODO
+  - id: implementation
+    status: TODO
+  - id: review
+    status: TODO
+    gate: code-gate
+  - id: verification
+    status: TODO
+    gate: verification-gate
+tasks: []
+artifacts: []
+gates:
+- id: code-gate
+  status: PENDING
+  evidence: []
+- id: verification-gate
+  status: PENDING
+  evidence: []
+evidence: []
+applied_events: []
+updated_at: '2026-08-08T06:17:00Z'
