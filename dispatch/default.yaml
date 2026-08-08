@@ -83,3 +83,28 @@ task_templates:
     read: [approved requirement, verification report, review artifacts, CI evidence]
     expected_outputs: [acceptance record]
     definition_of_done: [Every acceptance criterion has evidence, PASS or FAIL is explicit, Release blockers are recorded]
+
+profile_task_templates:
+  small-change:
+    requirement:
+      goal: Refine the feature into a testable requirement artifact for the bounded small change.
+      read: [Feature Issue, AGENTS.md]
+      expected_outputs: [requirement artifact]
+      definition_of_done: [Goals and non-goals are explicit, Acceptance criteria are testable, Open questions are resolved or recorded]
+    implementation:
+      goal: Implement the Feature requirement within the bounded repository ownership scope.
+      read: [Feature Issue, requirement artifact, AGENTS.md]
+      allowed_scope: [Only files required by the Feature requirement and permitted by Project Adapter ownership boundaries]
+      forbidden_scope: [Do not expand product or architecture scope without durable approval]
+      expected_outputs: [code changes, tests, implementation evidence]
+      definition_of_done: [Requirement acceptance criteria relevant to implementation are satisfied, Required tests pass, Any scope deviation is recorded]
+    review:
+      goal: Independently review the implementation against the Feature requirement, bounded scope, and code-review rubric.
+      read: [requirement artifact, implementation diff, test evidence, gates/review-rubrics.yaml]
+      expected_outputs: [code review artifact]
+      definition_of_done: [BLOCKER and MAJOR findings are explicit, Requirement and scope compliance are checked, Verdict is recorded]
+    verification:
+      goal: Verify the small-change implementation using deterministic evidence and the requirement acceptance criteria.
+      read: [requirement artifact, implementation diff, review artifact, CI evidence]
+      expected_outputs: [verification report]
+      definition_of_done: [Required deterministic checks pass, Acceptance coverage is mapped to evidence, Remaining failures are explicit]
