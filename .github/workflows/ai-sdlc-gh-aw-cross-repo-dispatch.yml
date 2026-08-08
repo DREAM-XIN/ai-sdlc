@@ -129,6 +129,8 @@ jobs:
           set -euo pipefail
           test -f "workspace/$MANIFEST_PATH" && test ! -L "workspace/$MANIFEST_PATH"
           test -f "workspace/$PROJECT_PATH" && test ! -L "workspace/$PROJECT_PATH"
+          source_sha=$(git -C workspace rev-parse HEAD)
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           python runtime/scripts/commander.py plan "workspace/$MANIFEST_PATH" \
             --repository "$TARGET_REPOSITORY" --policy runtime/dispatch/gh-aw-developer.yaml \
             --project "workspace/$PROJECT_PATH" --project-ref "$PROJECT_PATH" > commander-plan.json
@@ -180,13 +182,21 @@ jobs:
           path: write-workspace
           fetch-depth: 0
 
-      - name: Verify write precondition
+      - name: Verify target did not move after planning
         if: ${{ !inputs.dry_run }}
         shell: bash
         env:
+          SOURCE_SHA: ${{ steps.plan.outputs.source_sha }}
           TARGET_REF: ${{ inputs.target_ref }}
           DEFAULT_BRANCH: ${{ steps.target_meta.outputs.default_branch }}
-        run: python runtime/scripts/verify_git_write_precondition.py --repo-dir write-workspace --target-ref "$TARGET_REF" --default-branch "$DEFAULT_BRANCH"
+        run: |
+          set -euo pipefail
+          current_sha=$(git -C write-workspace rev-parse HEAD)
+          if [[ "$current_sha" != "$SOURCE_SHA" ]]; then
+            echo "target Feature branch advanced after trusted planning; refusing stale autonomous dispatch" >&2
+            exit 2
+          fi
+          python runtime/scripts/verify_git_write_precondition.py --repo-dir write-workspace --target-ref "$TARGET_REF" --default-branch "$DEFAULT_BRANCH"
 
       - name: Reserve fresh work unit through trusted Feature Event
         if: ${{ !inputs.dry_run && steps.plan.outputs.reserve_required == 'true' }}
@@ -224,12 +234,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
         run: |
           python - <<'PY'
           import json, os, subprocess
-          p=json.load(open('gh-aw-dispatch-plan.json'))['plan']; d=p['dispatches'][0]
-          if p['repository'] != os.environ.get('TARGET_REPOSITORY', p['repository']): pass
-          cmd=['gh','workflow','run',d['workflow'],'--repo',os.environ['GITHUB_REPOSITORY'],'--ref',os.environ['DEFAULT_BRANCH']]
-          for k,v in d['inputs'].items(): cmd.extend(['--field',f'{k}={v}'])
+          plan=json.load(open('gh-aw-dispatch-plan.json'))['plan']
+          if plan['repository'] != os.environ['TARGET_REPOSITORY']:
+              raise SystemExit('target repository identity drift before worker dispatch')
+          if plan['target_ref'] != os.environ['TARGET_REF']:
+              raise SystemExit('target ref drift before worker dispatch')
+          dispatch=plan['dispatches'][0]
+          if dispatch['inputs']['target_repository'] != os.environ['TARGET_REPOSITORY'] or dispatch['inputs']['target_ref'] != os.environ['TARGET_REF']:
+              raise SystemExit('worker input target identity drift before dispatch')
+          cmd=['gh','workflow','run',dispatch['workflow'],'--repo',os.environ['GITHUB_REPOSITORY'],'--ref',os.environ['DEFAULT_BRANCH']]
+          for key,value in dispatch['inputs'].items(): cmd.extend(['--field',f'{key}={value}'])
           subprocess.run(cmd,check=True)
           PY
