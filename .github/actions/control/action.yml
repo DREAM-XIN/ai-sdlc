@@ -1,20 +1,22 @@
 name: AI-SDLC Control
 
-description: Run trusted AI-SDLC plan/bootstrap/persist operations against an explicit repository workspace.
+description: Run trusted AI-SDLC installation/plan/bootstrap/persist operations against an explicit repository workspace.
 
 inputs:
   operation:
-    description: One of plan, bootstrap, persist.
+    description: One of validate-installation, plan, bootstrap, persist.
     required: true
   repository:
     description: Target repository in owner/name form.
     required: true
   target_ref:
-    description: Target branch/ref containing AI-SDLC state.
-    required: true
+    description: Target branch/ref containing AI-SDLC state. Not required for validate-installation.
+    required: false
+    default: ''
   manifest_path:
-    description: Feature Manifest path under state/features/.
-    required: true
+    description: Feature Manifest path under state/features/. Not required for validate-installation.
+    required: false
+    default: ''
   bootstrap_path:
     description: Repository-relative bootstrap YAML path for bootstrap.
     required: false
@@ -48,14 +50,17 @@ inputs:
     required: false
     default: 'false'
   default_branch:
-    description: Target repository default branch, required for write protection.
+    description: Target repository default branch; used for installation identity validation and write protection.
     required: false
     default: ''
 
 outputs:
   exit_code:
-    description: Reference Commander/control result code. Zero means the operation is valid.
+    description: Reference control result code. Zero means the operation is valid.
     value: ${{ steps.control.outputs.exit_code }}
+  installation_report_path:
+    description: Installation preflight report path when operation=validate-installation.
+    value: ${{ steps.control.outputs.installation_report_path }}
   commander_plan_path:
     description: Commander Plan path when operation=plan.
     value: ${{ steps.control.outputs.commander_plan_path }}
@@ -193,6 +198,26 @@ runs:
         }
 
         case "$OPERATION" in
+          validate-installation)
+            validate_relative_yaml "$PROJECT_PATH" project_path
+            validate_workspace_path "$PROJECT_PATH" project_path true
+            install_args=(
+              --workspace .
+              --project "$PROJECT_PATH"
+              --repository "$REPOSITORY"
+              --output installation-report.json
+            )
+            if [[ -n "$DEFAULT_BRANCH" ]]; then
+              install_args+=(--default-branch "$DEFAULT_BRANCH")
+            fi
+            set +e
+            python "$runtime_root/scripts/validate_target_installation.py" "${install_args[@]}"
+            code=$?
+            set -e
+            echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+            echo "installation_report_path=installation-report.json" >> "$GITHUB_OUTPUT"
+            ;;
+
           plan)
             validate_manifest_path true
 
