@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 import yaml
 
+# Materialization trigger: provider runtime sources must be durable alongside compiled locks.
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / ".github/workflows/ai-sdlc-gh-aw-worker.md"
 PROFILES = ROOT / "runtimes/gh-aw/engine-profiles.yaml"
