@@ -9,6 +9,7 @@ from gh_aw_adapter import build_dispatch_plan
 from gh_aw_cross_repo_handoff import prepare_handoff
 from project_adapter import load_project_adapter
 from runtime_router import load_yaml
+from validate_gh_aw_dispatch_idempotency import main as validate_dispatch_idempotency
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -120,7 +121,8 @@ def main():
     require("permission-contents: write" in result, "result collector target token must be explicitly contents:write")
     require("permission-pull-requests: write" not in result and "permission-actions: write" not in result, "result collector target token is over-permissioned")
 
-    print("cross-repo gh-aw handoff, resume-WORKING, repository binding, command neutrality, Safe Output, Manifest/Gate, receipt, and least-privilege checks passed")
+    validate_dispatch_idempotency()
+    print("cross-repo gh-aw handoff, resume-WORKING, repository binding, command neutrality, Safe Output, Manifest/Gate, receipt, least-privilege, and dispatch idempotency checks passed")
 
 
 if __name__ == "__main__":
