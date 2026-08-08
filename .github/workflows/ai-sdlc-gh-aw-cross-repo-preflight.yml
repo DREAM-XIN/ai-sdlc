@@ -1,0 +1,108 @@
+name: AI-SDLC gh-aw Cross-Repo Runtime Preflight
+run-name: "AI-SDLC gh-aw xrepo preflight ${{ inputs.target_repository }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: Target repository in owner/repo form
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install preflight dependency
+        run: pip install 'PyYAML>=6.0,<7'
+
+      - name: Validate target repository identity
+        id: target
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+        run: |
+          set -euo pipefail
+          python scripts/gh_aw_cross_repo_runtime.py target "$TARGET_REPOSITORY" > target.json
+          owner=$(python -c "import json; print(json.load(open('target.json'))['owner'])")
+          repo_name=$(python -c "import json; print(json.load(open('target.json'))['repo_name'])")
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
+
+      - name: Validate trusted Runtime App configuration
+        shell: bash
+        env:
+          HAS_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$HAS_CLIENT_ID" != "true" ]]; then
+            echo "::error::MISSING_RUNTIME_APP_CLIENT_ID: configure AI_SDLC_RUNTIME_APP_CLIENT_ID in the trusted control repository"
+            exit 2
+          fi
+          if [[ "$HAS_PRIVATE_KEY" != "true" ]]; then
+            echo "::error::MISSING_RUNTIME_APP_PRIVATE_KEY: configure AI_SDLC_RUNTIME_APP_PRIVATE_KEY in the trusted control repository"
+            exit 2
+          fi
+
+      - name: Mint exact-target read token
+        id: target_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: read
+          permission-metadata: read
+
+      - name: Probe target installation read access
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.target_token.outputs.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$TARGET_REPOSITORY" > repository.json
+          TARGET_REPOSITORY="$TARGET_REPOSITORY" python - <<'PY' > cross-repo-runtime-preflight.json
+          import json, os
+          repo = json.load(open('repository.json'))
+          expected = os.environ['TARGET_REPOSITORY']
+          if repo.get('full_name') != expected:
+              raise SystemExit(f"repository identity mismatch: {repo.get('full_name')} != {expected}")
+          print(json.dumps({
+              'status': 'READY',
+              'target_repository': expected,
+              'default_branch': repo.get('default_branch'),
+              'private': bool(repo.get('private')),
+              'archived': bool(repo.get('archived')),
+              'probe': 'exact-target-contents-read',
+          }, sort_keys=True))
+          PY
+          {
+            echo '### Cross-repository gh-aw runtime preflight'
+            echo
+            echo '```json'
+            cat cross-repo-runtime-preflight.json
+            echo '```'
+            echo
+            echo '> READY proves only trusted Runtime App configuration, installation on the exact repository, and repository read access. It does not grant or test target write authority and does not probe any AI provider.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-cross-repo-preflight
+          path: cross-repo-runtime-preflight.json
