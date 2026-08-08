@@ -78,10 +78,13 @@ jobs:
           FEATURE_ISSUE: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           CONTROL_REPO: ${{ steps.command.outputs.control_repo }}
+          REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          request_id="cmd-${REPOSITORY_ID}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
+          echo "request_id=$request_id" >> "$GITHUB_OUTPUT"
           if [[ "$OPERATION" == "dispatch-gh-aw" ]]; then
             if [[ -z "${CONTROL_TOKEN:-}" ]]; then
               echo "AI_SDLC_CONTROL_DISPATCH_TOKEN is required for cross-repository autonomous dispatch" >&2
@@ -89,6 +92,7 @@ jobs:
             fi
             GH_TOKEN="$CONTROL_TOKEN" gh workflow run "$WORKFLOW" \
               --repo "$CONTROL_REPO" --ref main \
+              --field request_id="$request_id" \
               --field target_repository="$GITHUB_REPOSITORY" \
               --field target_ref="$TARGET_REF" \
               --field manifest_path="$MANIFEST_PATH" \
@@ -114,6 +118,7 @@ jobs:
           OPERATION: ${{ steps.command.outputs.operation }}
           WORKFLOW: ${{ steps.command.outputs.workflow }}
           DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
+          REQUEST_ID: ${{ steps.dispatch.outputs.request_id }}
           TARGET_REF: ${{ steps.command.outputs.target_ref }}
           MANIFEST_PATH: ${{ steps.command.outputs.manifest_path }}
           EVENT_PATH: ${{ steps.command.outputs.event_path }}
@@ -125,8 +130,22 @@ jobs:
           if [[ "$OPERATION" == "dispatch-gh-aw" ]]; then downstream_repo="$CONTROL_REPO"; read_token="$CONTROL_TOKEN"; fi
           run_json=''
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            run_json=$(GH_TOKEN="$read_token" gh run list --repo "$downstream_repo" --workflow "$WORKFLOW" --event workflow_dispatch --limit 20 \
-              --json databaseId,createdAt,url,status,conclusion | jq -c --arg dispatched_at "$DISPATCHED_AT" 'map(select(.createdAt >= $dispatched_at)) | sort_by(.createdAt) | reverse | .[0] // empty')
+            if [[ "$OPERATION" == "dispatch-gh-aw" ]]; then
+              GH_TOKEN="$read_token" gh api "repos/$downstream_repo/actions/workflows/$WORKFLOW/runs?event=workflow_dispatch&per_page=20" > downstream-runs.json
+              run_json=$(REQUEST_ID="$REQUEST_ID" python - <<'PY'
+          import json, os
+          expected=f"AI-SDLC gh-aw profile {os.environ['REQUEST_ID']}"
+          runs=json.load(open('downstream-runs.json')).get('workflow_runs', [])
+          matches=[r for r in runs if r.get('display_title') == expected]
+          matches.sort(key=lambda r: (r.get('created_at') or '', int(r.get('id') or 0)), reverse=True)
+          r=matches[0] if matches else None
+          print(json.dumps({'databaseId':r['id'],'createdAt':r['created_at'],'url':r['html_url'],'status':r['status'],'conclusion':r.get('conclusion')}) if r else '')
+          PY
+              )
+            else
+              run_json=$(GH_TOKEN="$read_token" gh run list --repo "$downstream_repo" --workflow "$WORKFLOW" --event workflow_dispatch --limit 20 \
+                --json databaseId,createdAt,url,status,conclusion | jq -c --arg dispatched_at "$DISPATCHED_AT" 'map(select(.createdAt >= $dispatched_at)) | sort_by(.createdAt) | reverse | .[0] // empty')
+            fi
             [[ -n "$run_json" ]] && break
             sleep 2
           done
@@ -142,4 +161,4 @@ jobs:
           downstream_url=$(jq -r '.url' <<<"$run_json")
           downstream_status=$(jq -r '.status' <<<"$run_json")
           GH_TOKEN="$CALLER_TOKEN" gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --body "AI-SDLC command accepted: \`$OPERATION\` → run $downstream_id ($downstream_status) — $downstream_url\n\nDownstream repository: \`$downstream_repo\`\nCommand run: $command_run\n$detail"
+            --body "AI-SDLC command accepted: \`$OPERATION\` → run $downstream_id ($downstream_status) — $downstream_url\n\nDownstream repository: \`$downstream_repo\`\nRequest id: \`$REQUEST_ID\`\nCommand run: $command_run\n$detail"
