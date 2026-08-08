@@ -106,10 +106,13 @@ Implemented and dogfooded capabilities include:
 - artifact registration and evidence-backed artifact status transitions through Feature Events;
 - private cross-repository autonomous execution using exact-target, short-lived GitHub App credentials;
 - deterministic cross-repository dispatch identity, duplicate suppression, and exact run/receipt correlation;
-- provider-neutral runtime installation preflight and compiled-worker allowlisting;
-- a completed external Feature lifecycle in `DREAM-XIN/zhu-zhiliao-game`, including requirement, design, implementation, code review, verification, acceptance, and release Gates.
+- separate target-installation contract and Runtime App access preflights, so Project Adapter/context/caller defects fail before the first Feature and autonomous access remains exact-target;
+- workflow-profile-aware Commander task contracts, including `small-change` lifecycles that do not inherit nonexistent standard-feature design/plan context;
+- compiled-worker allowlisting and strict materialization of provider workers, including the current Gemini CLI `0.52.0` worker/lock;
+- a completed external Feature lifecycle in `DREAM-XIN/zhu-zhiliao-game`, including requirement, design, implementation, code review, verification, acceptance, and release Gates;
+- successful target-installation preflight dogfood in both `DREAM-XIN/SmartClipboard` and `DREAM-XIN/password-manager`.
 
-The project is now stabilizing these capabilities for a formal v0.2 baseline. Remaining work is intentionally focused on closing the Feature-context dogfood with real green CI evidence, reconciling stale generated runtime PRs, and repeating the generic cross-repository lifecycle against materially different target stacks.
+The project is now stabilizing these capabilities for a formal v0.2 baseline. Remaining release work is intentionally limited to lifecycle completion rather than more control-plane expansion: the Feature-context dogfood still needs real green CI evidence, SmartClipboard is waiting at independent review, and password-manager has split a security-sensitive Argon2 compatibility failure into a high-risk Feature waiting at independent requirement review. The earlier stale Gemini materialization PR has already been reconciled through a current-main rematerialization and is no longer a blocker.
 
 See `docs/v0.2-stabilization.md` and `release/v0.2.0-draft.yaml` for the current stabilization boundary and release criteria.
 
