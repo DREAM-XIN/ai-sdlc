@@ -1,0 +1,65 @@
+name: AI-SDLC gh-aw Run Diagnostic
+
+on:
+  push:
+    branches:
+      - 'dogfood/gh-aw-diagnose-*'
+    paths:
+      - 'dogfood/gh-aw-diagnose.yaml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Validate exact diagnostic trigger
+        run: |
+          python - <<'PY'
+          import yaml
+          expected = {
+              'version': '0.1.0',
+              'workflow': 'ai-sdlc-gh-aw-worker-gemini.lock.yml',
+              'ref': 'main',
+          }
+          actual = yaml.safe_load(open('dogfood/gh-aw-diagnose.yaml'))
+          if actual != expected:
+              raise SystemExit(f'diagnostic trigger must equal {expected}')
+          PY
+      - name: Capture sanitized recent worker run metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow ai-sdlc-gh-aw-worker-gemini.lock.yml \
+            --branch main \
+            --limit 10 \
+            --json databaseId,status,conclusion,headBranch,event,createdAt,updatedAt,url \
+            > dogfood/gh-aw-diagnostic.json
+          python - <<'PY'
+          import json
+          path='dogfood/gh-aw-diagnostic.json'
+          data=json.load(open(path))
+          if not isinstance(data, list):
+              raise SystemExit('unexpected run metadata shape')
+          # Persist only GitHub run metadata. No logs, prompts, outputs, or secrets.
+          json.dump(data, open(path,'w'), indent=2, sort_keys=True)
+          open(path,'a').write('\n')
+          PY
+      - name: Persist diagnostic metadata on diagnostic branch
+        run: |
+          git config user.name "ai-sdlc[bot]"
+          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git add -- dogfood/gh-aw-diagnostic.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore(dogfood): capture gh-aw worker run metadata"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
