@@ -3,6 +3,11 @@ name: AI-SDLC gh-aw Result
 on:
   workflow_dispatch:
     inputs:
+      target_repository:
+        description: Target Feature repository in owner/repo form; empty means current repository
+        required: false
+        default: ''
+        type: string
       target_ref:
         description: Non-default Feature branch/ref that owns the authoritative Manifest
         required: true
@@ -24,18 +29,68 @@ jobs:
   result:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve target repository identity
+        id: target
+        shell: bash
+        env:
+          INPUT_REPOSITORY: ${{ inputs.target_repository }}
+        run: |
+          set -euo pipefail
+          repository="${INPUT_REPOSITORY:-$GITHUB_REPOSITORY}"
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "target_repository must be owner/repo" >&2
+            exit 2
+          fi
+          owner="${repository%%/*}"
+          repo_name="${repository#*/}"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
+          if [[ "$repository" == "$GITHUB_REPOSITORY" ]]; then
+            echo "cross_repo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cross_repo=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint target repository write token
+        id: target_token
+        if: ${{ steps.target.outputs.cross_repo == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: write
+
+      - name: Resolve target default branch
+        id: default_branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ steps.target.outputs.repository }}
+        run: |
+          set -euo pipefail
+          default_branch=$(gh api "repos/$TARGET_REPOSITORY" --jq '.default_branch')
+          test -n "$default_branch"
+          echo "value=$default_branch" >> "$GITHUB_OUTPUT"
+
       - name: Checkout trusted control plane
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: runtime
           persist-credentials: false
+
       - name: Checkout target workspace
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          repository: ${{ steps.target.outputs.repository }}
+          token: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
           ref: ${{ inputs.target_ref }}
           path: workspace
           fetch-depth: 0
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -45,7 +100,7 @@ jobs:
         shell: bash
         env:
           TARGET_REF: ${{ inputs.target_ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ steps.default_branch.outputs.value }}
         run: |
           git -C workspace check-ref-format --branch "$TARGET_REF" >/dev/null
           if [[ "$TARGET_REF" == "$DEFAULT_BRANCH" ]]; then
@@ -90,7 +145,7 @@ jobs:
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
           EVENT_PATH: ${{ steps.paths.outputs.event_path }}
           TARGET_REF: ${{ inputs.target_ref }}
-          REPOSITORY: ${{ github.repository }}
+          REPOSITORY: ${{ steps.target.outputs.repository }}
         run: |
           test -f "workspace/$MANIFEST_PATH"
           test ! -L "workspace/$MANIFEST_PATH"
@@ -132,7 +187,7 @@ jobs:
         shell: bash
         env:
           TARGET_REF: ${{ inputs.target_ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ steps.default_branch.outputs.value }}
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
           EVENT_PATH: ${{ steps.paths.outputs.event_path }}
         run: |
