@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Render provider-specific gh-aw worker sources from the canonical worker.
 
-The canonical worker owns the lifecycle/security contract. Trusted profiles may
-vary engine installation/model settings and, for OpenAI-compatible providers,
-BYOK endpoint/auth configuration. Provider-specific workers must not change the
-AI-SDLC lifecycle or Safe Output contract.
+The canonical worker owns the lifecycle/security contract, including the invariant
+that autonomous work branches derive from the reserved target ref rather than the
+workflow default-branch checkout. Trusted profiles may vary engine installation/model
+settings and, for OpenAI-compatible providers, BYOK endpoint/auth configuration.
+Provider-specific workers must not change the AI-SDLC lifecycle or Safe Output contract.
 """
 from __future__ import annotations
 
