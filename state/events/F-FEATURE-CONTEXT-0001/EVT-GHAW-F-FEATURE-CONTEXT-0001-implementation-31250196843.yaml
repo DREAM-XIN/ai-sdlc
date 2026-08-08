@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31250196843
+feature_id: F-FEATURE-CONTEXT-0001
+expected_revision: 4
+occurred_at: '2026-08-08T09:20:41Z'
+changes:
+- kind: evidence
+  record:
+    id: EVID-GHAW-RUN-31250196843
+    status: pass
+    type: runtime-run
+    uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31250196843
+- kind: task
+  id: F-FEATURE-CONTEXT-0001-REMEDIATION-R4888527740
+  status: DONE
