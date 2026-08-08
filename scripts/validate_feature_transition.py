@@ -109,6 +109,74 @@ def main():
     require(next_state["outcome"] == "DISPATCH", f"next dispatch missing: {next_state}")
     require([item["stage"] for item in next_state["actions"]] == ["design-review"], f"wrong next dispatch: {next_state}")
 
+    # Review remediation is task-level work: the completed design stage stays DONE while
+    # independent design-review remains the current lifecycle stage and Gate authority.
+    remediation_created = apply_event(
+        completed["manifest"],
+        event(
+            "F-0030",
+            [{
+                "kind": "task-record",
+                "record": {
+                    "id": "F-0030-DESIGN-REMEDIATION-1",
+                    "kind": "remediation",
+                    "stage": "design",
+                    "role": "architect",
+                    "source_stage": "design-review",
+                    "feedback": "Clarify the retry boundary identified by independent review.",
+                    "target_pr": "https://github.com/example/repo/pull/30",
+                    "status": "TODO",
+                    "runtime": "gh-aw",
+                },
+            }],
+            "2026-08-07T11:12:10Z",
+            event_id="EVT-DESIGN-REMEDIATION-CREATE",
+            expected_revision=2,
+        ),
+    )
+    require(remediation_created["outcome"] == "APPLIED", f"remediation creation failed: {remediation_created}")
+    remediation_manifest = remediation_created["manifest"]
+    require(next(item for item in remediation_manifest["workflow"]["stages"] if item["id"] == "design")["status"] == "DONE", "remediation reopened completed design stage")
+    require(remediation_manifest["workflow"]["current_stage"] == "design-review", "remediation changed independent current review stage")
+    remediation_state = compute_state(remediation_manifest, profile)
+    require(remediation_state["outcome"] == "DISPATCH", f"remediation was not dispatchable: {remediation_state}")
+    remediation_action = remediation_state["actions"][0]
+    require(remediation_action["kind"] == "remediation", f"remediation action kind lost: {remediation_action}")
+    require(remediation_action["task_id"] == "F-0030-DESIGN-REMEDIATION-1", f"remediation task identity lost: {remediation_action}")
+    require(remediation_action["stage"] == "design" and remediation_action["role"] == "architect", f"remediation target assignment drifted: {remediation_action}")
+
+    remediation_started = apply_event(
+        remediation_manifest,
+        event(
+            "F-0030",
+            [{"kind": "task", "id": "F-0030-DESIGN-REMEDIATION-1", "status": "WORKING"}],
+            "2026-08-07T11:12:20Z",
+            event_id="EVT-DESIGN-REMEDIATION-START",
+            expected_revision=3,
+        ),
+    )
+    require(remediation_started["outcome"] == "APPLIED", f"remediation START failed: {remediation_started}")
+    require(compute_state(remediation_started["manifest"], profile)["outcome"] == "WAIT", "working remediation did not hold review dispatch")
+
+    remediation_done = apply_event(
+        remediation_started["manifest"],
+        event(
+            "F-0030",
+            [
+                {"kind": "evidence", "record": {"id": "EVID-REMEDIATION", "type": "runtime-run", "status": "pass", "uri": "actions://run/remediation"}},
+                {"kind": "task", "id": "F-0030-DESIGN-REMEDIATION-1", "status": "DONE"},
+            ],
+            "2026-08-07T11:12:30Z",
+            event_id="EVT-DESIGN-REMEDIATION-DONE",
+            expected_revision=4,
+        ),
+    )
+    require(remediation_done["outcome"] == "APPLIED", f"remediation completion failed: {remediation_done}")
+    require(next(item for item in remediation_done["manifest"]["tasks"] if item["id"] == "F-0030-DESIGN-REMEDIATION-1")["status"] == "DONE", "remediation task did not become DONE")
+    require(next(item for item in remediation_done["manifest"]["workflow"]["stages"] if item["id"] == "design")["status"] == "DONE", "remediation completion changed completed design stage")
+    post_remediation = compute_state(remediation_done["manifest"], profile)
+    require(post_remediation["outcome"] == "DISPATCH" and post_remediation["actions"][0]["stage"] == "design-review", f"review did not resume after remediation: {post_remediation}")
+
     blocked = apply_event(
         initial,
         event(
@@ -223,7 +291,7 @@ def main():
     require(refreshed_frontend["outcome"] == "APPLIED", f"refreshed parallel state write failed: {refreshed_frontend}")
     require(refreshed_frontend["manifest"]["revision"] == 2, "parallel refreshed write did not increment revision")
 
-    print("Feature transition, revision, replay and closed-loop orchestration scenarios passed")
+    print("Feature transition, revision, replay, remediation and closed-loop orchestration scenarios passed")
 
 
 if __name__ == "__main__":
