@@ -71,6 +71,7 @@ jobs:
       - run: python scripts/validate_gh_aw_feature_context.py
       - run: python scripts/validate_gh_aw_workflow_security.py
       - run: python scripts/validate_gh_aw_engine_profiles.py
+      - run: python scripts/validate_gh_aw_effective_model_metadata.py
       - run: python scripts/validate_gh_aw_runtime_preflight.py
       - run: python scripts/validate_release_readiness.py
 
