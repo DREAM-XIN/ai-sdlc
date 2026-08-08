@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import yaml
 
+# Materialization trigger: refresh durable provider sources and strict-compiled locks.
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / ".github/workflows/ai-sdlc-gh-aw-worker.md"
 PROFILES = ROOT / "runtimes/gh-aw/engine-profiles.yaml"
