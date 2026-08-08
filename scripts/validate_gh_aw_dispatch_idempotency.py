@@ -63,6 +63,11 @@ def main():
     require(not should_suppress(failed, run_name)["suppress"], "failed worker must remain retryable")
     cancelled = [{"id": 14, "display_title": run_name, "status": "completed", "conclusion": "cancelled", "created_at": "2026-08-08T00:00:04Z"}]
     require(not should_suppress(cancelled, run_name)["suppress"], "cancelled worker must remain retryable")
+    mixed = succeeded + [{"id": 15, "display_title": run_name, "status": "completed", "conclusion": "failure", "created_at": "2026-08-08T00:00:05Z"}]
+    decision = should_suppress(mixed, run_name)
+    require(decision["suppress"] and decision["reason"] == "existing-success", "an older success must remain terminal even after a newer manual failure")
+    neutral = [{"id": 16, "display_title": run_name, "status": "completed", "conclusion": "neutral", "created_at": "2026-08-08T00:00:06Z"}]
+    require(should_suppress(neutral, run_name)["suppress"], "ambiguous completed worker states must fail closed")
 
     gateway = (ROOT / ".github/workflows/ai-sdlc-gh-aw-cross-repo-dispatch.yml").read_text(encoding="utf-8")
     profile = (ROOT / ".github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml").read_text(encoding="utf-8")
