@@ -78,23 +78,45 @@ def main() -> int:
         fail("canonical worker must retain bounded safe-output scope")
     if f"max-turn-cache-misses: {CANONICAL_MAX_TURN_CACHE_MISSES}\n" not in canonical:
         fail("canonical worker must retain the bounded cache-miss turn budget")
-    if "pull-requests: read" not in canonical:
-        fail("result handoff must have read-only PR discovery permission")
-    if "Submission phase 1 is mandatory" not in canonical or "Submission phase 2 is mandatory and ordered" not in canonical:
-        fail("canonical worker must explicitly require PR-before-result ordering")
-    if "gh pr list" not in canonical or "test -n \"$PR_URL\"" not in canonical:
-        fail("result handoff must independently verify a real Draft PR")
-    if 'test -n "$SUMMARY"' not in canonical:
-        fail("result handoff must reject an empty completion summary")
-    if "needs.safe_outputs.outputs.created_pr_url" in canonical:
-        fail("result handoff must not trust an implicit safe-output PR URL binding")
+    if "pull-requests: read" not in canonical or "actions: write" not in canonical:
+        fail("deterministic conclusion handoff must have only the required PR-read/actions-write permissions")
 
-    # Live dogfood proved that target_ref must never double as the PR head.
+    # Live dogfood proved that model-owned custom result safe jobs are not a
+    # reliable completion primitive: the model may omit the tool, and custom
+    # safe-job inputs are read from GH_AW_AGENT_OUTPUT rather than workflow
+    # expression inputs. Result persistence must therefore be deterministic.
+    deterministic_result_markers = [
+        "jobs:\n  conclusion:",
+        "pre-steps:",
+        "Dispatch structured worker result after Draft PR",
+        'EXPECTED_HEAD="gh-aw/${FEATURE_ID}-${GITHUB_RUN_ID}"',
+        '--head "$EXPECTED_HEAD"',
+        'test -n "$PR_URL"',
+        "gh workflow run ai-sdlc-gh-aw-result.yml",
+        "The deterministic `conclusion` job will independently verify the exact Draft PR for this run",
+        "Do not call any result-reporting tool",
+    ]
+    for marker in deterministic_result_markers:
+        if marker not in canonical:
+            fail(f"canonical worker missing deterministic result handoff marker: {marker}")
+    forbidden_result_markers = [
+        "report-result:",
+        "report_result",
+        'SUMMARY: ${{ inputs.summary }}',
+        'test -n "$SUMMARY"',
+        "Submission phase 2 is mandatory and ordered",
+        "needs.safe_outputs.outputs.created_pr_url",
+    ]
+    for marker in forbidden_result_markers:
+        if marker in canonical:
+            fail(f"canonical worker must not retain model-owned result handoff marker: {marker}")
+
+    # Live dogfood also proved that target_ref must never double as the PR head.
     required_head_base_markers = [
-        "create and switch to a unique local work branch",
+        "create and switch to the exact local work branch `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}`",
         "PR base only",
         "never use `${{ inputs.target_ref }}` as the local work branch or as `create_pull_request.branch`",
-        "Set its `branch` argument to exactly the current local work branch",
+        "Set its `branch` argument to exactly `gh-aw/${{ inputs.feature_id }}-${{ github.run_id }}`",
         "Do not set or override the PR base",
         "The head branch and `${{ inputs.target_ref }}` must be different",
     ]
@@ -136,7 +158,7 @@ def main() -> int:
             if marker not in actual_source:
                 fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, PR head/base separation, PR-before-result contract, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
+    print("gh-aw trusted engine profile, deterministic conclusion handoff, exact PR head/base separation, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
     return 0
 
 
