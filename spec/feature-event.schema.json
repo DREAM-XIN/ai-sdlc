@@ -33,6 +33,20 @@
             "type": "object",
             "required": ["kind", "id", "status"],
             "properties": {
+              "kind": {"const": "task"},
+              "id": {"type": "string", "minLength": 1},
+              "status": {"enum": ["READY", "WORKING", "DONE", "BLOCKED", "FAILED"]},
+              "reason": {"type": "string", "minLength": 1}
+            },
+            "allOf": [
+              {"if": {"properties": {"status": {"enum": ["BLOCKED", "FAILED"]}}}, "then": {"required": ["reason"]}}
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["kind", "id", "status"],
+            "properties": {
               "kind": {"const": "gate"},
               "id": {"type": "string", "minLength": 1},
               "status": {"enum": ["PENDING", "PASS", "FAIL", "WAIVED"]},
