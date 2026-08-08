@@ -1,0 +1,9 @@
+version: 0.1.0
+feature_id: F-GHAW-DEEPSEEK-0001
+engine_profile: deepseek
+profile: small-change
+manifest_path: state/features/F-GHAW-DEEPSEEK-0001.yaml
+bootstrap_path: dogfood/gh-aw-live-deepseek-bootstrap.yaml
+requirement_start_event_path: state/events/F-GHAW-DEEPSEEK-0001/EVT-F-GHAW-DEEPSEEK-REQ-START.yaml
+requirement_done_event_path: state/events/F-GHAW-DEEPSEEK-0001/EVT-F-GHAW-DEEPSEEK-REQ-DONE.yaml
+policy_path: runtimes/gh-aw/example-dispatch-policy.yaml
