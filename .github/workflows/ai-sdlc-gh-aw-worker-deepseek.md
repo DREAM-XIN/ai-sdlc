@@ -29,6 +29,7 @@ on:
         type: string
 engine:
   id: copilot
+  model: "deepseek-chat"
   env:
     COPILOT_PROVIDER_BASE_URL: https://api.deepseek.com
     COPILOT_MODEL: deepseek-chat
