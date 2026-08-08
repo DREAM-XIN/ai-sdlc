@@ -1,0 +1,30 @@
+version: 0.1.0
+id: EVT-F-GHAW-DEEPSEEK-REVIEW-DONE
+feature_id: F-GHAW-DEEPSEEK-0001
+expected_revision: 5
+occurred_at: '2026-08-08T05:37:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: EVID-GHAW-PR110-REVIEW
+      type: code-review
+      status: pass
+      uri: https://github.com/DREAM-XIN/ai-sdlc/pull/110#pullrequestreview-4888201425
+  - kind: evidence
+    record:
+      id: EVID-GHAW-CI-31241812708
+      type: ci-run
+      status: pass
+      uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31241812708
+  - kind: stage
+    id: review
+    status: DONE
+  - kind: gate
+    id: code-gate
+    status: PASS
+    evidence:
+      - EVID-GHAW-PR110-REVIEW
+      - EVID-GHAW-CI-31241812708
+  - kind: stage
+    id: verification
+    status: WORKING
