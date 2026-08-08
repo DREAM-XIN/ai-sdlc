@@ -29,6 +29,10 @@ on:
         type: string
 engine: claude
 permissions: read-all
+# Same-repository read tools stay on the job-scoped token so optional PAT secrets cannot override this boundary.
+tools:
+  github:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 max-turn-cache-misses: 20
 checkout:
   fetch-depth: 0
