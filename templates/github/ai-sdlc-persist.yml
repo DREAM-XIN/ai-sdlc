@@ -47,61 +47,24 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || github.ref_name }}
           fetch-depth: 0
 
+      # Installer must replace this placeholder with the same reviewed full AI-SDLC commit SHA as the control action below.
       - name: Resolve automatic Feature Event push
         id: auto
         if: ${{ github.event_name == 'push' }}
-        shell: python
-        env:
-          BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.sha }}
-        run: |
-          import os
-          import re
-          import subprocess
-          from pathlib import PurePosixPath
-
-          before = os.environ['BEFORE_SHA']
-          after = os.environ['AFTER_SHA']
-          if not re.fullmatch(r'[0-9a-fA-F]{40}', before) or not re.fullmatch(r'[0-9a-fA-F]{40}', after):
-              raise SystemExit('before and after must be full 40-character commit SHAs')
-          if before == '0' * 40:
-              raise SystemExit('automatic persistence does not accept a branch-creation push; commit the event in a subsequent push')
-
-          result = subprocess.run(
-              ['git', 'diff', '--name-only', '--diff-filter=AM', before, after],
-              check=True,
-              capture_output=True,
-              text=True,
-          )
-          eligible = []
-          for raw in result.stdout.splitlines():
-              path = PurePosixPath(raw.strip())
-              if path.is_absolute() or '..' in path.parts:
-                  continue
-              if len(path.parts) != 4 or path.parts[:2] != ('state', 'events'):
-                  continue
-              if path.suffix not in {'.yaml', '.yml'}:
-                  continue
-              eligible.append(path.as_posix())
-          if len(eligible) != 1:
-              raise SystemExit(
-                  'automatic persistence requires exactly one added/modified Feature Event in the push; '
-                  f'found {len(eligible)}: {eligible}'
-              )
-
-          event = PurePosixPath(eligible[0])
-          manifest = PurePosixPath('state', 'features', f'{event.parts[2]}.yaml').as_posix()
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
-              handle.write(f'event_path={event.as_posix()}\n')
-              handle.write(f'manifest_path={manifest}\n')
+        uses: DREAM-XIN/ai-sdlc/.github/actions/resolve-event-push@REPLACE_WITH_AI_SDLC_FULL_SHA # ai-sdlc-install-placeholder
+        with:
+          before_sha: ${{ github.event.before }}
+          after_sha: ${{ github.sha }}
 
       - name: Resolve persistence request
         id: request
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          AUTO_MODE: ${{ steps.auto.outputs.mode }}
           AUTO_EVENT_PATH: ${{ steps.auto.outputs.event_path }}
           AUTO_MANIFEST_PATH: ${{ steps.auto.outputs.manifest_path }}
+          AUTO_EVENT_COUNT: ${{ steps.auto.outputs.event_count }}
           MANUAL_EVENT_PATH: ${{ inputs.event_path }}
           MANUAL_MANIFEST_PATH: ${{ inputs.manifest_path }}
           MANUAL_TARGET_REF: ${{ inputs.target_ref }}
@@ -112,27 +75,42 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "push" ]]; then
             {
+              echo "mode=$AUTO_MODE"
               echo "event_path=$AUTO_EVENT_PATH"
               echo "manifest_path=$AUTO_MANIFEST_PATH"
               echo "target_ref=$PUSH_REF"
               echo "feature_issue="
               echo "persist=true"
               echo "allow_default_branch=false"
+              echo "event_count=$AUTO_EVENT_COUNT"
             } >> "$GITHUB_OUTPUT"
           else
             {
+              echo "mode=persist"
               echo "event_path=$MANUAL_EVENT_PATH"
               echo "manifest_path=$MANUAL_MANIFEST_PATH"
               echo "target_ref=$MANUAL_TARGET_REF"
               echo "feature_issue=$MANUAL_FEATURE_ISSUE"
               if [[ "$MANUAL_DRY_RUN" == "true" ]]; then echo "persist=false"; else echo "persist=true"; fi
               echo "allow_default_branch=$MANUAL_ALLOW_DEFAULT_BRANCH"
+              echo "event_count=1"
             } >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Report already-applied Feature Event archive
+        if: ${{ steps.request.outputs.mode == 'noop' }}
+        shell: bash
+        env:
+          EVENT_COUNT: ${{ steps.request.outputs.event_count }}
+          TARGET_REF: ${{ steps.request.outputs.target_ref }}
+        run: |
+          echo "No persistence mutation required."
+          echo "$EVENT_COUNT Feature Event file(s) changed on $TARGET_REF and every Event is already recorded at its exact applied revision slot."
 
       # Installer must replace this placeholder with a reviewed full AI-SDLC commit SHA.
       - name: Apply AI-SDLC Feature Event
         id: control
+        if: ${{ steps.request.outputs.mode != 'noop' }}
         uses: DREAM-XIN/ai-sdlc/.github/actions/control@REPLACE_WITH_AI_SDLC_FULL_SHA # ai-sdlc-install-placeholder
         with:
           operation: persist
@@ -146,12 +124,12 @@ jobs:
           default_branch: ${{ github.event.repository.default_branch }}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ always() && steps.control.outputs.persistence_plan_path != '' }}
+        if: ${{ steps.request.outputs.mode != 'noop' && always() && steps.control.outputs.persistence_plan_path != '' }}
         with:
           name: ai-sdlc-persistence-plan
           path: ${{ steps.control.outputs.persistence_plan_path }}
 
       - name: Propagate invalid persistence result
-        if: ${{ steps.control.outputs.exit_code != '0' }}
+        if: ${{ steps.request.outputs.mode != 'noop' && steps.control.outputs.exit_code != '0' }}
         shell: bash
         run: exit "${{ steps.control.outputs.exit_code }}"
