@@ -81,6 +81,16 @@ def main() -> int:
     if "pull-requests: read" not in canonical or "actions: write" not in canonical:
         fail("deterministic conclusion handoff must have only the required PR-read/actions-write permissions")
 
+    # Safe Output patch generation runs after agent credentials have been scrubbed.
+    # Prefetch the complete branch graph while checkout still has a transient token so
+    # any trusted target_ref is already present as origin/<target_ref> for merge-base.
+    required_checkout_markers = [
+        "checkout:\n  fetch-depth: 0\n  fetch:\n    - \"*\"\n",
+    ]
+    for marker in required_checkout_markers:
+        if marker not in canonical:
+            fail(f"canonical worker missing safe-output base prefetch marker: {marker!r}")
+
     # Same-repository Safe Output writes must use the ephemeral Actions token.
     # A repository-level GH_AW_GITHUB_TOKEN is optional broader authentication;
     # live dogfood proved that allowing it to win the default fallback chain can
@@ -172,7 +182,7 @@ def main() -> int:
             if marker not in actual_source:
                 fail(f"{profile}: pinned model is not materialized in worker frontmatter")
 
-    print("gh-aw trusted engine profile, workflow-token Safe Output auth, deterministic salted-head conclusion handoff, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
+    print("gh-aw trusted engine profile, full-history target-base prefetch, workflow-token Safe Output auth, deterministic salted-head conclusion handoff, bounded cache-miss budget, pinned-version/model, and renderer checks passed")
     return 0
 
 
