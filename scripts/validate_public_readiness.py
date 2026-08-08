@@ -20,6 +20,8 @@ SELF = Path(__file__).resolve()
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GitHub classic token", re.compile(r"gh" + r"p_[A-Za-z0-9]{30,}")),
     ("GitHub fine-grained token", re.compile(r"github" + r"_pat_[A-Za-z0-9_]{40,}")),
+    ("OpenAI project API key", re.compile(r"sk" + r"-proj-[A-Za-z0-9_-]{20,}")),
+    ("OpenAI/DeepSeek-style API key", re.compile(r"sk" + r"-[A-Za-z0-9]{20,}")),
     ("Anthropic API key", re.compile(r"sk" + r"-ant-[A-Za-z0-9_-]{20,}")),
     ("Google API key", re.compile(r"AI" + r"za[0-9A-Za-z_-]{30,}")),
     ("AWS access key", re.compile(r"AK" + r"IA[0-9A-Z]{16}")),
