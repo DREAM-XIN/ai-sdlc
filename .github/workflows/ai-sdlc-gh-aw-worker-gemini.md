@@ -29,7 +29,7 @@ on:
         type: string
 engine:
   id: gemini
-  version: "0.52.0"
+  version: "0.39.1"
   model: gemini-3.5-flash-lite
 permissions: read-all
 safe-outputs:
