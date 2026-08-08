@@ -1,0 +1,29 @@
+version: 0.1.0
+id: EVT-F-FEATURE-CONTEXT-0001-REMEDIATION-R4888527740
+feature_id: F-FEATURE-CONTEXT-0001
+expected_revision: 2
+occurred_at: '2026-08-08T09:04:46Z'
+changes:
+- kind: evidence
+  record:
+    id: EVID-PR-REVIEW-4888527740
+    type: pr-review
+    status: warning
+    uri: https://github.com/DREAM-XIN/ai-sdlc/pull/130#pullrequestreview-4888527740
+- kind: task-record
+  record:
+    id: F-FEATURE-CONTEXT-0001-REMEDIATION-R4888527740
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: review
+    feedback: 'Remediation required: the worker must use the linked Feature Issue
+      #128 as concrete execution context before claiming the Feature-context acceptance
+      criterion is satisfied. Re-run the bounded DeepSeek work with the trusted GitHub
+      read-tool token fix, preserve the exact single output file `docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md`,
+      and update the marker so it truthfully records that the linked Feature Issue
+      was read. Do not change lifecycle state or Gates.'
+    target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/130
+    status: TODO
+    runtime: gh-aw
+    issue: '#128'
