@@ -2,8 +2,8 @@
 """Render provider-specific gh-aw worker sources from the canonical worker.
 
 The canonical worker owns the lifecycle/security contract. Engine profiles are
-allowed to vary only the workflow name, gh-aw engine id, and an optional pinned
-engine CLI version declared by the trusted profile registry.
+allowed to vary only the workflow name, gh-aw engine id, and optional pinned
+engine CLI version/model declared by the trusted profile registry.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / ".github/workflows/ai-sdlc-gh-aw-worker.md"
 PROFILES = ROOT / "runtimes/gh-aw/engine-profiles.yaml"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
 
 
 def load_profiles() -> dict[str, dict[str, str]]:
@@ -28,11 +29,19 @@ def load_profiles() -> dict[str, dict[str, str]]:
 def engine_frontmatter(cfg: dict[str, str]) -> str:
     engine = cfg["engine"]
     version = cfg.get("engine_version")
-    if version is None:
+    model = cfg.get("model")
+    if version is None and model is None:
         return f"engine: {engine}\n"
-    if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+    if version is not None and (not isinstance(version, str) or not VERSION_RE.fullmatch(version)):
         raise SystemExit(f"invalid pinned engine_version for {engine}: {version!r}")
-    return f"engine:\n  id: {engine}\n  version: \"{version}\"\n"
+    if model is not None and (not isinstance(model, str) or not MODEL_RE.fullmatch(model)):
+        raise SystemExit(f"invalid pinned model for {engine}: {model!r}")
+    lines = ["engine:", f"  id: {engine}"]
+    if version is not None:
+        lines.append(f'  version: "{version}"')
+    if model is not None:
+        lines.append(f"  model: {model}")
+    return "\n".join(lines) + "\n"
 
 
 def render_text(profile: str, cfg: dict[str, str], base: str) -> str:
@@ -55,8 +64,8 @@ def render(profile: str, cfg: dict[str, str]) -> Path:
     if profile == "copilot":
         if source != CANONICAL:
             raise SystemExit("copilot profile must point at the canonical worker")
-        if cfg.get("engine_version") is not None:
-            raise SystemExit("canonical copilot profile cannot inject an engine version")
+        if cfg.get("engine_version") is not None or cfg.get("model") is not None:
+            raise SystemExit("canonical copilot profile cannot inject an engine version/model")
         return CANONICAL
 
     rendered = render_text(profile, cfg, base)
@@ -81,7 +90,8 @@ def main() -> int:
             raise SystemExit(f"unknown gh-aw engine profile: {profile}")
         path = render(profile, profiles[profile])
         version = profiles[profile].get("engine_version", "default")
-        print(f"{profile}\t{profiles[profile]['engine']}\t{version}\t{path.relative_to(ROOT)}")
+        model = profiles[profile].get("model", "default")
+        print(f"{profile}\t{profiles[profile]['engine']}\t{version}\t{model}\t{path.relative_to(ROOT)}")
     return 0
 
 
