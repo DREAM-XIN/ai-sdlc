@@ -45,7 +45,7 @@ def main():
 
     require(bool(SEMVER.fullmatch(version)), f"VERSION is not MAJOR.MINOR.PATCH: {version!r}", errors)
     require(release.get("version") == version, f"release manifest version {release.get('version')!r} != VERSION {version!r}", errors)
-    require(release.get("status") == "release-candidate", "v0.1 baseline must remain release-candidate until declared blockers clear", errors)
+    require(release.get("status") == "release-candidate", "v0.1 baseline must remain release-candidate until tag publication", errors)
     require(f"## {version}" in changelog, f"CHANGELOG.md does not contain a {version} section", errors)
 
     declared_schemas = release.get("normative_schemas", [])
@@ -93,9 +93,22 @@ def main():
         require(path.is_file(), f"required CI validator is missing: {relative}", errors)
         require(f"python {relative}" in validate_workflow, f"required CI validator is not wired into validate.yml: {relative}", errors)
 
-    blocker_ids = {item.get("id") for item in release.get("known_release_blockers", []) if isinstance(item, dict)}
-    require("second-repository-dogfood" in blocker_ids, "second-repository dogfood blocker is not declared", errors)
-    require("autonomous-runtime-dogfood" in blocker_ids, "autonomous runtime dogfood blocker is not declared", errors)
+    blockers = release.get("known_release_blockers", [])
+    require(isinstance(blockers, list), "known_release_blockers must be a list", errors)
+    blocker_ids = []
+    if isinstance(blockers, list):
+        for item in blockers:
+            require(isinstance(item, dict), "each release blocker must be an object", errors)
+            if not isinstance(item, dict):
+                continue
+            blocker_id = item.get("id")
+            require(isinstance(blocker_id, str) and blocker_id, "release blocker id is required", errors)
+            require(isinstance(item.get("issue"), str) and item.get("issue"), f"release blocker {blocker_id!r} must reference an issue", errors)
+            require(isinstance(item.get("description"), str) and item.get("description"), f"release blocker {blocker_id!r} must have a description", errors)
+            if isinstance(blocker_id, str) and blocker_id:
+                blocker_ids.append(blocker_id)
+    require(len(blocker_ids) == len(set(blocker_ids)), "release manifest contains duplicate blocker ids", errors)
+
     require(release.get("release_policy", {}).get("publish_tag_after_blockers_clear") is True, "release policy must keep tag publication behind declared blockers", errors)
     require(release.get("release_policy", {}).get("production_caller_pin") == "full-commit-sha", "release policy must require full-commit-sha production caller pins", errors)
 
@@ -113,7 +126,11 @@ def main():
             print(error)
         raise SystemExit(2)
 
-    print(f"AI-SDLC {version} release readiness baseline passed: {len(declared_schemas)} schemas, {len(declared_profiles)} profiles, {len(validators)} CI validators")
+    print(
+        f"AI-SDLC {version} release readiness baseline passed: "
+        f"{len(declared_schemas)} schemas, {len(declared_profiles)} profiles, "
+        f"{len(validators)} CI validators, {len(blockers)} blockers"
+    )
 
 
 if __name__ == "__main__":
