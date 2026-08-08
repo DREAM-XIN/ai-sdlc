@@ -1,8 +1,9 @@
 protocol_version: 0.1.0
-revision: 0
+revision: 1
 feature:
   id: F-PR-LIFECYCLE-0001
-  title: Add only docs/gh-aw-dogfood/F-PR-LIFECYCLE-0001.md as the v0.2 PR lifecycle dogfood marker
+  title: Add only docs/gh-aw-dogfood/F-PR-LIFECYCLE-0001.md as the v0.2 PR lifecycle
+    dogfood marker
   risk: low
   issue: '#117'
 workflow:
@@ -13,7 +14,7 @@ workflow:
   - id: requirement
     status: DONE
   - id: implementation
-    status: READY
+    status: WORKING
   - id: review
     status: TODO
     gate: code-gate
@@ -30,5 +31,6 @@ gates:
   status: PENDING
   evidence: []
 evidence: []
-applied_events: []
-updated_at: '2026-08-08T06:27:00Z'
+applied_events:
+- EVT-GHAW-F-PR-LIFECYCLE-0001-0-START
+updated_at: '2026-08-08T06:29:57Z'

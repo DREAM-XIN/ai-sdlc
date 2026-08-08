@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-GHAW-F-PR-LIFECYCLE-0001-0-START
+feature_id: F-PR-LIFECYCLE-0001
+expected_revision: 0
+occurred_at: '2026-08-08T06:29:57Z'
+changes:
+- kind: stage
+  id: implementation
+  status: WORKING
