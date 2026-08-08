@@ -1,0 +1,343 @@
+name: AI-SDLC gh-aw Cross-Repo Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: Target Feature repository in owner/repo form
+        required: true
+        type: string
+      target_ref:
+        description: Non-default target Feature branch
+        required: true
+        type: string
+      manifest_path:
+        description: Feature Manifest under state/features/
+        required: true
+        type: string
+      project_path:
+        description: Target Project Adapter path
+        required: true
+        default: .ai-sdlc/project.yaml
+        type: string
+      worker_workflow:
+        description: Trusted compiled worker selected by the runtime profile gateway
+        required: true
+        type: string
+      dry_run:
+        description: Build the handoff without reserving/dispatching
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.adapter.outputs.outcome }}
+      plan_b64: ${{ steps.adapter.outputs.plan_b64 }}
+      reserve_required: ${{ steps.handoff.outputs.reserve_required }}
+      target_owner: ${{ steps.target.outputs.owner }}
+      target_repo_name: ${{ steps.target.outputs.repo_name }}
+      target_default_branch: ${{ steps.target.outputs.default_branch }}
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Validate immutable control inputs
+        id: target
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, re
+          from pathlib import PurePosixPath
+          repo = os.environ['TARGET_REPOSITORY']
+          if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+              raise SystemExit('target_repository must be owner/repo')
+          ref = os.environ['TARGET_REF']
+          if '..' in ref.split('/'):
+              raise SystemExit('target_ref parent traversal is not allowed')
+          for name, prefix in [('MANIFEST_PATH','state/features/'), ('PROJECT_PATH','.ai-sdlc/')]:
+              value = os.environ[name]
+              path = PurePosixPath(value)
+              if path.is_absolute() or '..' in path.parts or not value.startswith(prefix) or path.suffix not in {'.yaml','.yml'}:
+                  raise SystemExit(f'{name.lower()} is outside its allowed YAML path')
+          if not re.fullmatch(r'[A-Za-z0-9._-]+\.ya?ml', os.environ['WORKER_WORKFLOW']):
+              raise SystemExit('worker_workflow must be a workflow filename')
+          PY
+          git check-ref-format --branch "$TARGET_REF" >/dev/null
+          test -f "runtime/.github/workflows/$WORKER_WORKFLOW"
+          test ! -L "runtime/.github/workflows/$WORKER_WORKFLOW"
+          owner="${TARGET_REPOSITORY%%/*}"
+          repo_name="${TARGET_REPOSITORY#*/}"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
+
+      - name: Mint exact-target read token
+        id: read_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: read
+          permission-metadata: read
+
+      - name: Resolve target default branch
+        id: target_meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          set -euo pipefail
+          default_branch=$(gh api "repos/$TARGET_REPOSITORY" --jq '.default_branch')
+          test -n "$default_branch"
+          if [[ "$TARGET_REF" == "$default_branch" ]]; then
+            echo "gh-aw autonomous dispatch must target a non-default branch" >&2
+            exit 2
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Expose target default branch
+        shell: bash
+        env:
+          VALUE: ${{ steps.target_meta.outputs.default_branch }}
+        run: echo "default_branch=$VALUE" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout target Feature branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.target_repository }}
+          token: ${{ steps.read_token.outputs.token }}
+          ref: ${{ inputs.target_ref }}
+          path: workspace
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Validate target Feature inputs
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          test -f "workspace/$MANIFEST_PATH"
+          test ! -L "workspace/$MANIFEST_PATH"
+          test -f "workspace/$PROJECT_PATH"
+          test ! -L "workspace/$PROJECT_PATH"
+
+      - name: Build Commander plan from trusted policy
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          python runtime/scripts/commander.py plan "workspace/$MANIFEST_PATH" \
+            --repository "$TARGET_REPOSITORY" \
+            --policy runtime/dispatch/gh-aw-developer.yaml \
+            --project "workspace/$PROJECT_PATH" \
+            --project-ref "$PROJECT_PATH" > commander-plan.json
+
+      - name: Prepare fresh or resume-working handoff
+        id: handoff
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          DEFAULT_BRANCH: ${{ steps.target_meta.outputs.default_branch }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          python runtime/scripts/gh_aw_cross_repo_handoff.py \
+            "workspace/$MANIFEST_PATH" commander-plan.json \
+            --repository "$TARGET_REPOSITORY" \
+            --target-ref "$TARGET_REF" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --policy runtime/dispatch/gh-aw-developer.yaml \
+            --project "workspace/$PROJECT_PATH" \
+            --output handoff.json
+          python - <<'PY'
+          import json, os
+          data=json.load(open('handoff.json'))
+          open('commander-runtime-plan.json','w').write(json.dumps(data['commander_plan'], indent=2, sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as h:
+              h.write('reserve_required=' + ('true' if data['reserve_required'] else 'false') + '\n')
+              h.write('mode=' + data['mode'] + '\n')
+          PY
+
+      - name: Build gh-aw dispatch plan
+        id: adapter
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+          RESERVE_REQUIRED: ${{ steps.handoff.outputs.reserve_required }}
+        run: |
+          extra=()
+          if [[ "$RESERVE_REQUIRED" != "true" ]]; then extra+=(--no-reservation); fi
+          python runtime/scripts/gh_aw_adapter.py plan \
+            "workspace/$MANIFEST_PATH" commander-runtime-plan.json \
+            --repository "$TARGET_REPOSITORY" \
+            --target-ref "$TARGET_REF" \
+            --worker-workflow "$WORKER_WORKFLOW" \
+            --policy runtime/dispatch/gh-aw-developer.yaml \
+            --project "workspace/$PROJECT_PATH" \
+            --project-ref "$PROJECT_PATH" \
+            "${extra[@]}" \
+            --output gh-aw-dispatch-plan.json
+          outcome=$(python -c "import json; print(json.load(open('gh-aw-dispatch-plan.json'))['outcome'])")
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          echo "plan_b64=$(base64 -w0 gh-aw-dispatch-plan.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-cross-repo-plan
+          path: |
+            commander-plan.json
+            commander-runtime-plan.json
+            handoff.json
+            gh-aw-dispatch-plan.json
+
+  execute:
+    if: ${{ !inputs.dry_run && needs.plan.outputs.outcome == 'PLANNED' }}
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Mint exact-target write token
+        id: write_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ needs.plan.outputs.target_owner }}
+          repositories: ${{ needs.plan.outputs.target_repo_name }}
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Checkout target Feature branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.target_repository }}
+          token: ${{ steps.write_token.outputs.token }}
+          ref: ${{ inputs.target_ref }}
+          path: workspace
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Restore and validate trusted plan
+        shell: bash
+        env:
+          PLAN_B64: ${{ needs.plan.outputs.plan_b64 }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+        run: |
+          printf '%s' "$PLAN_B64" | base64 -d > gh-aw-dispatch-plan.json
+          python - <<'PY'
+          import json, os
+          result=json.load(open('gh-aw-dispatch-plan.json'))
+          if result.get('outcome') != 'PLANNED': raise SystemExit('execute requires PLANNED')
+          plan=result['plan']
+          if plan['repository'] != os.environ['TARGET_REPOSITORY']: raise SystemExit('target repository identity drift')
+          if plan['target_ref'] != os.environ['TARGET_REF']: raise SystemExit('target ref drift')
+          if plan['worker_workflow'] != os.environ['WORKER_WORKFLOW']: raise SystemExit('worker workflow drift')
+          if len(plan['dispatches']) != 1: raise SystemExit('exactly one autonomous dispatch is required')
+          PY
+          python runtime/scripts/verify_git_write_precondition.py \
+            --repo-dir workspace \
+            --target-ref "$TARGET_REF" \
+            --default-branch "${{ needs.plan.outputs.target_default_branch }}"
+
+      - name: Reserve fresh work unit through Feature Event
+        if: ${{ needs.plan.outputs.reserve_required == 'true' }}
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+        run: |
+          occurred_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          python runtime/scripts/gh_aw_adapter.py start-event gh-aw-dispatch-plan.json --occurred-at "$occurred_at" --output start-event.yaml
+          EVENT_PATH=$(python - <<'PY'
+          import yaml
+          e=yaml.safe_load(open('start-event.yaml'))
+          print(f"state/events/{e['feature_id']}/{e['id']}.yaml")
+          PY
+          )
+          python runtime/scripts/ingest_feature_event.py \
+            "workspace/$MANIFEST_PATH" start-event.yaml \
+            --event-path "$EVENT_PATH" \
+            --repository "$TARGET_REPOSITORY" \
+            --manifest-path "$MANIFEST_PATH" \
+            --target-ref "$TARGET_REF" \
+            --output start-persistence-plan.json
+          mkdir -p "workspace/$(dirname "$EVENT_PATH")"
+          cp start-event.yaml "workspace/$EVENT_PATH"
+          MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=json.load(open('start-persistence-plan.json'))
+          (Path('workspace')/os.environ['MANIFEST_PATH']).write_text(p['plan']['manifest']['content'], encoding='utf-8')
+          PY
+          python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
+          git -C workspace config user.name "ai-sdlc[bot]"
+          git -C workspace config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git -C workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
+          git -C workspace commit -m "ai-sdlc: reserve gh-aw runtime stage"
+          git -C workspace push origin "HEAD:$TARGET_REF"
+
+      - name: Dispatch trusted compiled worker
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          plan=json.load(open('gh-aw-dispatch-plan.json'))['plan']
+          dispatch=plan['dispatches'][0]
+          cmd=['gh','workflow','run',dispatch['workflow'],'--repo',os.environ['GITHUB_REPOSITORY'],'--ref',os.environ['DEFAULT_BRANCH']]
+          for key,value in dispatch['inputs'].items(): cmd.extend(['--field',f'{key}={value}'])
+          subprocess.run(cmd,check=True)
+          PY
