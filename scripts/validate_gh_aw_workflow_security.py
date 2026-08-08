@@ -39,6 +39,10 @@ def main():
         dispatch.index("git -C workspace push") < dispatch.index("'gh', 'workflow', 'run'"),
         "gh-aw worker may be dispatched before WORKING reservation is durably pushed",
     )
+    require("DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}" in dispatch, "worker dispatch lacks trusted default-branch ref")
+    require("'--ref', os.environ['DEFAULT_BRANCH']" in dispatch, "compiled worker is not dispatched from trusted default branch")
+    require("'--ref', dispatch['ref']" not in dispatch, "compiled worker still trusts Feature-branch dispatch ref")
+    require('test -f "runtime/.github/workflows/$WORKER_WORKFLOW"' in dispatch, "trusted worker workflow existence is not checked")
     require("AI-SDLC intentionally does not guess a rollback/block transition here" in dispatch, "dispatch failure semantics are no longer explicit/fail-closed")
     require("status: BLOCKED" not in dispatch, "dispatch workflow guesses a BLOCKED lifecycle transition after transport failure")
 
