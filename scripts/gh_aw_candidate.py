@@ -20,11 +20,13 @@ class CandidateError(ValueError):
 @dataclass(frozen=True)
 class Candidate:
     artifact_id: str
+    head_artifact_id: str
     repository: str
     pr_number: int
     pr_url: str
     head_sha: str
     head_url: str
+    status: str
 
 
 def _github_parts(uri: str, pattern: re.Pattern[str], label: str):
@@ -61,28 +63,35 @@ def build_candidate_artifacts(repository: str, pr_number: int, head_sha: str):
     ]
 
 
-def resolve_current_candidate(manifest: dict) -> Candidate:
+def resolve_current_candidate(manifest: dict, *, status: str) -> Candidate:
+    if status not in {"draft", "approved"}:
+        raise CandidateError("candidate status must be draft or approved")
     artifacts = [item for item in manifest.get("artifacts", []) if isinstance(item, dict)]
     candidates = [
         item for item in artifacts
         if item.get("type") == "implementation"
-        and item.get("status") == "draft"
+        and item.get("status") == status
         and str(item.get("id", "")).startswith(CANDIDATE_PREFIX)
     ]
     if len(candidates) != 1:
-        raise CandidateError(f"expected exactly one current draft implementation candidate, found {len(candidates)}")
+        raise CandidateError(
+            f"expected exactly one current {status} implementation candidate, found {len(candidates)}"
+        )
 
     candidate = candidates[0]
     owner, repo, pr_number = _github_parts(candidate["uri"], PR_RE, "candidate PR")
     suffix = candidate["id"][len(CANDIDATE_PREFIX):]
+    head_id = f"{HEAD_PREFIX}{suffix}"
     heads = [
         item for item in artifacts
         if item.get("type") == "implementation-head"
-        and item.get("status") == "draft"
-        and item.get("id") == f"{HEAD_PREFIX}{suffix}"
+        and item.get("status") == status
+        and item.get("id") == head_id
     ]
     if len(heads) != 1:
-        raise CandidateError("candidate must have exactly one matching draft implementation-head artifact")
+        raise CandidateError(
+            f"candidate must have exactly one matching {status} implementation-head artifact"
+        )
     head = heads[0]
     h_owner, h_repo, head_sha = _github_parts(head["uri"], COMMIT_RE, "candidate head")
     if (owner, repo) != (h_owner, h_repo):
@@ -91,11 +100,13 @@ def resolve_current_candidate(manifest: dict) -> Candidate:
         raise CandidateError("candidate artifact id is not bound to its head SHA")
     return Candidate(
         artifact_id=candidate["id"],
+        head_artifact_id=head_id,
         repository=f"{owner}/{repo}",
         pr_number=int(pr_number),
         pr_url=candidate["uri"],
         head_sha=head_sha,
         head_url=head["uri"],
+        status=status,
     )
 
 
