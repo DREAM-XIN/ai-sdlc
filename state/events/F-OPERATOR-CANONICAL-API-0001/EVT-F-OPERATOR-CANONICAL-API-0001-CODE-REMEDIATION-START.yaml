@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REMEDIATION-START
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 14
+occurred_at: '2026-08-09T21:03:00Z'
+changes:
+  - kind: task
+    id: remediation-code-review-v1
+    status: WORKING
