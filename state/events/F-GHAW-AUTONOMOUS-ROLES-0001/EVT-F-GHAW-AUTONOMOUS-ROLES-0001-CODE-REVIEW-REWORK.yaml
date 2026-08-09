@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-REWORK
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 16
+occurred_at: '2026-08-09T14:20:30Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/code-review.md
+- kind: task-record
+  record:
+    id: F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: code-review
+    feedback: Bind autonomous Gate-result ingestion to the exact trusted role-worker execution provenance. Carry trusted task identity into the Gate worker, pass exact control-repository Actions run/workflow identity to the collector, verify that run/workflow against the trusted role-worker registry before accepting the Safe Output comment, validate result task_id against trusted dispatch identity, and add wrong-task/wrong-run/wrong-workflow/Bot-comment-only fail-closed regressions without changing candidate SHA, read-only worker, provider routing, Developer compatibility, or Gate authority semantics.
+    status: TODO
+    runtime: manual
