@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 15
+revision: 16
 feature:
   id: F-OPERATOR-CANONICAL-API-0001
   title: Implement v0.3 canonical typed Operator API foundation
@@ -44,7 +44,7 @@ tasks:
     tests for malformed discovery rows/cardinality/ids and unsafe reason leakage;
     rerun exact-head validation and CI.'
   target_pr: '#209'
-  status: WORKING
+  status: DONE
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -96,6 +96,10 @@ evidence:
   type: review
   status: fail
   uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-remediation.md
 applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-REQ-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-REQ-DONE
@@ -112,4 +116,5 @@ applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-REWORK
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REMEDIATION-START
-updated_at: '2026-08-09T21:03:00Z'
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REMEDIATION-DONE
+updated_at: '2026-08-09T21:08:00Z'
