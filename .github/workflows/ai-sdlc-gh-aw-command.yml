@@ -49,7 +49,7 @@ jobs:
               handle.write(f'manifest_path={manifest_path}\n')
               handle.write(f'policy_path={policy_path}\n')
 
-      - name: Dispatch trusted gh-aw runtime gateway
+      - name: Dispatch trusted role-aware gh-aw runtime gateway
         id: dispatch
         continue-on-error: true
         shell: bash
@@ -63,15 +63,16 @@ jobs:
           set -euo pipefail
           dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
-          # The command selects only the gh-aw runtime. The profile gateway owns the
-          # trusted execution-profile/provider/model resolution and defaults.
-          gh workflow run ai-sdlc-gh-aw-dispatch-profile.yml \
+          # Target commands select only lifecycle context and the dispatch policy.
+          # The trusted core runtime resolves role/stage -> profile -> exact worker.
+          gh workflow run ai-sdlc-gh-aw-dispatch.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$DEFAULT_BRANCH" \
             --field target_ref="$TARGET_REF" \
             --field manifest_path="$MANIFEST_PATH" \
             --field policy_path="$POLICY_PATH" \
             --field project_path=.ai-sdlc/project.yaml \
+            --field worker_workflow='' \
             --field dry_run=false
 
       - name: Post failure receipt
@@ -87,7 +88,7 @@ jobs:
           parent_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue comment "$ISSUE_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
-            --body "AI-SDLC gh-aw dispatch command failed before a downstream runtime-profile run was confirmed — $parent_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+            --body "AI-SDLC gh-aw dispatch command failed before a downstream role-routed runtime run was confirmed — $parent_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
           exit 1
 
       - name: Resolve dispatched run and post receipt
@@ -105,7 +106,7 @@ jobs:
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             run_json=$(gh run list \
               --repo "$GITHUB_REPOSITORY" \
-              --workflow ai-sdlc-gh-aw-dispatch-profile.yml \
+              --workflow ai-sdlc-gh-aw-dispatch.yml \
               --event workflow_dispatch \
               --limit 20 \
               --json databaseId,createdAt,url,status,conclusion,headBranch | \
@@ -124,7 +125,7 @@ jobs:
           if [[ -z "$run_json" ]]; then
             gh issue comment "$ISSUE_NUMBER" \
               --repo "$GITHUB_REPOSITORY" \
-              --body "AI-SDLC gh-aw command dispatched the runtime profile gateway but could not resolve its run id — $parent_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+              --body "AI-SDLC gh-aw command dispatched the role-aware runtime gateway but could not resolve its run id — $parent_url\n\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
             exit 1
           fi
           run_id=$(jq -r '.databaseId' <<<"$run_json")
@@ -132,4 +133,4 @@ jobs:
           run_status=$(jq -r '.status' <<<"$run_json")
           gh issue comment "$ISSUE_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
-            --body "AI-SDLC gh-aw runtime dispatch accepted: profile run $run_id ($run_status) — $run_url\n\nCommand run: $parent_url\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
+            --body "AI-SDLC gh-aw runtime dispatch accepted: role-routed run $run_id ($run_status) — $run_url\n\nCommand run: $parent_url\nTarget: \`$TARGET_REF\`\nManifest: \`$MANIFEST_PATH\`"
