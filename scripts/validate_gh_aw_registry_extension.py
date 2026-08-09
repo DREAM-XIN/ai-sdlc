@@ -21,6 +21,8 @@ GENERIC_MODULES = (
     "scripts/resolve_gh_aw_engine.py",
     "scripts/gh_aw_runtime_preflight.py",
     "scripts/gh_aw_cross_repo_runtime.py",
+    "scripts/gh_aw_profile_routing.py",
+    "scripts/gh_aw_profile_readiness.py",
     "scripts/validate_gh_aw_effective_model_metadata.py",
 )
 IDENTITY_NAMES = frozenset({"provider", "profile", "profile_id", "engine_profile"})
@@ -136,6 +138,7 @@ def build_fixture(root: Path, token: str) -> dict[str, str]:
                 "worker_source": source,
                 "worker_workflow": lock,
                 "credential": credential,
+                "credential_source": "secret",
                 "maturity": "experimental",
             }
         },
