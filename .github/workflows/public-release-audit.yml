@@ -115,6 +115,18 @@ jobs:
             echo "**${DECISION}**"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # These reports contain only finding type and location, never matched
+          # credential values. Print them on failure so a BLOCKED run can be
+          # diagnosed from retained job logs without exposing secrets.
+          if [[ "$HISTORY_OUTCOME" != 'success' && -f public-history-audit.md ]]; then
+            echo '--- redacted full-history findings ---'
+            cat public-history-audit.md
+          fi
+          if [[ "$ACTIONS_OUTCOME" != 'success' && -f public-actions-audit.md ]]; then
+            echo '--- redacted historical Actions findings ---'
+            cat public-actions-audit.md
+          fi
+
           python - <<'PY'
           import json
           import os
