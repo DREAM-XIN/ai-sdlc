@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 16
+revision: 17
 feature:
   id: F-GHAW-AUTONOMOUS-ROLES-0001
   title: Add bounded autonomous Reviewer and QA gh-aw roles
@@ -45,6 +45,21 @@ tasks:
     resolve/approve that trusted candidate artifact without hard-coded implementation
     artifact ids.
   status: DONE
+  runtime: manual
+- id: F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Bind autonomous Gate-result ingestion to the exact trusted role-worker
+    execution provenance. Carry trusted task identity into the Gate worker, pass exact
+    control-repository Actions run/workflow identity to the collector, verify that
+    run/workflow against the trusted role-worker registry before accepting the Safe
+    Output comment, validate result task_id against trusted dispatch identity, and
+    add wrong-task/wrong-run/wrong-workflow/Bot-comment-only fail-closed regressions
+    without changing candidate SHA, read-only worker, provider routing, Developer
+    compatibility, or Gate authority semantics.
+  status: TODO
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -99,6 +114,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-review-v2.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/code-review.md
 applied_events:
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-START
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-DONE
@@ -116,4 +135,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-START
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-DONE
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-START
-updated_at: '2026-08-09T14:13:30Z'
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-REWORK
+updated_at: '2026-08-09T14:20:30Z'
