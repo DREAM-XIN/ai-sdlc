@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-AISDLC-DOCS-0001
+  title: AI-SDLC end-user documentation and getting-started guide
+  risk: medium
+  issue: '#193'
+profile: standard-feature
+created_at: '2026-08-09T07:35:56Z'
