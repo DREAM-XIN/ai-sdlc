@@ -1,4 +1,3 @@
-# Materialization trigger only; remove after generated artifacts are fast-forwarded.
 version: 0.1.0
 workers:
   - id: code-review-reviewer-claude
