@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install trusted runtime dependencies
+        run: pip install -r runtime/requirements-dev.txt
+
       - name: Resolve trusted release request
         id: release
         shell: python
