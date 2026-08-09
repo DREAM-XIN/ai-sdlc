@@ -29,8 +29,8 @@ def expect_invalid(text: str, registry, fragment: str) -> None:
         path.write_text(text, encoding="utf-8")
         try:
             load_routing_policy(path, registry=registry)
-        except RoutingValidationError as exc:
-            require(fragment in str(exc), f"unexpected routing validation error: {exc}")
+        except (RoutingValidationError, RegistryValidationError) as exc:
+            require(fragment in str(exc), f"unexpected trusted validation error: {exc}")
         else:
             raise AssertionError(f"invalid routing fixture unexpectedly passed: {fragment}")
 
