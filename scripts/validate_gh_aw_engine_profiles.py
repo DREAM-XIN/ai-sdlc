@@ -17,7 +17,7 @@ GATEWAY = ROOT / ".github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml"
 RENDERER = ROOT / "scripts/render_gh_aw_workers.py"
 
 # Test-only backward compatibility snapshot. Runtime trust comes only from the Registry.
-COMPATIBILITY_BASELINE = {
+LEGACY_COMPATIBILITY_BASELINE = {
     "copilot": ("copilot", "COPILOT_GITHUB_TOKEN", (), "ai-sdlc-gh-aw-worker.lock.yml"),
     "codex": ("codex", "OPENAI_API_KEY", ("CODEX_API_KEY",), "ai-sdlc-gh-aw-worker-codex.lock.yml"),
     "claude": ("claude", "ANTHROPIC_API_KEY", (), "ai-sdlc-gh-aw-worker-claude.lock.yml"),
@@ -39,12 +39,12 @@ def main():
     registry = load_registry()
     profiles = {profile.profile_id: profile for profile in registry.profiles}
 
-    # Explicit compatibility proof is not an execution authority.
+    # Explicit legacy compatibility proof is not an execution or extension authority.
     require(
-        set(profiles) == set(COMPATIBILITY_BASELINE),
-        f"existing compatibility profile set drifted: {sorted(profiles)}",
+        set(LEGACY_COMPATIBILITY_BASELINE).issubset(profiles),
+        f"legacy compatibility profiles missing: {sorted(set(LEGACY_COMPATIBILITY_BASELINE) - set(profiles))}",
     )
-    for profile_id, (engine, credential, aliases, worker) in COMPATIBILITY_BASELINE.items():
+    for profile_id, (engine, credential, aliases, worker) in LEGACY_COMPATIBILITY_BASELINE.items():
         profile = profiles[profile_id]
         require(
             (profile.engine, profile.credential, profile.credential_aliases, profile.worker_workflow)
@@ -57,17 +57,11 @@ def main():
         runtime.get("engine_profile_registry") == "runtimes/gh-aw/engine-profiles.yaml",
         "runtime profile registry drifted",
     )
-    require(
-        runtime.get("default_engine_profile") in profiles,
-        "runtime default engine profile missing",
-    )
+    require(runtime.get("default_engine_profile") in profiles, "runtime default engine profile missing")
     require(runtime.get("default_engine_profile") == "copilot", "default profile must remain copilot")
 
     canonical = CANONICAL.read_text(encoding="utf-8")
-    require(
-        canonical.count("engine: copilot\n") == 1,
-        "canonical worker must retain one renderer engine marker",
-    )
+    require(canonical.count("engine: copilot\n") == 1, "canonical worker must retain one renderer engine marker")
     require("permissions: read-all" in canonical, "canonical agent must remain read-only")
     for marker in (
         "target_repository:",
@@ -90,26 +84,13 @@ def main():
         "Do not merge or release",
     ):
         require(marker in canonical, f"canonical cross-repo worker missing marker: {marker}")
-    for forbidden in (
-        "docs/gh-aw-dogfood/**",
-        "permissions:\n  contents: write",
-        "report-result:",
-    ):
-        require(
-            forbidden not in canonical,
-            f"canonical worker retained obsolete/unsafe marker: {forbidden}",
-        )
+    for forbidden in ("docs/gh-aw-dogfood/**", "permissions:\n  contents: write", "report-result:"):
+        require(forbidden not in canonical, f"canonical worker retained obsolete/unsafe marker: {forbidden}")
 
     gateway = GATEWAY.read_text(encoding="utf-8")
     require("target_repository:" in gateway, "profile gateway lost target repository handoff")
-    require(
-        "ai-sdlc-gh-aw-cross-repo-dispatch.yml" in gateway,
-        "profile gateway does not route cross-repo requests",
-    )
-    require(
-        "scripts/resolve_gh_aw_engine.py" in gateway,
-        "trusted profile resolver bypassed",
-    )
+    require("ai-sdlc-gh-aw-cross-repo-dispatch.yml" in gateway, "profile gateway does not route cross-repo requests")
+    require("scripts/resolve_gh_aw_engine.py" in gateway, "trusted profile resolver bypassed")
 
     spec = importlib.util.spec_from_file_location("ghaw_renderer", RENDERER)
     module = importlib.util.module_from_spec(spec)
@@ -118,20 +99,18 @@ def main():
     for profile in registry.profiles:
         expected = module.expected_source(profile, canonical)
         actual = (ROOT / profile.worker_source).read_text(encoding="utf-8")
-        require(
-            actual == expected,
-            f"{profile.profile_id}: committed worker source drifted from deterministic renderer",
-        )
+        require(actual == expected, f"{profile.profile_id}: committed worker source drifted from deterministic renderer")
 
     for command in (
         [sys.executable, str(ROOT / "scripts/validate_gh_aw_provider_registry.py")],
+        [sys.executable, str(ROOT / "scripts/validate_gh_aw_worker_materialization.py")],
         [sys.executable, str(RENDERER), "--all", "--check"],
         [sys.executable, str(ROOT / "scripts/render_gh_aw_profile_surfaces.py"), "--check"],
     ):
         subprocess.run(command, cwd=ROOT, check=True)
 
     print(
-        "gh-aw profiles preserve registry-driven trust, backward compatibility, "
+        "gh-aw profiles preserve registry-driven trust, legacy backward compatibility, "
         "and the generic cross-repository worker security contract"
     )
 
