@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 7
+revision: 8
 feature:
   id: F-GHAW-ROLE-ROUTING-0001
   title: Add trusted role-aware gh-aw profile routing and fallback policy
@@ -33,7 +33,19 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-1
+  kind: remediation
+  stage: design
+  role: architect
+  source_stage: design-review
+  feedback: Introduce a validated metadata-driven credential-source abstraction so
+    secret-backed and trusted GitHub-token-backed profile readiness can be generated
+    without profile/provider-name-specific branches; define alias compatibility and
+    positive/negative tests while preserving secret non-serialization and eight-profile
+    compatibility.
+  status: TODO
+  runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -61,6 +73,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-ROLE-ROUTING-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design-review.md
 applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-REQ-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-REQ-DONE
@@ -69,4 +85,5 @@ applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-DONE
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-START
-updated_at: '2026-08-09T11:55:15Z'
+- EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-REWORK
+updated_at: '2026-08-09T11:55:16Z'
