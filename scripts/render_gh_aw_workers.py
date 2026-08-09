@@ -89,6 +89,11 @@ def materialize(profile: EngineProfile, base: str, check: bool) -> Path:
     return source
 
 
+def load_renderer_registry(*, check: bool):
+    """Permit absent generated sources only while deterministic write materialization runs."""
+    return load_registry(require_source_files=check)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", action="append", help="profile id to render; repeatable")
@@ -97,7 +102,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        registry = load_registry()
+        registry = load_renderer_registry(check=args.check)
         selected_ids = list(registry.profile_ids()) if args.all else (args.profile or [])
         if not selected_ids:
             raise RegistryValidationError("select --all or at least one --profile")
