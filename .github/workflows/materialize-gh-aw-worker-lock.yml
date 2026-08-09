@@ -10,6 +10,9 @@ on:
       - '.github/workflows/ai-sdlc-gh-aw-worker-*.md'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-*.md'
       - '.github/workflows/ai-sdlc-gh-aw-qa-*.md'
+      - '.github/workflows/ai-sdlc-gh-aw-product-*.md'
+      - '.github/workflows/ai-sdlc-gh-aw-architect-*.md'
+      - '.github/workflows/ai-sdlc-gh-aw-orchestrator-*.md'
       - '.github/workflows/ai-sdlc-gh-aw-preflight.yml'
       - '.github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
@@ -43,9 +46,9 @@ jobs:
         run: python scripts/render_gh_aw_workers.py --all
       - name: Verify rendered engine sources with strict Registry load
         run: python scripts/render_gh_aw_workers.py --all --check
-      - name: Render trusted Gate-role workers
+      - name: Render trusted specialized role workers
         run: PYTHONPATH=scripts python scripts/render_gh_aw_role_workers.py
-      - name: Verify trusted Gate-role worker sources
+      - name: Verify trusted specialized role worker sources
         run: PYTHONPATH=scripts python scripts/render_gh_aw_role_workers.py --check
       - name: Render Registry-derived profile surfaces
         run: python scripts/render_gh_aw_profile_surfaces.py
@@ -71,7 +74,7 @@ jobs:
           while IFS= read -r worker; do
             gh aw compile "$worker" --strict
           done < /tmp/workers.txt
-      - name: Strict-compile every Gate-role worker
+      - name: Strict-compile every specialized role worker
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: |
@@ -113,5 +116,5 @@ jobs:
             echo "Rendered worker sources, profile surfaces, and compiled lock files are already current."
             exit 0
           fi
-          git commit -m "build(gh-aw): materialize trusted engine and Gate-role workers"
+          git commit -m "build(gh-aw): materialize trusted engine and specialized role workers"
           git push origin "HEAD:${GITHUB_REF_NAME}"
