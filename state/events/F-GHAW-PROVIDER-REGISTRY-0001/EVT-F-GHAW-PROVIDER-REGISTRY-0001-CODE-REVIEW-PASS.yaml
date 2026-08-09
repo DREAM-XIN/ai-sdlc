@@ -10,6 +10,11 @@ changes:
     type: review
     status: pass
     uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review-v2.md
+- kind: artifact
+  id: implementation-v1
+  status: approved
+  evidence:
+  - evidence-code-review-v2
 - kind: gate
   id: code-gate
   status: PASS
