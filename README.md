@@ -4,6 +4,19 @@ Vendor-neutral, GitHub-native orchestration for agentic software development.
 
 AI-SDLC defines a portable protocol for coordinating humans, ChatGPT Web, coding agents, CI/CD and repository automation across the software-development lifecycle.
 
+## Getting started
+
+New to AI-SDLC? You do not need to read the internal architecture first.
+
+1. [Getting Started](docs/getting-started.md) — understand the operating loop from a new GitHub repository to a completed Feature.
+2. [Set up a new project](docs/new-project-setup.md) — install `AGENTS.md`, the Project Adapter, caller workflows, immutable pins, credentials, and installation validation.
+3. [Run your first Feature](docs/feature-lifecycle-guide.md) — follow `F-DEMO-LOGIN-0001` through Bootstrap, Plan, every `standard-feature` stage, Persist, Gates, and `DONE`.
+4. [Choose AI-SDLC roles](docs/role-guide.md) — use independent Product, Reviewer, Architect, Orchestrator, Developer, QA, and Acceptance contexts safely.
+5. [Enable autonomous development](docs/autonomous-development.md) — understand trusted gh-aw dispatch, bounded worker branches, Draft PRs, credentials, and preflights.
+6. [Troubleshooting and FAQ](docs/troubleshooting.md) — diagnose installation, revision, Persist, Gate, public/private transport, and autonomous runtime failures.
+
+The published v0.2.0 release baseline is `44e68d4ec6517135b0008ba4cf14fdb625f9481d`. Production caller workflows must pin reviewed AI-SDLC Actions to a full immutable commit SHA, never a moving ref such as `main`.
+
 ## Goals
 
 - Keep project state outside model conversations.

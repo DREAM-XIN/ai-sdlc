@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-AISDLC-DOCS-0001-ACCEPTANCE-START
+feature_id: F-AISDLC-DOCS-0001
+expected_revision: 16
+occurred_at: '2026-08-09T08:00:00Z'
+changes:
+- kind: stage
+  id: acceptance
+  status: WORKING
