@@ -13,6 +13,8 @@ from gh_aw_provider_registry import RegistryValidationError, load_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "runtimes/gh-aw/engine-profiles.yaml"
+LEGACY_PROFILE_PREFIX = ("copilot", "codex", "claude", "gemini", "deepseek")
+CERTIFIED_COMPATIBLE_PREFIX = ("deepseek", "qwen", "glm", "minimax")
 
 
 def require(condition: bool, message: str) -> None:
@@ -46,19 +48,31 @@ def write_fixture(root: Path, data: dict) -> Path:
 
 def main() -> int:
     current = load_registry(REGISTRY, repo_root=ROOT)
+    profile_ids = current.profile_ids()
     require(
-        current.profile_ids() == ("copilot", "codex", "claude", "gemini", "deepseek"),
-        "current compatibility profile ordering drifted",
+        profile_ids[: len(LEGACY_PROFILE_PREFIX)] == LEGACY_PROFILE_PREFIX,
+        "legacy compatibility profile ordering drifted",
     )
+    compatible_ids = tuple(p.profile_id for p in current.openai_compatible_profiles())
     require(
-        tuple(p.profile_id for p in current.openai_compatible_profiles()) == ("deepseek",),
-        "current compatible-provider classification drifted",
+        compatible_ids[: len(CERTIFIED_COMPATIBLE_PREFIX)] == CERTIFIED_COMPATIBLE_PREFIX,
+        "certified compatible-provider prefix drifted",
     )
     require(
         current.require_worker_workflow("ai-sdlc-gh-aw-worker-deepseek.lock.yml").profile_id
         == "deepseek",
         "worker index lost exact identity",
     )
+    for profile_id in ("qwen", "glm", "minimax"):
+        profile = current.require_profile(profile_id)
+        require(
+            profile.is_openai_compatible and profile.maturity == "experimental",
+            f"{profile_id}: required compatible experimental profile missing",
+        )
+        require(
+            current.require_worker_workflow(profile.worker_workflow).profile_id == profile_id,
+            f"{profile_id}: worker index lost exact identity",
+        )
     expect_invalid(lambda: current.require_profile("not-registered"), "unknown gh-aw engine profile")
     expect_invalid(lambda: current.require_worker_workflow("unregistered.lock.yml"), "not registered")
 
