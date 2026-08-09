@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 11
+revision: 12
 feature:
   id: F-GHAW-PROVIDER-REGISTRY-0001
   title: Generalize gh-aw trusted provider registry and certification pipeline
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: implementation
+  current_stage: code-review
   stages:
   - id: requirement
     status: DONE
@@ -23,9 +23,9 @@ workflow:
   - id: plan
     status: DONE
   - id: implementation
-    status: WORKING
+    status: DONE
   - id: code-review
-    status: TODO
+    status: READY
     gate: code-gate
   - id: verification
     status: TODO
@@ -46,6 +46,10 @@ artifacts:
 - id: plan-v1
   type: plan
   uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/plan.md
+  status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/implementation.md
   status: draft
 gates:
 - id: requirement-gate
@@ -83,4 +87,5 @@ applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-PLAN-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-PLAN-DONE
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-START
-updated_at: '2026-08-09T17:25:00Z'
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-DONE
+updated_at: '2026-08-09T09:56:30Z'
