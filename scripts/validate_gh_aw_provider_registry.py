@@ -106,6 +106,27 @@ def main() -> int:
         registry = write_fixture(root, traversal)
         expect_invalid(lambda: load_registry(registry, repo_root=root), "worker_source")
 
+        duplicate_separator = copy.deepcopy(raw)
+        duplicate_separator["profiles"]["deepseek"]["worker_source"] = (
+            ".github/workflows//ai-sdlc-gh-aw-worker-deepseek.md"
+        )
+        registry = write_fixture(root, duplicate_separator)
+        expect_invalid(lambda: load_registry(registry, repo_root=root), "worker_source")
+
+        dot_segment = copy.deepcopy(raw)
+        dot_segment["profiles"]["deepseek"]["worker_source"] = (
+            ".github/workflows/./ai-sdlc-gh-aw-worker-deepseek.md"
+        )
+        registry = write_fixture(root, dot_segment)
+        expect_invalid(lambda: load_registry(registry, repo_root=root), "worker_source")
+
+        compatible_alias = copy.deepcopy(raw)
+        compatible_alias["profiles"]["deepseek"]["credential_aliases"] = [
+            "DEEPSEEK_COMPAT_API_KEY"
+        ]
+        registry = write_fixture(root, compatible_alias)
+        expect_invalid(lambda: load_registry(registry, repo_root=root), "credential_aliases")
+
         valid_extension = copy.deepcopy(raw)
         valid_extension["profiles"]["fixture-provider"] = {
             "engine": "copilot",
