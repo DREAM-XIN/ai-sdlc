@@ -77,6 +77,16 @@ def load_compiled_worker(
         raise InvalidCompiledWorkerError(
             f"profile {profile.profile_id!r}: compiled worker metadata schema drifted"
         )
+    if metadata.get("agent_id") != profile.engine:
+        raise InvalidCompiledWorkerError(
+            f"profile {profile.profile_id!r}: compiled worker engine identity drifted"
+        )
+    if profile.engine_version is not None:
+        versions = metadata.get("engine_versions")
+        if not isinstance(versions, dict) or versions.get(profile.engine) != profile.engine_version:
+            raise InvalidCompiledWorkerError(
+                f"profile {profile.profile_id!r}: compiled worker engine version drifted"
+            )
     if profile.model is not None and metadata.get("agent_model") != profile.model:
         raise InvalidCompiledWorkerError(
             f"profile {profile.profile_id!r}: compiled worker effective model metadata drifted"
