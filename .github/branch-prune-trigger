@@ -1,5 +1,5 @@
 Public-release merged-branch cleanup trigger.
 
-Revision: 4
+Revision: 5
 
-Adding or changing this file on main intentionally runs the guarded publication branch cleanup. The workflow deletes only known short-lived refs selected by either strict main-ancestry or GitHub merged-PR metadata, while protecting every open PR head/base and long-lived release/bootstrap refs.
+Adding or changing this file on main intentionally runs the guarded publication branch cleanup. PR-metadata cleanup runs before ancestry cleanup, protects all open PR head/base refs, and continues across individual deletion failures so one protected historical ref cannot prevent unrelated safe cleanup.

@@ -33,19 +33,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-      - name: Show ancestry-safe candidates
-        run: bash scripts/prune_merged_branches.sh
-
       - name: Show PR-metadata candidates
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/prune_publication_pr_branches.py
 
-      - name: Delete ancestry-safe merged work branches
-        if: github.event_name == 'push' || inputs.apply == true
-        env:
-          CONFIRM_DELETE_MERGED_BRANCHES: 'yes'
-        run: bash scripts/prune_merged_branches.sh --apply
+      - name: Show ancestry-safe candidates
+        run: bash scripts/prune_merged_branches.sh
 
       - name: Delete merged/superseded PR branches
         if: github.event_name == 'push' || inputs.apply == true
@@ -53,3 +47,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           CONFIRM_DELETE_MERGED_PR_BRANCHES: 'yes'
         run: python scripts/prune_publication_pr_branches.py --apply
+
+      - name: Delete ancestry-safe merged work branches
+        if: always() && (github.event_name == 'push' || inputs.apply == true)
+        env:
+          CONFIRM_DELETE_MERGED_BRANCHES: 'yes'
+        run: bash scripts/prune_merged_branches.sh --apply
