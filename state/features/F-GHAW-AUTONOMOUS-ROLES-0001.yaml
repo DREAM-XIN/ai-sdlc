@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 14
+revision: 15
 feature:
   id: F-GHAW-AUTONOMOUS-ROLES-0001
   title: Add bounded autonomous Reviewer and QA gh-aw roles
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: implementation
+  current_stage: code-review
   stages:
   - id: requirement
     status: DONE
@@ -23,9 +23,9 @@ workflow:
   - id: plan
     status: DONE
   - id: implementation
-    status: WORKING
+    status: DONE
   - id: code-review
-    status: TODO
+    status: READY
     gate: code-gate
   - id: verification
     status: TODO
@@ -62,6 +62,10 @@ artifacts:
 - id: plan-v1
   type: plan
   uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/plan.md
+  status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/implementation.md
   status: draft
 gates:
 - id: requirement-gate
@@ -110,4 +114,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-PLAN-START
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-PLAN-DONE
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-START
-updated_at: '2026-08-09T13:24:30Z'
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-DONE
+updated_at: '2026-08-09T14:11:30Z'
