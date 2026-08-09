@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Audit retained GitHub Actions logs and artifacts before making a repo public.
+"""Audit retained GitHub Actions data before making a repository public.
 
-The script intentionally reports only finding type and location; it never prints
-matched secret values. It expects GITHUB_TOKEN and GITHUB_REPOSITORY.
+The script supports two modes:
+
+* full: enumerate and scan every retained run log/artifact;
+* baseline+delta: trust one reviewed full PASS baseline and scan every run or
+  artifact created/updated since a conservative overlap timestamp.
+
+Reports contain only finding type and location; matched credential values are
+never printed. GITHUB_TOKEN and GITHUB_REPOSITORY are required.
 """
 
 from __future__ import annotations
@@ -13,18 +19,22 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 API_ROOT = "https://api.github.com"
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 MAX_ENTRY_BYTES = 16 * 1024 * 1024
 MAX_NESTED_ZIP_DEPTH = 2
-MAX_WORKERS = 6
+MAX_WORKERS = 3
+MAX_HTTP_ATTEMPTS = 5
+MAX_RETRY_SLEEP_SECONDS = 120
 SENSITIVE_SUFFIXES = {".key", ".p12", ".pfx", ".pem"}
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GitHub classic token", re.compile(r"gh" + r"p_[A-Za-z0-9]{30,}")),
@@ -52,34 +62,171 @@ def request_headers(token: str) -> dict[str, str]:
     }
 
 
+def parse_github_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def item_changed_since(item: Mapping[str, Any], cutoff: datetime) -> bool:
+    timestamps = [
+        parsed
+        for parsed in (
+            parse_github_time(item.get("created_at")),
+            parse_github_time(item.get("updated_at")),
+        )
+        if parsed is not None
+    ]
+    # Missing/unparseable timestamps fail safe by selecting the item.
+    return not timestamps or max(timestamps) >= cutoff
+
+
+def load_baseline(path: Path, repository: str) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("version") != 1:
+        raise ValueError("unsupported public audit baseline version")
+    if payload.get("repository") != repository:
+        raise ValueError("public audit baseline repository does not match GITHUB_REPOSITORY")
+    audit = payload.get("full_actions_audit")
+    if not isinstance(audit, dict):
+        raise ValueError("public audit baseline is missing full_actions_audit")
+    if audit.get("outcome") != "PASS" or audit.get("commit_status_state") != "success":
+        raise ValueError("public audit baseline is not a reviewed successful full audit")
+    commit = audit.get("commit")
+    run_id = audit.get("run_id")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("public audit baseline commit is invalid")
+    if not isinstance(run_id, int) or run_id <= 0:
+        raise ValueError("public audit baseline run_id is invalid")
+    cutoff = parse_github_time(audit.get("incremental_since"))
+    if cutoff is None:
+        raise ValueError("public audit baseline incremental_since is invalid")
+    return {
+        "commit": commit,
+        "run_id": run_id,
+        "incremental_since": cutoff,
+        "incremental_since_text": audit["incremental_since"],
+        "workflow_runs_enumerated": audit.get("workflow_runs_enumerated"),
+        "retained_log_archives_scanned": audit.get("retained_log_archives_scanned"),
+        "retained_artifacts_scanned": audit.get("retained_artifacts_scanned"),
+    }
+
+
+def retry_delay_seconds(
+    status: int,
+    headers: Mapping[str, str],
+    body_text: str,
+    attempt: int,
+    *,
+    now: float | None = None,
+) -> float | None:
+    """Return bounded delay only for clearly transient GitHub failures."""
+
+    now_value = time.time() if now is None else now
+    retry_after = headers.get("Retry-After")
+    remaining = headers.get("X-RateLimit-Remaining")
+    reset = headers.get("X-RateLimit-Reset")
+    message = body_text.lower()
+    rate_limited = (
+        bool(retry_after)
+        or remaining == "0"
+        or "secondary rate limit" in message
+        or "rate limit exceeded" in message
+        or ("rate limit" in message and status == 403)
+    )
+    retryable = status in {429, 500, 502, 503, 504} or (status == 403 and rate_limited)
+    if not retryable or attempt >= MAX_HTTP_ATTEMPTS - 1:
+        return None
+
+    delay = float(min(2**attempt, 16))
+    if retry_after:
+        try:
+            delay = max(delay, float(retry_after))
+        except ValueError:
+            pass
+    if remaining == "0" and reset:
+        try:
+            delay = max(delay, float(reset) - now_value + 1.0)
+        except ValueError:
+            pass
+    return max(0.0, min(delay, float(MAX_RETRY_SLEEP_SECONDS)))
+
+
+def safe_http_error_kind(prefix: str, error: BaseException) -> str:
+    if isinstance(error, urllib.error.HTTPError):
+        return f"{prefix}: HTTP {error.code}"
+    return f"{prefix}: {type(error).__name__}"
+
+
 def github_json(repository: str, token: str, path: str) -> dict[str, Any]:
     url = f"{API_ROOT}/repos/{repository}{path}"
-    req = urllib.request.Request(url, headers=request_headers(token))
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.load(response)
+    for attempt in range(MAX_HTTP_ATTEMPTS):
+        req = urllib.request.Request(url, headers=request_headers(token))
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            body_text = error.read().decode("utf-8", errors="ignore")
+            delay = retry_delay_seconds(error.code, error.headers, body_text, attempt)
+            if delay is None:
+                raise
+            print(
+                f"GitHub API transient HTTP {error.code}; bounded retry "
+                f"{attempt + 2}/{MAX_HTTP_ATTEMPTS}.",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except urllib.error.URLError:
+            if attempt >= MAX_HTTP_ATTEMPTS - 1:
+                raise
+            time.sleep(float(min(2**attempt, 16)))
+    raise RuntimeError("GitHub JSON request retry loop exhausted")
 
 
 def download_github_archive(repository: str, token: str, path: str) -> bytes | None:
     url = f"{API_ROOT}/repos/{repository}{path}"
-    req = urllib.request.Request(url, headers=request_headers(token))
     opener = urllib.request.build_opener(NoRedirect)
-    try:
-        response = opener.open(req, timeout=60)
-    except urllib.error.HTTPError as error:
-        if error.code in {404, 410}:
-            return None
-        if error.code not in {301, 302, 303, 307, 308}:
-            raise
-        location = error.headers.get("Location")
-        if not location:
-            raise
-        response = urllib.request.urlopen(location, timeout=60)
-
-    with response:
-        data = response.read(MAX_DOWNLOAD_BYTES + 1)
-    if len(data) > MAX_DOWNLOAD_BYTES:
-        raise ValueError(f"download exceeds {MAX_DOWNLOAD_BYTES} bytes")
-    return data
+    for attempt in range(MAX_HTTP_ATTEMPTS):
+        req = urllib.request.Request(url, headers=request_headers(token))
+        try:
+            try:
+                response = opener.open(req, timeout=60)
+            except urllib.error.HTTPError as error:
+                if error.code in {404, 410}:
+                    return None
+                if error.code in {301, 302, 303, 307, 308}:
+                    location = error.headers.get("Location")
+                    if not location:
+                        raise
+                    response = urllib.request.urlopen(location, timeout=60)
+                else:
+                    body_text = error.read().decode("utf-8", errors="ignore")
+                    delay = retry_delay_seconds(error.code, error.headers, body_text, attempt)
+                    if delay is None:
+                        raise
+                    print(
+                        f"GitHub archive endpoint transient HTTP {error.code}; bounded retry "
+                        f"{attempt + 2}/{MAX_HTTP_ATTEMPTS}.",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+            with response:
+                data = response.read(MAX_DOWNLOAD_BYTES + 1)
+            if len(data) > MAX_DOWNLOAD_BYTES:
+                raise ValueError(f"download exceeds {MAX_DOWNLOAD_BYTES} bytes")
+            return data
+        except urllib.error.URLError:
+            if attempt >= MAX_HTTP_ATTEMPTS - 1:
+                raise
+            time.sleep(float(min(2**attempt, 16)))
+    raise RuntimeError("GitHub archive request retry loop exhausted")
 
 
 def paged_items(repository: str, token: str, path: str, key: str) -> list[dict[str, Any]]:
@@ -103,13 +250,11 @@ def scan_text(text: str, location: str) -> list[dict[str, str | int]]:
     for label, pattern in PATTERNS:
         match = pattern.search(text)
         if match:
-            findings.append(
-                {
-                    "location": location,
-                    "line": text.count("\n", 0, match.start()) + 1,
-                    "kind": label,
-                }
-            )
+            findings.append({
+                "location": location,
+                "line": text.count("\n", 0, match.start()) + 1,
+                "kind": label,
+            })
     return findings
 
 
@@ -118,8 +263,7 @@ def scan_zip_bytes(data: bytes, location: str, depth: int = 0) -> list[dict[str,
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
-        text = data.decode("utf-8", errors="ignore")
-        return scan_text(text, location)
+        return scan_text(data.decode("utf-8", errors="ignore"), location)
 
     with archive:
         for info in archive.infolist():
@@ -146,8 +290,8 @@ def scan_run_log(repository: str, token: str, run_id: int) -> tuple[int, int, li
     location = f"run:{run_id}:logs"
     try:
         data = download_github_archive(repository, token, f"/actions/runs/{run_id}/logs")
-    except (ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
-        return 0, 0, [{"location": location, "line": 0, "kind": f"log audit error: {type(error).__name__}"}]
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        return 0, 0, [{"location": location, "line": 0, "kind": safe_http_error_kind("log audit error", error)}]
     if data is None:
         return 0, 1, []
     return 1, 0, scan_zip_bytes(data, location)
@@ -164,8 +308,8 @@ def scan_artifact(repository: str, token: str, artifact: dict[str, Any]) -> tupl
         return 0, 0, [{"location": location, "line": 0, "kind": f"artifact exceeds {MAX_DOWNLOAD_BYTES} bytes and was not scanned"}]
     try:
         data = download_github_archive(repository, token, f"/actions/artifacts/{artifact_id}/zip")
-    except (ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
-        return 0, 0, [{"location": location, "line": 0, "kind": f"artifact audit error: {type(error).__name__}"}]
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        return 0, 0, [{"location": location, "line": 0, "kind": safe_http_error_kind("artifact audit error", error)}]
     if data is None:
         return 0, 1, []
     return 1, 0, scan_zip_bytes(data, location)
@@ -176,22 +320,36 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         "# Public release historical Actions audit",
         "",
         f"**Outcome:** `{report['outcome']}`",
+        f"**Mode:** `{report['mode']}`",
         "",
-        f"- Workflow runs enumerated: {report['workflow_runs_enumerated']}",
+    ]
+    if report.get("baseline_commit"):
+        lines.extend([
+            f"- Trusted full baseline commit: `{report['baseline_commit']}`",
+            f"- Trusted full baseline run: `{report['baseline_run_id']}`",
+            f"- Incremental overlap begins: `{report['incremental_since']}`",
+        ])
+    lines.extend([
+        f"- Workflow runs in current inventory: {report['workflow_runs_enumerated']}",
+        f"- Workflow runs selected for archive scan: {report['workflow_runs_selected']}",
         f"- Retained run log archives scanned: {report['run_logs_scanned']}",
         f"- Run logs unavailable/expired: {report['run_logs_unavailable']}",
-        f"- Artifacts enumerated: {report['artifacts_enumerated']}",
+        f"- Artifacts in current inventory: {report['artifacts_enumerated']}",
+        f"- Artifacts selected for archive scan: {report['artifacts_selected']}",
         f"- Retained artifacts scanned: {report['artifacts_scanned']}",
         f"- Expired artifacts skipped: {report['artifacts_expired']}",
         "",
-    ]
+    ])
     if report["findings"]:
         lines.extend(["## Blocking findings", ""])
         for finding in report["findings"]:
             line = f":{finding['line']}" if finding.get("line") else ""
             lines.append(f"- `{finding['location']}{line}` — {finding['kind']}")
     else:
-        lines.append("No retained Actions log or artifact credential findings were detected.")
+        if report["mode"] == "baseline+delta":
+            lines.append("Trusted full baseline plus the selected post-baseline Actions delta contain no blocking findings.")
+        else:
+            lines.append("No retained Actions log or artifact credential findings were detected.")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -199,6 +357,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json-output", type=Path, default=Path("public-actions-audit.json"))
     parser.add_argument("--markdown-output", type=Path, default=Path("public-actions-audit.md"))
+    parser.add_argument("--baseline-file", type=Path)
     args = parser.parse_args()
 
     repository = os.environ.get("GITHUB_REPOSITORY", "")
@@ -208,22 +367,51 @@ def main() -> int:
         return 2
 
     findings: list[dict[str, str | int]] = []
-    runs = paged_items(repository, token, "/actions/runs", "workflow_runs")
+    baseline: dict[str, Any] | None = None
+    if args.baseline_file:
+        try:
+            baseline = load_baseline(args.baseline_file, repository)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            findings.append({
+                "location": str(args.baseline_file),
+                "line": 0,
+                "kind": f"invalid full Actions audit baseline: {type(error).__name__}",
+            })
+
+    runs: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    try:
+        runs = paged_items(repository, token, "/actions/runs", "workflow_runs")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        findings.append({"location": "actions:runs", "line": 0, "kind": safe_http_error_kind("workflow-run enumeration error", error)})
+    try:
+        artifacts = paged_items(repository, token, "/actions/artifacts", "artifacts")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        findings.append({"location": "actions:artifacts", "line": 0, "kind": safe_http_error_kind("artifact enumeration error", error)})
+
+    mode = "baseline+delta" if baseline is not None else "full"
+    if baseline is not None:
+        cutoff = baseline["incremental_since"]
+        selected_runs = [item for item in runs if item_changed_since(item, cutoff)]
+        selected_artifacts = [item for item in artifacts if item_changed_since(item, cutoff)]
+    else:
+        selected_runs = runs
+        selected_artifacts = artifacts
+
     logs_scanned = 0
     logs_unavailable = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in runs]
+        futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in selected_runs]
         for future in as_completed(futures):
             scanned, unavailable, run_findings = future.result()
             logs_scanned += scanned
             logs_unavailable += unavailable
             findings.extend(run_findings)
 
-    artifacts = paged_items(repository, token, "/actions/artifacts", "artifacts")
     artifacts_scanned = 0
     artifacts_expired = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in artifacts]
+        futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in selected_artifacts]
         for future in as_completed(futures):
             scanned, expired, artifact_findings = future.result()
             artifacts_scanned += scanned
@@ -232,10 +420,16 @@ def main() -> int:
 
     report: dict[str, Any] = {
         "outcome": "BLOCKED" if findings else "PASS",
+        "mode": mode,
+        "baseline_commit": baseline["commit"] if baseline else None,
+        "baseline_run_id": baseline["run_id"] if baseline else None,
+        "incremental_since": baseline["incremental_since_text"] if baseline else None,
         "workflow_runs_enumerated": len(runs),
+        "workflow_runs_selected": len(selected_runs),
         "run_logs_scanned": logs_scanned,
         "run_logs_unavailable": logs_unavailable,
         "artifacts_enumerated": len(artifacts),
+        "artifacts_selected": len(selected_artifacts),
         "artifacts_scanned": artifacts_scanned,
         "artifacts_expired": artifacts_expired,
         "findings": findings,
@@ -244,8 +438,11 @@ def main() -> int:
     write_markdown(args.markdown_output, report)
 
     print(
-        f"Historical Actions audit {report['outcome']}: "
-        f"{len(runs)} runs, {logs_scanned} retained log archives, {artifacts_scanned} retained artifacts scanned."
+        f"Historical Actions audit {report['outcome']} ({mode}): "
+        f"{len(runs)} runs in inventory / {len(selected_runs)} selected, "
+        f"{logs_scanned} retained log archives scanned; "
+        f"{len(artifacts)} artifacts in inventory / {len(selected_artifacts)} selected, "
+        f"{artifacts_scanned} retained artifacts scanned."
     )
     return 1 if findings else 0
 
