@@ -16,8 +16,8 @@ CROSS_REPO_PREFLIGHT = ROOT / ".github/workflows/ai-sdlc-gh-aw-cross-repo-prefli
 CROSS_REPO_GATEWAY = ROOT / ".github/workflows/ai-sdlc-gh-aw-cross-repo-dispatch.yml"
 COMMAND_BRIDGE = ROOT / "templates/github/ai-sdlc-command.yml"
 
-# Test-only compatibility snapshot. Generic preflight execution iterates the Registry.
-COMPATIBILITY_BASELINE = {
+# Test-only legacy compatibility snapshot. Generic preflight execution iterates the Registry.
+LEGACY_COMPATIBILITY_BASELINE = {
     "copilot": ("native", "native", "reference"),
     "codex": ("native", "native", "reference"),
     "claude": ("native", "native", "reference"),
@@ -48,10 +48,18 @@ def require(condition: bool, message: str) -> None:
 
 def validate_provider_preflight() -> None:
     registry = load_registry()
+    profiles = {profile.profile_id: profile for profile in registry.profiles}
     require(
-        set(registry.profile_ids()) == set(COMPATIBILITY_BASELINE),
-        "existing preflight compatibility profile set drifted",
+        set(LEGACY_COMPATIBILITY_BASELINE).issubset(profiles),
+        "legacy preflight compatibility profile missing",
     )
+    for profile_id, expected in LEGACY_COMPATIBILITY_BASELINE.items():
+        profile = profiles[profile_id]
+        require(
+            (profile.provider, profile.protocol, profile.maturity) == expected,
+            f"{profile_id}: legacy compatibility identity/maturity drifted",
+        )
+
     for profile in registry.profiles:
         missing = run(profile.profile_id, False)
         require(
@@ -69,74 +77,41 @@ def validate_provider_preflight() -> None:
             f"{profile.profile_id}: valid lock + credential must reach entitlement probe readiness",
         )
         require(
-            present.get("compiler_version") == "v0.83.4"
-            and present.get("lock_strict") is True,
+            present.get("compiler_version") == "v0.83.4" and present.get("lock_strict") is True,
             f"{profile.profile_id}: preflight must verify pinned strict compiler metadata",
         )
         require(
             present.get("entitlement_verified") is False,
             f"{profile.profile_id}: credential presence must not imply provider entitlement",
         )
-        expected_provider, expected_protocol, expected_maturity = COMPATIBILITY_BASELINE[
-            profile.profile_id
-        ]
         require(
-            (
-                present.get("provider"),
-                present.get("protocol"),
-                present.get("maturity"),
-            )
-            == (expected_provider, expected_protocol, expected_maturity),
-            f"{profile.profile_id}: compatibility identity/maturity drifted",
+            (present.get("provider"), present.get("protocol"), present.get("maturity"))
+            == (profile.provider, profile.protocol, profile.maturity),
+            f"{profile.profile_id}: Registry-driven identity/maturity drifted",
         )
 
     text = WORKFLOW.read_text(encoding="utf-8")
     require("permissions:\n  contents: read" in text, "preflight workflow must remain repository read-only")
-    for forbidden in (
-        "gh workflow run ai-sdlc-gh-aw-dispatch",
-        "contents: write",
-        "state/features/",
-        "state/events/",
-    ):
-        require(
-            forbidden not in text,
-            f"preflight workflow contains forbidden mutation/dispatch marker: {forbidden}",
-        )
+    for forbidden in ("gh workflow run ai-sdlc-gh-aw-dispatch", "contents: write", "state/features/", "state/events/"):
+        require(forbidden not in text, f"preflight workflow contains forbidden mutation/dispatch marker: {forbidden}")
     for profile in registry.profiles:
-        credential_markers = (profile.credential, *profile.credential_aliases)
-        for credential in credential_markers:
+        for credential in (profile.credential, *profile.credential_aliases):
             require(
                 f"secrets.{credential} != ''" in text,
                 f"preflight workflow must test credential presence without exposing values: {credential}",
             )
-    require(
-        "READY_FOR_ENTITLEMENT_PROBE" in text,
-        "preflight workflow must explain entitlement remains unverified",
-    )
-    require(
-        "rate-limit headroom" in text,
-        "preflight workflow must not imply static checks prove provider rate-limit capacity",
-    )
+    require("READY_FOR_ENTITLEMENT_PROBE" in text, "preflight workflow must explain entitlement remains unverified")
+    require("rate-limit headroom" in text, "preflight workflow must not imply static checks prove provider rate-limit capacity")
 
 
 def validate_cross_repo_preflight() -> None:
     registry = load_registry()
     target = parse_repository("DREAM-XIN/private-target")
     require(
-        target
-        == {
-            "repository": "DREAM-XIN/private-target",
-            "owner": "DREAM-XIN",
-            "repo_name": "private-target",
-        },
+        target == {"repository": "DREAM-XIN/private-target", "owner": "DREAM-XIN", "repo_name": "private-target"},
         "cross-repo repository parser lost exact identity",
     )
-    for invalid in (
-        "private-target",
-        "DREAM-XIN/../private-target",
-        "DREAM-XIN/private target",
-        "/private-target",
-    ):
+    for invalid in ("private-target", "DREAM-XIN/../private-target", "DREAM-XIN/private target", "/private-target"):
         try:
             parse_repository(invalid)
         except ValueError:
@@ -146,10 +121,7 @@ def validate_cross_repo_preflight() -> None:
 
     for profile in registry.profiles:
         result = validate_worker_workflow(profile.worker_workflow)
-        require(
-            result.get("profile") == profile.profile_id,
-            f"{profile.profile_id}: registered worker lookup lost exact profile identity",
-        )
+        require(result.get("profile") == profile.profile_id, f"{profile.profile_id}: registered worker lookup lost exact profile identity")
     for untrusted in ("validate.yml", "ai-sdlc-gh-aw-result.yml", "../worker.yml"):
         try:
             validate_worker_workflow(untrusted)
@@ -159,24 +131,11 @@ def validate_cross_repo_preflight() -> None:
             fail(f"unregistered worker workflow was accepted: {untrusted}")
 
     preflight = CROSS_REPO_PREFLIGHT.read_text(encoding="utf-8")
-    require(
-        "permissions:\n  contents: read" in preflight,
-        "cross-repo runtime preflight must remain control-repository read-only",
-    )
+    require("permissions:\n  contents: read" in preflight, "cross-repo runtime preflight must remain control-repository read-only")
     input_block = preflight.split("inputs:", 1)[1].split("permissions:", 1)[0]
     require("target_repository:" in input_block, "cross-repo preflight target repository input missing")
-    for forbidden in (
-        "provider",
-        "model",
-        "engine_profile",
-        "worker_workflow",
-        "target_ref",
-        "manifest_path",
-    ):
-        require(
-            forbidden not in input_block,
-            f"cross-repo runtime preflight exposes forbidden input: {forbidden}",
-        )
+    for forbidden in ("provider", "model", "engine_profile", "worker_workflow", "target_ref", "manifest_path"):
+        require(forbidden not in input_block, f"cross-repo runtime preflight exposes forbidden input: {forbidden}")
     for marker in (
         "vars.AI_SDLC_RUNTIME_APP_CLIENT_ID != ''",
         "secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != ''",
@@ -196,26 +155,14 @@ def validate_cross_repo_preflight() -> None:
         "state/events/",
         "gh workflow run",
     ):
-        require(
-            forbidden not in preflight,
-            f"cross-repo runtime preflight contains forbidden mutation/dispatch marker: {forbidden}",
-        )
+        require(forbidden not in preflight, f"cross-repo runtime preflight contains forbidden mutation/dispatch marker: {forbidden}")
 
     gateway = CROSS_REPO_GATEWAY.read_text(encoding="utf-8")
-    require(
-        "scripts/gh_aw_cross_repo_runtime.py worker" in gateway,
-        "cross-repo gateway does not bind worker_workflow to trusted registry",
-    )
-    require(
-        "scripts/gh_aw_cross_repo_runtime.py target" in gateway,
-        "cross-repo gateway does not use shared repository identity validation",
-    )
+    require("scripts/gh_aw_cross_repo_runtime.py worker" in gateway, "cross-repo gateway does not bind worker_workflow to trusted registry")
+    require("scripts/gh_aw_cross_repo_runtime.py target" in gateway, "cross-repo gateway does not use shared repository identity validation")
     config_index = gateway.find("Validate trusted Runtime App configuration")
     token_index = gateway.find("Mint exact-target read token")
-    require(
-        config_index >= 0 and token_index >= 0 and config_index < token_index,
-        "Runtime App configuration must fail before target token mint",
-    )
+    require(config_index >= 0 and token_index >= 0 and config_index < token_index, "Runtime App configuration must fail before target token mint")
     for marker in (
         "MISSING_RUNTIME_APP_CLIENT_ID",
         "MISSING_RUNTIME_APP_PRIVATE_KEY",
@@ -226,18 +173,8 @@ def validate_cross_repo_preflight() -> None:
 
     command = COMMAND_BRIDGE.read_text(encoding="utf-8")
     gh_aw_syntax = next(line for line in command.splitlines() if "gh_aw = re.fullmatch" in line)
-    for forbidden in (
-        "provider=",
-        "model=",
-        "engine_profile=",
-        "credential=",
-        "worker_workflow=",
-        "policy=",
-    ):
-        require(
-            forbidden not in gh_aw_syntax,
-            f"target command surface exposes forbidden runtime selector: {forbidden}",
-        )
+    for forbidden in ("provider=", "model=", "engine_profile=", "credential=", "worker_workflow=", "policy="):
+        require(forbidden not in gh_aw_syntax, f"target command surface exposes forbidden runtime selector: {forbidden}")
 
 
 def main() -> int:
