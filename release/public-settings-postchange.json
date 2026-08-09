@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-09T14:13:00+08:00",
+  "source": "operator-confirmed post-public GitHub settings",
+  "repository": {
+    "visibility": "public",
+    "default_branch": "main"
+  },
+  "actions": {
+    "default_workflow_permissions": "read repository contents and packages",
+    "allow_actions_create_and_approve_pull_requests": true,
+    "require_full_length_action_sha": true,
+    "repository_variables_count": 0,
+    "environment_variables_count": 0
+  },
+  "branch_ruleset": {
+    "name": "main-protection",
+    "enforcement": "active",
+    "target": "default branch",
+    "bypass_list": "empty",
+    "restrict_deletions": true,
+    "block_force_pushes": true,
+    "require_pull_request_before_merging": true,
+    "required_approvals": 0,
+    "require_conversation_resolution": true,
+    "require_status_checks": true,
+    "required_status_checks": [
+      "required-pr-gate"
+    ],
+    "require_branches_up_to_date": true,
+    "require_linear_history": false,
+    "require_signed_commits": false
+  },
+  "notes": [
+    "No secret values, variable values, or environment names are recorded in this snapshot.",
+    "The required-pr-gate workflow is configured to run for every pull request and aggregates protocol and cross-repository control validation.",
+    "This snapshot records the operator-confirmed settings after the repository was made public."
+  ]
+}
