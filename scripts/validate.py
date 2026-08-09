@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 from evaluate_gate import evaluate
 from render_task_package import build_package
 from validate_artifact_event_lifecycle import main as validate_artifact_event_lifecycle
+from validate_gh_aw_autonomous_roles import main as validate_gh_aw_autonomous_roles
 from validate_gh_aw_profile_routing import main as validate_gh_aw_profile_routing
 from validate_remediation_review_completion import main as validate_remediation_review_completion
 from validate_transition import validate_schema as validate_execution_schema
@@ -46,6 +47,12 @@ def validate_with_schema(data, schema_path: Path, label: str):
 def validate_schemas():
     errors = []
     for path in sorted(SPEC.glob("*.schema.json")):
+        schema = load_json(path)
+        try:
+            Draft202012Validator.check_schema(schema)
+        except Exception as exc:
+            errors.append(f"{path.relative_to(ROOT)}: {exc}")
+    for path in sorted((ROOT / "runtimes" / "gh-aw").glob("*-result.schema.json")):
         schema = load_json(path)
         try:
             Draft202012Validator.check_schema(schema)
@@ -192,6 +199,7 @@ def main():
     validate_artifact_event_lifecycle()
     validate_remediation_review_completion()
     validate_gh_aw_profile_routing()
+    validate_gh_aw_autonomous_roles()
     errors = (
         validate_schemas()
         + validate_profiles()
