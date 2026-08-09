@@ -18,7 +18,6 @@ import json
 import os
 import subprocess
 import sys
-import urllib.parse
 import urllib.request
 from typing import Any, Iterable
 
@@ -138,8 +137,9 @@ def list_remote_branches(remote: str) -> list[str]:
     return branches
 
 
-def delete_branch(remote: str, branch: str) -> None:
-    subprocess.run(["git", "push", remote, "--delete", branch], check=True)
+def delete_branch(remote: str, branch: str) -> bool:
+    completed = subprocess.run(["git", "push", remote, "--delete", branch], check=False)
+    return completed.returncode == 0
 
 
 def self_test() -> None:
@@ -244,10 +244,22 @@ def main() -> int:
         print("refusing deletion: set CONFIRM_DELETE_MERGED_PR_BRANCHES=yes", file=sys.stderr)
         return 2
 
+    failed: list[str] = []
+    deleted = 0
     for branch in candidates:
         print(f"Deleting {args.remote}/{branch}")
-        delete_branch(args.remote, branch)
-    print(f"Deleted {len(candidates)} PR-metadata publication branches.")
+        if delete_branch(args.remote, branch):
+            deleted += 1
+        else:
+            failed.append(branch)
+            print(f"FAILED to delete {args.remote}/{branch}", file=sys.stderr)
+
+    print(f"Deleted {deleted} PR-metadata publication branches.")
+    if failed:
+        print(f"Failed deletions ({len(failed)}):", file=sys.stderr)
+        for branch in failed:
+            print(f"  {branch}", file=sys.stderr)
+        return 2
     return 0
 
 
