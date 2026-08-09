@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 13
+revision: 14
 feature:
   id: F-GHAW-PROVIDER-REGISTRY-0001
   title: Generalize gh-aw trusted provider registry and certification pipeline
@@ -33,7 +33,18 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Fix CR-MAJOR-1 credential-alias false readiness for OpenAI-compatible
+    profiles and CR-MINOR-1 raw worker_source normalization validation; add deterministic
+    negative fixtures and rerun required PR-head CI.
+  target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
+  status: TODO
+  runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -75,6 +86,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/design-review.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review.md
 applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-DONE
@@ -89,4 +104,5 @@ applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-DONE
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-START
-updated_at: '2026-08-09T10:00:00Z'
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-REWORK
+updated_at: '2026-08-09T10:05:00Z'
