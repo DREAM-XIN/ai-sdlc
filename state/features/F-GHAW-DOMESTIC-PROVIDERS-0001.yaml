@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 8
+revision: 9
 feature:
   id: F-GHAW-DOMESTIC-PROVIDERS-0001
   title: Add and certify Qwen, GLM, and MiniMax gh-aw provider profiles
@@ -43,7 +43,7 @@ tasks:
     worker sources before they exist, while preserving default fail-closed source-existence
     validation for check/read/execution consumers; add deterministic positive and
     negative tests to the design.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -85,4 +85,5 @@ applied_events:
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-DONE
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-REVIEW-START
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-REVIEW-REWORK
-updated_at: '2026-08-09T11:09:00Z'
+- EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-REMEDIATION-START
+updated_at: '2026-08-09T11:10:00Z'
