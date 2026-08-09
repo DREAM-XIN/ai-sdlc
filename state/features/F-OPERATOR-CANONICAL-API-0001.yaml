@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 13
+revision: 14
 feature:
   id: F-OPERATOR-CANONICAL-API-0001
   title: Implement v0.3 canonical typed Operator API foundation
@@ -7,7 +7,7 @@ feature:
   issue: '#208'
 workflow:
   profile: standard-feature
-  status: ACTIVE
+  status: BLOCKED
   current_stage: code-review
   stages:
   - id: requirement
@@ -25,7 +25,7 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: WORKING
+    status: BLOCKED
     gate: code-gate
   - id: verification
     status: TODO
@@ -33,7 +33,18 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: remediation-code-review-v1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: 'Fix MAJOR-1: bind system.capabilities response to the strict capability
+    discovery schema; restrict availability reasons to safe bounded codes; add negative
+    tests for malformed discovery rows/cardinality/ids and unsafe reason leakage;
+    rerun exact-head validation and CI.'
+  target_pr: '#209'
+  status: READY
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -61,7 +72,9 @@ gates:
   evidence:
   - evidence-design-review-v1
 - id: code-gate
-  status: PENDING
+  status: FAIL
+  evidence:
+  - evidence-code-review-v1
 - id: verification-gate
   status: PENDING
 - id: release-gate
@@ -79,6 +92,10 @@ evidence:
   type: verification
   status: pass
   uri: docs/features/F-OPERATOR-CANONICAL-API-0001/evidence/implementation-verification.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-review.md
 applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-REQ-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-REQ-DONE
@@ -93,4 +110,5 @@ applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-IMPL-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-IMPL-DONE
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-START
-updated_at: '2026-08-09T20:06:00Z'
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-REWORK
+updated_at: '2026-08-09T20:12:00Z'
