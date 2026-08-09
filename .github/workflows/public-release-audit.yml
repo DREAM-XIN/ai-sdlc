@@ -9,6 +9,7 @@ on:
       - 'scripts/validate_public_history.py'
       - 'scripts/audit_public_actions_history.py'
       - 'scripts/validate_public_release_audit_examples.py'
+      - 'release/public-release-audit-baseline.json'
       - '.github/workflows/public-release-audit.yml'
       - 'docs/public-release-readiness.md'
   pull_request:
@@ -16,6 +17,7 @@ on:
       - 'scripts/validate_public_history.py'
       - 'scripts/audit_public_actions_history.py'
       - 'scripts/validate_public_release_audit_examples.py'
+      - 'release/public-release-audit-baseline.json'
       - '.github/workflows/public-release-audit.yml'
       - 'docs/public-release-readiness.md'
 
@@ -72,13 +74,14 @@ jobs:
             --json-output public-history-audit.json \
             --markdown-output public-history-audit.md
 
-      - name: Audit retained Actions logs and artifacts
+      - name: Audit Actions delta from reviewed full baseline
         id: actions_audit
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/audit_public_actions_history.py \
+            --baseline-file release/public-release-audit-baseline.json \
             --json-output public-actions-audit.json \
             --markdown-output public-actions-audit.md
 
@@ -115,9 +118,7 @@ jobs:
             echo "**${DECISION}**"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # These reports contain only finding type and location, never matched
-          # credential values. Print them on failure so a BLOCKED run can be
-          # diagnosed from retained job logs without exposing secrets.
+          # Reports contain only finding type and location, never matched values.
           if [[ "$HISTORY_OUTCOME" != 'success' && -f public-history-audit.md ]]; then
             echo '--- redacted full-history findings ---'
             cat public-history-audit.md
