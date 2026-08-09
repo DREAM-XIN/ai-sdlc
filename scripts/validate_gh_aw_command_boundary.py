@@ -15,20 +15,26 @@ def main():
     command = COMMAND.read_text(encoding="utf-8")
     gateway = PROFILE_GATEWAY.read_text(encoding="utf-8")
 
-    # The maintenance command is a control-plane/runtime entrypoint. It may identify
-    # Feature state and routing policy, but it must not accept or resolve provider,
-    # model, engine profile, credential, or compiled-worker details.
+    # The maintenance command may identify Feature state and routing policy, but it
+    # must never accept provider/model/profile/credential/compiled-worker identity.
     for forbidden in (
         "worker=",
         "worker_workflow",
         "engine_profile=",
+        "provider=",
+        "model=",
+        "credential=",
         "DEEPSEEK",
         "OPENAI_API_KEY",
+        "CODEX_API_KEY",
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
         "COPILOT_GITHUB_TOKEN",
     ):
-        require(forbidden not in command, f"gh-aw command leaked execution-plane selector/credential: {forbidden}")
+        require(
+            forbidden not in command,
+            f"gh-aw command leaked execution-plane selector/credential: {forbidden}",
+        )
 
     require("target_ref=" in command, "gh-aw command lost Feature target ref")
     require("manifest=" in command, "gh-aw command lost Manifest selector")
@@ -42,12 +48,16 @@ def main():
         "control-plane command must not override the profile gateway's trusted default/selection policy",
     )
 
-    # Provider/model selection remains in the execution plane behind the trusted
-    # registry-backed profile gateway.
     require("engine_profile:" in gateway, "profile gateway lost trusted engine-profile input")
-    require("scripts/resolve_gh_aw_engine.py" in gateway, "profile gateway bypasses trusted profile registry")
+    require(
+        "scripts/resolve_gh_aw_engine.py" in gateway,
+        "profile gateway bypasses trusted profile registry",
+    )
     require("worker_workflow=" in gateway, "profile gateway no longer resolves the compiled worker")
-    require("ai-sdlc-gh-aw-dispatch.yml" in gateway, "profile gateway no longer hands off to core runtime gateway")
+    require(
+        "ai-sdlc-gh-aw-dispatch.yml" in gateway,
+        "profile gateway no longer hands off to core runtime gateway",
+    )
 
     print("gh-aw command/runtime/provider boundary checks passed")
 
