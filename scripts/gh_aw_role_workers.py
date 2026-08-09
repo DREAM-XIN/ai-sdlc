@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-from gh_aw_provider_registry import load_registry
+from gh_aw_provider_registry import RegistryValidationError, load_registry
 from gh_aw_profile_routing import load_routing_policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +59,7 @@ def load_role_workers(path: Path = DEFAULT_PATH):
         raise RoleWorkerError("role-worker registry must contain workers")
 
     profiles = load_registry()
-    routing = load_routing_policy()
+    routing = load_routing_policy(registry=profiles)
     allowed_profiles = {
         (rule.role, rule.stage): tuple(rule.candidates)
         for rule in routing.rules
@@ -81,8 +81,10 @@ def load_role_workers(path: Path = DEFAULT_PATH):
             raise RoleWorkerError(f"unsupported autonomous Gate role/stage: {key[0]}/{key[1]}")
         if row["id"] in seen_ids or triple in seen_keys:
             raise RoleWorkerError("duplicate role-worker identity")
-        if row["profile"] not in profiles.profiles:
-            raise RoleWorkerError(f"unknown profile: {row['profile']}")
+        try:
+            profiles.require_profile(row["profile"])
+        except RegistryValidationError as exc:
+            raise RoleWorkerError(f"unknown profile: {row['profile']}") from exc
         if row["profile"] not in allowed_profiles.get(key, ()):
             raise RoleWorkerError(f"profile {row['profile']} is not allowed by trusted routing for {key[0]}/{key[1]}")
         if not _safe_source(row["worker_source"]) or not _safe_workflow(row["worker_workflow"]):
