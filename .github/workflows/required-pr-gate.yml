@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  required-pr-gate:
+  protocol-validation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -15,13 +15,149 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
-      - name: Run stable required PR gate
+      - name: Run complete protocol validation suite
         run: |
           python scripts/validate_public_readiness.py
           python scripts/validate.py
+          python scripts/validate_feature_examples.py
+          python scripts/validate_orchestrator_examples.py
+          python scripts/validate_dispatch_examples.py
+          python scripts/validate_feature_transition.py
+          python scripts/validate_github_persistence.py
+          python scripts/validate_feature_event_push_resolution.py
+          python scripts/validate_pr_lifecycle_events.py
+          python scripts/validate_bootstrap_inbox.py
+          python scripts/validate_commander.py
+          python scripts/validate_github_commander_transport.py
           python scripts/validate_github_workflow_security.py
+          python scripts/validate_project_adapter.py
           python scripts/validate_target_installation_examples.py
           python scripts/validate_cross_repo_transport.py
+          python scripts/validate_cross_repo_gh_aw_dispatch.py
           python scripts/validate_git_write_precondition.py
           python scripts/validate_action_security.py
+          python scripts/validate_gh_aw_adapter.py
+          python scripts/validate_gh_aw_feature_context.py
+          python scripts/validate_gh_aw_workflow_security.py
+          python scripts/validate_gh_aw_engine_profiles.py
+          python scripts/validate_gh_aw_effective_model_metadata.py
+          python scripts/validate_gh_aw_command_boundary.py
+          python scripts/validate_gh_aw_runtime_preflight.py
           python scripts/validate_release_readiness.py
+
+  cross-repo-control-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Prepare target fixture
+        shell: bash
+        run: |
+          mkdir -p tmp-install/.ai-sdlc tmp-install/.github/workflows tmp-install/docs
+          cp examples/project-adapters/generic.yaml tmp-install/.ai-sdlc/project.yaml
+          printf '# Agent rules\n' > tmp-install/AGENTS.md
+          printf '# Contributing\n' > tmp-install/CONTRIBUTING.md
+          printf '# Sample app\n' > tmp-install/README.md
+          printf '# Architecture\n' > tmp-install/docs/architecture.md
+          cat > tmp-install/.github/workflows/ai-sdlc-plan.yml <<'YAML'
+          name: fixture
+          jobs:
+            plan:
+              steps:
+                - uses: DREAM-XIN/ai-sdlc/.github/actions/control@0123456789abcdef0123456789abcdef01234567
+          YAML
+      - name: Validate target installation through shared control action
+        id: installation
+        uses: ./.github/actions/control
+        with:
+          operation: validate-installation
+          repository: example/sample-app
+          default_branch: main
+          workspace_path: tmp-install
+      - name: Verify installation result
+        shell: bash
+        run: |
+          test "${{ steps.installation.outputs.exit_code }}" = "0"
+          grep -q '"outcome": "READY"' "tmp-install/${{ steps.installation.outputs.installation_report_path }}"
+      - name: Prepare lifecycle fixture
+        shell: bash
+        run: |
+          mkdir -p .ai-sdlc state/features state/events/F-0050
+          cp examples/project-adapters/generic.yaml .ai-sdlc/project.yaml
+      - name: Bootstrap through shared control action
+        id: bootstrap
+        uses: ./.github/actions/control
+        with:
+          operation: bootstrap
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+          bootstrap_path: examples/cross-repo-target/bootstrap.yaml
+          persist: 'false'
+          default_branch: main
+      - name: Materialize bootstrap artifact
+        shell: bash
+        run: |
+          test "${{ steps.bootstrap.outputs.exit_code }}" = "0"
+          cp "${{ steps.bootstrap.outputs.bootstrap_manifest_path }}" state/features/F-0050.yaml
+          grep -q 'revision: 0' state/features/F-0050.yaml
+      - name: Plan through shared control action
+        id: plan
+        uses: ./.github/actions/control
+        with:
+          operation: plan
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+      - name: Verify plan result
+        shell: bash
+        run: |
+          test "${{ steps.plan.outputs.exit_code }}" = "0"
+          grep -q '"outcome": "DISPATCH"' "${{ steps.plan.outputs.commander_plan_path }}"
+      - name: Create Feature Event
+        shell: bash
+        run: |
+          cat > state/events/F-0050/EVT-F0050-REQ-START.yaml <<'YAML'
+          version: 0.1.0
+          id: EVT-F0050-REQ-START
+          feature_id: F-0050
+          expected_revision: 0
+          occurred_at: '2026-08-07T13:07:00Z'
+          changes:
+            - kind: stage
+              id: requirement
+              status: WORKING
+          YAML
+      - name: Persist through shared control action in dry-run mode
+        id: persist
+        uses: ./.github/actions/control
+        with:
+          operation: persist
+          repository: DREAM-XIN/ai-sdlc
+          target_ref: test-cross-repo
+          manifest_path: state/features/F-0050.yaml
+          event_path: state/events/F-0050/EVT-F0050-REQ-START.yaml
+          feature_issue: '50'
+          persist: 'false'
+          default_branch: main
+      - name: Verify persistence result
+        shell: bash
+        run: |
+          test "${{ steps.persist.outputs.exit_code }}" = "0"
+          grep -q 'EVT-F0050-REQ-START' state/features/F-0050.yaml
+          grep -q 'revision: 1' state/features/F-0050.yaml
+
+  required-pr-gate:
+    if: ${{ always() }}
+    needs:
+      - protocol-validation
+      - cross-repo-control-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce required PR gate
+        shell: bash
+        env:
+          PROTOCOL_RESULT: ${{ needs.protocol-validation.result }}
+          CROSS_REPO_RESULT: ${{ needs.cross-repo-control-validation.result }}
+        run: |
+          test "$PROTOCOL_RESULT" = "success"
+          test "$CROSS_REPO_RESULT" = "success"
