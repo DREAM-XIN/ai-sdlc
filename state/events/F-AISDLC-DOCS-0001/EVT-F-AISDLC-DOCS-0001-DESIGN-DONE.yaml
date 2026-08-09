@@ -1,0 +1,18 @@
+version: 0.1.0
+id: EVT-F-AISDLC-DOCS-0001-DESIGN-DONE
+feature_id: F-AISDLC-DOCS-0001
+expected_revision: 5
+occurred_at: '2026-08-09T07:47:00Z'
+changes:
+- kind: artifact-record
+  record:
+    id: design-v1
+    type: design
+    uri: docs/features/F-AISDLC-DOCS-0001/design.md
+    status: draft
+- kind: stage
+  id: design
+  status: DONE
+- kind: stage
+  id: design-review
+  status: READY
