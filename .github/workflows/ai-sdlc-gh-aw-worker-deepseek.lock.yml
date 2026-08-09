@@ -167,7 +167,7 @@ jobs:
           GH_AW_INFO_AWMG_VERSION: ""
           GH_AW_INFO_FIREWALL_TYPE: "squid"
           GH_AW_COMPILED_STRICT: "true"
-          GH_AW_INFO_MODEL_COSTS: '{"providers":{"github-copilot":{"models":{"deepseek-chat":{"cost":{"input":"2.9e-07","output":"4.3e-07"}}}}}}'
+          GH_AW_INFO_MODEL_COSTS: '{"providers":{"github-copilot":{"models":{"deepseek-chat":{"cost":{"cache_read":"5.0000000000000004e-08","input":"1.0000000000000001e-07","output":"4.25e-07"}}}}}}'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
