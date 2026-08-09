@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 
@@ -120,6 +122,13 @@ def main():
             actual == expected,
             f"{profile.profile_id}: committed worker source drifted from deterministic renderer",
         )
+
+    for command in (
+        [sys.executable, str(ROOT / "scripts/validate_gh_aw_provider_registry.py")],
+        [sys.executable, str(RENDERER), "--all", "--check"],
+        [sys.executable, str(ROOT / "scripts/render_gh_aw_profile_surfaces.py"), "--check"],
+    ):
+        subprocess.run(command, cwd=ROOT, check=True)
 
     print(
         "gh-aw profiles preserve registry-driven trust, backward compatibility, "
