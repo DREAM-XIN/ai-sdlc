@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-REWORK
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 7
+occurred_at: '2026-08-09T13:14:10Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-design-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-review.md
+- kind: task-record
+  record:
+    id: F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-1
+    kind: remediation
+    stage: design
+    role: architect
+    source_stage: design-review
+    feedback: Define a deterministic draft implementation-candidate artifact produced by trusted autonomous Developer result persistence, bind it to PR/head evidence, preserve/manual coexistence and supersession semantics, and make Reviewer PASS resolve/approve that trusted candidate artifact without hard-coded implementation artifact ids.
+    status: TODO
+    runtime: manual
