@@ -2,7 +2,15 @@ version: 0.1.0
 routes:
   - id: gh-aw-autonomous-developer
     priority: 100
-    match: {role: developer}
+    match: {role: developer, stage: implementation}
+    runtime: {id: gh-aw, mode: autonomous}
+  - id: gh-aw-autonomous-code-reviewer
+    priority: 100
+    match: {role: reviewer, stage: code-review}
+    runtime: {id: gh-aw, mode: autonomous}
+  - id: gh-aw-autonomous-qa
+    priority: 100
+    match: {role: qa, stage: verification}
     runtime: {id: gh-aw, mode: autonomous}
   - id: manual-product
     priority: 10
@@ -37,3 +45,17 @@ task_templates:
     forbidden_scope: [Do not expand product or architecture scope without durable approval]
     expected_outputs: [code changes, tests, implementation evidence]
     definition_of_done: [Assigned work-unit DoD is satisfied, Required tests pass, Deviations from design are recorded]
+  code-review:
+    goal: Independently review the immutable implementation candidate against approved requirement, design, plan and the code-review rubric.
+    read: [Feature Issue, approved requirement, approved design, work-unit plan, implementation candidate, implementation evidence, gates/review-rubrics.yaml]
+    allowed_scope: [Read-only review of the trusted immutable implementation candidate]
+    forbidden_scope: [Do not edit source or lifecycle state, Do not implement remediation, Do not merge or release]
+    expected_outputs: [structured code-review recommendation, review evidence]
+    definition_of_done: [BLOCKER and MAJOR findings are explicit, Candidate identity is recorded, Verdict is PASS REWORK or BLOCKED]
+  verification:
+    goal: Independently verify the immutable reviewed candidate against approved acceptance criteria and deterministic checks.
+    read: [Feature Issue, approved requirement, approved design, reviewed implementation candidate, code-review evidence, CI evidence]
+    allowed_scope: [Read-only verification of the trusted immutable reviewed candidate]
+    forbidden_scope: [Do not edit source or lifecycle state, Do not implement fixes, Do not approve release-gate]
+    expected_outputs: [structured verification recommendation, verification evidence]
+    definition_of_done: [Acceptance coverage maps to evidence, Required checks are recorded, Verdict is PASS FAIL or BLOCKED]

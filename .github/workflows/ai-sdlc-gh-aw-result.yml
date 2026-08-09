@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   result:
@@ -62,6 +63,7 @@ jobs:
           owner: ${{ steps.target.outputs.owner }}
           repositories: ${{ steps.target.outputs.repo_name }}
           permission-contents: write
+          permission-pull-requests: read
 
       - name: Resolve target default branch
         id: default_branch
@@ -138,6 +140,66 @@ jobs:
           print(f'manifest_path=state/features/{feature}.yaml')
           print(f'event_path=state/events/{feature}/{event_id}.yaml')
           PY
+
+      - name: Resolve trusted implementation candidate
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ steps.target.outputs.repository }}
+        run: |
+          set -euo pipefail
+          read -r status pr_url < <(python - <<'PY'
+          import json
+          result = json.load(open('gh-aw-worker-result.json'))
+          pulls = [a.get('uri') for a in result.get('artifacts', []) if a.get('type') == 'pull-request']
+          if result.get('status') != 'COMPLETED':
+              print(result.get('status', ''), '')
+          elif len(pulls) != 1:
+              raise SystemExit('COMPLETED gh-aw Developer result must contain exactly one pull-request artifact')
+          else:
+              print('COMPLETED', pulls[0])
+          PY
+          )
+          if [ "$status" != "COMPLETED" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          prefix="https://github.com/$TARGET_REPOSITORY/pull/"
+          case "$pr_url" in
+            "$prefix"*) ;;
+            *) echo "worker pull-request artifact is outside trusted target repository" >&2; exit 2 ;;
+          esac
+          pr_number="${pr_url#${prefix}}"
+          if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
+            echo "worker pull-request artifact is not a canonical PR URL" >&2
+            exit 2
+          fi
+          canonical=$(gh api "repos/$TARGET_REPOSITORY/pulls/$pr_number" --jq '.html_url')
+          head_sha=$(gh api "repos/$TARGET_REPOSITORY/pulls/$pr_number" --jq '.head.sha')
+          test "$canonical" = "$pr_url"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "present=true" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Bind trusted candidate to proposed Event
+        if: ${{ steps.candidate.outputs.present == 'true' }}
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
+          TARGET_REPOSITORY: ${{ steps.target.outputs.repository }}
+          PR_NUMBER: ${{ steps.candidate.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.candidate.outputs.head_sha }}
+        run: |
+          test -f "workspace/$MANIFEST_PATH"
+          python runtime/scripts/gh_aw_candidate_event.py \
+            "workspace/$MANIFEST_PATH" proposed-event.yaml \
+            --repository "$TARGET_REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --output proposed-event.with-candidate.yaml
+          mv proposed-event.with-candidate.yaml proposed-event.yaml
 
       - name: Build persistence plan
         shell: bash

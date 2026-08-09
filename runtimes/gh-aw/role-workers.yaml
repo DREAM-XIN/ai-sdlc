@@ -1,0 +1,26 @@
+version: 0.1.0
+workers:
+  - id: code-review-reviewer-claude
+    role: reviewer
+    stage: code-review
+    profile: claude
+    worker_source: .github/workflows/ai-sdlc-gh-aw-reviewer-claude.md
+    worker_workflow: ai-sdlc-gh-aw-reviewer-claude.lock.yml
+  - id: code-review-reviewer-copilot
+    role: reviewer
+    stage: code-review
+    profile: copilot
+    worker_source: .github/workflows/ai-sdlc-gh-aw-reviewer-copilot.md
+    worker_workflow: ai-sdlc-gh-aw-reviewer-copilot.lock.yml
+  - id: verification-qa-gemini
+    role: qa
+    stage: verification
+    profile: gemini
+    worker_source: .github/workflows/ai-sdlc-gh-aw-qa-gemini.md
+    worker_workflow: ai-sdlc-gh-aw-qa-gemini.lock.yml
+  - id: verification-qa-copilot
+    role: qa
+    stage: verification
+    profile: copilot
+    worker_source: .github/workflows/ai-sdlc-gh-aw-qa-copilot.md
+    worker_workflow: ai-sdlc-gh-aw-qa-copilot.lock.yml

@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-GHAW-AUTONOMOUS-ROLES-0001
+  title: Add bounded autonomous Reviewer and QA gh-aw roles
+  risk: high
+  issue: '#202'
+profile: standard-feature
+created_at: '2026-08-09T12:58:48Z'

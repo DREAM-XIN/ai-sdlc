@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-DONE
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 18
+occurred_at: '2026-08-09T14:31:30Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-remediation-v1
+    type: implementation
+    status: pass
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/code-remediation.md
+- kind: task
+  id: F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-1
+  status: DONE

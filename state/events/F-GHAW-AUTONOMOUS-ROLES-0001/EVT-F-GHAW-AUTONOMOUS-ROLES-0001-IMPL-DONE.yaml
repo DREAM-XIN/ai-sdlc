@@ -1,0 +1,18 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-DONE
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 14
+occurred_at: '2026-08-09T14:12:00Z'
+changes:
+- kind: artifact-record
+  record:
+    id: implementation-v1
+    type: implementation
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/implementation.md
+    status: draft
+- kind: stage
+  id: implementation
+  status: DONE
+- kind: stage
+  id: code-review
+  status: READY

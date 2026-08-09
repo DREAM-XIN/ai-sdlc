@@ -1,0 +1,24 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-DONE
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 9
+occurred_at: '2026-08-09T13:17:45Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-design-remediation-v1
+    type: implementation
+    status: pass
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-remediation.md
+- kind: artifact
+  id: design-v1
+  status: superseded
+- kind: artifact-record
+  record:
+    id: design-v2
+    type: design
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-v2.md
+    status: draft
+- kind: task
+  id: F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-1
+  status: DONE

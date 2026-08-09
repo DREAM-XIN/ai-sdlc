@@ -1,0 +1,20 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-ACCEPTANCE-PASS
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 23
+occurred_at: '2026-08-09T14:48:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-acceptance-v1
+    type: acceptance
+    status: pass
+    uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/acceptance.md
+- kind: gate
+  id: release-gate
+  status: PASS
+  evidence:
+  - evidence-acceptance-v1
+- kind: stage
+  id: acceptance
+  status: DONE

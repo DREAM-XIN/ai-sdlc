@@ -1,0 +1,168 @@
+protocol_version: 0.1.0
+revision: 24
+feature:
+  id: F-GHAW-AUTONOMOUS-ROLES-0001
+  title: Add bounded autonomous Reviewer and QA gh-aw roles
+  risk: high
+  issue: '#202'
+workflow:
+  profile: standard-feature
+  status: DONE
+  current_stage: acceptance
+  stages:
+  - id: requirement
+    status: DONE
+  - id: requirement-review
+    status: DONE
+    gate: requirement-gate
+  - id: design
+    status: DONE
+  - id: design-review
+    status: DONE
+    gate: design-gate
+  - id: plan
+    status: DONE
+  - id: implementation
+    status: DONE
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: DONE
+    gate: verification-gate
+  - id: acceptance
+    status: DONE
+    gate: release-gate
+tasks:
+- id: F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-1
+  kind: remediation
+  stage: design
+  role: architect
+  source_stage: design-review
+  feedback: Define a deterministic draft implementation-candidate artifact produced
+    by trusted autonomous Developer result persistence, bind it to PR/head evidence,
+    preserve/manual coexistence and supersession semantics, and make Reviewer PASS
+    resolve/approve that trusted candidate artifact without hard-coded implementation
+    artifact ids.
+  status: DONE
+  runtime: manual
+- id: F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Bind autonomous Gate-result ingestion to the exact trusted role-worker
+    execution provenance. Carry trusted task identity into the Gate worker, pass exact
+    control-repository Actions run/workflow identity to the collector, verify that
+    run/workflow against the trusted role-worker registry before accepting the Safe
+    Output comment, validate result task_id against trusted dispatch identity, and
+    add wrong-task/wrong-run/wrong-workflow/Bot-comment-only fail-closed regressions
+    without changing candidate SHA, read-only worker, provider routing, Developer
+    compatibility, or Gate authority semantics.
+  status: DONE
+  runtime: manual
+artifacts:
+- id: requirement-v1
+  type: requirement
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/requirement.md
+  status: approved
+- id: design-v1
+  type: design
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design.md
+  status: superseded
+- id: design-v2
+  type: design
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-v2.md
+  status: approved
+- id: plan-v1
+  type: plan
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/plan.md
+  status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/implementation.md
+  status: approved
+gates:
+- id: requirement-gate
+  status: PASS
+  evidence:
+  - evidence-requirement-review-v1
+- id: design-gate
+  status: PASS
+  evidence:
+  - evidence-design-review-v2
+- id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v2
+- id: verification-gate
+  status: PASS
+  evidence:
+  - evidence-verification-v1
+- id: release-gate
+  status: PASS
+  evidence:
+  - evidence-acceptance-v1
+evidence:
+- id: evidence-requirement-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-review.md
+- id: evidence-design-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-remediation.md
+- id: evidence-design-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-review-v2.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/code-remediation.md
+- id: evidence-code-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/code-review-v2.md
+- id: evidence-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/verification.md
+- id: evidence-acceptance-v1
+  type: acceptance
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/acceptance.md
+applied_events:
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-DONE
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-REVIEW-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-REVIEW-PASS
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-DONE
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-REWORK
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-DONE
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-PASS
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-PLAN-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-PLAN-DONE
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-IMPL-DONE
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-REWORK
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-DONE
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-PASS
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-VERIFICATION-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-VERIFICATION-PASS
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-ACCEPTANCE-START
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-ACCEPTANCE-PASS
+updated_at: '2026-08-09T14:48:30Z'

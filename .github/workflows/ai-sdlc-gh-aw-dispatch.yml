@@ -209,6 +209,7 @@ jobs:
     permissions:
       contents: write
       actions: write
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout trusted control plane
@@ -311,6 +312,25 @@ jobs:
             gh-aw-dispatch-plan.json
             start-event.yaml
             start-persistence-plan.json
+      - name: Verify Gate candidate head immediately before dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr=$(python - <<'PY'
+          import json
+          d=json.load(open('gh-aw-dispatch-plan.json'))['plan']['dispatches'][0]
+          print(d.get('inputs',{}).get('candidate_pr_number',''))
+          PY
+          )
+          if [[ -z "$pr" ]]; then
+            python runtime/scripts/gh_aw_candidate_dispatch_guard.py gh-aw-dispatch-plan.json
+            exit 0
+          fi
+          current_head=$(gh api "repos/$REPOSITORY/pulls/$pr" --jq '.head.sha')
+          python runtime/scripts/gh_aw_candidate_dispatch_guard.py gh-aw-dispatch-plan.json --current-head-sha "$current_head"
       - name: Dispatch compiled gh-aw worker from trusted default branch
         shell: bash
         env:
