@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 16
+revision: 17
 feature:
   id: F-AISDLC-DOCS-0001
   title: AI-SDLC end-user documentation and getting-started guide
@@ -31,7 +31,7 @@ workflow:
     status: DONE
     gate: verification-gate
   - id: acceptance
-    status: READY
+    status: WORKING
     gate: release-gate
 tasks: []
 artifacts:
@@ -104,4 +104,5 @@ applied_events:
 - EVT-F-AISDLC-DOCS-0001-CODE-REVIEW-PASS
 - EVT-F-AISDLC-DOCS-0001-VERIFICATION-START
 - EVT-F-AISDLC-DOCS-0001-VERIFICATION-PASS
+- EVT-F-AISDLC-DOCS-0001-ACCEPTANCE-START
 updated_at: '2026-08-09T08:00:00Z'
