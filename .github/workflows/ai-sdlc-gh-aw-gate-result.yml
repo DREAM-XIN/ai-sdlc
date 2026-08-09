@@ -276,6 +276,22 @@ jobs:
             proposed-event.yaml
             persistence-plan.json
 
+      - name: Re-check candidate head before lifecycle persistence
+        if: ${{ inputs.persist }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
+          CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
+        run: |
+          set -euo pipefail
+          current_head=$(gh api "repos/$TARGET_REPOSITORY/pulls/$CANDIDATE_PR_NUMBER" --jq '.head.sha')
+          if [[ "$current_head" != "$CANDIDATE_HEAD_SHA" ]]; then
+            echo "candidate PR head moved during Gate collection; refusing to persist a stale verdict" >&2
+            exit 2
+          fi
+
       - name: Persist validated Gate result
         if: ${{ inputs.persist }}
         shell: bash
