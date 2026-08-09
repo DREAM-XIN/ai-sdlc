@@ -43,7 +43,7 @@ def main():
     require("'--ref', os.environ['DEFAULT_BRANCH']" in dispatch, "compiled worker is not dispatched from trusted default branch")
     require("'--ref', dispatch['ref']" not in dispatch, "compiled worker still trusts Feature-branch dispatch ref")
     require('test -f "runtime/.github/workflows/$WORKER_WORKFLOW"' in dispatch, "trusted worker workflow existence is not checked")
-    require("AI-SDLC intentionally does not guess a rollback/block transition here" in dispatch, "dispatch failure semantics are no longer explicit/fail-closed")
+    require("subprocess.run(cmd, check=True)" in dispatch, "worker transport failure is not propagated as a failing trusted job")
     require("status: BLOCKED" not in dispatch, "dispatch workflow guesses a BLOCKED lifecycle transition after transport failure")
 
     require("permissions:\n  contents: write" in result, "gh-aw result intake lacks explicit write envelope")
