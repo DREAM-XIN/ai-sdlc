@@ -140,7 +140,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          existing_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null || true)
+          existing_sha=''
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > tag-ref.json 2> tag-ref.err; then
+            existing_sha=$(jq -er '.object.sha' tag-ref.json)
+          else
+            status=$(jq -r '.status // empty' tag-ref.json 2>/dev/null || true)
+            if [[ "$status" != "404" ]]; then
+              cat tag-ref.err >&2 || true
+              cat tag-ref.json >&2 || true
+              exit 2
+            fi
+          fi
+
           if [[ -n "$existing_sha" && "$existing_sha" != "$BASELINE_SHA" ]]; then
             echo "Tag $TAG already exists at $existing_sha, expected $BASELINE_SHA" >&2
             exit 2
