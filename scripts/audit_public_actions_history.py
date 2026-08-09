@@ -13,18 +13,21 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 API_ROOT = "https://api.github.com"
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 MAX_ENTRY_BYTES = 16 * 1024 * 1024
 MAX_NESTED_ZIP_DEPTH = 2
-MAX_WORKERS = 6
+MAX_WORKERS = 3
+MAX_HTTP_ATTEMPTS = 5
+MAX_RETRY_SLEEP_SECONDS = 120
 SENSITIVE_SUFFIXES = {".key", ".p12", ".pfx", ".pem"}
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GitHub classic token", re.compile(r"gh" + r"p_[A-Za-z0-9]{30,}")),
@@ -52,34 +55,124 @@ def request_headers(token: str) -> dict[str, str]:
     }
 
 
+def retry_delay_seconds(
+    status: int,
+    headers: Mapping[str, str],
+    body_text: str,
+    attempt: int,
+    *,
+    now: float | None = None,
+) -> float | None:
+    """Return a bounded retry delay only for clearly transient HTTP failures.
+
+    A plain permission-denied 403 is never retried. A 403 is retryable only
+    when GitHub exposes rate-limit evidence through Retry-After,
+    X-RateLimit-Remaining=0, or the standard rate-limit error message.
+    """
+
+    now_value = time.time() if now is None else now
+    retry_after = headers.get("Retry-After")
+    remaining = headers.get("X-RateLimit-Remaining")
+    reset = headers.get("X-RateLimit-Reset")
+    message = body_text.lower()
+    rate_limited = (
+        bool(retry_after)
+        or remaining == "0"
+        or "secondary rate limit" in message
+        or "rate limit exceeded" in message
+        or "rate limit" in message and status == 403
+    )
+
+    retryable = status in {429, 500, 502, 503, 504} or (status == 403 and rate_limited)
+    if not retryable or attempt >= MAX_HTTP_ATTEMPTS - 1:
+        return None
+
+    delay = float(min(2**attempt, 16))
+    if retry_after:
+        try:
+            delay = max(delay, float(retry_after))
+        except ValueError:
+            pass
+    if remaining == "0" and reset:
+        try:
+            delay = max(delay, float(reset) - now_value + 1.0)
+        except ValueError:
+            pass
+    return max(0.0, min(delay, float(MAX_RETRY_SLEEP_SECONDS)))
+
+
+def safe_http_error_kind(prefix: str, error: BaseException) -> str:
+    if isinstance(error, urllib.error.HTTPError):
+        return f"{prefix}: HTTP {error.code}"
+    return f"{prefix}: {type(error).__name__}"
+
+
 def github_json(repository: str, token: str, path: str) -> dict[str, Any]:
     url = f"{API_ROOT}/repos/{repository}{path}"
-    req = urllib.request.Request(url, headers=request_headers(token))
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.load(response)
+    for attempt in range(MAX_HTTP_ATTEMPTS):
+        req = urllib.request.Request(url, headers=request_headers(token))
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            body_text = error.read().decode("utf-8", errors="ignore")
+            delay = retry_delay_seconds(error.code, error.headers, body_text, attempt)
+            if delay is None:
+                raise
+            print(
+                f"GitHub API transient HTTP {error.code}; retrying request after bounded backoff "
+                f"(attempt {attempt + 2}/{MAX_HTTP_ATTEMPTS}).",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except urllib.error.URLError:
+            if attempt >= MAX_HTTP_ATTEMPTS - 1:
+                raise
+            time.sleep(float(min(2**attempt, 16)))
+    raise RuntimeError("GitHub JSON request retry loop exhausted")
 
 
 def download_github_archive(repository: str, token: str, path: str) -> bytes | None:
     url = f"{API_ROOT}/repos/{repository}{path}"
-    req = urllib.request.Request(url, headers=request_headers(token))
     opener = urllib.request.build_opener(NoRedirect)
-    try:
-        response = opener.open(req, timeout=60)
-    except urllib.error.HTTPError as error:
-        if error.code in {404, 410}:
-            return None
-        if error.code not in {301, 302, 303, 307, 308}:
-            raise
-        location = error.headers.get("Location")
-        if not location:
-            raise
-        response = urllib.request.urlopen(location, timeout=60)
 
-    with response:
-        data = response.read(MAX_DOWNLOAD_BYTES + 1)
-    if len(data) > MAX_DOWNLOAD_BYTES:
-        raise ValueError(f"download exceeds {MAX_DOWNLOAD_BYTES} bytes")
-    return data
+    for attempt in range(MAX_HTTP_ATTEMPTS):
+        req = urllib.request.Request(url, headers=request_headers(token))
+        try:
+            try:
+                response = opener.open(req, timeout=60)
+            except urllib.error.HTTPError as error:
+                if error.code in {404, 410}:
+                    return None
+                if error.code in {301, 302, 303, 307, 308}:
+                    location = error.headers.get("Location")
+                    if not location:
+                        raise
+                    response = urllib.request.urlopen(location, timeout=60)
+                else:
+                    body_text = error.read().decode("utf-8", errors="ignore")
+                    delay = retry_delay_seconds(error.code, error.headers, body_text, attempt)
+                    if delay is None:
+                        raise
+                    print(
+                        f"GitHub archive endpoint transient HTTP {error.code}; retrying after bounded backoff "
+                        f"(attempt {attempt + 2}/{MAX_HTTP_ATTEMPTS}).",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+
+            with response:
+                data = response.read(MAX_DOWNLOAD_BYTES + 1)
+            if len(data) > MAX_DOWNLOAD_BYTES:
+                raise ValueError(f"download exceeds {MAX_DOWNLOAD_BYTES} bytes")
+            return data
+        except urllib.error.URLError:
+            if attempt >= MAX_HTTP_ATTEMPTS - 1:
+                raise
+            time.sleep(float(min(2**attempt, 16)))
+
+    raise RuntimeError("GitHub archive request retry loop exhausted")
 
 
 def paged_items(repository: str, token: str, path: str, key: str) -> list[dict[str, Any]]:
@@ -146,8 +239,8 @@ def scan_run_log(repository: str, token: str, run_id: int) -> tuple[int, int, li
     location = f"run:{run_id}:logs"
     try:
         data = download_github_archive(repository, token, f"/actions/runs/{run_id}/logs")
-    except (ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
-        return 0, 0, [{"location": location, "line": 0, "kind": f"log audit error: {type(error).__name__}"}]
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        return 0, 0, [{"location": location, "line": 0, "kind": safe_http_error_kind("log audit error", error)}]
     if data is None:
         return 0, 1, []
     return 1, 0, scan_zip_bytes(data, location)
@@ -164,8 +257,8 @@ def scan_artifact(repository: str, token: str, artifact: dict[str, Any]) -> tupl
         return 0, 0, [{"location": location, "line": 0, "kind": f"artifact exceeds {MAX_DOWNLOAD_BYTES} bytes and was not scanned"}]
     try:
         data = download_github_archive(repository, token, f"/actions/artifacts/{artifact_id}/zip")
-    except (ValueError, urllib.error.HTTPError, urllib.error.URLError) as error:
-        return 0, 0, [{"location": location, "line": 0, "kind": f"artifact audit error: {type(error).__name__}"}]
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        return 0, 0, [{"location": location, "line": 0, "kind": safe_http_error_kind("artifact audit error", error)}]
     if data is None:
         return 0, 1, []
     return 1, 0, scan_zip_bytes(data, location)
@@ -195,6 +288,32 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_report(
+    args: argparse.Namespace,
+    *,
+    runs: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
+    logs_scanned: int,
+    logs_unavailable: int,
+    artifacts_scanned: int,
+    artifacts_expired: int,
+    findings: list[dict[str, str | int]],
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "outcome": "BLOCKED" if findings else "PASS",
+        "workflow_runs_enumerated": len(runs),
+        "run_logs_scanned": logs_scanned,
+        "run_logs_unavailable": logs_unavailable,
+        "artifacts_enumerated": len(artifacts),
+        "artifacts_scanned": artifacts_scanned,
+        "artifacts_expired": artifacts_expired,
+        "findings": findings,
+    }
+    args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_markdown(args.markdown_output, report)
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json-output", type=Path, default=Path("public-actions-audit.json"))
@@ -208,40 +327,61 @@ def main() -> int:
         return 2
 
     findings: list[dict[str, str | int]] = []
-    runs = paged_items(repository, token, "/actions/runs", "workflow_runs")
+    runs: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+
+    # Enumerate both collections before the high-volume archive downloads. This
+    # ensures a later transient throttle cannot prevent the audit from knowing
+    # the complete retained run/artifact inventory.
+    try:
+        runs = paged_items(repository, token, "/actions/runs", "workflow_runs")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        findings.append({
+            "location": "actions:runs",
+            "line": 0,
+            "kind": safe_http_error_kind("workflow-run enumeration error", error),
+        })
+    try:
+        artifacts = paged_items(repository, token, "/actions/artifacts", "artifacts")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
+        findings.append({
+            "location": "actions:artifacts",
+            "line": 0,
+            "kind": safe_http_error_kind("artifact enumeration error", error),
+        })
+
     logs_scanned = 0
     logs_unavailable = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in runs]
-        for future in as_completed(futures):
-            scanned, unavailable, run_findings = future.result()
-            logs_scanned += scanned
-            logs_unavailable += unavailable
-            findings.extend(run_findings)
+    if runs:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in runs]
+            for future in as_completed(futures):
+                scanned, unavailable, run_findings = future.result()
+                logs_scanned += scanned
+                logs_unavailable += unavailable
+                findings.extend(run_findings)
 
-    artifacts = paged_items(repository, token, "/actions/artifacts", "artifacts")
     artifacts_scanned = 0
     artifacts_expired = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in artifacts]
-        for future in as_completed(futures):
-            scanned, expired, artifact_findings = future.result()
-            artifacts_scanned += scanned
-            artifacts_expired += expired
-            findings.extend(artifact_findings)
+    if artifacts:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in artifacts]
+            for future in as_completed(futures):
+                scanned, expired, artifact_findings = future.result()
+                artifacts_scanned += scanned
+                artifacts_expired += expired
+                findings.extend(artifact_findings)
 
-    report: dict[str, Any] = {
-        "outcome": "BLOCKED" if findings else "PASS",
-        "workflow_runs_enumerated": len(runs),
-        "run_logs_scanned": logs_scanned,
-        "run_logs_unavailable": logs_unavailable,
-        "artifacts_enumerated": len(artifacts),
-        "artifacts_scanned": artifacts_scanned,
-        "artifacts_expired": artifacts_expired,
-        "findings": findings,
-    }
-    args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    write_markdown(args.markdown_output, report)
+    report = write_report(
+        args,
+        runs=runs,
+        artifacts=artifacts,
+        logs_scanned=logs_scanned,
+        logs_unavailable=logs_unavailable,
+        artifacts_scanned=artifacts_scanned,
+        artifacts_expired=artifacts_expired,
+        findings=findings,
+    )
 
     print(
         f"Historical Actions audit {report['outcome']}: "
