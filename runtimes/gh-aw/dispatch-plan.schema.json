@@ -43,6 +43,8 @@
               "target_ref": {"type": "string", "minLength": 1},
               "stage": {"type": "string", "minLength": 1},
               "role": {"type": "string", "minLength": 1},
+              "candidate_pr_number": {"type": "integer", "minimum": 1},
+              "candidate_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "task_payload": {"type": "string", "minLength": 2}
             },
             "additionalProperties": false
@@ -51,12 +53,39 @@
             "type": "object",
             "required": ["contract", "event_path_prefix"],
             "properties": {
-              "contract": {"const": "gh-aw-worker-result-v0.1"},
+              "contract": {"enum": ["gh-aw-worker-result-v0.1", "ai-sdlc-gh-aw-reviewer-result-v0.1", "ai-sdlc-gh-aw-qa-result-v0.1"]},
               "event_path_prefix": {"type": "string", "pattern": "^state/events/[^/]+/$"}
             },
             "additionalProperties": false
           }
         },
+        "allOf": [
+          {
+            "if": {"properties": {"role": {"const": "reviewer"}, "stage": {"const": "code-review"}}, "required": ["role", "stage"]},
+            "then": {
+              "properties": {
+                "inputs": {"required": ["candidate_pr_number", "candidate_head_sha"]},
+                "expected_result": {"properties": {"contract": {"const": "ai-sdlc-gh-aw-reviewer-result-v0.1"}}}
+              }
+            }
+          },
+          {
+            "if": {"properties": {"role": {"const": "qa"}, "stage": {"const": "verification"}}, "required": ["role", "stage"]},
+            "then": {
+              "properties": {
+                "inputs": {"required": ["candidate_pr_number", "candidate_head_sha"]},
+                "expected_result": {"properties": {"contract": {"const": "ai-sdlc-gh-aw-qa-result-v0.1"}}}
+              }
+            }
+          },
+          {
+            "if": {"not": {"anyOf": [
+              {"properties": {"role": {"const": "reviewer"}, "stage": {"const": "code-review"}}, "required": ["role", "stage"]},
+              {"properties": {"role": {"const": "qa"}, "stage": {"const": "verification"}}, "required": ["role", "stage"]}
+            ]}},
+            "then": {"properties": {"expected_result": {"properties": {"contract": {"const": "gh-aw-worker-result-v0.1"}}}}}
+          }
+        ],
         "additionalProperties": false
       }
     }
