@@ -65,31 +65,64 @@ def build_candidate_artifacts(repository: str, pr_number: int, head_sha: str):
     ]
 
 
+def _candidate_pr(item: dict):
+    if item.get("type") != "implementation":
+        return None
+    try:
+        return _github_parts(item["uri"], PR_RE, "candidate PR")
+    except (KeyError, CandidateError):
+        return None
+
+
 def resolve_current_candidate(manifest: dict, *, status: str) -> Candidate:
+    """Resolve one current candidate without hard-coding an implementation artifact id.
+
+    Autonomous candidates use the deterministic implementation-candidate/head id pair.
+    A manual candidate is also eligible when its implementation artifact is explicitly
+    bound to a canonical PR URL and exactly one same-status implementation-head artifact
+    in the same repository supplies the immutable SHA. Documentation-only implementation
+    artifacts are intentionally not inferred as PR candidates.
+    """
     if status not in {"draft", "approved"}:
         raise CandidateError("candidate status must be draft or approved")
     artifacts = [item for item in manifest.get("artifacts", []) if isinstance(item, dict)]
     candidates = [
         item for item in artifacts
-        if item.get("type") == "implementation"
-        and item.get("status") == status
-        and str(item.get("id", "")).startswith(CANDIDATE_PREFIX)
+        if item.get("status") == status and _candidate_pr(item) is not None
     ]
     if len(candidates) != 1:
         raise CandidateError(
-            f"expected exactly one current {status} implementation candidate, found {len(candidates)}"
+            f"expected exactly one current {status} PR-bound implementation candidate, found {len(candidates)}"
         )
 
     candidate = candidates[0]
     owner, repo, pr_number = _github_parts(candidate["uri"], PR_RE, "candidate PR")
-    suffix = candidate["id"][len(CANDIDATE_PREFIX):]
-    head_id = f"{HEAD_PREFIX}{suffix}"
-    heads = [
-        item for item in artifacts
-        if item.get("type") == "implementation-head"
-        and item.get("status") == status
-        and item.get("id") == head_id
-    ]
+    candidate_id = str(candidate.get("id", ""))
+    heads = []
+    if candidate_id.startswith(CANDIDATE_PREFIX):
+        suffix = candidate_id[len(CANDIDATE_PREFIX):]
+        head_id = f"{HEAD_PREFIX}{suffix}"
+        heads = [
+            item for item in artifacts
+            if item.get("type") == "implementation-head"
+            and item.get("status") == status
+            and item.get("id") == head_id
+        ]
+    else:
+        # Manual candidate compatibility is explicit, not inferred from a file artifact:
+        # the implementation artifact must already point at the candidate PR, and exactly
+        # one current head artifact in that same repository supplies immutable identity.
+        for item in artifacts:
+            if item.get("type") != "implementation-head" or item.get("status") != status:
+                continue
+            try:
+                h_owner, h_repo, _ = _github_parts(item["uri"], COMMIT_RE, "candidate head")
+            except (KeyError, CandidateError):
+                continue
+            if (h_owner, h_repo) == (owner, repo):
+                heads.append(item)
+        head_id = heads[0]["id"] if len(heads) == 1 else ""
+
     if len(heads) != 1:
         raise CandidateError(
             f"candidate must have exactly one matching {status} implementation-head artifact"
@@ -98,8 +131,10 @@ def resolve_current_candidate(manifest: dict, *, status: str) -> Candidate:
     h_owner, h_repo, head_sha = _github_parts(head["uri"], COMMIT_RE, "candidate head")
     if (owner, repo) != (h_owner, h_repo):
         raise CandidateError("candidate PR and head repository identities differ")
-    if not head_sha.startswith(suffix):
-        raise CandidateError("candidate artifact id is not bound to its head SHA")
+    if candidate_id.startswith(CANDIDATE_PREFIX):
+        suffix = candidate_id[len(CANDIDATE_PREFIX):]
+        if not head_sha.startswith(suffix):
+            raise CandidateError("candidate artifact id is not bound to its head SHA")
     return Candidate(
         artifact_id=candidate["id"],
         head_artifact_id=head_id,
