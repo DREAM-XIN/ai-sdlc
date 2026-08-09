@@ -56,11 +56,20 @@ def main() -> int:
     preferred_presence["OPENAI_API_KEY"] = True
     preferred_presence["COPILOT_GITHUB_TOKEN"] = True
     readiness = readiness_from_presence(registry, preferred_presence)
-    resolution, profile = resolve_route(
+    preferred_resolution, preferred_profile = resolve_route(
         policy, registry, role="developer", stage="implementation", readiness=readiness, validate_compiled_worker=False
     )
-    require(profile.profile_id == "codex", "Developer did not select preferred Codex profile")
-    require(not resolution.fallback, "preferred selection incorrectly marked fallback")
+    require(preferred_profile.profile_id == "codex", "Developer did not select preferred Codex profile")
+    require(not preferred_resolution.fallback, "preferred selection incorrectly marked fallback")
+    preferred_payload = resolution_payload(preferred_resolution, preferred_profile)
+    require(
+        preferred_payload["candidate_order"] == ["codex", "copilot"],
+        "preferred-selection audit omitted the complete policy candidate order",
+    )
+    require(
+        preferred_payload["candidates"] == [{"profile": "codex", "ready": True, "reason": "SELECTED"}],
+        "preferred-selection evaluated-decision audit drifted",
+    )
 
     alias_presence = dict(presence)
     alias_presence["CODEX_API_KEY"] = True
@@ -78,9 +87,18 @@ def main() -> int:
     require(resolution.fallback, "fallback selection was not audited")
     require(resolution.fallback_reason == "PREFERRED_CANDIDATE_NOT_READY", "fallback reason drifted")
     payload = resolution_payload(resolution, profile)
+    require(payload["candidate_order"] == ["codex", "copilot"], "fallback audit lost complete candidate order")
+    require(
+        payload["candidates"] == [
+            {"profile": "codex", "ready": False, "reason": "MISSING_CREDENTIAL"},
+            {"profile": "copilot", "ready": True, "reason": "SELECTED"},
+        ],
+        "fallback evaluated-decision audit drifted",
+    )
     require(payload["selection_mode"] == "policy", "policy selection mode missing")
     require(payload["entitlement_verified"] is False, "static routing overclaimed entitlement")
     require("OPENAI_API_KEY" not in json.dumps(payload), "credential identity leaked into routing audit")
+    require("OPENAI_API_KEY" not in json.dumps(preferred_payload), "credential identity leaked into preferred routing audit")
 
     try:
         resolve_route(
