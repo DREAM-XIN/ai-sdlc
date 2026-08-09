@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import copy
+import subprocess
+import sys
 
 import yaml
 
@@ -127,6 +129,11 @@ def main() -> int:
             "valid compatible fixture was not normalized",
         )
 
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_gh_aw_registry_extension.py")],
+        cwd=ROOT,
+        check=True,
+    )
     print("gh-aw shared provider registry validation checks passed")
     return 0
 
