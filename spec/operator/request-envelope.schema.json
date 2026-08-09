@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/request-envelope.schema.json",
+  "title": "AI-SDLC Operator canonical request envelope",
+  "type": "object",
+  "required": ["api_version", "request_id", "capability", "client_identity", "payload"],
+  "properties": {
+    "api_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+    "capability": {"type": "string", "minLength": 1, "maxLength": 128},
+    "target": {"type": "object", "properties": {"repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"}, "feature_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}}, "additionalProperties": false},
+    "context": {"type": "object", "properties": {"operation_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}, "operation_generation": {"type": "integer", "minimum": 0}, "expected_feature_revision": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+    "client_identity": {"$ref": "identity-context.schema.json#/$defs/client_identity"},
+    "payload": {"type": "object"}
+  },
+  "additionalProperties": false
+}

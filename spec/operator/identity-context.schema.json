@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/identity-context.schema.json",
+  "title": "AI-SDLC Operator identity boundaries",
+  "$defs": {
+    "client_identity": {"type": "object", "required": ["adapter_id"], "properties": {"adapter_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}, "human_principal": {"type": "string", "minLength": 1, "maxLength": 256}}, "additionalProperties": false},
+    "trusted_identity": {"type": "object", "required": ["service_id", "authorization_context"], "properties": {"service_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}, "runtime_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}, "authorization_context": {"type": "string", "minLength": 1, "maxLength": 256}}, "additionalProperties": false}
+  }
+}
