@@ -110,6 +110,8 @@ def build_fixture(root: Path, token: str) -> dict[str, str]:
         ".github/workflows/ai-sdlc-gh-aw-worker.md",
         ".github/workflows/ai-sdlc-gh-aw-preflight.yml",
         ".github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml",
+        ".github/workflows/ai-sdlc-gh-aw-dispatch.yml",
+        ".github/workflows/ai-sdlc-gh-aw-cross-repo-dispatch.yml",
     ):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
