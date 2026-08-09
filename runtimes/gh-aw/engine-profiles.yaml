@@ -1,4 +1,5 @@
 # Provider workers inherit lifecycle/remediation behavior and effective model audit pins from the canonical worker source.
+# Materialization trigger for F-GHAW-DOMESTIC-PROVIDERS-0001; not intended for Feature branch transfer.
 version: 0.1.0
 profiles:
   copilot:
