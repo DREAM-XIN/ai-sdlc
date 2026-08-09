@@ -2,7 +2,7 @@ version: 0.1.0
 id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-DESIGN-DONE
 feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
 expected_revision: 5
-occurred_at: '2026-08-09T15:12:00Z'
+occurred_at: '2026-08-09T15:10:00Z'
 changes:
 - kind: artifact-record
   record:
