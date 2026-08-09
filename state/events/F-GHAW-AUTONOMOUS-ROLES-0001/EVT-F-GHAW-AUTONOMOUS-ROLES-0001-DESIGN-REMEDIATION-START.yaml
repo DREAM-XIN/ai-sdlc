@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-START
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 8
+occurred_at: '2026-08-09T13:15:10Z'
+changes:
+- kind: task
+  id: F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-1
+  status: WORKING
