@@ -6,12 +6,29 @@
     "run_id": 31293828015,
     "started_at": "2026-08-09T04:05:38Z",
     "completed_at": "2026-08-09T04:07:45Z",
-    "incremental_since": "2026-08-09T04:05:00Z",
+    "incremental_since": "2026-08-09T04:56:00Z",
     "outcome": "PASS",
     "workflow_runs_enumerated": 647,
     "retained_log_archives_scanned": 617,
     "retained_artifacts_scanned": 397,
     "commit_status_context": "public-release-audit",
     "commit_status_state": "success"
+  },
+  "reviewed_delta_checkpoint": {
+    "parent_full_audit_run_id": 31293828015,
+    "commit": "260f4e75be012d285dde3eea43c0fa2e7f2daa70",
+    "run_id": 31295292800,
+    "previous_incremental_since": "2026-08-09T04:05:00Z",
+    "next_incremental_since": "2026-08-09T04:56:00Z",
+    "outcome": "PASS",
+    "workflow_runs_enumerated": 699,
+    "workflow_runs_selected": 55,
+    "retained_log_archives_scanned": 55,
+    "artifacts_enumerated": 406,
+    "artifacts_selected": 0,
+    "retained_artifacts_scanned": 0,
+    "commit_status_context": "public-release-audit",
+    "commit_status_state": "success",
+    "rationale": "Advance the conservative delta overlap only after a reviewed successful baseline+delta audit. The one-minute overlap starts before the checkpoint run and preserves coverage for concurrently-created or updated Actions data while avoiding repeated downloads of already-reviewed historical archives."
   }
 }
