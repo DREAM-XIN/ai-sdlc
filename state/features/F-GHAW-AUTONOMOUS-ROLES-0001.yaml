@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 7
+revision: 8
 feature:
   id: F-GHAW-AUTONOMOUS-ROLES-0001
   title: Add bounded autonomous Reviewer and QA gh-aw roles
@@ -33,7 +33,19 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-1
+  kind: remediation
+  stage: design
+  role: architect
+  source_stage: design-review
+  feedback: Define a deterministic draft implementation-candidate artifact produced
+    by trusted autonomous Developer result persistence, bind it to PR/head evidence,
+    preserve/manual coexistence and supersession semantics, and make Reviewer PASS
+    resolve/approve that trusted candidate artifact without hard-coded implementation
+    artifact ids.
+  status: TODO
+  runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -61,6 +73,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-AUTONOMOUS-ROLES-0001/design-review.md
 applied_events:
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-START
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-REQ-DONE
@@ -69,4 +85,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-START
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-DONE
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-START
-updated_at: '2026-08-09T13:12:50Z'
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-REWORK
+updated_at: '2026-08-09T13:14:10Z'
