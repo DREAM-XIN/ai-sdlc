@@ -6,12 +6,14 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker.md
     worker_workflow: ai-sdlc-gh-aw-worker.lock.yml
     credential: COPILOT_GITHUB_TOKEN
+    credential_source: github-token
     maturity: reference
   codex:
     engine: codex
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-codex.md
     worker_workflow: ai-sdlc-gh-aw-worker-codex.lock.yml
     credential: OPENAI_API_KEY
+    credential_source: secret
     credential_aliases:
       - CODEX_API_KEY
     maturity: reference
@@ -20,6 +22,7 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-claude.md
     worker_workflow: ai-sdlc-gh-aw-worker-claude.lock.yml
     credential: ANTHROPIC_API_KEY
+    credential_source: secret
     maturity: reference
   gemini:
     engine: gemini
@@ -28,6 +31,7 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-gemini.md
     worker_workflow: ai-sdlc-gh-aw-worker-gemini.lock.yml
     credential: GEMINI_API_KEY
+    credential_source: secret
     maturity: reference
   deepseek:
     engine: copilot
@@ -41,6 +45,7 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-deepseek.md
     worker_workflow: ai-sdlc-gh-aw-worker-deepseek.lock.yml
     credential: DEEPSEEK_API_KEY
+    credential_source: secret
     maturity: experimental
   qwen:
     engine: copilot
@@ -54,6 +59,7 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-qwen.md
     worker_workflow: ai-sdlc-gh-aw-worker-qwen.lock.yml
     credential: DASHSCOPE_API_KEY
+    credential_source: secret
     maturity: experimental
   glm:
     engine: copilot
@@ -67,6 +73,7 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-glm.md
     worker_workflow: ai-sdlc-gh-aw-worker-glm.lock.yml
     credential: ZHIPUAI_API_KEY
+    credential_source: secret
     maturity: experimental
   minimax:
     engine: copilot
@@ -80,4 +87,5 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-minimax.md
     worker_workflow: ai-sdlc-gh-aw-worker-minimax.lock.yml
     credential: MINIMAX_API_KEY
+    credential_source: secret
     maturity: experimental
