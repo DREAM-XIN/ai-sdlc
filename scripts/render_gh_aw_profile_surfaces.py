@@ -23,11 +23,14 @@ CREDENTIAL_CASE_END = "# END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE CASE"
 
 
 def replace_block(text: str, begin: str, end: str, rendered: str) -> str:
-    start = text.find(begin)
-    finish = text.find(end)
-    if start < 0 or finish < 0 or finish < start:
+    marker_start = text.find(begin)
+    marker_end = text.find(end, marker_start + 1)
+    if marker_start < 0 or marker_end < 0:
         raise RegistryValidationError(f"generated workflow marker block missing: {begin}")
-    finish += len(end)
+    start = text.rfind("\n", 0, marker_start) + 1
+    finish = text.find("\n", marker_end + len(end))
+    if finish < 0:
+        finish = len(text)
     return text[:start] + rendered + text[finish:]
 
 
