@@ -3,21 +3,19 @@ status: planning
 base_version: 0.2.0
 tracking_issue: '#205'
 final_manifest: release/v0.3.0.yaml
-
 release_theme: ai-operated-sdlc
 canonical_api_version: ai-sdlc.operator/v1
 operation_event_version: ai-sdlc.operation-event/v1
 
 release_intent: >-
-  Productize the existing deterministic AI-SDLC control kernel behind a
-  durable, typed AI Operator surface so users can operate an installed Feature
-  through natural-language AI clients without moving lifecycle authority into
-  the model, worker, client session, or Operator store.
+  Productize the deterministic AI-SDLC control kernel behind a durable typed
+  Operator surface while preserving lifecycle authority, independent role
+  execution, immutable candidate evidence, and trusted GitHub-backed audit.
 
 required_release_slice:
   starting_condition: installed-project-with-eligible-feature
   lifecycle:
-    - ai-client-capability-discovery-status-and-inbox
+    - ai-client-capability-status-and-inbox
     - durable-operation-start-or-discovery
     - developer
     - independent-code-review
@@ -29,51 +27,208 @@ required_release_slice:
     repeated_continue_messages_required: false
     routine_manual_github_operations_after_installation: false
     session_survival_required: true
-    prior_operation_id_required_for_new_session_discovery: false
 
-canonical_tool_surface:
-  - system.capabilities
-  - project.inspect
-  - feature.status
-  - operator.inbox
-  - operation.start
-  - operation.status
-  - operation.resume
-  - operation.cancel
-  - decision.list
-  - decision.respond
-  - notification.list
-  - notification.ack
+client_contract:
+  canonical_api: ai-sdlc.operator/v1
+  required_supported_ai_client_adapters: 2
+  materially_independent: true
+  common_conformance_subset:
+    - system.capabilities
+    - feature.status
+    - operator.inbox
+    - operation.status
+    - decision.list
+    - notification.list
+  both_require:
+    - api-version-semantics
+    - structured-error-semantics
+    - identity-propagation
+    - unsupported-capability-behavior
+  minimum_write_capable_adapters: 1
+  required_write_slice:
+    - operation.start
+    - operation.cancel
+    - decision.respond
+    - notification.ack
+
+worker_result_contract:
+  arbitrary_executable_feature_events: forbidden
+  trusted_translation_required: true
+  trusted_context_fields:
+    - operation-id
+    - operation-generation
+    - dispatch-id
+    - target-repository
+    - feature-id
+    - expected-revision
+    - target-ref
+    - candidate-pr-number-when-applicable
+    - candidate-head-sha-when-applicable
+    - task-id
+    - role
+    - runtime-receipt-identity
+  reviewer_qa_candidate_head_sha_required: true
+  current_head_revalidation_before_persist: true
+  head_change_requires_new_semantic_dispatch: true
+  required_translators:
+    - developer-result-translator
+    - review-verdict-translator
+    - verification-verdict-translator
+
+operation_store:
+  authority: orchestration-only
+  trusted_location: control-repository-protected-state-ref
+  target_feature_branch_write_access: forbidden
+  append_only_journal: required
+  deterministic_projection: required
+  git_ref_compare_and_set: required
+  state_ref_selected_by_feature_branch: forbidden
+  operation_generation_fencing: required
+  one_active_generation_per_feature: true
+
+semantic_dispatch:
+  claim_before_launch: true
+  identity_fields:
+    - target-repository
+    - feature-id
+    - expected-revision
+    - current-stage
+    - task-identity
+    - role
+    - operation-generation
+    - candidate-head-sha-when-candidate-bound
+  invariant: >-
+    At most one active valid Worker dispatch may exist for one target repository,
+    Feature revision, stage, semantic task, role, Operation generation, and
+    candidate head when applicable.
+
+launch_fence:
+  required: true
+  check_immediately_before_external_side_effect: true
+  verifies:
+    - active-operation-still-current
+    - operation-generation-current
+    - operation-not-cancelled
+    - operation-not-superseded
+    - dispatch-claim-still-active
+    - candidate-head-still-current-when-applicable
+    - trusted-policy-and-credential-preconditions
+  stale_generation_launch: forbidden
+
+external_dispatch_recovery:
+  stable_external_dispatch_key: required
+  trusted_launch_receipt_lookup: required
+  lookup_states:
+    - NOT_LAUNCHED
+    - LAUNCHED
+    - UNKNOWN
+  not_launched_behavior: retry-same-key-after-current-launch-fence
+  launched_behavior: adopt-existing-receipt-no-relaunch
+  unknown_behavior: blocked-no-speculative-relaunch
+
+persist_linearization:
+  required: true
+  persist_requested_record: required
+  final_generation_cancel_fence_before_feature_write: required
+  candidate_head_revalidation_when_applicable: required
+  linearization_receipt: required
+  rules:
+    cancellation_before_linearization: reject-feature-write
+    cancellation_after_linearization: exact-inflight-write-may-complete
+    feature_write_ack_loss: query-exact-event-receipt-before-retry
+
+operation_states:
+  top_level:
+    - RUNNING
+    - WAITING_EXTERNAL
+    - NEEDS_USER
+    - BLOCKED
+    - DONE
+    - CANCELLED
+  waiting_external:
+    - WAITING_WORKER
+    - WAITING_CI
+    - WAITING_PR
+    - WAITING_CALLBACK
+  needs_user:
+    - NEEDS_CLARIFICATION
+    - NEEDS_AUTHORIZATION
+    - NEEDS_ACCEPTANCE
+    - NEEDS_CREDENTIAL_SETUP
+  terminal:
+    - DONE
+    - CANCELLED
+  recoverable_suspended:
+    - BLOCKED
+
+authorization_model:
+  trusted_sources:
+    - protected-default-branch-configuration
+    - installation-level-configuration
+    - trusted-control-repository-policy
+  feature_branch_can_tighten: true
+  feature_branch_can_expand: false
+  generic_natural_language_approval_is_sufficient: false
+  decision_binding:
+    - decision-id
+    - decision-type
+    - feature-id
+    - operation-id
+    - operation-generation
+    - expected-revision
+    - target-ref
+    - candidate-head-sha-when-applicable
+    - allowed-choice
+    - trusted-policy-ref-or-digest
+    - responder-identity
+    - expiry
+
+notification_outbox:
+  required: true
+  required_types:
+    - decision.requested
+    - operation.blocked
+    - operation.completed
+    - authorization.expiring
+  new_session_discovery:
+    - unfinished-operations
+    - pending-decisions
+    - unread-notifications
+  bounded_ack_operation: notification.ack
+
+acceptance_policy:
+  default_standard_feature:
+    ai_recommendation_allowed: true
+    ai_recommendation_is_human_acceptance_evidence: false
+    human_product_decision_required: true
 
 required_workstreams:
-  - id: operator-canonical-api-and-clients
+  - id: operator-canonical-api-and-ai-client-adapters
     status: proposed
     includes:
-      - exact-api-version-ai-sdlc-operator-v1
+      - transport-independent-typed-api
+      - exact-api-versioning
       - capability-discovery
-      - operator-inbox-new-session-discovery
       - structured-error-model
-      - actor-client-service-identity-separation
-      - expected-revision-contract
-      - semantic-idempotency-contract
-      - mcp-read-only-bootstrap
-      - release-slice-write-capable-client-adapter
-      - second-independent-client-integration
-      - tool-schema-and-conformance-tests
-
-  - id: durable-operation-store
+      - identity-and-idempotency-contract
+      - operator-inbox
+      - two-supported-materially-independent-ai-client-adapters
+      - one-write-capable-release-slice-adapter
+      - canonical-conformance-tests
+  - id: durable-operation-store-and-fencing
     status: proposed
     includes:
-      - protected-trusted-control-plane-state-ref
-      - append-only-versioned-operation-events
+      - append-only-operation-events
       - deterministic-operation-projection
-      - git-ref-cas-writer
-      - active-operation-claim
+      - protected-control-state-ref
+      - git-ref-cas
+      - active-operation-generation
       - semantic-dispatch-claim
+      - launch-fence
+      - external-dispatch-key
+      - trusted-launch-receipt-lookup
+      - candidate-head-sha-binding
       - callback-correlation
-      - cancellation-and-orphan-result-handling
-      - operation-recovery
-
   - id: operator-vertical-loop
     status: proposed
     includes:
@@ -85,210 +240,70 @@ required_workstreams:
       - independent-re-review
       - qa-dispatch
       - trusted-verification-verdict-translation
-
-  - id: operator-recovery-and-concurrency
+  - id: operator-recovery-concurrency-and-linearization
     status: proposed
     includes:
       - stale-revision-reread-and-replan
-      - duplicate-request-suppression
-      - duplicate-callback-suppression
-      - callback-order-safety
-      - active-operation-race-safety
-      - semantic-dispatch-race-safety
-      - worker-timeout-policy
-      - ci-failure-remediation
-      - pr-head-change-invalidation
+      - duplicate-request-and-callback-suppression
+      - candidate-head-change-invalidation
+      - claim-before-launch-crash-recovery
+      - cancel-supersede-launch-fencing
+      - persist-cancel-linearization
       - persist-ack-loss-recovery
-      - cancellation-callback-race-safety
       - concurrent-resume-safety
-
   - id: operator-decisions-authorization-notifications
     status: proposed
     includes:
       - bounded-decision-object
-      - exact-revision-ref-sha-policy-authorization-binding
+      - exact-revision-ref-sha-generation-binding
       - trusted-authorization-policy-resolution
-      - concurrent-decision-response-safety
       - operation-cancel-feature-cancel-separation
       - notification-outbox
-      - notification-ack
       - new-session-discovery
-
   - id: v0-3-planning-manifest-validation
     status: proposed
     includes:
-      - deterministic-v0-3-draft-contract
-      - repository-ci-validation
-
-worker_result_contract:
-  trusted_context_owner: trusted-runtime-or-collector
-  trusted_context:
-    - operation-id
-    - dispatch-id
-    - target-repository
-    - feature-id
-    - expected-revision
-    - target-ref
-    - task-id
-    - role
-    - runtime-receipt-identity
-  worker_payload:
-    - status
-    - artifacts
-    - evidence
-    - findings
-    - role-specific-payload
-  worker_may_override_trusted_context: false
-  arbitrary_executable_feature_events: forbidden
-  trusted_translation_required: true
-  translator_rules_worker_controlled: false
-  required_translators:
-    - developer-result-translator
-    - review-verdict-translator
-    - verification-verdict-translator
-
-authorization_model:
-  trusted_sources:
-    - protected-default-branch-configuration
-    - installation-level-configuration
-    - trusted-control-repository-policy
-  feature_branch_can_tighten: true
-  feature_branch_can_expand: false
-  policy_change_requires_independent_review: true
-  generic_natural_language_approval_is_sufficient: false
-  decision_binding:
-    - decision-id
-    - decision-type
-    - feature-id
-    - operation-id-when-applicable
-    - expected-revision
-    - target-ref
-    - candidate-head-sha-when-applicable
-    - allowed-choice
-    - trusted-policy-ref-or-digest
-    - responder-user-identity
-    - responder-client-identity
-    - expiry
-  consume_time_policy_recheck_required: true
-
-operation_store:
-  authority: trusted-control-repository
-  target_feature_branch_storage: forbidden
-  reference_state_ref: refs/heads/ai-sdlc-operator-state
-  state_ref_selection_source: trusted-installation-or-control-policy
-  state_ref_writer: trusted-operator-collector-recovery-only
-  git_ref_compare_and_set_required: true
-  append_only_journal: required
-  immutable_operation_events: required
-  deterministic_projection: required
-  schema_version: ai-sdlc.operation-event/v1
-  conceptual_layout:
-    operations: state/operator/v1/operations/<operation-id>/events/
-    dispatch_claims: state/operator/v1/claims/dispatch/
-    active_feature_claims: state/operator/v1/claims/feature/
-    decisions: state/operator/v1/decisions/
-    notifications: state/operator/v1/notifications/
-    projections: state/operator/v1/projections/
-
-operation_model:
-  lifecycle_authority: false
-  long_lived_chat_dependency: forbidden
-  execution_style: short-execution-plus-event-driven-resume
-  active_operation_invariant: >-
-    For one target repository and Feature, at most one nonterminal active
-    Operation generation may own automatic progression unless a trusted atomic
-    supersession records and fences the prior generation.
-  semantic_dispatch_invariant: >-
-    For one target repository, Feature, revision, stage, semantic task, role and
-    operation generation, at most one active valid Worker dispatch may exist.
-  semantic_dispatch_claim_before_worker_launch: required
-  top_level_states:
-    - RUNNING
-    - WAITING_EXTERNAL
-    - NEEDS_USER
-    - BLOCKED
-    - DONE
-    - CANCELLED
-  terminal_states:
-    - DONE
-    - CANCELLED
-  suspended_recoverable_states:
-    - BLOCKED
-  waiting_external:
-    - WAITING_WORKER
-    - WAITING_CI
-    - WAITING_PR
-    - WAITING_CALLBACK
-  needs_user:
-    - NEEDS_CLARIFICATION
-    - NEEDS_AUTHORIZATION
-    - NEEDS_ACCEPTANCE
-    - NEEDS_CREDENTIAL_SETUP
-
-cancellation_model:
-  operation_cancel_is_feature_cancel: false
-  post_cancel_new_dispatch: forbidden
-  late_worker_receipt_recording: allowed-for-audit
-  late_worker_result_auto_translation_or_persist: forbidden
-  late_worker_result_disposition: orphaned
-  previously_confirmed_persist_remains_authoritative: true
-
-notification_outbox:
-  required: true
-  required_types:
-    - decision.requested
-    - operation.blocked
-    - operation.completed
-    - authorization.expiring
-  acknowledgement_capability: notification.ack
-  new_session_discovery:
-    - unfinished-operations
-    - pending-decisions
-    - unread-notifications
-
-acceptance_policy:
-  default_standard_feature:
-    ai_recommendation_allowed: true
-    ai_recommendation_is_human_acceptance_evidence: false
-    human_product_decision_required: true
+      - deterministic-draft-schema-or-validator
+      - repository-ci-wiring
+      - spec-manifest-consistency-checks
 
 required_tests:
   tool_contract:
-    - exact-api-version
-    - unsupported-version-response
+    - api-version-negotiation
     - capability-discovery
     - operator-inbox-without-prior-operation-id
     - invalid-schema-rejection
     - structured-error-codes
     - idempotency
     - expected-revision-rejection
+  two_ai_client_conformance:
+    minimum_supported_materially_independent_adapters: 2
+    minimum_write_capable_adapters: 1
   authorization_adversarial:
     - feature-policy-expansion-rejected
     - broader-credential-scope-rejected
     - developer-gate-pass-rejected
-    - reviewer-prohibited-write-rejected
+    - reviewer-qa-prohibited-write-rejected
     - stale-authorization-replay-rejected
     - wrong-ref-authorization-replay-rejected
-    - wrong-sha-merge-authorization-rejected
+    - wrong-sha-authorization-replay-rejected
+    - wrong-generation-authorization-replay-rejected
     - expired-decision-rejected
-    - concurrent-decision-response-single-consumption
-  operation_replay_and_concurrency:
+  operation_replay_and_races:
     - duplicate-callback
     - out-of-order-callback
     - duplicate-worker-completion
-    - active-operation-claim-race
-    - concurrent-runner-dispatch-claim-race
-    - persist-success-response-loss
+    - concurrent-operation-start-or-resume
+    - concurrent-semantic-dispatch-claim
+    - candidate-head-change-result-arrival-race
+    - cancel-after-claim-before-launch
+    - claim-committed-runner-crash-before-launch-receipt
+    - cancel-before-persist-requested
+    - cancel-between-persist-requested-and-linearized
+    - cancel-after-persist-linearized-before-feature-write-confirmed
+    - feature-write-success-acknowledgement-loss
     - projection-rebuild
     - client-session-loss-and-resume
-    - operation-cancel-worker-callback-race
-    - orphaned-worker-result-no-auto-persist
-    - unsafe-recovery-blocks-without-speculative-dispatch
-  client_conformance:
-    minimum_independent_paths: 2
-    at_least_one_write_capable_ai_client_adapter: true
-  planning_manifest:
-    deterministic_ci_validation_required: true
 
 required_dogfood:
   happy_path:
@@ -299,15 +314,17 @@ required_dogfood:
     requirement: reviewer-change-request-through-remediation-re-review-and-qa
   session_recovery:
     status: pending
-    requirement: new-session-discovers-durable-operation-and-user-items-without-prior-operation-id
+    requirement: new-session-discovers-durable-operation-and-user-items
   failure_injection:
     status: pending
     required_cases:
       - stale-revision
       - duplicate-callback
-      - active-operation-race
-      - dispatch-claim-race
-      - operation-cancel-worker-callback-race
+      - candidate-head-race
+      - cancel-after-claim-before-launch
+      - claim-before-launch-crash
+      - concurrent-resume
+      - cancel-persist-linearization-races
       - persist-acknowledgement-loss
   external_transport_matrix:
     status: pending-release-decision
@@ -316,29 +333,33 @@ required_dogfood:
 known_release_blockers:
   - id: arbitrary-worker-event-mutation
     status: unresolved
-  - id: worker-can-spoof-trusted-result-context
+  - id: missing-role-specific-trusted-translators
     status: unresolved
-  - id: missing-role-specific-deterministic-translators
+  - id: reviewer-qa-not-bound-to-exact-candidate-head
     status: unresolved
-  - id: authorization-not-exactly-bound
+  - id: candidate-head-not-revalidated-before-persist
     status: unresolved
   - id: feature-branch-policy-escalation
     status: unresolved
-  - id: duplicate-active-operation-owner
+  - id: authorization-not-exactly-bound
     status: unresolved
   - id: duplicate-semantic-worker-dispatch
     status: unresolved
-  - id: untrusted-operation-store-boundary
+  - id: multiple-active-operation-generations
     status: unresolved
-  - id: non-atomic-operation-or-dispatch-claim
+  - id: stale-claim-can-cross-launch-after-cancel-or-supersede
     status: unresolved
-  - id: operation-journal-not-append-only-rebuildable
+  - id: claim-before-launch-crash-recovery-gap
     status: unresolved
-  - id: unsafe-operation-recovery-gap
+  - id: unknown-launch-status-can-speculatively-relaunch
+    status: unresolved
+  - id: cancel-persist-linearization-gap
+    status: unresolved
+  - id: cancellation-before-linearization-can-still-persist
+    status: unresolved
+  - id: operation-store-not-append-only-rebuildable-cas-protected
     status: unresolved
   - id: callback-replay-side-effects
-    status: unresolved
-  - id: cancellation-late-result-can-auto-persist
     status: unresolved
   - id: operation-cancel-feature-cancel-ambiguity
     status: unresolved
@@ -348,24 +369,62 @@ known_release_blockers:
     status: unresolved
   - id: offline-user-stalls-durable-execution
     status: unresolved
-  - id: normal-feature-requires-manual-github-after-install
+  - id: fewer-than-two-supported-ai-client-adapters
+    status: unresolved
+  - id: no-write-capable-ai-client-release-slice
     status: unresolved
   - id: typed-api-version-or-capability-gap
-    status: unresolved
-  - id: no-write-capable-ai-client-adapter
-    status: unresolved
-  - id: fewer-than-two-client-conformance-paths
-    status: unresolved
-  - id: notification-ack-gap
     status: unresolved
   - id: decision-data-minimization-gap
     status: unresolved
   - id: ai-can-synthesize-human-acceptance-evidence
     status: unresolved
-  - id: planning-manifest-validation-gap
+  - id: v0-3-draft-manifest-unvalidated
     status: unresolved
-  - id: v0.2-authority-invariant-regression
+  - id: v0-2-authority-invariant-regression
     status: unresolved
+
+release_invariants:
+  lifecycle_authority:
+    - operator-cannot-edit-authoritative-feature-manifest-directly
+    - workers-cannot-emit-arbitrary-executable-feature-events
+    - workers-cannot-pass-or-waive-gates
+    - expected-revision-remains-lifecycle-write-precondition
+    - lifecycle-mutations-remain-feature-event-plus-trusted-persist
+  candidate_evidence:
+    - reviewer-and-qa-bind-to-exact-candidate-head-sha
+    - current-head-is-revalidated-before-gate-persist
+    - head-change-requires-new-semantic-dispatch
+  orchestration:
+    - operation-state-does-not-become-feature-lifecycle-truth
+    - operation-journal-is-append-only-and-rebuildable
+    - state-writes-use-git-ref-cas
+    - one-active-operation-generation-per-feature
+    - semantic-dispatch-claimed-before-worker-launch
+    - launch-requires-current-generation-fence
+    - claim-before-launch-crash-is-recoverable-without-duplicate-side-effects
+    - chat-session-lifetime-does-not-own-operation-lifetime
+  persistence:
+    - persist-has-explicit-operation-generation-linearization-point
+    - cancellation-before-linearization-prevents-feature-write
+    - cancellation-after-linearization-does-not-retroactively-revoke-exact-write
+  authorization:
+    - feature-branch-cannot-expand-authorization-policy
+    - user-authorization-bound-to-exact-target-state-and-generation
+    - protected-merge-and-production-authority-remain-policy-controlled
+  independence:
+    - developer-reviewer-and-qa-remain-separate-execution-identities
+    - reviewer-or-qa-cannot-self-remediate-and-pass-own-result
+
+release_policy:
+  keep_version_at_current_release_until_candidate_ready: true
+  change_VERSION_during_planning: false
+  create_release_candidate_manifest_during_planning: false
+  require_green_repository_validation: true
+  require_two_supported_ai_client_adapter_conformance: true
+  require_one_write_capable_ai_client_adapter: true
+  require_repeated_cross_repo_dogfood: true
+  production_callers_pin_full_commit_sha: true
 
 deferred_v0_3_x:
   - full-product-requirement-architecture-design-orchestration
@@ -380,39 +439,3 @@ deferred_later:
   - dynamic-provider-cost-optimization
   - automatic-production-deployment
   - unaudited-high-risk-gate-automation
-
-release_invariants:
-  lifecycle_authority:
-    - operator-cannot-edit-authoritative-feature-manifest-directly
-    - workers-cannot-emit-arbitrary-executable-feature-events
-    - workers-cannot-spoof-trusted-result-context
-    - workers-cannot-pass-or-waive-gates
-    - expected-revision-remains-a-lifecycle-write-precondition
-    - lifecycle-mutations-remain-feature-event-plus-trusted-persist
-  orchestration:
-    - operation-state-does-not-become-feature-lifecycle-truth
-    - operation-store-is-trusted-control-plane-state
-    - operation-journal-is-append-only-and-rebuildable
-    - state-ref-writes-use-cas
-    - one-active-operation-owner-per-feature
-    - semantic-dispatch-is-claimed-before-worker-launch
-    - cancelled-operation-late-results-do-not-auto-persist
-    - chat-session-lifetime-does-not-own-operation-lifetime
-  authorization:
-    - feature-branch-cannot-expand-authorization-policy
-    - user-authorization-is-bound-to-exact-target-state-and-trusted-policy
-    - protected-merge-and-production-authority-remain-policy-controlled
-  independence:
-    - developer-reviewer-and-qa-remain-separate-execution-identities
-    - reviewer-or-qa-cannot-self-remediate-and-pass-own-result
-
-release_policy:
-  keep_version_at_current_release_until_candidate_ready: true
-  change_VERSION_during_planning: false
-  create_release_candidate_manifest_during_planning: false
-  require_green_repository_validation: true
-  require_v0_3_planning_manifest_validation_before_feature_execution_depends_on_it: true
-  require_two_client_adapter_conformance: true
-  require_write_capable_ai_client_adapter: true
-  require_repeated_cross_repo_dogfood: true
-  production_callers_pin_full_commit_sha: true
