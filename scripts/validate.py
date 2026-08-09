@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 from evaluate_gate import evaluate
 from render_task_package import build_package
 from validate_artifact_event_lifecycle import main as validate_artifact_event_lifecycle
+from validate_remediation_review_completion import main as validate_remediation_review_completion
 from validate_transition import validate_schema as validate_execution_schema
 from validate_transition import validate_transition
 
@@ -188,6 +189,7 @@ def validate_execution_examples():
 
 def main():
     validate_artifact_event_lifecycle()
+    validate_remediation_review_completion()
     errors = (
         validate_schemas()
         + validate_profiles()
