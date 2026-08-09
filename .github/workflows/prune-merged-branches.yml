@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Show automatically safe candidates
-        run: scripts/prune_merged_branches.sh
+        run: bash scripts/prune_merged_branches.sh
 
       - name: Configure authenticated origin
         if: github.event_name == 'push' || inputs.apply == true
@@ -40,4 +40,4 @@ jobs:
         if: github.event_name == 'push' || inputs.apply == true
         env:
           CONFIRM_DELETE_MERGED_BRANCHES: 'yes'
-        run: scripts/prune_merged_branches.sh --apply
+        run: bash scripts/prune_merged_branches.sh --apply
