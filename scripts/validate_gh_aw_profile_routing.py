@@ -47,15 +47,11 @@ def main() -> int:
         require(not rule.allow_experimental, f"default rule {rule.rule_id} unexpectedly allows experimental profiles")
         require(all(registry.require_profile(pid).maturity != "experimental" for pid in rule.candidates), f"default rule {rule.rule_id} contains experimental profile")
 
-    presence = {
-        profile.credential: False
-        for profile in registry.profiles
-    }
+    presence = {profile.credential: False for profile in registry.profiles}
     for profile in registry.profiles:
         for alias in profile.credential_aliases:
             presence[alias] = False
 
-    # Codex primary => preferred selection.
     preferred_presence = dict(presence)
     preferred_presence["OPENAI_API_KEY"] = True
     preferred_presence["COPILOT_GITHUB_TOKEN"] = True
@@ -66,14 +62,12 @@ def main() -> int:
     require(profile.profile_id == "codex", "Developer did not select preferred Codex profile")
     require(not resolution.fallback, "preferred selection incorrectly marked fallback")
 
-    # Codex alias is generic readiness evidence.
     alias_presence = dict(presence)
     alias_presence["CODEX_API_KEY"] = True
     alias_presence["COPILOT_GITHUB_TOKEN"] = True
     alias_readiness = readiness_from_presence(registry, alias_presence)
     require(alias_readiness["codex"], "Codex approved alias did not produce readiness")
 
-    # Missing Codex credential => Copilot fallback.
     fallback_presence = dict(presence)
     fallback_presence["COPILOT_GITHUB_TOKEN"] = True
     fallback_readiness = readiness_from_presence(registry, fallback_presence)
@@ -88,7 +82,6 @@ def main() -> int:
     require(payload["entitlement_verified"] is False, "static routing overclaimed entitlement")
     require("OPENAI_API_KEY" not in json.dumps(payload), "credential identity leaked into routing audit")
 
-    # No candidate ready => fail closed.
     try:
         resolve_route(
             policy, registry, role="developer", stage="implementation", readiness=readiness_from_presence(registry, presence), validate_compiled_worker=False
@@ -98,21 +91,20 @@ def main() -> int:
     else:
         raise AssertionError("no-ready route unexpectedly selected a profile")
 
-    # Unknown context and missing readiness fail closed.
     try:
         policy.require_rule("product", "requirement")
     except RoutingValidationError:
         pass
     else:
         raise AssertionError("unknown role/stage route unexpectedly resolved")
+
     incomplete = {"codex": True}
     try:
         resolve_route(policy, registry, role="developer", stage="implementation", readiness=incomplete, validate_compiled_worker=False)
     except RoutingValidationError as exc:
-        require("copilot" not in str(exc) or "readiness" in str(exc), "unexpected incomplete readiness failure")
+        require("copilot" in str(exc) and "readiness" in str(exc), f"unexpected incomplete readiness failure: {exc}")
     else:
-        # Codex is selected first, so an unused fallback readiness key need not be consulted.
-        pass
+        raise AssertionError("partial readiness map unexpectedly selected preferred profile")
 
     base = """version: 0.1.0\ndefault_profile: copilot\nrules:\n  - id: fixture\n    match: {role: developer, stage: implementation}\n    candidates: [codex, copilot]\n    allow_experimental: false\n"""
     expect_invalid(base.replace("candidates: [codex, copilot]", "candidates: [codex, codex]"), registry, "duplicate candidates")
@@ -125,7 +117,6 @@ def main() -> int:
         exp_policy = load_routing_policy(path, registry=registry)
         require(exp_policy.rules[0].allow_experimental, "trusted experimental opt-in was not retained")
 
-    # Credential source migration is complete and bounded.
     require(registry.require_profile("copilot").credential_source == "github-token", "Copilot credential source drifted")
     require(not registry.require_profile("copilot").credential_aliases, "github-token profile unexpectedly has aliases")
     for profile in registry.profiles:
