@@ -124,7 +124,7 @@ def main():
         require(exp_policy.require_rule("developer", "implementation").allow_experimental is True, "trusted experimental opt-in rejected")
 
     duplicate_match = base + """  - id: fixture-two\n    match: {role: developer, stage: implementation}\n    candidates: [copilot]\n    allow_experimental: false\n"""
-    expect_invalid(duplicate_match, registry, "duplicate role/stage")
+    expect_invalid(duplicate_match, registry, "duplicate routing role/stage match")
     print("gh-aw trusted profile routing validation passed")
 
 
