@@ -79,7 +79,10 @@ jobs:
         run: |
           worker=$(python scripts/resolve_gh_aw_engine.py "$ENGINE_PROFILE")
           printf 'worker_workflow=%s\n' "$worker" >> "$GITHUB_OUTPUT"
-          python scripts/resolve_gh_aw_engine.py "$ENGINE_PROFILE" --json >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo 'selection_mode: manual-trusted-profile'
+            python scripts/resolve_gh_aw_engine.py "$ENGINE_PROFILE" --json
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify compiled worker is installed on trusted default branch
         env:
           WORKER_WORKFLOW: ${{ steps.engine.outputs.worker_workflow }}
