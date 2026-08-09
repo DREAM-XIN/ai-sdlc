@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 13
+revision: 14
 feature:
   id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
   title: Add bounded autonomous Product, Architect, and Orchestrator gh-aw roles
@@ -25,7 +25,7 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: WORKING
+    status: READY
     gate: code-gate
   - id: verification
     status: TODO
@@ -33,7 +33,20 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Bind trusted source_run_id into durable autonomous-authoring evidence
+    and replay identity; persist an exact source Actions-run reference; add explicit
+    traversal, arbitrary docs/**, state/**, and .github/** model-path negative fixtures
+    required by Design Review DR-MINOR-1. Do not alter routing, Gate authority, provider
+    maturity, merge/release authority, or broader scope.
+  target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/207
+  status: READY
+  runtime: gh-aw
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -75,6 +88,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/design-review.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/code-review-v1.md
 applied_events:
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-START
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-DONE
@@ -89,4 +106,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-IMPL-START
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-IMPL-DONE
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-START
-updated_at: '2026-08-09T16:05:30Z'
+- EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-REWORK-1
+updated_at: '2026-08-09T16:08:00Z'
