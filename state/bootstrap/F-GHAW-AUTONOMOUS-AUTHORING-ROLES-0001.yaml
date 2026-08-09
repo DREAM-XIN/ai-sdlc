@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
+  title: Add bounded autonomous Product, Architect, and Orchestrator gh-aw roles
+  risk: high
+  issue: '#204'
+profile: standard-feature
+created_at: '2026-08-09T14:56:00Z'
