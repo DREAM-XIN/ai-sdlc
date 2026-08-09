@@ -14,12 +14,14 @@ on:
         required: true
         default: copilot
         type: choice
+        # BEGIN AI-SDLC GENERATED GH-AW PROFILE OPTIONS
         options:
           - copilot
           - codex
           - claude
           - gemini
           - deepseek
+        # END AI-SDLC GENERATED GH-AW PROFILE OPTIONS
       target_repository:
         description: Optional cross-repository Feature target in owner/repo form
         required: false
