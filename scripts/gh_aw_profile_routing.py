@@ -214,18 +214,22 @@ def resolve_route(
     validate_compiled_worker: bool = True,
 ) -> tuple[RoutingResolution, object]:
     rule = policy.require_rule(role, stage)
+
+    # Validate the complete trusted readiness contract before making any selection.
+    # This avoids accepting a partial map merely because an earlier candidate is ready.
+    for profile_id in rule.candidates:
+        if profile_id not in readiness or not isinstance(readiness[profile_id], bool):
+            raise RoutingValidationError(
+                f"missing trusted boolean readiness signal for profile {profile_id!r}"
+            )
+
     decisions: list[CandidateDecision] = []
     selected = None
-
     for profile_id in rule.candidates:
         profile = registry.require_profile(profile_id)
         if profile.maturity == "experimental" and not rule.allow_experimental:
             raise RoutingValidationError(
                 f"routing rule {rule.rule_id!r} attempted disallowed experimental profile {profile_id!r}"
-            )
-        if profile_id not in readiness or not isinstance(readiness[profile_id], bool):
-            raise RoutingValidationError(
-                f"missing trusted boolean readiness signal for profile {profile_id!r}"
             )
         if not readiness[profile_id]:
             decisions.append(CandidateDecision(profile_id, False, "MISSING_CREDENTIAL"))
