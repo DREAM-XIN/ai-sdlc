@@ -10,6 +10,7 @@ on:
       - 'scripts/audit_public_actions_history.py'
       - 'scripts/validate_public_release_audit_examples.py'
       - 'release/public-release-audit-baseline.json'
+      - 'release/public-settings-prechange.json'
       - '.github/workflows/public-release-audit.yml'
       - 'docs/public-release-readiness.md'
   pull_request:
@@ -18,6 +19,7 @@ on:
       - 'scripts/audit_public_actions_history.py'
       - 'scripts/validate_public_release_audit_examples.py'
       - 'release/public-release-audit-baseline.json'
+      - 'release/public-settings-prechange.json'
       - '.github/workflows/public-release-audit.yml'
       - 'docs/public-release-readiness.md'
 
