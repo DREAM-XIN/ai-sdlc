@@ -7,9 +7,10 @@ on:
       - 'gh-aw/compile-*'
     paths:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
-      - '.github/workflows/ai-sdlc-gh-aw-worker-deepseek.md'
+      - '.github/workflows/ai-sdlc-gh-aw-worker-*.md'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
       - 'runtimes/gh-aw/engine-profiles.yaml'
+      - 'scripts/gh_aw_provider_registry.py'
       - 'scripts/render_gh_aw_workers.py'
   workflow_dispatch:
 
@@ -31,6 +32,8 @@ jobs:
         run: pip install 'PyYAML>=6.0,<7'
       - name: Render all trusted engine workers
         run: python scripts/render_gh_aw_workers.py --all
+      - name: Verify rendered sources with strict Registry load
+        run: python scripts/render_gh_aw_workers.py --all --check
       - name: Install pinned gh-aw compiler
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
@@ -40,11 +43,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          python - <<'PY' > /tmp/workers.txt
-          import yaml
-          data = yaml.safe_load(open('runtimes/gh-aw/engine-profiles.yaml'))
-          for cfg in data['profiles'].values():
-              source = cfg['worker_source'].split('/')[-1]
+          PYTHONPATH=scripts python - <<'PY' > /tmp/workers.txt
+          from gh_aw_provider_registry import load_registry
+          for profile in load_registry().profiles:
+              source = profile.worker_source.split('/')[-1]
               if not source.endswith('.md'):
                   raise SystemExit('worker_source must end in .md')
               print(source[:-3])
@@ -57,15 +59,12 @@ jobs:
           set -euo pipefail
           git config user.name "ai-sdlc[bot]"
           git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          python - <<'PY' > /tmp/generated.txt
-          import yaml
-          data = yaml.safe_load(open('runtimes/gh-aw/engine-profiles.yaml'))
-          for profile, cfg in data['profiles'].items():
-              source = cfg['worker_source']
-              lock = '.github/workflows/' + cfg['worker_workflow']
-              if profile != 'copilot':
-                  print(source)
-              print(lock)
+          PYTHONPATH=scripts python - <<'PY' > /tmp/generated.txt
+          from gh_aw_provider_registry import load_registry
+          for profile in load_registry().profiles:
+              if profile.profile_id != 'copilot':
+                  print(profile.worker_source)
+              print('.github/workflows/' + profile.worker_workflow)
           PY
           while IFS= read -r generated; do
             test -f "$generated"
