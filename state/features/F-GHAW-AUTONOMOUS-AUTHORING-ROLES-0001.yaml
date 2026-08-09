@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 2
+revision: 3
 feature:
   id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
   title: Add bounded autonomous Product, Architect, and Orchestrator gh-aw roles
@@ -13,7 +13,7 @@ workflow:
   - id: requirement
     status: DONE
   - id: requirement-review
-    status: READY
+    status: WORKING
     gate: requirement-gate
   - id: design
     status: TODO
@@ -54,4 +54,5 @@ evidence: []
 applied_events:
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-START
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-DONE
-updated_at: '2026-08-09T14:59:10Z'
+- EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-REVIEW-START
+updated_at: '2026-08-09T15:00:55Z'
