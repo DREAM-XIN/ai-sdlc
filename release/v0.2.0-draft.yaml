@@ -1,6 +1,7 @@
 version: 0.2.0
-status: stabilization-draft
+status: finalized
 base_version: 0.1.0
+final_manifest: release/v0.2.0.yaml
 
 release_intent: >-
   Stabilize autonomous and cross-repository execution without changing the
@@ -48,45 +49,52 @@ implemented_stabilization_fixes:
       - protocol-ci: '31265718779'
       - strict-worker-compile: '31265719113'
 
-current_blockers:
-  - id: feature-context-dogfood
+completed_release_evidence:
+  feature_context_dogfood:
     issue: '#128'
-    description: >-
-      Current remediation content is reviewed and correctly scoped, but normal
-      green repository validation evidence is still required. Review and
-      verification lifecycle state must reach DONE through the normal path.
-  - id: private-target-a-repeated-dogfood
+    pull_request: '#144'
+    final_revision: 10
+    workflow: DONE
+    validation_runs: ['31299038228', '31299047295']
+  private_target_a_repeated_dogfood:
     target: private-dogfood-target-a
-    stage: review
-    description: >-
-      Requirement and implementation are DONE with green repository validation
-      evidence. Independent review/code-gate and verification remain before the
-      small-change workflow can reach DONE.
-  - id: private-target-b-repeated-dogfood
-    target: private-dogfood-target-b
-    stage: requirement-review
-    description: >-
-      The low-risk CI-baseline Feature correctly failed closed when compilation
-      exposed a security-sensitive compatibility issue. That work is split to a
-      high-risk standard Feature with a completed requirement awaiting
-      independent requirement review.
+    final_revision: 7
+    workflow: DONE
+    code_gate: PASS
+    verification_gate: PASS
+  public_external_full_lifecycle:
+    result: pass
+    lifecycle: requirement-through-release-gate
+  private_installation_matrix:
+    materially_different_targets: 2
+    result: pass
+  public_repository_release_audit:
+    run: '31298771874'
+    result: pass
 
-repeated_dogfood_candidates:
-  - target: private-dogfood-target-a
-    characteristics:
-      - desktop-and-mobile-client
-      - typescript-shared-packages
-      - native-build-verification
-    current_state: review-ready
-  - target: private-dogfood-target-b
-    characteristics:
-      - java-spring-backend
-      - vue-vite-frontend
-      - browser-and-mobile-clients
-      - relational-database
-      - containerized-local-stack
-      - security-sensitive
-    current_state: requirement-review-ready
+current_blockers: []
+
+release_decision:
+  id: v0.2-required-matrix-narrowing
+  decision: approved
+  rationale: >-
+    v0.2 already has a completed public external standard-feature lifecycle, a
+    completed private repeated-dogfood lifecycle with independent review and
+    verification, successful installation preflight across two materially
+    different private repositories, and completed Feature-context dogfood.
+    The remaining security-sensitive private target has moved from control-plane
+    validation into target-specific Argon2 compatibility implementation, so it is
+    deferred rather than treated as a v0.2 release blocker.
+  required_lifecycle_matrix:
+    - public-external-full-lifecycle
+    - private-target-a-repeated-lifecycle
+  deferred_work:
+    - id: private-target-b-security-hardening
+      target: private-dogfood-target-b
+      feature: F-PASSWORD-MANAGER-CRYPTO-COMPAT-0001
+      observed_state: implementation-WORKING
+      disposition: post-v0.2-hardening
+      gate_waiver: false
 
 release_invariants:
   lifecycle_authority:
@@ -115,3 +123,4 @@ release_policy:
   forbid_feature_specific_recovery_workflows: true
   require_green_repository_validation: true
   require_repeated_cross_repo_dogfood: true
+  repeated_cross_repo_matrix: narrowed-by-explicit-release-decision
