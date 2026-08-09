@@ -1,5 +1,5 @@
 Public-release merged-branch cleanup trigger.
 
-Revision: 3
+Revision: 4
 
-Adding or changing this file on main intentionally runs the guarded merged-work-branch pruning workflow. The workflow deletes only short-lived branches whose current remote tip is already an ancestor of main.
+Adding or changing this file on main intentionally runs the guarded publication branch cleanup. The workflow deletes only known short-lived refs selected by either strict main-ancestry or GitHub merged-PR metadata, while protecting every open PR head/base and long-lived release/bootstrap refs.
