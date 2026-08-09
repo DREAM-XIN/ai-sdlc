@@ -15,6 +15,9 @@ on:
           - claude
           - gemini
           - deepseek
+          - qwen
+          - glm
+          - minimax
         # END AI-SDLC GENERATED GH-AW PROFILE OPTIONS
 
 permissions:
@@ -45,6 +48,9 @@ jobs:
           HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
           HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+          HAS_ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY != '' }}
+          HAS_MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY != '' }}
           # END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
         run: |
           set -euo pipefail
@@ -57,6 +63,9 @@ jobs:
             claude) present="$HAS_ANTHROPIC_API_KEY" ;;
             gemini) present="$HAS_GEMINI_API_KEY" ;;
             deepseek) present="$HAS_DEEPSEEK_API_KEY" ;;
+            qwen) present="$HAS_DASHSCOPE_API_KEY" ;;
+            glm) present="$HAS_ZHIPUAI_API_KEY" ;;
+            minimax) present="$HAS_MINIMAX_API_KEY" ;;
             *) echo "unexpected trusted profile" >&2; exit 2 ;;
           esac
           # END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE CASE

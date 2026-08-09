@@ -21,6 +21,9 @@ on:
           - claude
           - gemini
           - deepseek
+          - qwen
+          - glm
+          - minimax
         # END AI-SDLC GENERATED GH-AW PROFILE OPTIONS
       target_repository:
         description: Optional cross-repository Feature target in owner/repo form
