@@ -1,0 +1,3 @@
+Public-release merged-branch cleanup trigger.
+
+Adding or changing this file on main intentionally runs the guarded merged-work-branch pruning workflow. The workflow deletes only short-lived branches whose current remote tip is already an ancestor of main.
