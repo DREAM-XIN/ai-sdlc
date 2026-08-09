@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       apply:
-        description: Delete branches selected by the fail-safe merged-branch helper
+        description: Delete branches selected by the fail-safe publication cleanup
         required: true
         default: false
         type: boolean
@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   prune:
@@ -32,11 +33,23 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-      - name: Show automatically safe candidates
+      - name: Show ancestry-safe candidates
         run: bash scripts/prune_merged_branches.sh
 
-      - name: Delete automatically safe merged work branches
+      - name: Show PR-metadata candidates
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prune_publication_pr_branches.py
+
+      - name: Delete ancestry-safe merged work branches
         if: github.event_name == 'push' || inputs.apply == true
         env:
           CONFIRM_DELETE_MERGED_BRANCHES: 'yes'
         run: bash scripts/prune_merged_branches.sh --apply
+
+      - name: Delete merged/superseded PR branches
+        if: github.event_name == 'push' || inputs.apply == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CONFIRM_DELETE_MERGED_PR_BRANCHES: 'yes'
+        run: python scripts/prune_publication_pr_branches.py --apply
