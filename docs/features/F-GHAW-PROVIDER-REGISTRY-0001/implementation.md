@@ -6,9 +6,9 @@ Issue: `#195`
 
 Role: Implementation Developer
 
-Status: **WORKING — implementation candidate validated; final evidence-only head checks pending**
+Status: **DONE — trusted Persist applied Implementation completion; ready for independent Code Review**
 
-Draft PR: `#196` — `[F-GHAW-PROVIDER-REGISTRY-0001] Generalize trusted gh-aw provider registry`
+PR: `#196` — `[F-GHAW-PROVIDER-REGISTRY-0001] Generalize trusted gh-aw provider registry`
 
 Validated implementation candidate SHA: `aaae61797c56047c37a455647bf2238218463bb3`
 
@@ -118,7 +118,7 @@ This implementation does not:
 
 ### Candidate and PR identity
 
-- Draft PR: `#196`
+- PR: `#196`
 - Validated implementation candidate: `aaae61797c56047c37a455647bf2238218463bb3`
 - Base at validation: `main@8ba1515f5d9d455683a8eaacbd7443f1e415e0a0`
 
@@ -152,11 +152,27 @@ The same workflow's `cross-repo-control` job `93228862296` also completed succes
 
 ### Additional required PR-head workflows
 
+On the validated implementation candidate:
+
 - `Required PR Gate` run `31307009693`: **SUCCESS**.
 - `Validate Public Runtime Distribution` run `31307009683`: **SUCCESS**.
 - `Validate AI-SDLC gh-aw Worker Compile` run `31307009677`: **SUCCESS**.
 
-The worker compile result confirms the pinned strict gh-aw generated worker set remains compilable after the Registry refactor; no generated worker source/lock drift was introduced by this Feature.
+The evidence-only head `2aa51a5440af38e76a5f713d0bb7a7ebde72c579` was also fully green:
+
+- `Validate AI-SDLC protocol` run `31307059313`: **SUCCESS**.
+- `Required PR Gate` run `31307059322`: **SUCCESS**.
+- `Validate Public Runtime Distribution` run `31307059319`: **SUCCESS**.
+- `Validate AI-SDLC gh-aw Worker Compile` run `31307059349`: **SUCCESS**.
+
+The legal `IMPL-DONE` Event commit `526b99336d562da9863c2e398f005d72f973cb99` was likewise fully green before trusted persistence:
+
+- `Validate AI-SDLC protocol` run `31307110256`: **SUCCESS**.
+- `Required PR Gate` run `31307110257`: **SUCCESS**.
+- `Validate Public Runtime Distribution` run `31307110232`: **SUCCESS**.
+- `Validate AI-SDLC gh-aw Worker Compile` run `31307110237`: **SUCCESS**.
+
+The worker compile results confirm the pinned strict gh-aw generated worker set remains compilable after the Registry refactor; no generated worker source/lock drift was introduced by this Feature.
 
 ### Static-preflight matrix
 
@@ -202,6 +218,20 @@ Both deterministic drift checks passed in CI:
 - worker source drift: clean;
 - workflow profile/credential surface drift: clean.
 
+## Lifecycle persistence result
+
+The Developer proposed `EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-DONE` with `expected_revision: 11` after the required implementation validation was green.
+
+Trusted `.github/workflows/ai-sdlc-persist.yml` consumed the Event and produced authoritative Feature revision `12` with:
+
+- `implementation: DONE`;
+- `implementation-v1` registered as a draft implementation artifact;
+- `code-review: READY`;
+- `code-gate: PENDING`;
+- `workflow.current_stage: code-review`.
+
+The Developer did not directly modify the Feature Manifest. The immediate bot-origin Persist commit produced GitHub `action_required` PR workflow entries with no jobs, rather than test failures; the preceding Event commit was fully green. This final evidence update creates a normal user-origin head so the PR can receive a normal final CI run before independent review.
+
 ## Known limitations / follow-up boundaries
 
 This Feature deliberately leaves live provider entitlement, quota/billing, current endpoint/model availability, rate-limit headroom, and multi-provider dogfood outside static validation. Future provider onboarding must follow the documented live entitlement probe and bounded dogfood sequence before maturity promotion.
@@ -212,4 +242,4 @@ Separate follow-up Features remain responsible for adding Qwen/GLM/MiniMax produ
 
 The Developer does not approve this implementation, PASS `code-gate`, perform independent Verification, merge, release, or directly edit the authoritative Feature Manifest.
 
-After the final evidence-only PR head also passes required checks, the Developer may propose the legal Implementation DONE lifecycle event and hand the Feature to an independent Code Reviewer; that transition does not constitute Code Review approval.
+Implementation is complete through trusted Persist. The next lifecycle owner is an independent Code Reviewer who must review PR `#196` and the approved Requirement/Design/Plan plus this Evidence before deciding `code-gate`.
