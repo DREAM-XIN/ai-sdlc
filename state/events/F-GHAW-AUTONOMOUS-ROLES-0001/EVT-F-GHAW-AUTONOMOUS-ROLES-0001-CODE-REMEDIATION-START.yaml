@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-START
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 17
+occurred_at: '2026-08-09T14:21:20Z'
+changes:
+- kind: task
+  id: F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REMEDIATION-1
+  status: WORKING
