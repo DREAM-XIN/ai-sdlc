@@ -8,42 +8,40 @@ Approved Requirement: `docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/requirement.
 
 Requirement Review: `docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/requirement-review.md`
 
-## 1. Design goals
+Design Review v1: `docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/design-review.md`
 
-This design adds Qwen, GLM, and MiniMax to the trusted gh-aw execution inventory while preserving the architecture established by `F-GHAW-PROVIDER-REGISTRY-0001`:
+## 1. Objective and invariants
+
+Add Qwen, GLM, and MiniMax through the provider Registry/certification architecture delivered by `F-GHAW-PROVIDER-REGISTRY-0001`:
 
 ```text
 trusted Registry metadata
-  -> atomic Registry validation
-  -> deterministic worker generation
-  -> strict compiler materialization
-  -> compiled-lock identity validation
+  -> shared Registry validation
+  -> deterministic worker materialization
+  -> strict gh-aw compile
+  -> compiled-lock validation
   -> static preflight
   -> effective-model audit
   -> exact worker allowlisting
 ```
 
-The design intentionally does **not** create three new provider adapters or provider-specific control-plane branches. Provider-specific facts live only in trusted Registry entries and documentation/evidence.
+No provider-specific production adapter or Python branch is introduced. Provider-specific facts exist only as trusted Registry metadata and durable documentation/evidence.
 
-## 2. Architectural invariants
+Unchanged invariants:
 
-The following invariants are unchanged and are treated as non-negotiable design constraints:
+- Registry: `runtimes/gh-aw/engine-profiles.yaml`.
+- Default trusted load validates the entire Registry atomically and requires registered worker sources to exist.
+- Generic behavior branches only on capabilities such as protocol/engine/provider_type/wire_api.
+- Provider workers inherit the canonical read-only/Safe Output/lifecycle contract.
+- Static preflight performs no provider HTTP calls and never proves entitlement.
+- Target repositories cannot select provider/model/profile/credential/worker identities.
+- Feature Event, Gate, Verification, Acceptance, Runtime App, merge, and release authority are unchanged.
+- `copilot` remains the default profile.
+- Qwen, GLM, MiniMax, and DeepSeek remain `experimental`.
 
-1. `runtimes/gh-aw/engine-profiles.yaml` remains the trusted provider/profile inventory.
-2. `scripts/gh_aw_provider_registry.py` remains the single atomic fail-closed validation boundary before a profile or worker identity can be trusted.
-3. Generic behavior branches on capabilities such as `protocol`, `engine`, `provider_type`, and `wire_api`, never on `provider == "qwen"`, `provider == "glm"`, or `provider == "minimax"`.
-4. Provider workers inherit the canonical read-only/Safe Output/lifecycle authority contract from `.github/workflows/ai-sdlc-gh-aw-worker.md`.
-5. Static preflight never performs provider HTTP calls and never claims entitlement.
-6. Target repositories cannot supply provider/model/profile/credential/worker identities.
-7. Feature Event, optimistic revision, Gate, Verification, Acceptance, merge, and release authority are unchanged.
-8. `copilot` remains the default profile.
-9. Qwen, GLM, MiniMax, and DeepSeek remain `experimental` after this Feature.
+## 2. Registry entries
 
-## 3. Provider Registry additions
-
-Exactly three profiles are added.
-
-### 3.1 Qwen
+### Qwen
 
 ```yaml
 qwen:
@@ -61,18 +59,9 @@ qwen:
   maturity: experimental
 ```
 
-Provider-fact provenance, observed 2026-08-09:
+Observed 2026-08-09 from Alibaba Cloud Model Studio Base URL and text-model documentation. The trusted profile intentionally uses the Beijing shared domain instead of a workspace-specific hostname. `DASHSCOPE_API_KEY` must therefore be valid for the Beijing region. WorkspaceId/base URL is never target-controlled. A future region/domain/model change is a reviewed Registry migration.
 
-- Alibaba Cloud Model Studio Base URL documentation: `https://help.aliyun.com/en/model-studio/base-url`
-- Alibaba Cloud text-generation/model documentation: `https://help.aliyun.com/en/model-studio/text-generation-model/`
-
-The Beijing shared domain is deliberately selected over a workspace-dedicated hostname. A dedicated hostname contains a workspace identity and therefore cannot be represented as one stable globally trusted Registry host without introducing per-user templating. Target repositories are not allowed to override this host.
-
-Qwen API keys are region-coupled. `DASHSCOPE_API_KEY` used with this profile must therefore be valid for the China (Beijing) service region. A future region or dedicated-domain migration is a reviewed Registry change, not runtime fallback behavior.
-
-`qwen3.7-plus` is a rolling provider model alias. This Feature pins the alias as observed on 2026-08-09; future replacement or version pinning requires a reviewed Registry change and regenerated lock/evidence.
-
-### 3.2 GLM
+### GLM
 
 ```yaml
 glm:
@@ -90,14 +79,9 @@ glm:
   maturity: experimental
 ```
 
-Provider-fact provenance, observed 2026-08-09:
+Observed 2026-08-09 from Zhipu BigModel general API and Chat Completions documentation. Coding Plan-specific endpoints are not used as the trusted default profile.
 
-- Zhipu BigModel API introduction: `https://docs.bigmodel.cn/cn/api/introduction`
-- Zhipu BigModel Chat Completions reference: `https://docs.bigmodel.cn/api-reference/模型-api/对话补全`
-
-The general API endpoint is selected. Coding Plan-specific endpoints/entitlements are intentionally not encoded in the trusted default profile.
-
-### 3.3 MiniMax
+### MiniMax
 
 ```yaml
 minimax:
@@ -115,463 +99,222 @@ minimax:
   maturity: experimental
 ```
 
-Provider-fact provenance, observed 2026-08-09:
+Observed 2026-08-09 from MiniMax OpenAI-compatible API documentation. Other compatibility transports are not fallback routes in this Feature.
 
-- MiniMax OpenAI-compatible API reference: `https://platform.minimaxi.com/docs/api-reference/text-openai-api`
+## 3. Registry boundary and source-materialization modes
 
-This Feature intentionally certifies MiniMax through the generic OpenAI-compatible path. Other MiniMax compatibility surfaces do not become fallback routes.
-
-## 4. Registry validation boundary
-
-No new provider-specific validation code is introduced in `scripts/gh_aw_provider_registry.py`.
-
-The existing validation already enforces the required contract for all three entries:
-
-- normalized profile/provider ids;
-- `engine: copilot` for compatible profiles;
-- `provider_type: openai`;
-- supported wire API;
-- model syntax;
-- HTTPS-only base URL;
-- no URL credentials/query/fragment;
-- exact `network_host`/hostname agreement;
-- canonical repository-relative worker source path;
-- registered worker source existence;
-- globally unique worker source/workflow and credential names;
-- `experimental|reference` maturity;
-- atomic full-Registry failure semantics.
-
-The new profiles therefore exercise the existing boundary rather than expanding it.
-
-## 5. Deterministic worker generation
-
-`scripts/render_gh_aw_workers.py` already renders every OpenAI-compatible profile from Registry metadata into the canonical worker contract.
-
-For each new profile it generates only the engine/provider frontmatter delta:
+`gh_aw_provider_registry.load_registry()` keeps its secure default:
 
 ```text
-engine.id = copilot
-engine.model = Registry model
-COPILOT_PROVIDER_BASE_URL = Registry base_url
-COPILOT_MODEL = Registry model
-COPILOT_PROVIDER_API_KEY = secrets.<Registry credential>
-COPILOT_PROVIDER_TYPE = openai
-COPILOT_PROVIDER_WIRE_API = completions
-network.allowed += exact Registry network_host
+require_source_files=True
 ```
 
-Everything else is inherited byte-for-byte from the canonical worker, including:
+All routing, resolver, preflight, compiled-lock audit, cross-repository allowlisting, effective-model audit, and ordinary validation consumers continue using that default. A missing registered worker source therefore fails closed.
 
-- target repository/ref binding;
-- read-only permission posture;
-- Runtime App/Safe Output configuration;
-- protected files;
-- Feature Manifest prohibition;
-- Gate prohibition;
-- merge/release prohibition;
-- Worker Result collection semantics.
+### 3.1 Bounded materialization mode
 
-Committed generated source files are:
+Design Review v1 found a generation deadlock: a newly registered profile points to a generated worker source that does not yet exist, while the renderer currently loads the Registry with source-existence enforcement before it can create that file.
+
+The remediation is narrowly scoped to deterministic worker **write/materialization** mode:
+
+```text
+render_gh_aw_workers.py --write/default materialization
+  -> load_registry(require_source_files=False)
+  -> still validate every Registry field, identity, URL, host, model,
+     credential, worker path syntax, uniqueness, protocol and maturity
+  -> render the registered worker sources deterministically
+```
+
+This mode relaxes only the final filesystem-existence predicate for `worker_source`; it does not relax path canonicalization or any other Registry/security rule.
+
+### 3.2 Check/read mode
+
+Renderer `--check` must use:
+
+```text
+load_registry(require_source_files=True)
+```
+
+so a missing generated source is rejected.
+
+All non-generator trusted consumers remain unchanged on the secure default. No caller-facing flag is added to resolver/preflight/routing code to opt out of source existence.
+
+### 3.3 Materialization workflow discovery
+
+`materialize-gh-aw-worker-lock.yml` needs to enumerate profiles before the new sources exist. Its pre-render discovery therefore uses the same bounded materialization Registry load (`require_source_files=False`) solely to obtain validated profile/source identities. After rendering, strict compile and later validation use normal source-existence enforcement.
+
+`compile-gh-aw-worker.yml` runs on a PR candidate after generated sources have been committed, so its discovery uses normal `load_registry()` with source existence required.
+
+This resolves `DR-MAJOR-1` without weakening execution trust.
+
+## 4. Deterministic workers and generated workflow surfaces
+
+`render_gh_aw_workers.py` generates three sources from the canonical worker:
 
 - `.github/workflows/ai-sdlc-gh-aw-worker-qwen.md`
 - `.github/workflows/ai-sdlc-gh-aw-worker-glm.md`
 - `.github/workflows/ai-sdlc-gh-aw-worker-minimax.md`
 
-`python scripts/render_gh_aw_workers.py --all --check` remains the drift proof.
+Only compatible-provider engine frontmatter changes: model, base URL, API-key secret reference, provider type, wire API, and exact network host. Target binding, permissions, Safe Outputs, protected files, lifecycle instructions, Gate prohibitions, and merge/release prohibitions remain inherited from canonical source.
 
-## 6. Generated workflow profile and credential surfaces
+`render_gh_aw_profile_surfaces.py` remains the only generator for dispatch/preflight profile choices and boolean credential-presence plumbing. It adds explicit checks for `DASHSCOPE_API_KEY`, `ZHIPUAI_API_KEY`, and `MINIMAX_API_KEY`, but never exposes secret values.
 
-`scripts/render_gh_aw_profile_surfaces.py` remains the only generator for:
+## 5. Compatibility validators
 
-- preflight `workflow_dispatch` profile choices;
-- dispatch profile choices;
-- boolean secret-presence environment entries;
-- profile-to-presence shell case mapping.
+The existing five-profile compatibility fixtures remain durable **legacy subset assertions**, not a closed provider inventory.
 
-The three new credentials become explicit generated boolean expressions:
+### Engine-profile validator
 
-```text
-secrets.DASHSCOPE_API_KEY != ''
-secrets.ZHIPUAI_API_KEY != ''
-secrets.MINIMAX_API_KEY != ''
-```
-
-Only booleans are passed to Python preflight; secret values never leave the trusted GitHub Actions secret substitution boundary.
-
-No provider-specific handwritten shell branch is added.
-
-## 7. Backward-compatibility validator generalization
-
-Two validators currently contain a deliberate five-profile test-only compatibility snapshot. The snapshot is useful, but its current exact-set assertion makes it functionally closed to real Registry extension.
-
-### 7.1 Engine profile compatibility baseline
-
-Current behavior in `scripts/validate_gh_aw_engine_profiles.py`:
+Change the exact-set assertion to:
 
 ```text
-set(registry profiles) == set(existing five-profile baseline)
+legacy five baseline keys ⊆ Registry profile ids
 ```
 
-New behavior:
+Preserve exact legacy engine/credential/alias/worker mappings. Then iterate every Registry profile generically for deterministic source validation.
 
-```text
-existing five-profile baseline keys must be a subset of Registry profile ids
-```
+### Runtime-preflight validator
 
-For those five legacy profiles, exact engine/credential/alias/worker mappings remain asserted unchanged.
+Likewise preserve the five legacy identity/maturity checks as a subset. For every Registry profile, derive generic expected provider/protocol/maturity from the validated `EngineProfile` and test:
 
-All Registry profiles — including Qwen, GLM, and MiniMax — continue through generic renderer/source validation.
+- credential absent -> `MISSING_CREDENTIAL`;
+- credential-present boolean -> `READY_FOR_ENTITLEMENT_PROBE`;
+- `entitlement_verified` remains false;
+- strict compiler metadata remains pinned.
 
-This keeps the old snapshot as a backward-compatibility assertion rather than runtime or extension authority.
+Adding a future provider therefore does not require another generic identity-map branch.
 
-### 7.2 Runtime-preflight compatibility baseline
+## 6. Registry-derived strict compile and lock materialization
 
-Current behavior in `scripts/validate_gh_aw_runtime_preflight.py` also requires the Registry profile set to equal the five-profile snapshot and uses the snapshot to derive expected provider/protocol/maturity for every profile.
+### PR compile workflow
 
-New behavior:
+`compile-gh-aw-worker.yml` becomes Registry-derived:
 
-1. Existing five baseline profiles must remain present with their old compatibility identity/maturity.
-2. Every Registry profile is exercised generically for missing/present credential semantics.
-3. Generic expected provider/protocol/maturity comes from the validated `EngineProfile` itself.
-4. The old five-profile snapshot is checked only for backward compatibility.
+1. read-only discovery job checks out the PR candidate;
+2. installs PyYAML;
+3. loads normal validated Registry with source files required;
+4. outputs ordered profile ids as JSON;
+5. compile job uses `fromJSON(...)` as its matrix;
+6. selected worker source/lock identities are resolved through `EngineProfile`, not raw YAML;
+7. each profile is rendered/checked and strict-compiled with pinned `github/gh-aw v0.83.4`.
 
-Result: adding a future valid Registry provider does not require adding it to a generic preflight identity map.
+Provider-worker path filters become generic `ai-sdlc-gh-aw-worker-*.md` rather than DeepSeek-specific.
 
-## 8. Effective-model audit
+### Materialization workflow
 
-`scripts/validate_gh_aw_effective_model_metadata.py` requires no provider-specific architectural change. It already iterates all `openai-compatible` Registry profiles.
+`materialize-gh-aw-worker-lock.yml`:
 
-After this Feature it must automatically audit:
+1. on bounded `gh-aw/compile-*` branch, loads Registry in materialization mode for validated identities;
+2. runs deterministic renderer write mode;
+3. reloads normal Registry/source validation after rendering;
+4. strict-compiles every registered profile using the pinned compiler;
+5. commits only registered generated worker sources and registered lock files.
 
-- `deepseek`
-- `qwen`
-- `glm`
-- `minimax`
+Lock files are compiler output and are never hand-authored.
 
-For each profile it verifies one model identity across:
+## 7. Effective-model, preflight and allowlisting behavior
 
-- Registry model;
-- rendered `engine.model`;
-- rendered `COPILOT_MODEL`;
-- compiled `GH_AW_INFO_MODEL`;
-- compiled `GH_AW_ENGINE_MODEL`;
-- compiled `agent_model` metadata.
+`validate_gh_aw_effective_model_metadata.py` requires no provider-specific logic. It must automatically audit DeepSeek, Qwen, GLM, and MiniMax through one compatible-profile loop, matching Registry model to rendered and compiled audit metadata.
 
-The same code path must cover all four.
-
-## 9. Static runtime preflight
-
-`scripts/gh_aw_runtime_preflight.py` remains static and non-networked.
-
-For every profile:
+Static preflight remains non-networked:
 
 ```text
 invalid Registry / unknown profile / invalid lock -> fail closed
 missing credential -> MISSING_CREDENTIAL
-valid lock + credential-present boolean -> READY_FOR_ENTITLEMENT_PROBE
-entitlement_verified -> always false
+valid static prerequisites + credential presence -> READY_FOR_ENTITLEMENT_PROBE
+entitlement_verified -> false
 ```
 
-No live HTTP probe is added to this script or workflow.
-
-This repository currently has no generic trusted live entitlement-probe implementation. Therefore the expected Feature evidence for the three new providers is:
+The repository currently has no generic trusted live entitlement probe. Expected evidence for each new provider is therefore:
 
 ```text
-static certification: passed (if all deterministic checks pass)
+static certification: passed
 live entitlement: not established
 bounded dogfood: not established
 maturity: experimental
 ```
 
-If a trusted live probe appears independently before Acceptance, its evidence may be recorded, but this Feature does not depend on or create such a mechanism.
+unless a separate trusted probe produces real evidence before Acceptance.
 
-This explicitly resolves `RQ-MINOR-1`.
+Cross-repository exact worker allowlisting remains derived from the fully validated Registry. Target Issue Comment grammar remains unchanged and exposes no provider/model/profile/credential/worker selector.
 
-## 10. Strict compile workflow becomes Registry-derived
+## 8. Fail-closed and materialization tests
 
-The current PR compile workflow hard-codes a five-profile matrix and has a DeepSeek-specific path filter. That is test orchestration, not runtime authority, but leaving it closed would make every future provider require another hard-coded compile edit.
+Implementation must add deterministic coverage for the Design Review remediation:
 
-### 10.1 Discovery job
+### Positive materialization fixture
 
-`.github/workflows/compile-gh-aw-worker.yml` will gain a small read-only discovery job:
+1. create a temporary valid compatible profile whose registered worker source does not exist;
+2. normal `load_registry()` must reject it;
+3. bounded materialization load with `require_source_files=False` must validate all metadata and return the profile;
+4. renderer write mode must generate the deterministic source;
+5. normal `load_registry()` and renderer `--check` must then pass.
 
-1. checkout candidate PR head;
-2. set up Python;
-3. install PyYAML;
-4. load the full Registry through `scripts/gh_aw_provider_registry.py`;
-5. emit the validated ordered profile id list as JSON.
+### Negative trusted-read fixture
 
-The compile job uses:
+With that valid Registry entry but generated source deleted:
 
-```text
-strategy.matrix.profile = fromJSON(needs.discover.outputs.profiles)
-```
+- normal Registry load fails;
+- renderer `--check` fails;
+- any resolver/preflight/allowlist test using normal Registry load fails closed.
 
-The matrix therefore contains all registered profiles without a provider-name list in workflow YAML.
+Also preserve existing negative coverage for malformed unrelated entries, duplicate credentials/workers, unsafe URLs/hosts/paths, unknown profiles, and unregistered workers.
 
-### 10.2 Identity resolution
+## 9. Provider-fact durability, migration and rollback
 
-The compile job will stop parsing raw `engine-profiles.yaml` with `yaml.safe_load` to obtain source/lock identities. It will resolve the selected validated `EngineProfile` through the shared Registry helper.
+Official source URLs and observation date (`2026-08-09`) are stored in Requirement/Design/Implementation Evidence. External provider changes never cause implicit runtime substitution.
 
-This reinforces the trusted Registry boundary rather than creating a second raw-YAML identity consumer.
+Future endpoint, region, network host, model, credential identity, provider type, or wire-API changes require a reviewed Registry change and regenerated source/locks/evidence.
 
-### 10.3 Path filters
+Before release, one incompatible new profile can be rolled back by removing its Registry entry and regenerated artifacts, then rerunning the full Registry/static/compile suite. After release, removal/migration should be a separate Feature because consumers may rely on the profile id.
 
-Provider-worker source path triggers become generic:
+## 10. Test and CI matrix
 
-```text
-.github/workflows/ai-sdlc-gh-aw-worker.md
-.github/workflows/ai-sdlc-gh-aw-worker-*.md
-```
+Final deterministic validation covers:
 
-plus Registry/renderer/compile/materialization dependencies.
-
-No DeepSeek-only trigger remains.
-
-## 11. Lock materialization workflow
-
-`.github/workflows/materialize-gh-aw-worker-lock.yml` already iterates every Registry profile for render/compile, but currently uses raw YAML snippets for identity enumeration and has a DeepSeek-specific path filter.
-
-The workflow will be aligned with the same boundary:
-
-- generic worker-source path filter;
-- use validated Registry helper for worker source and lock enumeration;
-- render all profiles;
-- strict-compile every profile using pinned `github/gh-aw v0.83.4`;
-- commit only registered generated worker sources and registered lock files.
-
-Generated `.lock.yml` files are compiler output and must never be hand-authored.
-
-Materialization still occurs on bounded `gh-aw/compile-*` branches. The generated artifacts are then transferred to the Feature branch as compiler-produced content before final CI/Review.
-
-## 12. Compiled-lock validation
-
-`scripts/gh_aw_compiled_worker.py` remains generic and unchanged in authority. For each Registry profile it validates:
-
-- expected lock path;
-- metadata schema version;
-- strict flag;
-- pinned compiler version;
-- compiled agent id vs Registry engine;
-- optional engine version when configured;
-- compiled agent model vs Registry model when configured.
-
-All three new compatible profiles therefore require their compiled metadata to pin the selected model.
-
-## 13. Cross-repository worker allowlisting
-
-`scripts/gh_aw_cross_repo_runtime.py` already obtains exact trusted worker workflows from the full validated Registry.
-
-Adding the three Registry entries automatically adds exactly these allowed workflow identities:
-
-- `ai-sdlc-gh-aw-worker-qwen.lock.yml`
-- `ai-sdlc-gh-aw-worker-glm.lock.yml`
-- `ai-sdlc-gh-aw-worker-minimax.lock.yml`
-
-No wildcard worker execution and no target-controlled worker selector is introduced.
-
-## 14. Command boundary
-
-No command grammar changes are needed.
-
-`/ai-sdlc dispatch-gh-aw` remains bounded to trusted target repository/ref/Manifest context. Tests continue rejecting target-controlled:
-
-- provider;
-- model;
-- engine profile;
-- credential;
-- worker workflow/policy selectors.
-
-Provider selection remains a control-repository workflow decision.
-
-## 15. Provider-fact durability and migration policy
-
-Provider external contracts are mutable independently of AI-SDLC, so the Feature records a durable observation date (`2026-08-09`) and official source URLs.
-
-A future change to any of these requires a reviewed Registry migration:
-
-- endpoint/base URL;
-- region;
-- network host;
-- model alias/version;
-- credential identity;
-- wire API;
-- provider type.
-
-There is no runtime fallback to a different region, host, model, or vendor gateway.
-
-For Qwen specifically:
-
-- the trusted profile is Beijing shared-domain only;
-- the key must match that region;
-- workspace-dedicated domains are not dynamically substituted;
-- target repositories cannot inject WorkspaceId/base URL.
-
-This explicitly resolves `RQ-MINOR-2`.
-
-## 16. Rollback
-
-Rollback is a reviewed Registry/artifact change, not runtime failover.
-
-If one new profile proves incompatible before release:
-
-1. remove only that profile Registry entry;
-2. regenerate profile/credential workflow surfaces;
-3. remove its generated worker source and compiler-generated lock;
-4. rerun all Registry/static/compile/compatibility checks.
-
-Atomic Registry validation means a malformed profile cannot be left registered while other profiles continue silently.
-
-After a profile is released, removal/endpoint/model migration should be handled as a separate reviewed Feature because consumers may rely on its trusted profile id.
-
-## 17. Test strategy
-
-### 17.1 Registry and fail-closed checks
-
-Existing Registry validation remains mandatory. Add/adjust deterministic checks only where needed to prove:
-
-- all three new entries load through the shared boundary;
-- source/worker/credential identities are globally unique;
-- malformed unrelated entries still invalidate all lookups;
-- unknown profiles/workers remain rejected.
-
-No test should encode provider-name-specific production branching.
-
-### 17.2 Legacy compatibility
-
-The original five profile mappings remain exact backward-compatibility fixtures as a subset of the Registry.
-
-Assertions:
-
-- Copilot/Codex/Claude/Gemini mappings unchanged;
-- DeepSeek mapping and `experimental` maturity unchanged;
-- default remains Copilot.
-
-### 17.3 Render drift
-
-Run:
-
-```text
-python scripts/render_gh_aw_workers.py --all --check
-python scripts/render_gh_aw_profile_surfaces.py --check
-```
-
-### 17.4 Static preflight
-
-For every Registry profile:
-
-- credential absent -> `MISSING_CREDENTIAL`;
-- credential present boolean -> `READY_FOR_ENTITLEMENT_PROBE`;
-- entitlement remains false;
-- strict compiler metadata verified.
-
-For legacy five profiles, old identity/maturity fixtures remain unchanged.
-
-### 17.5 Effective model
-
-One generic test must enumerate all compatible profiles and report DeepSeek + Qwen + GLM + MiniMax without provider-specific branches.
-
-### 17.6 Compile matrix
-
-Final PR compile workflow must discover all Registry profile ids and produce successful strict compile jobs for eight profiles:
-
-- copilot
-- codex
-- claude
-- gemini
-- deepseek
-- qwen
-- glm
-- minimax
-
-The fact that eight are expected is an Acceptance/Verification observation, not a hard-coded runtime or workflow authority list.
-
-### 17.7 Security/regression
-
-Required final checks include:
-
-- repository protocol validation;
-- GitHub workflow/action security;
-- provider Registry/extension tests;
-- command boundary;
-- cross-repository runtime checks;
+- shared Registry/fail-closed validation;
+- positive and negative missing-source materialization tests;
+- renderer `--all --check`;
+- generated workflow-surface `--check`;
+- legacy five-profile compatibility subset;
+- generic static preflight over all Registry profiles;
+- effective-model audit over all compatible profiles;
+- exact cross-repo worker allowlisting;
+- command-boundary/security validation;
 - public runtime distribution;
-- required PR gate;
-- strict compile matrix.
+- Required PR Gate;
+- Registry-derived strict compile for all registered profiles.
 
-## 18. Implementation boundaries
+At Feature completion the Registry is expected to contain eight profiles (existing five plus Qwen/GLM/MiniMax), but this count is Verification evidence, not a hard-coded runtime/workflow authority.
 
-Expected production/configuration changes:
+## 11. Requirement Review closure
 
-- `runtimes/gh-aw/engine-profiles.yaml`
-- generated worker sources for Qwen/GLM/MiniMax
-- compiler-generated lock files for Qwen/GLM/MiniMax
-- generated preflight/dispatch profile surfaces
-- compile/materialization workflow generic discovery/path filters
-- compatibility-test generalization in engine-profile/runtime-preflight validators
-- provider integration documentation/evidence
+`RQ-MINOR-1` is resolved by the explicit evidence states: static certification, live entitlement, bounded dogfood, maturity. Static readiness is never described as entitlement success.
+
+`RQ-MINOR-2` is resolved by source/date provenance, explicit Qwen Beijing key/region coupling, no target/workspace host override, and reviewed endpoint/model migration semantics.
+
+## 12. Implementation boundaries
+
+Expected changes:
+
+- three Registry entries;
+- renderer materialization-mode source-existence handling;
+- three generated worker sources and compiler-generated locks;
+- generated dispatch/preflight surfaces;
+- generic compile/materialization discovery and path filters;
+- compatibility validator closed-set removal;
+- deterministic materialization tests;
+- provider documentation/evidence.
 
 Not expected:
 
-- provider-specific branch changes in Registry/renderer/preflight/effective-model/cross-repo runtime;
-- direct provider HTTP client code;
-- Commander/Persist/Gate changes;
-- Runtime App/Safe Output authority changes;
+- provider-name-specific branches in Registry/resolver/preflight/audit/allowlist;
+- provider HTTP calls in control plane/static preflight;
+- Commander/Persist/Gate authority changes;
 - default-profile changes;
-- maturity promotion.
+- maturity promotion;
+- Kimi or another provider.
 
-## 19. Risks and mitigations
+## 13. Conclusion
 
-### Provider API/model contract changes
-
-Risk: external provider aliases/endpoints can change.
-
-Mitigation: source/date evidence, explicit reviewed migration policy, no runtime fallback.
-
-### Qwen regional mismatch
-
-Risk: a non-Beijing DashScope key may fail against the selected endpoint.
-
-Mitigation: document key/region coupling; preflight only proves credential presence; live entitlement is not claimed.
-
-### Strict compiler/provider compatibility
-
-Risk: a syntactically OpenAI-compatible profile may still fail gh-aw strict compile or runtime semantics.
-
-Mitigation: all profiles must strict-compile on the pinned compiler; failure blocks implementation completion. Runtime/live behavior remains experimental until separate evidence.
-
-### CI matrix growth
-
-Risk: adding three profiles increases compile time.
-
-Mitigation: fail-fast remains disabled to collect independent evidence; matrix discovery is deterministic and bounded by trusted Registry size.
-
-### False certification language
-
-Risk: users interpret static compatibility as live provider support.
-
-Mitigation: standardized evidence status explicitly distinguishes static certification, live entitlement, bounded dogfood, and maturity.
-
-## 20. Requirement traceability
-
-| Requirement/AC | Design mechanism |
-| --- | --- |
-| AC1 Registry entries | Section 3 |
-| AC2 no provider-specific control branches | Sections 2, 4, 7–14 |
-| AC3 deterministic workers | Section 5 |
-| AC4 generated workflow surfaces | Section 6 |
-| AC5 strict compile/model metadata | Sections 10–12 |
-| AC6 effective-model audit | Section 8 |
-| AC7 preflight semantics | Section 9 |
-| AC8 fail closed | Sections 4, 17.1 |
-| AC9 existing compatibility/default | Sections 7, 17.2 |
-| AC10 command boundary | Section 14 |
-| AC11 provider facts/static-vs-live docs | Sections 3, 9, 15 |
-| AC12 required final CI | Section 17.7 |
-| AC13 experimental maturity/authority | Sections 2, 9, 18 |
-| RQ-MINOR-1 | Section 9 + evidence terminology |
-| RQ-MINOR-2 | Sections 3.1 and 15 |
-
-## 21. Design conclusion
-
-The new providers can be added without extending provider-specific production control logic. The only reusable framework changes are to remove closed-set assumptions from test orchestration/compatibility validation and make strict compile discovery consume the validated Registry. Static integration can therefore be independently certified while live entitlement/dogfood remains explicitly unproven and all four direct compatible providers remain `experimental`.
+The Feature remains a Registry extension, not a new adapter architecture. The only shared behavior change is a narrowly bounded generator materialization mode that can create a newly registered worker source before it exists; every normal trusted consumer and renderer check mode continues to require that source and fail closed when it is absent. This removes the Design Review bootstrap deadlock while preserving the Provider Registry security boundary.
