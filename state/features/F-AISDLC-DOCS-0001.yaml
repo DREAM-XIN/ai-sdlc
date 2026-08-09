@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 12
+revision: 13
 feature:
   id: F-AISDLC-DOCS-0001
   title: AI-SDLC end-user documentation and getting-started guide
@@ -25,7 +25,7 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: READY
+    status: WORKING
     gate: code-gate
   - id: verification
     status: TODO
@@ -88,4 +88,5 @@ applied_events:
 - EVT-F-AISDLC-DOCS-0001-PLAN-DONE
 - EVT-F-AISDLC-DOCS-0001-IMPLEMENTATION-START
 - EVT-F-AISDLC-DOCS-0001-IMPLEMENTATION-DONE
-updated_at: '2026-08-09T07:58:00Z'
+- EVT-F-AISDLC-DOCS-0001-CODE-REVIEW-START
+updated_at: '2026-08-09T08:00:00Z'
