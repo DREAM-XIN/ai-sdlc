@@ -32,22 +32,12 @@ class RoleWorker:
 
 def _safe_source(value: str) -> bool:
     path = PurePosixPath(value)
-    return (
-        value.startswith(".github/workflows/")
-        and path.suffix == ".md"
-        and not path.is_absolute()
-        and ".." not in path.parts
-    )
+    return value.startswith(".github/workflows/") and path.suffix == ".md" and not path.is_absolute() and ".." not in path.parts
 
 
 def _safe_workflow(value: str) -> bool:
     path = PurePosixPath(value)
-    return (
-        "/" not in value
-        and value.endswith(".lock.yml")
-        and not path.is_absolute()
-        and ".." not in path.parts
-    )
+    return "/" not in value and value.endswith(".lock.yml") and not path.is_absolute() and ".." not in path.parts
 
 
 def load_role_workers(path: Path = DEFAULT_PATH):
@@ -60,17 +50,10 @@ def load_role_workers(path: Path = DEFAULT_PATH):
 
     profiles = load_registry()
     routing = load_routing_policy(registry=profiles)
-    allowed_profiles = {
-        (rule.role, rule.stage): tuple(rule.candidates)
-        for rule in routing.rules
-        if (rule.role, rule.stage) in ALLOWED_ROLE_STAGES
-    }
+    allowed_profiles = {(rule.role, rule.stage): tuple(rule.candidates) for rule in routing.rules if (rule.role, rule.stage) in ALLOWED_ROLE_STAGES}
 
     workers = []
-    seen_ids = set()
-    seen_keys = set()
-    seen_sources = set()
-    seen_workflows = set()
+    seen_ids, seen_keys, seen_sources, seen_workflows = set(), set(), set(), set()
     required = {"id", "role", "stage", "profile", "worker_source", "worker_workflow"}
     for row in rows:
         if not isinstance(row, dict) or set(row) != required:
@@ -92,16 +75,11 @@ def load_role_workers(path: Path = DEFAULT_PATH):
         if row["worker_source"] in seen_sources or row["worker_workflow"] in seen_workflows:
             raise RoleWorkerError("role-worker source/workflow identities must be unique")
         workers.append(RoleWorker(**row))
-        seen_ids.add(row["id"])
-        seen_keys.add(triple)
-        seen_sources.add(row["worker_source"])
-        seen_workflows.add(row["worker_workflow"])
+        seen_ids.add(row["id"]); seen_keys.add(triple); seen_sources.add(row["worker_source"]); seen_workflows.add(row["worker_workflow"])
 
     expected = {
-        ("reviewer", "code-review", "claude"),
-        ("reviewer", "code-review", "copilot"),
-        ("qa", "verification", "gemini"),
-        ("qa", "verification", "copilot"),
+        ("reviewer", "code-review", "claude"), ("reviewer", "code-review", "copilot"),
+        ("qa", "verification", "gemini"), ("qa", "verification", "copilot"),
     }
     if seen_keys != expected:
         raise RoleWorkerError(f"unexpected autonomous Gate-role worker set: {sorted(seen_keys)}")
@@ -112,6 +90,13 @@ def resolve_role_worker(role: str, stage: str, profile: str, path: Path = DEFAUL
     matches = [w for w in load_role_workers(path) if (w.role, w.stage, w.profile) == (role, stage, profile)]
     if len(matches) != 1:
         raise RoleWorkerError(f"no unique role-worker for {role}/{stage}/{profile}")
+    return matches[0]
+
+
+def require_role_worker_workflow(role: str, stage: str, workflow: str, path: Path = DEFAULT_PATH) -> RoleWorker:
+    matches = [w for w in load_role_workers(path) if (w.role, w.stage, w.worker_workflow) == (role, stage, workflow)]
+    if len(matches) != 1:
+        raise RoleWorkerError(f"workflow {workflow!r} is not a trusted worker for {role}/{stage}")
     return matches[0]
 
 
