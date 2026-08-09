@@ -1,0 +1,51 @@
+protocol_version: 0.1.0
+revision: 0
+feature:
+  id: F-AISDLC-DOCS-0001
+  title: AI-SDLC end-user documentation and getting-started guide
+  risk: medium
+  issue: '#193'
+workflow:
+  profile: standard-feature
+  status: ACTIVE
+  current_stage: requirement
+  stages:
+  - id: requirement
+    status: READY
+  - id: requirement-review
+    status: TODO
+    gate: requirement-gate
+  - id: design
+    status: TODO
+  - id: design-review
+    status: TODO
+    gate: design-gate
+  - id: plan
+    status: TODO
+  - id: implementation
+    status: TODO
+  - id: code-review
+    status: TODO
+    gate: code-gate
+  - id: verification
+    status: TODO
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts: []
+gates:
+- id: requirement-gate
+  status: PENDING
+- id: design-gate
+  status: PENDING
+- id: code-gate
+  status: PENDING
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence: []
+applied_events: []
+updated_at: '2026-08-09T07:35:56Z'
