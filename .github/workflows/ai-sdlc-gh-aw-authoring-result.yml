@@ -1,0 +1,343 @@
+name: AI-SDLC gh-aw Authoring Result
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        required: true
+        type: string
+      target_ref:
+        required: true
+        type: string
+      feature_id:
+        required: true
+        type: string
+      feature_issue_number:
+        required: true
+        type: string
+      task_id:
+        required: true
+        type: string
+      expected_revision:
+        required: true
+        type: string
+      stage:
+        required: true
+        type: string
+      role:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+      source_workflow_ref:
+        required: true
+        type: string
+      comment_id:
+        required: true
+        type: string
+      comment_url:
+        required: true
+        type: string
+      persist:
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target repository identity
+        id: target
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "target_repository must be owner/repo" >&2
+            exit 2
+          fi
+          owner="${TARGET_REPOSITORY%%/*}"
+          repo_name="${TARGET_REPOSITORY#*/}"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
+          if [[ "$TARGET_REPOSITORY" == "$GITHUB_REPOSITORY" ]]; then
+            echo "cross_repo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cross_repo=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint exact-target writer token
+        id: target_token
+        if: ${{ steps.target.outputs.cross_repo == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo_name }}
+          permission-contents: write
+          permission-issues: read
+
+      - name: Checkout trusted control plane
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r runtime/requirements-dev.txt
+
+      - name: Resolve target branch policy
+        id: target_meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          set -euo pipefail
+          default_branch=$(gh api "repos/$TARGET_REPOSITORY" --jq '.default_branch')
+          test -n "$default_branch"
+          git check-ref-format --branch "$TARGET_REF" >/dev/null
+          if [[ "$TARGET_REF" == "$default_branch" ]]; then
+            echo "Authoring result persistence must target a non-default Feature branch" >&2
+            exit 2
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Validate trusted authoring worker run provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FEATURE_ID: ${{ inputs.feature_id }}
+          TASK_ID: ${{ inputs.task_id }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          STAGE: ${{ inputs.stage }}
+          ROLE: ${{ inputs.role }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_WORKFLOW_REF: ${{ inputs.source_workflow_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$CONTROL_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          PYTHONPATH=runtime/scripts python runtime/scripts/gh_aw_authoring_provenance.py source-run.json \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-workflow-ref "$SOURCE_WORKFLOW_REF" \
+            --control-repository "$CONTROL_REPOSITORY" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --role "$ROLE" \
+            --stage "$STAGE" \
+            --feature-id "$FEATURE_ID" \
+            --task-id "$TASK_ID" \
+            --expected-revision "$EXPECTED_REVISION"
+
+      - name: Checkout target Feature branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.target_repository }}
+          token: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
+          ref: ${{ inputs.target_ref }}
+          path: workspace
+          fetch-depth: 0
+
+      - name: Validate Feature/revision/Issue identity
+        shell: bash
+        env:
+          FEATURE_ID: ${{ inputs.feature_id }}
+          FEATURE_ISSUE_NUMBER: ${{ inputs.feature_issue_number }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          STAGE: ${{ inputs.stage }}
+          ROLE: ${{ inputs.role }}
+        run: |
+          set -euo pipefail
+          [[ "$FEATURE_ID" =~ ^[A-Za-z0-9._:-]+$ ]]
+          [[ "$FEATURE_ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_REVISION" =~ ^[0-9]+$ ]]
+          case "$ROLE/$STAGE" in
+            product/requirement|architect/design|orchestrator/plan) ;;
+            *) echo "unsupported autonomous authoring role/stage" >&2; exit 2 ;;
+          esac
+          manifest="workspace/state/features/$FEATURE_ID.yaml"
+          test -f "$manifest" && test ! -L "$manifest"
+          FEATURE_ID="$FEATURE_ID" FEATURE_ISSUE_NUMBER="$FEATURE_ISSUE_NUMBER" EXPECTED_REVISION="$EXPECTED_REVISION" python - <<'PY'
+          import os,yaml
+          manifest=yaml.safe_load(open(f"workspace/state/features/{os.environ['FEATURE_ID']}.yaml"))
+          if manifest.get('revision') != int(os.environ['EXPECTED_REVISION']):
+              raise SystemExit('authoring result revision is stale')
+          issue=str(manifest.get('feature',{}).get('issue','')).lstrip('#')
+          if issue != os.environ['FEATURE_ISSUE_NUMBER']:
+              raise SystemExit('Feature Issue identity mismatch')
+          PY
+
+      - name: Fetch and validate Safe Output comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          FEATURE_ISSUE_NUMBER: ${{ inputs.feature_issue_number }}
+          COMMENT_ID: ${{ inputs.comment_id }}
+          COMMENT_URL: ${{ inputs.comment_url }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$TARGET_REPOSITORY/issues/comments/$COMMENT_ID" > authoring-comment.json
+          test "$(jq -r '.id' authoring-comment.json)" = "$COMMENT_ID"
+          test "$(jq -r '.html_url' authoring-comment.json)" = "$COMMENT_URL"
+          test "$(jq -r '.issue_url' authoring-comment.json)" = "https://api.github.com/repos/$TARGET_REPOSITORY/issues/$FEATURE_ISSUE_NUMBER"
+          test "$(jq -r '.user.type' authoring-comment.json)" = "Bot"
+
+      - name: Extract closed authoring result envelope
+        shell: bash
+        env:
+          FEATURE_ID: ${{ inputs.feature_id }}
+          TRUSTED_TASK_ID: ${{ inputs.task_id }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          STAGE: ${{ inputs.stage }}
+          ROLE: ${{ inputs.role }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          body=json.load(open('authoring-comment.json'))['body']
+          start='<!-- AI-SDLC-AUTHORING-RESULT\n'
+          end='\nAI-SDLC-AUTHORING-RESULT -->'
+          if not body.startswith(start) or body.count(start)!=1 or body.count(end)!=1:
+              raise SystemExit('Authoring Safe Output comment has an invalid machine envelope')
+          payload=json.loads(body[len(start):body.index(end)])
+          expected={
+              'feature_id':os.environ['FEATURE_ID'],
+              'task_id':os.environ['TRUSTED_TASK_ID'],
+              'expected_revision':int(os.environ['EXPECTED_REVISION']),
+              'target_repository':os.environ['TARGET_REPOSITORY'],
+              'target_ref':os.environ['TARGET_REF'],
+              'stage':os.environ['STAGE'],
+              'role':os.environ['ROLE'],
+          }
+          for key,value in expected.items():
+              if payload.get(key)!=value:
+                  raise SystemExit(f'Authoring result identity mismatch: {key}')
+          open('authoring-result.json','w').write(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Translate to canonical artifact and bounded Feature Event
+        id: translated
+        shell: bash
+        env:
+          FEATURE_ID: ${{ inputs.feature_id }}
+          COMMENT_URL: ${{ inputs.comment_url }}
+        run: |
+          set -euo pipefail
+          manifest="workspace/state/features/$FEATURE_ID.yaml"
+          occurred_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PYTHONPATH=runtime/scripts python runtime/scripts/gh_aw_authoring_result.py "$manifest" authoring-result.json \
+            --comment-url "$COMMENT_URL" \
+            --occurred-at "$occurred_at" \
+            --event-output proposed-event.yaml \
+            --artifact-output authored.md > authoring-translation.json
+          artifact_uri=$(jq -r '.artifact_uri' authoring-translation.json)
+          case "${{ inputs.role }}/${{ inputs.stage }}" in
+            product/requirement) expected="docs/features/$FEATURE_ID/requirement.md" ;;
+            architect/design) expected="docs/features/$FEATURE_ID/design.md" ;;
+            orchestrator/plan) expected="docs/features/$FEATURE_ID/plan.md" ;;
+            *) exit 2 ;;
+          esac
+          test "$artifact_uri" = "$expected"
+          event_id=$(python -c "import yaml; print(yaml.safe_load(open('proposed-event.yaml'))['id'])")
+          echo "artifact_uri=$artifact_uri" >> "$GITHUB_OUTPUT"
+          echo "manifest_path=state/features/$FEATURE_ID.yaml" >> "$GITHUB_OUTPUT"
+          echo "event_path=state/events/$FEATURE_ID/$event_id.yaml" >> "$GITHUB_OUTPUT"
+
+      - name: Build trusted persistence plan
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.translated.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.translated.outputs.event_path }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          python runtime/scripts/ingest_feature_event.py \
+            "workspace/$MANIFEST_PATH" proposed-event.yaml \
+            --event-path "$EVENT_PATH" \
+            --repository "$TARGET_REPOSITORY" \
+            --manifest-path "$MANIFEST_PATH" \
+            --target-ref "$TARGET_REF" \
+            --output persistence-plan.json
+
+      - name: Materialize canonical artifact and Feature state
+        shell: bash
+        env:
+          MANIFEST_PATH: ${{ steps.translated.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.translated.outputs.event_path }}
+          ARTIFACT_URI: ${{ steps.translated.outputs.artifact_uri }}
+        run: |
+          set -euo pipefail
+          mkdir -p -- "workspace/$(dirname -- "$EVENT_PATH")"
+          cp -- proposed-event.yaml "workspace/$EVENT_PATH"
+          if [[ -f authored.md ]]; then
+            mkdir -p -- "workspace/$(dirname -- "$ARTIFACT_URI")"
+            cp -- authored.md "workspace/$ARTIFACT_URI"
+          fi
+          MANIFEST_PATH="$MANIFEST_PATH" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          plan=json.load(open('persistence-plan.json'))
+          path=Path('workspace')/os.environ['MANIFEST_PATH']
+          path.write_text(plan['plan']['manifest']['content'],encoding='utf-8')
+          PY
+          python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-sdlc-gh-aw-authoring-result
+          path: |
+            source-run.json
+            authoring-comment.json
+            authoring-result.json
+            authoring-translation.json
+            proposed-event.yaml
+            persistence-plan.json
+            authored.md
+          if-no-files-found: ignore
+
+      - name: Persist validated canonical authoring result
+        if: ${{ inputs.persist }}
+        shell: bash
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          DEFAULT_BRANCH: ${{ steps.target_meta.outputs.default_branch }}
+          MANIFEST_PATH: ${{ steps.translated.outputs.manifest_path }}
+          EVENT_PATH: ${{ steps.translated.outputs.event_path }}
+          ARTIFACT_URI: ${{ steps.translated.outputs.artifact_uri }}
+        run: |
+          set -euo pipefail
+          python runtime/scripts/verify_git_write_precondition.py \
+            --repo-dir workspace \
+            --target-ref "$TARGET_REF" \
+            --default-branch "$DEFAULT_BRANCH"
+          git -C workspace config user.name "ai-sdlc[bot]"
+          git -C workspace config user.email "ai-sdlc[bot]@users.noreply.github.com"
+          git -C workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
+          if [[ -f "workspace/$ARTIFACT_URI" ]]; then
+            git -C workspace add -- "$ARTIFACT_URI"
+          fi
+          if git -C workspace diff --cached --quiet; then
+            echo "No authoring result changes to persist"
+            exit 0
+          fi
+          git -C workspace commit -m "chore(ai-sdlc): ingest gh-aw authoring result"
+          git -C workspace push origin "HEAD:$TARGET_REF"
