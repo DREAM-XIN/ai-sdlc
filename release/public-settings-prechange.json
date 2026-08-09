@@ -1,6 +1,6 @@
 {
   "schema_version": "public-settings-prechange-v1",
-  "repository": "DREAM-XIN/ai-sdlc",
+  "repository_full_name": "DREAM-XIN/ai-sdlc",
   "recorded_on": "2026-08-09",
   "source": "sanitized Public Settings Snapshot plus repository-administrator review of GitHub Settings UI",
   "safety": {
@@ -8,7 +8,7 @@
     "secret_values_recorded": false,
     "repository_variable_values_recorded": false
   },
-  "repository": {
+  "repository_state": {
     "visibility": "private",
     "default_branch": "main"
   },
