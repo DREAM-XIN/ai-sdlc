@@ -2,7 +2,11 @@
 
 Role: Implementation Developer
 
-## Local deterministic evidence
+Implementation code commit: `9d14802fc122e2e037475475cf06697e1e780a15`
+
+Implementation PR: `#209`
+
+## Deterministic Feature validation
 
 `python scripts/validate_operator_api.py`
 
@@ -20,9 +24,28 @@ Operator API validation passed
 
 The validator covers all 12 request/response schema pairs plus envelope/error/identity/capability schemas and the frozen Plan metadata matrix.
 
-## Required repository validation
+`python scripts/validate_feature_manifest.py state/features/F-OPERATOR-CANONICAL-API-0001.yaml`
 
-`python scripts/validate_feature_manifest.py state/features/F-OPERATOR-CANONICAL-API-0001.yaml` remains a required candidate-head check. Required PR checks for changed `spec/**`, `scripts/**`, and Feature documentation must be green before Code Review can PASS.
+Result: **PASS**
+
+Observed output:
+
+```text
+Feature Manifest validation passed
+```
+
+## Exact implementation-head PR checks
+
+For implementation code head `9d14802fc122e2e037475475cf06697e1e780a15`:
+
+- Validate AI-SDLC protocol — run `31330747701` — **SUCCESS**
+- Validate Public Runtime Distribution — run `31330747732` — **SUCCESS**
+- Required PR Gate — run `31330747736` — **SUCCESS**
+  - `protocol-validation` — success
+  - `cross-repo-control-validation` — success
+  - `required-pr-gate` — success
+
+PR #209 was also confirmed mergeable at that implementation head. Any later evidence-only head must be rechecked before independent Code Review treats CI as exact-head evidence.
 
 ## Security/authority evidence
 
