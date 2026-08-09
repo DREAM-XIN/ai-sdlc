@@ -17,7 +17,7 @@ Current-tree validation alone is therefore necessary but not sufficient.
    - current tracked-tree secret scanning in CI;
    - existing GitHub Actions security validation.
 2. Run the `Public Release Audit` workflow from the commit that is intended to become Public. It must finish with `PUBLIC-READY-AUDIT: PASS` and publish `public-release-audit: success` on that exact commit.
-3. Review or delete historical GitHub Actions runs and downloadable artifacts that must not become public. Historical logs must be treated as publishable data after the visibility change.
+3. Maintain a reviewed full historical-Actions audit baseline and scan every Actions run/artifact created or updated after its conservative overlap timestamp. Re-baseline with another full scan whenever the prior baseline cannot be trusted or the retention model changes.
 4. Verify that no repository file contains real runtime credentials. Secret *names* and examples are allowed; secret values are not.
 5. Run `Public Settings Snapshot`, retain its sanitized result, and manually capture every administration endpoint that it reports as unavailable. The combined snapshot must cover the current default branch, branch protection/rulesets, required status checks, environments, repository variables, and Actions settings so those settings can be revalidated after the visibility change.
 6. Confirm that runtime credentials remain stored only in GitHub Secrets or the external credential system that owns them.
@@ -36,20 +36,37 @@ The validator fails on obvious committed credential formats and tracked private-
 
 ## Automated historical audit
 
-The `Public Release Audit` workflow is the reproducible pre-publication gate. It:
+The `Public Release Audit` workflow is the reproducible pre-publication gate. Every candidate:
 
 - checks out complete repository history with `fetch-depth: 0`;
 - fetches branches, tags, and GitHub Pull Request head/merge refs that may become inspectable after publication;
 - runs `scripts/validate_public_history.py` against all reachable Git blobs;
-- enumerates historical Actions runs through the GitHub API;
-- downloads every retained run log archive that GitHub still makes available;
-- enumerates retained repository Actions artifacts and downloads every non-expired artifact within the configured size limit;
-- recursively scans ZIP content, including nested ZIPs, without printing matched credential values;
-- fails closed when an artifact or archive entry exceeds the configured scan limit;
+- validates the reviewed full Actions-audit baseline in `release/public-release-audit-baseline.json`;
+- enumerates the current Actions run/artifact inventories;
+- selects every run and artifact whose `created_at` or `updated_at` is at or after the baseline's conservative overlap timestamp;
+- scans every selected retained run log and artifact archive, recursively including nested ZIPs;
+- fails closed on missing/unparseable timestamps by selecting the item, on non-transient API failures, and on retained content that exceeds configured scan limits;
+- uses bounded retry only for clearly transient GitHub rate-limit/5xx failures;
 - publishes a combined result to the workflow job summary as `PUBLIC-READY-AUDIT: PASS` or `PUBLIC-READY-AUDIT: BLOCKED`;
 - publishes the same decision as commit status context `public-release-audit`, so the exact `main` publication-candidate SHA can be verified independently of workflow-run discovery.
 
-The workflow intentionally does not upload its audit reports as new artifacts, because doing so would create additional material that itself becomes part of the publication surface.
+### Reviewed full Actions baseline
+
+`release/public-release-audit-baseline.json` records the reviewed full-retention scan that anchors incremental audits. The current baseline is:
+
+- commit `5a545e7be57e0d67eb20dbdac4a26fe670e97e14`;
+- workflow run `31293828015`;
+- result `PASS` / commit status `public-release-audit: success`;
+- 647 workflow runs enumerated;
+- 617 retained run-log archives scanned;
+- 397 retained artifacts scanned;
+- conservative delta overlap begins at `2026-08-09T04:05:00Z`, slightly before the baseline run started.
+
+This baseline is not a cache of secret material. It contains only reviewed audit identity/count metadata. Subsequent candidates still perform a complete Git-history scan; only historical Actions archives that were already covered by the reviewed full baseline are not re-downloaded. Any run that is re-run or otherwise updated after the cutoff is selected again by its `updated_at`, and any new artifact is selected by its creation/update timestamp.
+
+A new full baseline may be produced by running `scripts/audit_public_actions_history.py` without `--baseline-file`, reviewing the full PASS, and then updating the baseline file in a separate reviewed change. A failed or mismatched baseline is never accepted as a delta anchor.
+
+The workflow intentionally does not upload its audit reports as new artifacts, because doing so would create additional material that itself becomes part of the publication surface. Reports and failure diagnostics contain finding type/location only, never matched credential values.
 
 The historical scanners detect obvious GitHub, OpenAI/DeepSeek-style, Anthropic, Google, AWS, and private-key credential formats. A green automated result is a strong technical gate but does not replace human review of non-secret business or dogfood information exposure.
 
@@ -80,6 +97,16 @@ git fetch --force origin \
 python scripts/validate_public_history.py \
   --json-output public-history-audit.json \
   --markdown-output public-history-audit.md
+```
+
+A full historical-Actions re-baseline can be run separately:
+
+```bash
+GITHUB_REPOSITORY=DREAM-XIN/ai-sdlc \
+GITHUB_TOKEN=... \
+python scripts/audit_public_actions_history.py \
+  --json-output public-actions-audit.json \
+  --markdown-output public-actions-audit.md
 ```
 
 Any confirmed credential discovered in history must be revoked/rotated even if the history is later rewritten.
@@ -120,8 +147,8 @@ Public conversion is complete only when:
 
 - current-tree scan is green;
 - `Public Release Audit` is green and `public-release-audit: success` is present on the exact publication-candidate commit;
-- full-history findings are reviewed;
-- historical Actions/log/artifact exposure is accepted or cleaned;
+- full Git-history findings are reviewed;
+- the reviewed full Actions baseline plus the candidate's post-baseline delta is green;
 - non-secret Private-dogfood information exposure is explicitly accepted or anonymized;
 - license is present;
 - the sanitized Settings snapshot plus manual follow-up forms a complete pre-change settings record;
