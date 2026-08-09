@@ -6,7 +6,11 @@ Issue: `#195`
 
 Role: Implementation Developer
 
-Status: **WORKING — candidate implementation assembled; CI evidence pending**
+Status: **WORKING — implementation candidate validated; final evidence-only head checks pending**
+
+Draft PR: `#196` — `[F-GHAW-PROVIDER-REGISTRY-0001] Generalize trusted gh-aw provider registry`
+
+Validated implementation candidate SHA: `aaae61797c56047c37a455647bf2238218463bb3`
 
 ## Scope implemented
 
@@ -14,7 +18,7 @@ Status: **WORKING — candidate implementation assembled; CI evidence pending**
 
 Added `scripts/gh_aw_provider_registry.py` as the authoritative full-Registry loader/validator.
 
-The boundary now validates the complete Registry before selection, returns frozen normalized profile objects, rejects malformed root/profile schema, duplicate YAML mapping keys, invalid profile/provider/model/credential/path/URL/host metadata, duplicate worker/source/credential identities, and unknown profile/worker lookups.
+The boundary validates the complete Registry before selection, returns frozen normalized profile objects, rejects malformed root/profile schema, duplicate YAML mapping keys, invalid profile/provider/model/credential/path/URL/host metadata, duplicate worker/source/credential identities, and unknown profile/worker lookups.
 
 OpenAI-compatible validation is capability-driven (`protocol`, `engine`, `provider_type`, `wire_api`) rather than provider-name-driven.
 
@@ -110,24 +114,102 @@ This implementation does not:
 - change merge or release authority;
 - replace the pinned gh-aw compiler/runtime dependency.
 
-## Validation planned / pending durable results
+## WU-7 — Integrated validation evidence
 
-The candidate is wired into existing repository validators. Required evidence still to be recorded here after the Draft PR head is exercised:
+### Candidate and PR identity
 
-- `python scripts/validate_gh_aw_provider_registry.py`
-- `python scripts/render_gh_aw_workers.py --all --check`
-- `python scripts/render_gh_aw_profile_surfaces.py --check`
-- `python scripts/validate_gh_aw_registry_extension.py`
+- Draft PR: `#196`
+- Validated implementation candidate: `aaae61797c56047c37a455647bf2238218463bb3`
+- Base at validation: `main@8ba1515f5d9d455683a8eaacbd7443f1e415e0a0`
+
+### Repository validation workflow
+
+`Validate AI-SDLC protocol` run `31307009684`: **SUCCESS**.
+
+The `validate` job `93228862331` completed every repository validator successfully, including:
+
+- `python scripts/validate_github_workflow_security.py`
+- `python scripts/validate_cross_repo_transport.py`
+- `python scripts/validate_cross_repo_gh_aw_dispatch.py`
+- `python scripts/validate_action_security.py`
+- `python scripts/validate_gh_aw_adapter.py`
+- `python scripts/validate_gh_aw_feature_context.py`
+- `python scripts/validate_gh_aw_workflow_security.py`
 - `python scripts/validate_gh_aw_engine_profiles.py`
 - `python scripts/validate_gh_aw_effective_model_metadata.py`
-- `python scripts/validate_gh_aw_runtime_preflight.py`
 - `python scripts/validate_gh_aw_command_boundary.py`
-- gh-aw workflow/security validators;
-- complete repository `Validate AI-SDLC protocol` CI;
-- `Required PR Gate`.
+- `python scripts/validate_gh_aw_runtime_preflight.py`
+- `python scripts/validate_release_readiness.py`
 
-Any failed required check blocks Implementation completion. This evidence must be updated with the exact candidate commit, PR, CI run links/results, and any remediation before proposing the Implementation DONE transition.
+`validate_gh_aw_engine_profiles.py` chains the new targeted checks, so the successful CI result also proves:
+
+- `python scripts/validate_gh_aw_provider_registry.py` — success;
+- `python scripts/validate_gh_aw_registry_extension.py` — success through the Registry validator;
+- `python scripts/render_gh_aw_workers.py --all --check` — success;
+- `python scripts/render_gh_aw_profile_surfaces.py --check` — success.
+
+The same workflow's `cross-repo-control` job `93228862296` also completed successfully, preserving installation/bootstrap/plan/persist/re-plan behavior across the shared control action.
+
+### Additional required PR-head workflows
+
+- `Required PR Gate` run `31307009693`: **SUCCESS**.
+- `Validate Public Runtime Distribution` run `31307009683`: **SUCCESS**.
+- `Validate AI-SDLC gh-aw Worker Compile` run `31307009677`: **SUCCESS**.
+
+The worker compile result confirms the pinned strict gh-aw generated worker set remains compilable after the Registry refactor; no generated worker source/lock drift was introduced by this Feature.
+
+### Static-preflight matrix
+
+All registered profiles were exercised by `validate_gh_aw_runtime_preflight.py` through the successful Protocol run:
+
+| Profile | Credential absent | Credential present | Entitlement claimed | Maturity compatibility |
+| --- | --- | --- | --- | --- |
+| copilot | MISSING_CREDENTIAL | READY_FOR_ENTITLEMENT_PROBE | false | reference |
+| codex | MISSING_CREDENTIAL | READY_FOR_ENTITLEMENT_PROBE | false | reference |
+| claude | MISSING_CREDENTIAL | READY_FOR_ENTITLEMENT_PROBE | false | reference |
+| gemini | MISSING_CREDENTIAL | READY_FOR_ENTITLEMENT_PROBE | false | reference |
+| deepseek | MISSING_CREDENTIAL | READY_FOR_ENTITLEMENT_PROBE | false | experimental |
+
+Credential values were not passed to the Python preflight or recorded in artifacts/evidence; only boolean presence is used.
+
+### Effective-model audit matrix
+
+The current Registry contains one `openai-compatible` profile, `deepseek`. Generic audit verified the Registry model against all required surfaces:
+
+| Profile | Registry model | rendered engine.model | COPILOT_MODEL | compiled agent_model | GH_AW_INFO_MODEL | GH_AW_ENGINE_MODEL |
+| --- | --- | --- | --- | --- | --- | --- |
+| deepseek | deepseek-chat | match | match | match | match | match |
+
+The validator iterates all applicable compatible profiles, so a future compatible Registry entry enters the same audit path without a provider-name-specific Python branch.
+
+### Synthetic extension / fail-closed evidence
+
+The successful targeted validator chain proves:
+
+- a digest-derived compatible provider/profile fixture is admitted through Registry metadata and generated artifacts without modifying generic production modules;
+- generic module hashes remain unchanged during the fixture proof;
+- provider/profile literal branches are rejected by the scoped AST guard;
+- capability comparisons and the explicit test-only five-profile baseline remain accepted;
+- malformed unrelated Registry entries fail the whole Registry before selecting an otherwise valid profile;
+- duplicate worker/credential identities fail closed;
+- path traversal and invalid provider URL forms fail closed;
+- unknown profiles and unregistered worker workflows fail closed.
+
+### Generated-artifact drift
+
+Both deterministic drift checks passed in CI:
+
+- worker source drift: clean;
+- workflow profile/credential surface drift: clean.
+
+## Known limitations / follow-up boundaries
+
+This Feature deliberately leaves live provider entitlement, quota/billing, current endpoint/model availability, rate-limit headroom, and multi-provider dogfood outside static validation. Future provider onboarding must follow the documented live entitlement probe and bounded dogfood sequence before maturity promotion.
+
+Separate follow-up Features remain responsible for adding Qwen/GLM/MiniMax production profiles, autonomous Product/Architect/Reviewer/QA roles, and mixed-provider multi-role dogfood.
 
 ## Developer authority boundary
 
 The Developer does not approve this implementation, PASS `code-gate`, perform independent Verification, merge, release, or directly edit the authoritative Feature Manifest.
+
+After the final evidence-only PR head also passes required checks, the Developer may propose the legal Implementation DONE lifecycle event and hand the Feature to an independent Code Reviewer; that transition does not constitute Code Review approval.
