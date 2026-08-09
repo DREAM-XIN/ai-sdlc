@@ -17,6 +17,7 @@ REGISTRY_VERSION = "0.1.0"
 SUPPORTED_NATIVE_ENGINES = frozenset({"copilot", "codex", "claude", "gemini"})
 SUPPORTED_MATURITY = frozenset({"reference", "experimental"})
 SUPPORTED_WIRE_APIS = frozenset({"completions", "responses"})
+SUPPORTED_CREDENTIAL_SOURCES = frozenset({"secret", "github-token"})
 PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -36,6 +37,7 @@ PROFILE_FIELDS = frozenset(
         "worker_source",
         "worker_workflow",
         "credential",
+        "credential_source",
         "credential_aliases",
         "maturity",
         "protocol",
@@ -77,6 +79,7 @@ class EngineProfile:
     worker_source: str
     worker_workflow: str
     credential: str
+    credential_source: str
     maturity: str
     engine_version: str | None = None
     model: str | None = None
@@ -173,7 +176,7 @@ def _validate_credential(profile_id: str, field: str, value: str) -> None:
         raise _error(
             profile_id,
             field,
-            "must be an uppercase repository secret name and not use GITHUB_ prefix",
+            "must be an uppercase credential identity and not use GITHUB_ prefix",
         )
 
 
@@ -258,6 +261,7 @@ def load_registry(
         worker_source = _require_string(raw_cfg, profile_id, "worker_source")
         worker_workflow = _require_string(raw_cfg, profile_id, "worker_workflow")
         credential = _require_string(raw_cfg, profile_id, "credential")
+        credential_source = _require_string(raw_cfg, profile_id, "credential_source")
         maturity = _require_string(raw_cfg, profile_id, "maturity")
         protocol = raw_cfg.get("protocol", "native")
         if not isinstance(protocol, str) or protocol not in {"native", "openai-compatible"}:
@@ -267,6 +271,12 @@ def load_registry(
                 profile_id,
                 "maturity",
                 f"must be one of: {', '.join(sorted(SUPPORTED_MATURITY))}",
+            )
+        if credential_source not in SUPPORTED_CREDENTIAL_SOURCES:
+            raise _error(
+                profile_id,
+                "credential_source",
+                f"must be one of: {', '.join(sorted(SUPPORTED_CREDENTIAL_SOURCES))}",
             )
 
         _validate_worker_source(profile_id, worker_source, root, require_source_files)
@@ -288,12 +298,18 @@ def load_registry(
         if not isinstance(aliases_raw, (list, tuple)) or any(
             not isinstance(alias, str) for alias in aliases_raw
         ):
-            raise _error(profile_id, "credential_aliases", "must be a sequence of secret names")
+            raise _error(profile_id, "credential_aliases", "must be a sequence of credential identities")
         aliases = tuple(aliases_raw)
         if len(set(aliases)) != len(aliases):
             raise _error(profile_id, "credential_aliases", "must not contain duplicates")
         for alias in aliases:
             _validate_credential(profile_id, "credential_aliases", alias)
+        if credential_source == "github-token" and aliases:
+            raise _error(
+                profile_id,
+                "credential_aliases",
+                "are not supported for github-token credential source",
+            )
 
         engine_version = raw_cfg.get("engine_version")
         if engine_version is not None and (
@@ -368,15 +384,15 @@ def load_registry(
             if previous is not None:
                 raise _error(profile_id, field_name, f"duplicates profile {previous!r}")
             seen[value] = profile_id
-        for secret_name in (credential, *aliases):
-            previous = seen_credentials.get(secret_name)
+        for credential_name in (credential, *aliases):
+            previous = seen_credentials.get(credential_name)
             if previous is not None:
                 raise _error(
                     profile_id,
                     "credential",
-                    f"secret name {secret_name!r} duplicates profile {previous!r}",
+                    f"credential identity {credential_name!r} duplicates profile {previous!r}",
                 )
-            seen_credentials[secret_name] = profile_id
+            seen_credentials[credential_name] = profile_id
 
         normalized.append(
             EngineProfile(
@@ -385,6 +401,7 @@ def load_registry(
                 worker_source=worker_source,
                 worker_workflow=worker_workflow,
                 credential=credential,
+                credential_source=credential_source,
                 maturity=maturity,
                 engine_version=engine_version,
                 model=model,
