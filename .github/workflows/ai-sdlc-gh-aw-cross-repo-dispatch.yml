@@ -116,6 +116,7 @@ jobs:
           repositories: ${{ steps.target.outputs.repo_name }}
           permission-contents: read
           permission-metadata: read
+          permission-pull-requests: read
 
       - name: Resolve and validate target default branch
         id: target_meta
@@ -356,6 +357,27 @@ jobs:
           git -C write-workspace add -- "$MANIFEST_PATH" "$EVENT_PATH"
           git -C write-workspace commit -m "ai-sdlc: reserve gh-aw runtime stage"
           git -C write-workspace push origin "HEAD:$TARGET_REF"
+
+      - name: Verify Gate candidate head immediately before dispatch
+        if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.read_token.outputs.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+        run: |
+          set -euo pipefail
+          pr=$(python - <<'PY'
+          import json
+          d=json.load(open('gh-aw-dispatch-plan.json'))['plan']['dispatches'][0]
+          print(d.get('inputs',{}).get('candidate_pr_number',''))
+          PY
+          )
+          if [[ -z "$pr" ]]; then
+            python runtime/scripts/gh_aw_candidate_dispatch_guard.py gh-aw-dispatch-plan.json
+            exit 0
+          fi
+          current_head=$(gh api "repos/$TARGET_REPOSITORY/pulls/$pr" --jq '.head.sha')
+          python runtime/scripts/gh_aw_candidate_dispatch_guard.py gh-aw-dispatch-plan.json --current-head-sha "$current_head"
 
       - name: Dispatch trusted compiled worker
         if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
