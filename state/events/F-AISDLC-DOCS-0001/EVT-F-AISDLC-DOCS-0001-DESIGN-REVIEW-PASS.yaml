@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-AISDLC-DOCS-0001-DESIGN-REVIEW-PASS
+feature_id: F-AISDLC-DOCS-0001
+expected_revision: 7
+occurred_at: '2026-08-09T07:50:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-design-review-v1
+    type: review
+    status: pass
+    uri: docs/features/F-AISDLC-DOCS-0001/design-review.md
+- kind: artifact
+  id: design-v1
+  status: approved
+  evidence:
+  - evidence-design-review-v1
+- kind: gate
+  id: design-gate
+  status: PASS
+  evidence:
+  - evidence-design-review-v1
+- kind: stage
+  id: design-review
+  status: DONE
+- kind: stage
+  id: plan
+  status: READY
