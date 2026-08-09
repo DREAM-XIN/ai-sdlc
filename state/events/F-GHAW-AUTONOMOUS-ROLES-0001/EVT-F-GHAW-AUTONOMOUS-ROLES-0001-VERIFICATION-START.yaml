@@ -2,7 +2,7 @@ version: 0.1.0
 id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-VERIFICATION-START
 feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
 expected_revision: 20
-occurred_at: '2026-08-09T14:36:00Z'
+occurred_at: '2026-08-09T14:35:45Z'
 changes:
 - kind: stage
   id: verification
