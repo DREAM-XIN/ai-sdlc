@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 17
+revision: 18
 feature:
   id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
   title: Add bounded autonomous Product, Architect, and Orchestrator gh-aw roles
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: code-review
+  current_stage: verification
   stages:
   - id: requirement
     status: DONE
@@ -25,10 +25,10 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: WORKING
+    status: DONE
     gate: code-gate
   - id: verification
-    status: TODO
+    status: READY
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -63,7 +63,7 @@ artifacts:
 - id: implementation-v1
   type: implementation
   uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/implementation.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
   status: PASS
@@ -74,7 +74,9 @@ gates:
   evidence:
   - evidence-design-review-v1
 - id: code-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-code-review-v2
 - id: verification-gate
   status: PENDING
 - id: release-gate
@@ -96,6 +98,10 @@ evidence:
   type: implementation
   status: pass
   uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/implementation.md
+- id: evidence-code-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/code-review-v2.md
 applied_events:
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-START
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-REQ-DONE
@@ -114,4 +120,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-START-1
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-DONE-1
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-RESTART-2
-updated_at: '2026-08-09T16:19:00Z'
+- EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-PASS-2
+updated_at: '2026-08-09T16:24:00Z'
