@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 15
+revision: 16
 feature:
   id: F-GHAW-DOMESTIC-PROVIDERS-0001
   title: Add and certify Qwen, GLM, and MiniMax gh-aw provider profiles
@@ -25,7 +25,7 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: READY
+    status: WORKING
     gate: code-gate
   - id: verification
     status: TODO
@@ -110,4 +110,5 @@ applied_events:
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-PLAN-DONE
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-IMPL-START
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-IMPL-DONE
-updated_at: '2026-08-09T11:35:00Z'
+- EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-CODE-REVIEW-START
+updated_at: '2026-08-09T11:29:30Z'
