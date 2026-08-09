@@ -42,3 +42,42 @@ profiles:
     worker_workflow: ai-sdlc-gh-aw-worker-deepseek.lock.yml
     credential: DEEPSEEK_API_KEY
     maturity: experimental
+  qwen:
+    engine: copilot
+    provider: qwen
+    protocol: openai-compatible
+    provider_type: openai
+    wire_api: completions
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    network_host: dashscope.aliyuncs.com
+    model: qwen3.7-plus
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-qwen.md
+    worker_workflow: ai-sdlc-gh-aw-worker-qwen.lock.yml
+    credential: DASHSCOPE_API_KEY
+    maturity: experimental
+  glm:
+    engine: copilot
+    provider: glm
+    protocol: openai-compatible
+    provider_type: openai
+    wire_api: completions
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    network_host: open.bigmodel.cn
+    model: glm-5.2
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-glm.md
+    worker_workflow: ai-sdlc-gh-aw-worker-glm.lock.yml
+    credential: ZHIPUAI_API_KEY
+    maturity: experimental
+  minimax:
+    engine: copilot
+    provider: minimax
+    protocol: openai-compatible
+    provider_type: openai
+    wire_api: completions
+    base_url: https://api.minimaxi.com/v1
+    network_host: api.minimaxi.com
+    model: MiniMax-M2.7
+    worker_source: .github/workflows/ai-sdlc-gh-aw-worker-minimax.md
+    worker_workflow: ai-sdlc-gh-aw-worker-minimax.lock.yml
+    credential: MINIMAX_API_KEY
+    maturity: experimental

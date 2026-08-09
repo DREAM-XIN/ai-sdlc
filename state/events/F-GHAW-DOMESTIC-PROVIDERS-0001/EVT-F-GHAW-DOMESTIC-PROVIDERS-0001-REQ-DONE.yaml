@@ -1,0 +1,18 @@
+version: 0.1.0
+id: EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-REQ-DONE
+feature_id: F-GHAW-DOMESTIC-PROVIDERS-0001
+expected_revision: 1
+occurred_at: '2026-08-09T11:03:00Z'
+changes:
+- kind: artifact-record
+  record:
+    id: requirement-v1
+    type: requirement
+    uri: docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/requirement.md
+    status: draft
+- kind: stage
+  id: requirement
+  status: DONE
+- kind: stage
+  id: requirement-review
+  status: READY

@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-ACCEPTANCE-START
+feature_id: F-GHAW-DOMESTIC-PROVIDERS-0001
+expected_revision: 19
+occurred_at: '2026-08-09T11:45:30Z'
+changes:
+- kind: stage
+  id: acceptance
+  status: WORKING

@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-REVIEW-REWORK
+feature_id: F-GHAW-DOMESTIC-PROVIDERS-0001
+expected_revision: 7
+occurred_at: '2026-08-09T11:09:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-design-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/design-review.md
+- kind: task-record
+  record:
+    id: F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-REMEDIATION-1
+    kind: remediation
+    stage: design
+    role: architect
+    source_stage: design-review
+    feedback: Define a bounded materialization load mode that can generate newly registered worker sources before they exist, while preserving default fail-closed source-existence validation for check/read/execution consumers; add deterministic positive and negative tests to the design.
+    status: TODO
+    runtime: manual
