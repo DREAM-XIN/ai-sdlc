@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-PLAN-START
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 8
+occurred_at: '2026-08-09T09:25:00Z'
+changes:
+- kind: stage
+  id: plan
+  status: WORKING

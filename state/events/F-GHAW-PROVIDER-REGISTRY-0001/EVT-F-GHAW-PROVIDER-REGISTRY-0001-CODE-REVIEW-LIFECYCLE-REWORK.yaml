@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-LIFECYCLE-REWORK
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 16
+occurred_at: '2026-08-09T10:12:30Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-lifecycle-blocker-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review-lifecycle-blocker.md
+- kind: task-record
+  record:
+    id: F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: code-review
+    feedback: Fix the control-plane Manifest validator so completed remediation history does not make a subsequently completed source review invalid; preserve blocking for unfinished remediation and add deterministic closed-loop regression coverage.
+    target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
+    status: TODO
+    runtime: manual

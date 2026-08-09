@@ -12,6 +12,8 @@ profiles:
     worker_source: .github/workflows/ai-sdlc-gh-aw-worker-codex.md
     worker_workflow: ai-sdlc-gh-aw-worker-codex.lock.yml
     credential: OPENAI_API_KEY
+    credential_aliases:
+      - CODEX_API_KEY
     maturity: reference
   claude:
     engine: claude

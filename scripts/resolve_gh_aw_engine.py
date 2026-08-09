@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
-import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-REGISTRY = ROOT / "runtimes/gh-aw/engine-profiles.yaml"
+from gh_aw_provider_registry import RegistryValidationError, load_registry
 
 
 def main() -> int:
@@ -17,21 +14,20 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    data = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))
-    profiles = data.get("profiles", {})
-    if args.profile not in profiles:
-        allowed = ", ".join(sorted(profiles))
-        raise SystemExit(f"unknown gh-aw engine profile {args.profile!r}; allowed: {allowed}")
-    cfg = profiles[args.profile]
+    try:
+        profile = load_registry().require_profile(args.profile)
+    except RegistryValidationError as exc:
+        raise SystemExit(str(exc)) from None
+
     result = {
-        "profile": args.profile,
-        "engine": cfg["engine"],
-        "provider": cfg.get("provider", "native"),
-        "protocol": cfg.get("protocol", "native"),
-        "model": cfg.get("model"),
-        "worker_workflow": cfg["worker_workflow"],
-        "credential": cfg["credential"],
-        "maturity": cfg["maturity"],
+        "profile": profile.profile_id,
+        "engine": profile.engine,
+        "provider": profile.provider,
+        "protocol": profile.protocol,
+        "model": profile.model,
+        "worker_workflow": profile.worker_workflow,
+        "credential": profile.credential,
+        "maturity": profile.maturity,
     }
     if args.json:
         print(json.dumps(result, separators=(",", ":")))

@@ -1,0 +1,159 @@
+protocol_version: 0.1.0
+revision: 24
+feature:
+  id: F-GHAW-PROVIDER-REGISTRY-0001
+  title: Generalize gh-aw trusted provider registry and certification pipeline
+  risk: medium
+  issue: '#195'
+workflow:
+  profile: standard-feature
+  status: DONE
+  current_stage: acceptance
+  stages:
+  - id: requirement
+    status: DONE
+  - id: requirement-review
+    status: DONE
+    gate: requirement-gate
+  - id: design
+    status: DONE
+  - id: design-review
+    status: DONE
+    gate: design-gate
+  - id: plan
+    status: DONE
+  - id: implementation
+    status: DONE
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: DONE
+    gate: verification-gate
+  - id: acceptance
+    status: DONE
+    gate: release-gate
+tasks:
+- id: F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Fix CR-MAJOR-1 credential-alias false readiness for OpenAI-compatible
+    profiles and CR-MINOR-1 raw worker_source normalization validation; add deterministic
+    negative fixtures and rerun required PR-head CI.
+  target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
+  status: DONE
+  runtime: manual
+- id: F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Fix the control-plane Manifest validator so completed remediation history
+    does not make a subsequently completed source review invalid; preserve blocking
+    for unfinished remediation and add deterministic closed-loop regression coverage.
+  target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
+  status: DONE
+  runtime: manual
+artifacts:
+- id: requirement-v1
+  type: requirement
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/requirement.md
+  status: approved
+- id: design-v1
+  type: design
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/design.md
+  status: approved
+- id: plan-v1
+  type: plan
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/plan.md
+  status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/implementation.md
+  status: approved
+gates:
+- id: requirement-gate
+  status: PASS
+  evidence:
+  - evidence-requirement-review-v1
+- id: design-gate
+  status: PASS
+  evidence:
+  - evidence-design-review-v1
+- id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v3
+- id: verification-gate
+  status: PASS
+  evidence:
+  - evidence-verification-v1
+- id: release-gate
+  status: PASS
+  evidence:
+  - evidence-acceptance-v1
+evidence:
+- id: evidence-requirement-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/design-review.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-remediation.md
+- id: evidence-code-review-lifecycle-blocker-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review-lifecycle-blocker.md
+- id: evidence-lifecycle-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/lifecycle-remediation.md
+- id: evidence-code-review-v3
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review-v3.md
+- id: evidence-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/verification.md
+- id: evidence-acceptance-v1
+  type: acceptance
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/acceptance.md
+applied_events:
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-DONE
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-REVIEW-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-REVIEW-PASS
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-DESIGN-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-DESIGN-DONE
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-DESIGN-REVIEW-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-DESIGN-REVIEW-PASS
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-PLAN-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-PLAN-DONE
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-DONE
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-REWORK
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-DONE
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-LIFECYCLE-REWORK
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-DONE
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-PASS
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-VERIFICATION-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-VERIFICATION-PASS
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-ACCEPTANCE-START
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-ACCEPTANCE-PASS
+updated_at: '2026-08-09T10:39:45Z'

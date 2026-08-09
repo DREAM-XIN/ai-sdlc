@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-DONE
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 15
+occurred_at: '2026-08-09T10:12:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-remediation-v1
+    type: implementation
+    status: pass
+    uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-remediation.md
+- kind: task
+  id: F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-1
+  status: DONE

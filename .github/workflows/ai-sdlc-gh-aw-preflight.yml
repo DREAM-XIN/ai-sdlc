@@ -8,12 +8,14 @@ on:
         required: true
         default: copilot
         type: choice
+        # BEGIN AI-SDLC GENERATED GH-AW PROFILE OPTIONS
         options:
           - copilot
           - codex
           - claude
           - gemini
           - deepseek
+        # END AI-SDLC GENERATED GH-AW PROFILE OPTIONS
 
 permissions:
   contents: read
@@ -36,24 +38,28 @@ jobs:
         id: credential
         env:
           PROFILE: ${{ inputs.engine_profile }}
-          HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
-          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
-          HAS_CODEX: ${{ secrets.CODEX_API_KEY != '' }}
-          HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
-          HAS_GEMINI: ${{ secrets.GEMINI_API_KEY != '' }}
-          HAS_DEEPSEEK: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          # BEGIN AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
+          HAS_COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
+          HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          # END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
         run: |
           set -euo pipefail
+          # BEGIN AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE CASE
           case "$PROFILE" in
-            copilot) present="$HAS_COPILOT" ;;
+            copilot) present="$HAS_COPILOT_GITHUB_TOKEN" ;;
             codex)
-              if [[ "$HAS_OPENAI" == "true" || "$HAS_CODEX" == "true" ]]; then present=true; else present=false; fi
+              if [[ "$HAS_OPENAI_API_KEY" == "true" || "$HAS_CODEX_API_KEY" == "true" ]]; then present=true; else present=false; fi
               ;;
-            claude) present="$HAS_ANTHROPIC" ;;
-            gemini) present="$HAS_GEMINI" ;;
-            deepseek) present="$HAS_DEEPSEEK" ;;
+            claude) present="$HAS_ANTHROPIC_API_KEY" ;;
+            gemini) present="$HAS_GEMINI_API_KEY" ;;
+            deepseek) present="$HAS_DEEPSEEK_API_KEY" ;;
             *) echo "unexpected trusted profile" >&2; exit 2 ;;
           esac
+          # END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE CASE
           printf 'present=%s\n' "$present" >> "$GITHUB_OUTPUT"
       - name: Run non-invasive preflight
         id: preflight
