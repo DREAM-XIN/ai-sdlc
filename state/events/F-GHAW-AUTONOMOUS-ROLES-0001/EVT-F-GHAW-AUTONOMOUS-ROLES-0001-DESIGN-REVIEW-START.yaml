@@ -2,7 +2,7 @@ version: 0.1.0
 id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-START
 feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
 expected_revision: 6
-occurred_at: '2026-08-09T13:12:50Z'
+occurred_at: '2026-08-09T13:13:15Z'
 changes:
 - kind: stage
   id: design-review
