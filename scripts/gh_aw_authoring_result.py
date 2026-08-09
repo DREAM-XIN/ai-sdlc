@@ -60,7 +60,15 @@ def _task(manifest, task_id):
     return matches[0]
 
 
-def translate(manifest, result, *, comment_url: str, occurred_at: str):
+def _source_run_uri(control_repository: str, source_run_id: int):
+    if not isinstance(source_run_id,int) or source_run_id <= 0:
+        raise AuthoringResultError("source_run_id must be a positive integer")
+    if not isinstance(control_repository,str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",control_repository):
+        raise AuthoringResultError("control_repository must be canonical owner/repo")
+    return f"https://github.com/{control_repository}/actions/runs/{source_run_id}"
+
+
+def translate(manifest, result, *, comment_url: str, source_run_id: int, control_repository: str, occurred_at: str):
     errors=_schema_errors(result)
     if errors: raise AuthoringResultError("; ".join(errors))
     feature_id=manifest.get("feature",{}).get("id")
@@ -78,11 +86,12 @@ def translate(manifest, result, *, comment_url: str, occurred_at: str):
         if task.get("kind")!="remediation" or task.get("stage")!=stage or task.get("role")!=role or task.get("status")!="WORKING":
             raise AuthoringResultError("authoring remediation task identity/status mismatch")
 
-    digest=hashlib.sha256(f"{result['task_id']}:{result['expected_revision']}:{stage}".encode()).hexdigest()[:12]
+    source_run_uri=_source_run_uri(control_repository,source_run_id)
+    digest=hashlib.sha256(f"{result['task_id']}:{result['expected_revision']}:{stage}:{source_run_id}".encode()).hexdigest()[:12]
     evidence_id=f"evidence-authoring-{stage}-{digest}"
     if any(e.get("id")==evidence_id for e in manifest.get("evidence",[])):
         raise AuthoringResultError("authoring result replay detected")
-    evidence={"id":evidence_id,"type":"implementation","status":"pass" if result["status"]=="COMPLETED" else "fail","uri":comment_url}
+    evidence={"id":evidence_id,"type":"implementation","status":"pass" if result["status"]=="COMPLETED" else "fail","uri":source_run_uri}
     changes=[{"kind":"evidence","record":evidence}]
 
     if result["status"]=="BLOCKED":
@@ -106,7 +115,13 @@ def translate(manifest, result, *, comment_url: str, occurred_at: str):
     event={"version":"0.1.0","id":event_id,"feature_id":feature_id,"expected_revision":result["expected_revision"],"occurred_at":occurred_at,"changes":changes}
     event_errors=validate_event(event)
     if event_errors: raise AuthoringResultError("; ".join(event_errors))
-    return {"event":event,"artifact_uri":artifact_uri,"artifact_body":result["artifact_body"] if result["status"]=="COMPLETED" else None}
+    return {
+        "event":event,
+        "artifact_uri":artifact_uri,
+        "artifact_body":result["artifact_body"] if result["status"]=="COMPLETED" else None,
+        "source_run_uri":source_run_uri,
+        "transport_comment_url":comment_url,
+    }
 
 
 def main():
@@ -114,18 +129,29 @@ def main():
     parser.add_argument("manifest",type=Path)
     parser.add_argument("result",type=Path)
     parser.add_argument("--comment-url",required=True)
+    parser.add_argument("--source-run-id",required=True,type=int)
+    parser.add_argument("--control-repository",required=True)
     parser.add_argument("--occurred-at",required=True)
     parser.add_argument("--event-output",type=Path,required=True)
     parser.add_argument("--artifact-output",type=Path)
     args=parser.parse_args()
     manifest=yaml.safe_load(args.manifest.read_text(encoding="utf-8")); result=json.loads(args.result.read_text(encoding="utf-8"))
-    try: translated=translate(manifest,result,comment_url=args.comment_url,occurred_at=args.occurred_at)
+    try:
+        translated=translate(
+            manifest,result,comment_url=args.comment_url,source_run_id=args.source_run_id,
+            control_repository=args.control_repository,occurred_at=args.occurred_at,
+        )
     except AuthoringResultError as exc:
         print(json.dumps({"outcome":"INVALID","errors":[str(exc)]},indent=2)); raise SystemExit(2)
     args.event_output.write_text(yaml.safe_dump(translated["event"],sort_keys=False),encoding="utf-8")
     if args.artifact_output and translated["artifact_body"] is not None:
         args.artifact_output.write_text(translated["artifact_body"],encoding="utf-8")
-    print(json.dumps({"outcome":"EVENT_READY","artifact_uri":translated["artifact_uri"],"event_id":translated["event"]["id"]},sort_keys=True))
+    print(json.dumps({
+        "outcome":"EVENT_READY",
+        "artifact_uri":translated["artifact_uri"],
+        "event_id":translated["event"]["id"],
+        "source_run_uri":translated["source_run_uri"],
+    },sort_keys=True))
 
 
 if __name__=="__main__": main()
