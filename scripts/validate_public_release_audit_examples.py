@@ -90,9 +90,48 @@ def validate_actions_archive_secret_is_detected() -> None:
         raise AssertionError(findings)
 
 
+def validate_actions_http_retry_policy() -> None:
+    module = load_actions_module()
+
+    secondary = module.retry_delay_seconds(
+        403,
+        {"Retry-After": "2", "X-RateLimit-Remaining": "17"},
+        '{"message":"You have exceeded a secondary rate limit"}',
+        0,
+        now=1000.0,
+    )
+    if secondary is None or secondary < 2:
+        raise AssertionError(f"secondary rate limit was not retryable: {secondary!r}")
+
+    primary = module.retry_delay_seconds(
+        403,
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1010"},
+        '{"message":"API rate limit exceeded"}',
+        0,
+        now=1000.0,
+    )
+    if primary is None or primary < 11:
+        raise AssertionError(f"primary rate limit reset was not respected: {primary!r}")
+
+    unavailable = module.retry_delay_seconds(503, {}, "", 1, now=1000.0)
+    if unavailable is None:
+        raise AssertionError("HTTP 503 must be retryable")
+
+    permission_denied = module.retry_delay_seconds(
+        403,
+        {"X-RateLimit-Remaining": "42"},
+        '{"message":"Resource not accessible by integration"}',
+        0,
+        now=1000.0,
+    )
+    if permission_denied is not None:
+        raise AssertionError(f"plain permission 403 must fail closed without retry: {permission_denied!r}")
+
+
 def main() -> int:
     validate_history_deleted_secret_is_detected()
     validate_actions_archive_secret_is_detected()
+    validate_actions_http_retry_policy()
     print("Public-release historical audit regression scenarios passed")
     return 0
 
