@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 16
+revision: 17
 feature:
   id: F-GHAW-ROLE-ROUTING-0001
   title: Add trusted role-aware gh-aw profile routing and fallback policy
@@ -45,6 +45,17 @@ tasks:
     positive/negative tests while preserving secret non-serialization and eight-profile
     compatibility.
   status: DONE
+  runtime: manual
+- id: F-GHAW-ROLE-ROUTING-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Preserve routing selection semantics but make durable routing audit evidence
+    explicitly record the complete ordered candidate list independently from evaluated
+    decisions; add deterministic preferred/fallback/no-ready and non-secret regressions
+    without expanding scope or adding provider/profile-name-specific branches.
+  status: TODO
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -95,6 +106,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design-review-v2.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-GHAW-ROLE-ROUTING-0001/code-review.md
 applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-REQ-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-REQ-DONE
@@ -112,4 +127,5 @@ applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-IMPL-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-IMPL-DONE
 - EVT-F-GHAW-ROLE-ROUTING-0001-CODE-REVIEW-START
-updated_at: '2026-08-09T12:39:00Z'
+- EVT-F-GHAW-ROLE-ROUTING-0001-CODE-REVIEW-REWORK
+updated_at: '2026-08-09T12:40:00Z'
