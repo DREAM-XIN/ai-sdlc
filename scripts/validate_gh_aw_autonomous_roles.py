@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import json
+import tempfile
 
 import yaml
 
 from gh_aw_candidate import CandidateError, build_candidate_artifacts, resolve_current_candidate
+from gh_aw_candidate_dispatch_guard import DispatchGuardError, verify as verify_dispatch_candidate
 from gh_aw_gate_result import GateResultError, translate
 from gh_aw_role_workers import RoleWorkerError, load_role_workers, resolve_role_worker
 from runtime_router import select_runtime
@@ -154,6 +157,43 @@ def validate_candidate_contract():
         pass
 
 
+def validate_dispatch_guard():
+    gate_plan = {
+        "outcome": "PLANNED",
+        "plan": {
+            "repository": REPO,
+            "dispatches": [{
+                "role": "reviewer",
+                "stage": "code-review",
+                "inputs": {
+                    "target_repository": REPO,
+                    "candidate_pr_number": PR,
+                    "candidate_head_sha": SHA,
+                },
+            }],
+        },
+    }
+    developer_plan = {
+        "outcome": "PLANNED",
+        "plan": {
+            "repository": REPO,
+            "dispatches": [{"role": "developer", "stage": "implementation", "inputs": {"target_repository": REPO}}],
+        },
+    }
+    with tempfile.TemporaryDirectory() as td:
+        gate_path = Path(td) / "gate.json"
+        dev_path = Path(td) / "dev.json"
+        gate_path.write_text(json.dumps(gate_plan), encoding="utf-8")
+        dev_path.write_text(json.dumps(developer_plan), encoding="utf-8")
+        assert_true(verify_dispatch_candidate(gate_path, SHA)["outcome"] == "VERIFIED", "matching Gate candidate head was rejected")
+        assert_true(verify_dispatch_candidate(dev_path, None)["outcome"] == "NO_GATE_CANDIDATE", "Developer dispatch unexpectedly required Gate candidate")
+        try:
+            verify_dispatch_candidate(gate_path, "b" * 40)
+            raise AssertionError("moved Gate candidate head unexpectedly accepted")
+        except DispatchGuardError:
+            pass
+
+
 def validate_reviewer_translation():
     manifest = base_manifest("code-review", "WORKING", "draft")
     event = translate(reviewer_result(), manifest, repository=REPO, target_ref=REF, current_pr_head_sha=SHA)
@@ -200,6 +240,7 @@ def main():
     validate_routes()
     validate_role_registry()
     validate_candidate_contract()
+    validate_dispatch_guard()
     validate_reviewer_translation()
     validate_qa_translation()
     print("gh-aw autonomous Reviewer/QA validation passed")
