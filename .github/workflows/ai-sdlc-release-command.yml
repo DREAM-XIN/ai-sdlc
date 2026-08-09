@@ -1,0 +1,185 @@
+name: AI-SDLC Release Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: ai-sdlc-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      startsWith(github.event.comment.body, '/ai-sdlc release ')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: runtime
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Resolve trusted release request
+        id: release
+        shell: python
+        env:
+          COMMAND: ${{ github.event.comment.body }}
+        run: |
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          import yaml
+
+          command = os.environ['COMMAND'].strip()
+          match = re.fullmatch(r'/ai-sdlc release version=(\d+\.\d+\.\d+)', command)
+          if not match:
+              raise SystemExit('unsupported release command; expected /ai-sdlc release version=<MAJOR.MINOR.PATCH>')
+
+          version = match.group(1)
+          runtime = Path('runtime')
+          declared = (runtime / 'VERSION').read_text(encoding='utf-8').strip()
+          if declared != version:
+              raise SystemExit(f'requested version {version} does not match VERSION {declared}')
+
+          marker_path = runtime / 'release' / f'publish-v{version}.yaml'
+          if not marker_path.is_file():
+              raise SystemExit(f'publication marker is missing: {marker_path}')
+          marker = yaml.safe_load(marker_path.read_text(encoding='utf-8'))
+          if marker.get('version') != version or marker.get('publication') != 'requested':
+              raise SystemExit('publication marker does not authorize the requested version')
+
+          baseline = str(marker.get('source_baseline_commit') or '')
+          if not re.fullmatch(r'[0-9a-f]{40}', baseline):
+              raise SystemExit('publication marker source_baseline_commit must be a full commit SHA')
+
+          subprocess.run(
+              ['git', '-C', 'runtime', 'merge-base', '--is-ancestor', baseline, 'HEAD'],
+              check=True,
+          )
+
+          critical = ['VERSION', f'release/v{version}.yaml', 'CHANGELOG.md']
+          changed = subprocess.check_output(
+              ['git', '-C', 'runtime', 'diff', '--name-only', f'{baseline}..HEAD', '--', *critical],
+              text=True,
+          ).splitlines()
+          if changed:
+              raise SystemExit(f'release-critical files changed after baseline {baseline}: {changed}')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f'version={version}\n')
+              handle.write(f'tag=v{version}\n')
+              handle.write(f'baseline={baseline}\n')
+
+      - name: Checkout exact release baseline
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.release.outputs.baseline }}
+          path: baseline
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Install release validation dependencies
+        run: pip install -r baseline/requirements-dev.txt
+
+      - name: Revalidate exact release baseline
+        working-directory: baseline
+        run: python scripts/validate_release_readiness.py
+
+      - name: Build release notes from exact baseline
+        shell: python
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          import os
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          lines = Path('baseline/CHANGELOG.md').read_text(encoding='utf-8').splitlines()
+          start = None
+          body = []
+          for index, line in enumerate(lines):
+              if line.startswith(f'## {version}'):
+                  start = index + 1
+                  continue
+              if start is not None:
+                  if line.startswith('## '):
+                      break
+                  body.append(line)
+          if start is None:
+              raise SystemExit(f'CHANGELOG section for {version} not found')
+          Path('release-notes.md').write_text('\n'.join(body).strip() + '\n', encoding='utf-8')
+
+      - name: Publish immutable tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          BASELINE_SHA: ${{ steps.release.outputs.baseline }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null || true)
+          if [[ -n "$existing_sha" && "$existing_sha" != "$BASELINE_SHA" ]]; then
+            echo "Tag $TAG already exists at $existing_sha, expected $BASELINE_SHA" >&2
+            exit 2
+          fi
+          if [[ -z "$existing_sha" ]]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="$BASELINE_SHA" >/dev/null
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists"
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "AI-SDLC ${TAG}" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Post durable release receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          TAG: ${{ steps.release.outputs.tag }}
+          BASELINE_SHA: ${{ steps.release.outputs.baseline }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          release_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "AI-SDLC release published: \`$TAG\` → \`$BASELINE_SHA\`. Release: $release_url. Command run: $run_url"
+
+      - name: Report release command failure
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "AI-SDLC release command failed before publication. Command run: $run_url"
