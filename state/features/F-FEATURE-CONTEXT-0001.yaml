@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 9
+revision: 10
 feature:
   id: F-FEATURE-CONTEXT-0001
   title: Create exactly docs/gh-aw-dogfood/F-FEATURE-CONTEXT-0001.md from linked Feature
@@ -8,7 +8,7 @@ feature:
   issue: '#128'
 workflow:
   profile: small-change
-  status: ACTIVE
+  status: DONE
   current_stage: verification
   stages:
   - id: requirement
@@ -19,7 +19,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: WORKING
+    status: DONE
     gate: verification-gate
 tasks:
 - id: F-FEATURE-CONTEXT-0001-REMEDIATION-R4888527740
@@ -61,8 +61,10 @@ gates:
   - EVID-PR144-REVIEW
   - EVID-PR144-CI
 - id: verification-gate
-  status: PENDING
-  evidence: []
+  status: PASS
+  evidence:
+  - EVID-PR144-CI
+  - EVID-PR144-VERIFICATION
 evidence:
 - id: EVID-GHAW-RUN-31247475455
   status: pass
@@ -92,6 +94,10 @@ evidence:
   type: ci-run
   status: pass
   uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31299047295
+- id: EVID-PR144-VERIFICATION
+  type: verification
+  status: pass
+  uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31299047295
 applied_events:
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-0-START
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31247475455
@@ -102,4 +108,5 @@ applied_events:
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-6-START
 - EVT-GHAW-F-FEATURE-CONTEXT-0001-implementation-31250873419
 - EVT-F-FEATURE-CONTEXT-0001-PR144-REVIEW-DONE
-updated_at: '2026-08-09T06:31:40Z'
+- EVT-F-FEATURE-CONTEXT-0001-PR144-VERIFICATION-DONE
+updated_at: '2026-08-09T06:32:00Z'
