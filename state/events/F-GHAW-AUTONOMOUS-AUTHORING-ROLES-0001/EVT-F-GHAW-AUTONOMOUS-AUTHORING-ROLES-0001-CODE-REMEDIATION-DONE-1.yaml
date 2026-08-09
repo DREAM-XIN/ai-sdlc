@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-DONE-1
+feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
+expected_revision: 15
+occurred_at: '2026-08-09T16:18:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-remediation-1
+    type: implementation
+    status: pass
+    uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/implementation.md
+- kind: task
+  id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-1
+  status: DONE

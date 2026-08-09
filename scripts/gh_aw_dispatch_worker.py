@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 from gh_aw_profile_readiness import readiness_from_environment
@@ -28,12 +27,12 @@ def autonomous_action(commander: dict):
 def select(commander: dict, override: str = ""):
     action = autonomous_action(commander)
     role, stage = action["role"], action["stage"]
-    gate_role = (role, stage) in ALLOWED_ROLE_STAGES
+    specialized_role = (role, stage) in ALLOWED_ROLE_STAGES
     registry = load_registry()
 
     if override:
         try:
-            if gate_role:
+            if specialized_role:
                 role_worker = require_role_worker_workflow(role, stage, override)
                 profile = registry.require_profile(role_worker.profile)
                 worker = role_worker.worker_workflow
@@ -72,7 +71,7 @@ def select(commander: dict, override: str = ""):
     payload["role"] = role
     payload["stage"] = stage
     payload["selection_mode"] = "trusted-role-routing"
-    if gate_role:
+    if specialized_role:
         role_worker = resolve_role_worker(role, stage, profile.profile_id)
         payload["selected"]["worker_workflow"] = role_worker.worker_workflow
         payload["role_worker_id"] = role_worker.id

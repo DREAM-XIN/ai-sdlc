@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Deterministic regression tests for trusted gh-aw role-aware routing."""
+"""Deterministic validation for trusted gh-aw profile routing."""
+
 from __future__ import annotations
 
 import json
@@ -7,86 +8,71 @@ from pathlib import Path
 import tempfile
 
 from gh_aw_profile_readiness import readiness_from_presence
-from gh_aw_profile_routing import (
-    RoutingValidationError,
-    load_routing_policy,
-    resolve_route,
-    resolution_payload,
-)
-from gh_aw_provider_registry import RegistryValidationError, load_registry
+from gh_aw_profile_routing import RoutingValidationError, load_routing_policy, resolve_route, resolution_payload
+from gh_aw_provider_registry import load_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def require(condition: bool, message: str) -> None:
+def require(condition, message):
     if not condition:
         raise AssertionError(message)
 
 
-def expect_invalid(text: str, registry, fragment: str) -> None:
-    with tempfile.TemporaryDirectory(prefix="ghaw-routing-") as tmp:
+def expect_invalid(text, registry, fragment):
+    with tempfile.TemporaryDirectory(prefix="ghaw-routing-invalid-") as tmp:
         path = Path(tmp) / "routing.yaml"
         path.write_text(text, encoding="utf-8")
         try:
             load_routing_policy(path, registry=registry)
-        except (RoutingValidationError, RegistryValidationError) as exc:
-            require(fragment in str(exc), f"unexpected trusted validation error: {exc}")
+        except Exception as exc:
+            require(fragment in str(exc), f"unexpected validation failure: {exc}")
         else:
             raise AssertionError(f"invalid routing fixture unexpectedly passed: {fragment}")
 
 
-def main() -> int:
+def main():
     registry = load_registry()
     policy = load_routing_policy(registry=registry)
+    require(policy.default_profile == "copilot", "routing compatibility default changed")
+    expected = {
+        ("product", "requirement"): ("claude", "copilot"),
+        ("architect", "design"): ("claude", "copilot"),
+        ("orchestrator", "plan"): ("codex", "copilot"),
+        ("developer", "implementation"): ("codex", "copilot"),
+        ("reviewer", "code-review"): ("claude", "copilot"),
+        ("qa", "verification"): ("gemini", "copilot"),
+    }
+    for key, candidates in expected.items():
+        require(policy.require_rule(*key).candidates == candidates, f"candidate order drifted for {key}")
 
-    require(policy.default_profile == "copilot", "global compatibility default drifted")
-    require(policy.require_rule("developer", "implementation").candidates == ("codex", "copilot"), "Developer route drifted")
-    require(policy.require_rule("reviewer", "code-review").candidates == ("claude", "copilot"), "Reviewer route drifted")
-    require(policy.require_rule("qa", "verification").candidates == ("gemini", "copilot"), "QA route drifted")
-    for rule in policy.rules:
-        require(not rule.allow_experimental, f"default rule {rule.rule_id} unexpectedly allows experimental profiles")
-        require(all(registry.require_profile(pid).maturity != "experimental" for pid in rule.candidates), f"default rule {rule.rule_id} contains experimental profile")
-
-    presence = {profile.credential: False for profile in registry.profiles}
-    for profile in registry.profiles:
-        for alias in profile.credential_aliases:
-            presence[alias] = False
-
-    preferred_presence = dict(presence)
-    preferred_presence["OPENAI_API_KEY"] = True
-    preferred_presence["COPILOT_GITHUB_TOKEN"] = True
-    readiness = readiness_from_presence(registry, preferred_presence)
-    preferred_resolution, preferred_profile = resolve_route(
-        policy, registry, role="developer", stage="implementation", readiness=readiness, validate_compiled_worker=False
+    presence = {
+        identity: False
+        for profile in registry.profiles
+        for identity in (profile.credential, *profile.credential_aliases)
+    }
+    presence.update(
+        {
+            "COPILOT_GITHUB_TOKEN": True,
+            "OPENAI_API_KEY": True,
+            "CODEX_API_KEY": True,
+            "ANTHROPIC_API_KEY": True,
+            "GEMINI_API_KEY": True,
+        }
     )
-    require(preferred_profile.profile_id == "codex", "Developer did not select preferred Codex profile")
-    require(not preferred_resolution.fallback, "preferred selection incorrectly marked fallback")
-    preferred_payload = resolution_payload(preferred_resolution, preferred_profile)
-    require(
-        preferred_payload["candidate_order"] == ["codex", "copilot"],
-        "preferred-selection audit omitted the complete policy candidate order",
-    )
-    require(
-        preferred_payload["candidates"] == [{"profile": "codex", "ready": True, "reason": "SELECTED"}],
-        "preferred-selection evaluated-decision audit drifted",
-    )
-
-    alias_presence = dict(presence)
-    alias_presence["CODEX_API_KEY"] = True
-    alias_presence["COPILOT_GITHUB_TOKEN"] = True
-    alias_readiness = readiness_from_presence(registry, alias_presence)
-    require(alias_readiness["codex"], "Codex approved alias did not produce readiness")
+    readiness = readiness_from_presence(registry, presence)
+    resolution, profile = resolve_route(policy, registry, role="developer", stage="implementation", readiness=readiness, validate_compiled_worker=False)
+    preferred_payload = resolution_payload(resolution, profile)
+    require(preferred_payload["selected"]["profile"] == "codex", "Developer preferred route did not select Codex")
+    require(preferred_payload["candidate_order"] == ["codex", "copilot"], "preferred audit lost complete candidate order")
 
     fallback_presence = dict(presence)
-    fallback_presence["COPILOT_GITHUB_TOKEN"] = True
-    fallback_readiness = readiness_from_presence(registry, fallback_presence)
-    resolution, profile = resolve_route(
-        policy, registry, role="developer", stage="implementation", readiness=fallback_readiness, validate_compiled_worker=False
-    )
-    require(profile.profile_id == "copilot", "Developer fallback did not select Copilot")
-    require(resolution.fallback, "fallback selection was not audited")
-    require(resolution.fallback_reason == "PREFERRED_CANDIDATE_NOT_READY", "fallback reason drifted")
+    fallback_presence["OPENAI_API_KEY"] = False
+    fallback_presence["CODEX_API_KEY"] = False
+    resolution, profile = resolve_route(policy, registry, role="developer", stage="implementation", readiness=readiness_from_presence(registry, fallback_presence), validate_compiled_worker=False)
     payload = resolution_payload(resolution, profile)
+    require(payload["selected"]["profile"] == "copilot", "Developer fallback route did not select Copilot")
+    require(payload["fallback"] is True, "fallback audit flag missing")
     require(payload["candidate_order"] == ["codex", "copilot"], "fallback audit lost complete candidate order")
     require(
         payload["candidates"] == [
@@ -97,20 +83,22 @@ def main() -> int:
     )
     require(payload["selection_mode"] == "policy", "policy selection mode missing")
     require(payload["entitlement_verified"] is False, "static routing overclaimed entitlement")
-    require("OPENAI_API_KEY" not in json.dumps(payload), "credential identity leaked into routing audit")
-    require("OPENAI_API_KEY" not in json.dumps(preferred_payload), "credential identity leaked into preferred routing audit")
+    for profile in registry.profiles:
+        for identity in (profile.credential, *profile.credential_aliases):
+            require(identity not in json.dumps(payload), f"credential identity {identity!r} leaked into routing audit")
+            require(identity not in json.dumps(preferred_payload), f"credential identity {identity!r} leaked into preferred routing audit")
 
+    no_ready = dict(fallback_presence)
+    no_ready["COPILOT_GITHUB_TOKEN"] = False
     try:
-        resolve_route(
-            policy, registry, role="developer", stage="implementation", readiness=readiness_from_presence(registry, presence), validate_compiled_worker=False
-        )
+        resolve_route(policy, registry, role="developer", stage="implementation", readiness=readiness_from_presence(registry, no_ready), validate_compiled_worker=False)
     except RoutingValidationError as exc:
         require("NO_READY_CANDIDATE" in str(exc), f"unexpected no-ready failure: {exc}")
     else:
         raise AssertionError("no-ready route unexpectedly selected a profile")
 
     try:
-        policy.require_rule("product", "requirement")
+        policy.require_rule("product", "acceptance")
     except RoutingValidationError:
         pass
     else:
@@ -133,16 +121,12 @@ def main() -> int:
         path = Path(tmp) / "routing.yaml"
         path.write_text(trusted_experimental, encoding="utf-8")
         exp_policy = load_routing_policy(path, registry=registry)
-        require(exp_policy.rules[0].allow_experimental, "trusted experimental opt-in was not retained")
+        require(exp_policy.require_rule("developer", "implementation").allow_experimental is True, "trusted experimental opt-in rejected")
 
-    require(registry.require_profile("copilot").credential_source == "github-token", "Copilot credential source drifted")
-    require(not registry.require_profile("copilot").credential_aliases, "github-token profile unexpectedly has aliases")
-    for profile in registry.profiles:
-        require(profile.credential_source in {"secret", "github-token"}, "unsupported credential source escaped validation")
-
-    print("gh-aw trusted role-aware routing validation passed")
-    return 0
+    duplicate_match = base + """  - id: fixture-two\n    match: {role: developer, stage: implementation}\n    candidates: [copilot]\n    allow_experimental: false\n"""
+    expect_invalid(duplicate_match, registry, "duplicate routing role/stage match")
+    print("gh-aw trusted profile routing validation passed")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

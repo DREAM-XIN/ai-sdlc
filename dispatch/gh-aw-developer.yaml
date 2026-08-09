@@ -1,5 +1,17 @@
 version: 0.1.0
 routes:
+  - id: gh-aw-autonomous-product-requirement
+    priority: 100
+    match: {role: product, stage: requirement}
+    runtime: {id: gh-aw, mode: autonomous}
+  - id: gh-aw-autonomous-architect-design
+    priority: 100
+    match: {role: architect, stage: design}
+    runtime: {id: gh-aw, mode: autonomous}
+  - id: gh-aw-autonomous-orchestrator-plan
+    priority: 100
+    match: {role: orchestrator, stage: plan}
+    runtime: {id: gh-aw, mode: autonomous}
   - id: gh-aw-autonomous-developer
     priority: 100
     match: {role: developer, stage: implementation}
@@ -38,6 +50,27 @@ routes:
     runtime: {id: chatgpt-web, mode: manual}
 
 task_templates:
+  requirement:
+    goal: Author the bounded Product Requirement for the assigned Feature.
+    read: [Feature Issue, project adapter, AGENTS.md, relevant product context]
+    allowed_scope: [Requirement artifact content only]
+    forbidden_scope: [Do not modify lifecycle state, approve requirement-gate, implement code, merge, or release]
+    expected_outputs: [structured authoring result, requirement draft]
+    definition_of_done: [Requirement is testable, acceptance criteria are explicit, non-goals and safety boundaries are recorded]
+  design:
+    goal: Author or remediate the bounded architecture Design from the approved Requirement.
+    read: [Feature Issue, approved requirement, requirement-review evidence, AGENTS.md, relevant architecture context]
+    allowed_scope: [Design artifact content only]
+    forbidden_scope: [Do not modify lifecycle state, approve design-gate, implement code, merge, or release]
+    expected_outputs: [structured authoring result, design draft]
+    definition_of_done: [Design closes review notes, boundaries and migration are explicit, deterministic tests are defined]
+  plan:
+    goal: Author the bounded implementation Plan from the approved Requirement and Design.
+    read: [Feature Issue, approved requirement, approved design, review evidence, AGENTS.md]
+    allowed_scope: [Plan artifact content only]
+    forbidden_scope: [Do not modify lifecycle state, implement code, pass Gates, merge, or release]
+    expected_outputs: [structured authoring result, implementation plan]
+    definition_of_done: [Work units are bounded, dependencies and DoD are explicit, review checkpoints are recorded]
   implementation:
     goal: Implement the assigned work unit according to the approved requirement and design.
     read: [Feature Issue, approved requirement, approved design, assigned work unit, AGENTS.md]
