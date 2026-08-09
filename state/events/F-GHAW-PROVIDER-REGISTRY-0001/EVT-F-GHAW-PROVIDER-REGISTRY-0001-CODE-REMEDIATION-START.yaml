@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-START
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 14
+occurred_at: '2026-08-09T10:07:00Z'
+changes:
+- kind: task
+  id: F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-1
+  status: WORKING
