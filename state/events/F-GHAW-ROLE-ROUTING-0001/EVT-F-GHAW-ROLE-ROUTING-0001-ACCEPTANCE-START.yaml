@@ -2,7 +2,7 @@ version: 0.1.0
 id: EVT-F-GHAW-ROLE-ROUTING-0001-ACCEPTANCE-START
 feature_id: F-GHAW-ROLE-ROUTING-0001
 expected_revision: 22
-occurred_at: '2026-08-09T12:52:15Z'
+occurred_at: '2026-08-09T12:52:00Z'
 changes:
 - kind: stage
   id: acceptance
