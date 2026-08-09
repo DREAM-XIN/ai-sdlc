@@ -1,5 +1,41 @@
 version: 0.1.0
 workers:
+  - id: requirement-product-claude
+    role: product
+    stage: requirement
+    profile: claude
+    worker_source: .github/workflows/ai-sdlc-gh-aw-product-claude.md
+    worker_workflow: ai-sdlc-gh-aw-product-claude.lock.yml
+  - id: requirement-product-copilot
+    role: product
+    stage: requirement
+    profile: copilot
+    worker_source: .github/workflows/ai-sdlc-gh-aw-product-copilot.md
+    worker_workflow: ai-sdlc-gh-aw-product-copilot.lock.yml
+  - id: design-architect-claude
+    role: architect
+    stage: design
+    profile: claude
+    worker_source: .github/workflows/ai-sdlc-gh-aw-architect-claude.md
+    worker_workflow: ai-sdlc-gh-aw-architect-claude.lock.yml
+  - id: design-architect-copilot
+    role: architect
+    stage: design
+    profile: copilot
+    worker_source: .github/workflows/ai-sdlc-gh-aw-architect-copilot.md
+    worker_workflow: ai-sdlc-gh-aw-architect-copilot.lock.yml
+  - id: plan-orchestrator-codex
+    role: orchestrator
+    stage: plan
+    profile: codex
+    worker_source: .github/workflows/ai-sdlc-gh-aw-orchestrator-codex.md
+    worker_workflow: ai-sdlc-gh-aw-orchestrator-codex.lock.yml
+  - id: plan-orchestrator-copilot
+    role: orchestrator
+    stage: plan
+    profile: copilot
+    worker_source: .github/workflows/ai-sdlc-gh-aw-orchestrator-copilot.md
+    worker_workflow: ai-sdlc-gh-aw-orchestrator-copilot.lock.yml
   - id: code-review-reviewer-claude
     role: reviewer
     stage: code-review
