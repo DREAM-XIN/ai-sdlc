@@ -2,7 +2,7 @@ version: 0.1.0
 id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-DESIGN-REVIEW-PASS
 feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
 expected_revision: 7
-occurred_at: '2026-08-09T15:12:31Z'
+occurred_at: '2026-08-09T15:13:10Z'
 changes:
 - kind: evidence
   record:
