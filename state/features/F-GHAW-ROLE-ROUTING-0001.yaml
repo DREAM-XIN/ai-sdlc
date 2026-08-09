@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 8
+revision: 9
 feature:
   id: F-GHAW-ROLE-ROUTING-0001
   title: Add trusted role-aware gh-aw profile routing and fallback policy
@@ -44,7 +44,7 @@ tasks:
     without profile/provider-name-specific branches; define alias compatibility and
     positive/negative tests while preserving secret non-serialization and eight-profile
     compatibility.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -86,4 +86,5 @@ applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-DONE
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-REWORK
-updated_at: '2026-08-09T11:55:16Z'
+- EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-START
+updated_at: '2026-08-09T11:55:18Z'
