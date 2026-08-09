@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 18
+revision: 19
 feature:
   id: F-GHAW-DOMESTIC-PROVIDERS-0001
   title: Add and certify Qwen, GLM, and MiniMax gh-aw provider profiles
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: verification
+  current_stage: acceptance
   stages:
   - id: requirement
     status: DONE
@@ -28,10 +28,10 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: WORKING
+    status: DONE
     gate: verification-gate
   - id: acceptance
-    status: TODO
+    status: READY
     gate: release-gate
 tasks:
 - id: F-GHAW-DOMESTIC-PROVIDERS-0001-DESIGN-REMEDIATION-1
@@ -76,7 +76,9 @@ gates:
   evidence:
   - evidence-code-review-v1
 - id: verification-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-verification-v1
 - id: release-gate
   status: PENDING
 evidence:
@@ -100,6 +102,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/code-review.md
+- id: evidence-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-GHAW-DOMESTIC-PROVIDERS-0001/verification.md
 applied_events:
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-REQ-START
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-REQ-DONE
@@ -119,4 +125,5 @@ applied_events:
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-CODE-REVIEW-START
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-CODE-REVIEW-PASS
 - EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-VERIFICATION-START
-updated_at: '2026-08-09T11:43:00Z'
+- EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-VERIFICATION-PASS
+updated_at: '2026-08-09T11:44:30Z'
