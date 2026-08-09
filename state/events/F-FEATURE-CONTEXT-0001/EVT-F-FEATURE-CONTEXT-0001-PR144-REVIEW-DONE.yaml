@@ -1,0 +1,33 @@
+version: 0.1.0
+id: EVT-F-FEATURE-CONTEXT-0001-PR144-REVIEW-DONE
+feature_id: F-FEATURE-CONTEXT-0001
+expected_revision: 8
+occurred_at: '2026-08-09T06:31:40Z'
+changes:
+- kind: evidence
+  record:
+    id: EVID-PR144-REVIEW
+    type: code-review
+    status: pass
+    uri: https://github.com/DREAM-XIN/ai-sdlc/pull/144#pullrequestreview-4890689933
+- kind: evidence
+  record:
+    id: EVID-PR144-CI
+    type: ci-run
+    status: pass
+    uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31299047295
+- kind: stage
+  id: review
+  status: WORKING
+- kind: stage
+  id: review
+  status: DONE
+- kind: gate
+  id: code-gate
+  status: PASS
+  evidence:
+  - EVID-PR144-REVIEW
+  - EVID-PR144-CI
+- kind: stage
+  id: verification
+  status: WORKING
