@@ -31,6 +31,10 @@ class CounterBackend:
         self.calls += 1
         if self.fail: raise RuntimeError(self.fail)
         return copy.deepcopy(self.result)
+class AvailabilityBackend(CounterBackend):
+    def __init__(self, result, *, available=False, reason="BACKEND_NOT_CONFIGURED"):
+        super().__init__(result); self.available = available; self.reason = reason
+    def availability(self, capability, trusted_context): return self.available, self.reason
 def req(capability, **extra):
     body = {"api_version": API_VERSION, "request_id": "req-1", "capability": capability, "client_identity": {"adapter_id": "fixture-adapter"}, "payload": {}}
     body.update(extra); return body
@@ -62,11 +66,29 @@ def main():
             assert_code(dispatch(body), "INVALID_REQUEST"); body["context"] = {"expected_feature_revision": 10}
         assert_code(dispatch(body), "CAPABILITY_UNAVAILABLE")
     result = dispatch(req("system.capabilities")); assert result["ok"] is True
-    rows = {row["id"]: row for row in result["result"]["capabilities"]}; assert set(rows) == set(EXPECTED)
+    canonical_discovery = copy.deepcopy(result["result"])
+    rows = {row["id"]: row for row in canonical_discovery["capabilities"]}; assert set(rows) == set(EXPECTED)
     assert rows["system.capabilities"]["available"] is True
     assert all(not row["available"] for key,row in rows.items() if key != "system.capabilities")
+    malformed = copy.deepcopy(canonical_discovery); malformed["capabilities"].pop()
+    assert_code(dispatch(req("system.capabilities"), backends={"system.capabilities": CounterBackend(malformed)}), "INTERNAL_FAILURE")
+    malformed = copy.deepcopy(canonical_discovery); malformed["capabilities"][0]["id"] = "not.real"
+    assert_code(dispatch(req("system.capabilities"), backends={"system.capabilities": CounterBackend(malformed)}), "INTERNAL_FAILURE")
+    malformed = copy.deepcopy(canonical_discovery); malformed["capabilities"][-1]["id"] = malformed["capabilities"][0]["id"]
+    assert_code(dispatch(req("system.capabilities"), backends={"system.capabilities": CounterBackend(malformed)}), "INTERNAL_FAILURE")
+    malformed = copy.deepcopy(canonical_discovery); del malformed["capabilities"][0]["available"]
+    assert_code(dispatch(req("system.capabilities"), backends={"system.capabilities": CounterBackend(malformed)}), "INTERNAL_FAILURE")
+    malformed = copy.deepcopy(canonical_discovery); malformed["capabilities"][0]["reason"] = "Bearer TOP-SECRET token"
+    result = dispatch(req("system.capabilities"), backends={"system.capabilities": CounterBackend(malformed)}); assert_code(result, "INTERNAL_FAILURE")
+    assert "TOP-SECRET" not in json.dumps(result)
     status_result = {"feature_id":"F-X","revision":1,"workflow_status":"ACTIVE","current_stage":"implementation"}
     backend = CounterBackend(status_result); result = dispatch(req("feature.status"), backends={"feature.status": backend}); assert result["ok"] is True and backend.calls == 1
+    unsafe_unavailable = AvailabilityBackend(status_result, available=False, reason="Bearer TOP-SECRET token password=abc")
+    result = dispatch(req("feature.status"), backends={"feature.status": unsafe_unavailable}); assert_code(result, "CAPABILITY_UNAVAILABLE")
+    assert result["error"]["details"]["reason"] == "BACKEND_NOT_CONFIGURED" and "TOP-SECRET" not in json.dumps(result)
+    result = dispatch(req("system.capabilities"), backends={"feature.status": unsafe_unavailable}); assert result["ok"] is True
+    discovery_rows = {row["id"]: row for row in result["result"]["capabilities"]}
+    assert discovery_rows["feature.status"]["reason"] == "BACKEND_NOT_CONFIGURED" and "TOP-SECRET" not in json.dumps(result)
     secret_backend = CounterBackend(status_result, fail="Bearer TOP-SECRET token password=abc")
     result = dispatch(req("feature.status"), backends={"feature.status": secret_backend}); assert_code(result, "INTERNAL_FAILURE")
     rendered = json.dumps(result); assert "TOP-SECRET" not in rendered and "password=abc" not in rendered
@@ -80,5 +102,6 @@ def main():
     print(f"- api_version: {API_VERSION}")
     print(f"- capabilities: {len(CAPABILITIES)}")
     print("- default_available: system.capabilities")
+    print("- capability discovery: strict exact-vocabulary schema + bounded availability reasons")
     print("- conformance fixture identities: 2 distinct; alias rejected as independent evidence")
 if __name__ == "__main__": main()
