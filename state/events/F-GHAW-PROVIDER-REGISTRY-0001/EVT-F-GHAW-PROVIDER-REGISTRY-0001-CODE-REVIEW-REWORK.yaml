@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-REWORK
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 13
+occurred_at: '2026-08-09T10:05:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review.md
+- kind: task-record
+  record:
+    id: F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: code-review
+    feedback: Fix CR-MAJOR-1 credential-alias false readiness for OpenAI-compatible profiles and CR-MINOR-1 raw worker_source normalization validation; add deterministic negative fixtures and rerun required PR-head CI.
+    target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
+    status: TODO
+    runtime: manual
