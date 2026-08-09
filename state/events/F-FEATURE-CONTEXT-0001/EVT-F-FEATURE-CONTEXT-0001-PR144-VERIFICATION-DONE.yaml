@@ -1,0 +1,21 @@
+version: 0.1.0
+id: EVT-F-FEATURE-CONTEXT-0001-PR144-VERIFICATION-DONE
+feature_id: F-FEATURE-CONTEXT-0001
+expected_revision: 9
+occurred_at: '2026-08-09T06:32:00Z'
+changes:
+- kind: evidence
+  record:
+    id: EVID-PR144-VERIFICATION
+    type: verification
+    status: pass
+    uri: https://github.com/DREAM-XIN/ai-sdlc/actions/runs/31299047295
+- kind: stage
+  id: verification
+  status: DONE
+- kind: gate
+  id: verification-gate
+  status: PASS
+  evidence:
+  - EVID-PR144-VERIFICATION
+  - EVID-PR144-CI
