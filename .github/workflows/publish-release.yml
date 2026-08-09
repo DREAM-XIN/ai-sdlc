@@ -1,0 +1,139 @@
+name: Publish Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'release/publish-v*.yaml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 2
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Resolve and validate release request
+        id: release
+        shell: python
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          import yaml
+
+          before = os.environ['BEFORE_SHA']
+          after = os.environ['AFTER_SHA']
+          changed = subprocess.check_output(
+              ['git', 'diff', '--name-only', before, after], text=True
+          ).splitlines()
+          markers = [
+              path for path in changed
+              if re.fullmatch(r'release/publish-v\d+\.\d+\.\d+\.yaml', path)
+          ]
+          if len(markers) != 1:
+              raise SystemExit(f'exactly one release publication marker must change; got {markers!r}')
+
+          marker_path = Path(markers[0])
+          marker = yaml.safe_load(marker_path.read_text(encoding='utf-8'))
+          version = Path('VERSION').read_text(encoding='utf-8').strip()
+          expected_marker = f'release/publish-v{version}.yaml'
+          if marker_path.as_posix() != expected_marker:
+              raise SystemExit(f'publication marker {marker_path} does not match VERSION {version}')
+          if marker.get('version') != version:
+              raise SystemExit('publication marker version does not match VERSION')
+          if marker.get('publication') != 'requested':
+              raise SystemExit('publication marker must set publication: requested')
+
+          manifest_path = Path('release') / f'v{version}.yaml'
+          release = yaml.safe_load(manifest_path.read_text(encoding='utf-8'))
+          if release.get('version') != version:
+              raise SystemExit('release manifest version does not match VERSION')
+          if release.get('status') != 'release-candidate':
+              raise SystemExit('release manifest must be release-candidate before tag publication')
+          if release.get('known_release_blockers') != []:
+              raise SystemExit('release manifest still declares release blockers')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f'version={version}\n')
+              handle.write(f'tag=v{version}\n')
+              handle.write(f'marker={marker_path.as_posix()}\n')
+
+      - name: Revalidate release baseline
+        run: python scripts/validate_release_readiness.py
+
+      - name: Build release notes
+        shell: python
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          import os
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+          lines = Path('CHANGELOG.md').read_text(encoding='utf-8').splitlines()
+          start = None
+          body = []
+          for index, line in enumerate(lines):
+              if line.startswith(f'## {version}'):
+                  start = index + 1
+                  continue
+              if start is not None:
+                  if line.startswith('## '):
+                      break
+                  body.append(line)
+          if start is None:
+              raise SystemExit(f'CHANGELOG section for {version} not found')
+          notes = '\n'.join(body).strip() + '\n'
+          Path('release-notes.md').write_text(notes, encoding='utf-8')
+
+      - name: Publish immutable tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null || true)
+          if [[ -n "$existing_sha" && "$existing_sha" != "$GITHUB_SHA" ]]; then
+            echo "Tag $TAG already exists at $existing_sha, expected $GITHUB_SHA" >&2
+            exit 2
+          fi
+          if [[ -z "$existing_sha" ]]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists"
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "AI-SDLC ${TAG}" \
+            --notes-file release-notes.md
