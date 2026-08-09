@@ -28,3 +28,4 @@ changes:
   - kind: stage
     id: code-review
     status: BLOCKED
+    reason: 'Independent Code Review found MAJOR-1 in canonical system.capabilities result validation and availability-reason safety; Developer remediation required before re-review.'
