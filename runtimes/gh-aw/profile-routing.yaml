@@ -1,0 +1,27 @@
+version: 0.1.0
+default_profile: copilot
+rules:
+  - id: implementation-developer
+    match:
+      role: developer
+      stage: implementation
+    candidates:
+      - codex
+      - copilot
+    allow_experimental: false
+  - id: code-review-reviewer
+    match:
+      role: reviewer
+      stage: code-review
+    candidates:
+      - claude
+      - copilot
+    allow_experimental: false
+  - id: verification-qa
+    match:
+      role: qa
+      stage: verification
+    candidates:
+      - gemini
+      - copilot
+    allow_experimental: false
