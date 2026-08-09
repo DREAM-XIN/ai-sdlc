@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-DOMESTIC-PROVIDERS-0001-REQ-START
+feature_id: F-GHAW-DOMESTIC-PROVIDERS-0001
+expected_revision: 0
+occurred_at: '2026-08-09T11:02:20Z'
+changes:
+- kind: stage
+  id: requirement
+  status: WORKING
