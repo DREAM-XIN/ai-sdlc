@@ -1,8 +1,8 @@
 version: 0.1.0
 id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-REVIEW-PASS
 feature_id: F-GHAW-PROVIDER-REGISTRY-0001
-expected_revision: 2
-occurred_at: '2026-08-09T08:36:00Z'
+expected_revision: 3
+occurred_at: '2026-08-09T08:38:00Z'
 changes:
   - kind: evidence
     record:
