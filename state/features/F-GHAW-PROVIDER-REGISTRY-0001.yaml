@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 19
+revision: 20
 feature:
   id: F-GHAW-PROVIDER-REGISTRY-0001
   title: Generalize gh-aw trusted provider registry and certification pipeline
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: code-review
+  current_stage: verification
   stages:
   - id: requirement
     status: DONE
@@ -25,10 +25,10 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: WORKING
+    status: DONE
     gate: code-gate
   - id: verification
-    status: TODO
+    status: READY
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -72,7 +72,7 @@ artifacts:
 - id: implementation-v1
   type: implementation
   uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/implementation.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
   status: PASS
@@ -83,7 +83,9 @@ gates:
   evidence:
   - evidence-design-review-v1
 - id: code-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-code-review-v3
 - id: verification-gate
   status: PENDING
 - id: release-gate
@@ -113,6 +115,10 @@ evidence:
   type: implementation
   status: pass
   uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/lifecycle-remediation.md
+- id: evidence-code-review-v3
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review-v3.md
 applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-REQ-DONE
@@ -133,4 +139,5 @@ applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-LIFECYCLE-REWORK
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-DONE
-updated_at: '2026-08-09T10:16:00Z'
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-PASS
+updated_at: '2026-08-09T10:21:30Z'
