@@ -86,12 +86,14 @@ def reviewer_event(result: dict, manifest: dict, *, repository: str, target_ref:
             raise GateResultError("Reviewer PASS cannot contain BLOCKER or MAJOR findings")
         if not all(item["status"] == "pass" for item in result["evidence"]):
             raise GateResultError("Reviewer PASS requires pass Evidence")
+        evidence_ids = [item["id"] for item in result["evidence"]]
         reviewed_id = f"reviewed-candidate-head-{candidate.head_sha[:12]}"
         changes.extend([
-            {"kind": "artifact", "id": candidate.artifact_id, "status": "approved", "evidence": [item["id"] for item in result["evidence"]]},
-            {"kind": "artifact", "id": candidate.head_artifact_id, "status": "approved", "evidence": [item["id"] for item in result["evidence"]]},
-            {"kind": "artifact-record", "record": {"id": reviewed_id, "type": "reviewed-candidate-head", "uri": candidate.head_url, "status": "approved"}},
-            {"kind": "gate", "id": "code-gate", "status": "PASS", "evidence": [item["id"] for item in result["evidence"]]},
+            {"kind": "artifact", "id": candidate.artifact_id, "status": "approved", "evidence": evidence_ids},
+            {"kind": "artifact", "id": candidate.head_artifact_id, "status": "approved", "evidence": evidence_ids},
+            {"kind": "artifact-record", "record": {"id": reviewed_id, "type": "reviewed-candidate-head", "uri": candidate.head_url, "status": "draft"}},
+            {"kind": "artifact", "id": reviewed_id, "status": "approved", "evidence": evidence_ids},
+            {"kind": "gate", "id": "code-gate", "status": "PASS", "evidence": evidence_ids},
             {"kind": "stage", "id": "code-review", "status": "DONE"},
             {"kind": "stage", "id": "verification", "status": "READY"},
         ])
@@ -146,9 +148,12 @@ def qa_event(result: dict, manifest: dict, *, repository: str, target_ref: str, 
             raise GateResultError("QA PASS requires every check and acceptance criterion to pass")
         if not all(item["status"] == "pass" for item in result["evidence"]):
             raise GateResultError("QA PASS requires pass Evidence")
+        evidence_ids = [item["id"] for item in result["evidence"]]
+        verified_id = f"verified-candidate-head-{candidate.head_sha[:12]}"
         changes.extend([
-            {"kind": "artifact-record", "record": {"id": f"verified-candidate-head-{candidate.head_sha[:12]}", "type": "verified-candidate-head", "uri": candidate.head_url, "status": "approved"}},
-            {"kind": "gate", "id": "verification-gate", "status": "PASS", "evidence": [item["id"] for item in result["evidence"]]},
+            {"kind": "artifact-record", "record": {"id": verified_id, "type": "verified-candidate-head", "uri": candidate.head_url, "status": "draft"}},
+            {"kind": "artifact", "id": verified_id, "status": "approved", "evidence": evidence_ids},
+            {"kind": "gate", "id": "verification-gate", "status": "PASS", "evidence": evidence_ids},
             {"kind": "stage", "id": "verification", "status": "DONE"},
             {"kind": "stage", "id": "acceptance", "status": "READY"},
         ])
