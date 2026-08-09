@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-START
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 12
+occurred_at: '2026-08-09T10:00:00Z'
+changes:
+- kind: stage
+  id: code-review
+  status: WORKING
