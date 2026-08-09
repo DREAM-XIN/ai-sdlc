@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-GHAW-PROVIDER-REGISTRY-0001
+  title: Generalize gh-aw trusted provider registry and certification pipeline
+  risk: medium
+  issue: '#195'
+profile: standard-feature
+created_at: '2026-08-09T08:25:11Z'
