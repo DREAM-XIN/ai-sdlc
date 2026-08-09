@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 17
+revision: 18
 feature:
   id: F-GHAW-PROVIDER-REGISTRY-0001
   title: Generalize gh-aw trusted provider registry and certification pipeline
@@ -54,7 +54,7 @@ tasks:
     does not make a subsequently completed source review invalid; preserve blocking
     for unfinished remediation and add deterministic closed-loop regression coverage.
   target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -127,4 +127,5 @@ applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-DONE
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-LIFECYCLE-REWORK
-updated_at: '2026-08-09T10:12:30Z'
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-LIFECYCLE-REMEDIATION-START
+updated_at: '2026-08-09T10:13:30Z'
