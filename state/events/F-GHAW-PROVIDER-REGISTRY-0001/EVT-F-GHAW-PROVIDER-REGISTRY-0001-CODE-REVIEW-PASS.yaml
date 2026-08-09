@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-PASS
+feature_id: F-GHAW-PROVIDER-REGISTRY-0001
+expected_revision: 16
+occurred_at: '2026-08-09T10:16:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v2
+    type: review
+    status: pass
+    uri: docs/features/F-GHAW-PROVIDER-REGISTRY-0001/code-review-v2.md
+- kind: gate
+  id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v2
+- kind: stage
+  id: code-review
+  status: DONE
+- kind: stage
+  id: verification
+  status: READY
