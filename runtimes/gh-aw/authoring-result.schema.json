@@ -3,7 +3,7 @@
   "$id": "https://ai-sdlc.dev/runtime/gh-aw/authoring-result.schema.json",
   "title": "AI-SDLC gh-aw Authoring Result",
   "type": "object",
-  "required": ["contract", "feature_id", "task_id", "work_kind", "expected_revision", "target_repository", "target_ref", "target_head_sha", "stage", "role", "status", "artifact_body", "summary"],
+  "required": ["contract", "feature_id", "task_id", "work_kind", "expected_revision", "target_repository", "target_ref", "stage", "role", "status", "artifact_body", "summary"],
   "properties": {
     "contract": {"const": "ai-sdlc-gh-aw-authoring-result-v0.1"},
     "feature_id": {"type": "string", "minLength": 1},
@@ -12,7 +12,6 @@
     "expected_revision": {"type": "integer", "minimum": 0},
     "target_repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
     "target_ref": {"type": "string", "minLength": 1},
-    "target_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "stage": {"enum": ["requirement", "design", "plan"]},
     "role": {"enum": ["product", "architect", "orchestrator"]},
     "status": {"enum": ["COMPLETED", "BLOCKED"]},
