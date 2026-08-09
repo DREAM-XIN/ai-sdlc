@@ -167,7 +167,7 @@ jobs:
           GH_AW_INFO_AWMG_VERSION: ""
           GH_AW_INFO_FIREWALL_TYPE: "squid"
           GH_AW_COMPILED_STRICT: "true"
-          GH_AW_INFO_MODEL_COSTS: '{"providers":{"github-copilot":{"models":{"glm-5.2":{"cost":{"cache_read":"3.135e-07","input":"1.254e-06","output":"5.016e-06"}}}}}}'
+          GH_AW_INFO_MODEL_COSTS: '{"providers":{"github-copilot":{"models":{"glm-5.2":{"cost":{"input":"0","output":"0"}}}}}}'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
