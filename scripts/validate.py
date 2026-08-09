@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 from evaluate_gate import evaluate
 from render_task_package import build_package
 from validate_artifact_event_lifecycle import main as validate_artifact_event_lifecycle
+from validate_remediation_review_completion import main as validate_remediation_review_completion
 from validate_transition import validate_schema as validate_execution_schema
 from validate_transition import validate_transition
 
@@ -65,24 +66,13 @@ def validate_tasks_and_packages():
     errors = []
     task_schema = SPEC / "task.schema.json"
     package_schema = SPEC / "task-package.schema.json"
-
     for path in sorted(TASK_EXAMPLES.glob("*.yaml")):
         task = load_yaml(path)
         errors += validate_with_schema(task, task_schema, str(path.relative_to(ROOT)))
-        package = build_package(
-            task,
-            repository="example-org/example-repo",
-            read_refs=task.get("inputs", []),
-            project_rules=["AGENTS.md"],
-        )
-        errors += validate_with_schema(
-            package, package_schema, f"rendered:{path.relative_to(ROOT)}"
-        )
-
+        package = build_package(task, repository="example-org/example-repo", read_refs=task.get("inputs", []), project_rules=["AGENTS.md"])
+        errors += validate_with_schema(package, package_schema, f"rendered:{path.relative_to(ROOT)}")
     for path in sorted(TASK_PACKAGE_EXAMPLES.glob("*.yaml")):
-        errors += validate_with_schema(
-            load_yaml(path), package_schema, str(path.relative_to(ROOT))
-        )
+        errors += validate_with_schema(load_yaml(path), package_schema, str(path.relative_to(ROOT)))
     return errors
 
 
@@ -127,7 +117,6 @@ def validate_gate_examples():
     result = evaluate("code-gate", load_yaml(passing_fixture))
     if not result["pass"]:
         errors.append(f"{passing_fixture.relative_to(ROOT)}: expected code-gate to pass")
-
     incomplete_state = {"satisfied": ["code:blockers=0"]}
     result = evaluate("code-gate", incomplete_state)
     if result["pass"]:
@@ -142,19 +131,16 @@ def validate_execution_examples():
     started = load_yaml(EXECUTION_EXAMPLES / "started.yaml")
     submitted = load_yaml(EXECUTION_EXAMPLES / "submitted.yaml")
     completed = load_yaml(EXECUTION_EXAMPLES / "completed.yaml")
-
     for label, doc in (("ready", ready), ("started", started), ("submitted", submitted), ("completed", completed)):
         try:
             validate_execution_schema(doc, schema, label)
         except ValueError as exc:
             errors.append(str(exc))
-
     for before, after in ((ready, started), (started, submitted), (submitted, completed)):
         try:
             validate_transition(before, after)
         except ValueError as exc:
             errors.append(f"expected valid transition failed: {exc}")
-
     try:
         illegal = dict(completed)
         illegal["previous_state"] = "READY"
@@ -162,7 +148,6 @@ def validate_execution_examples():
         errors.append("execution validator: illegal READY -> COMPLETED unexpectedly passed")
     except ValueError:
         pass
-
     invalid_docs = [
         {**started, "state": "BLOCKED", "previous_state": "STARTED"},
         {**started, "state": "FAILED", "previous_state": "STARTED"},
@@ -174,7 +159,6 @@ def validate_execution_examples():
             errors.append(f"execution schema: invalid state-specific fixture {index} unexpectedly passed")
         except ValueError:
             pass
-
     identity_mutation = dict(started)
     identity_mutation["task_id"] = "TASK-OTHER"
     try:
@@ -182,12 +166,12 @@ def validate_execution_examples():
         errors.append("execution validator: identity mutation unexpectedly passed")
     except ValueError:
         pass
-
     return errors
 
 
 def main():
     validate_artifact_event_lifecycle()
+    validate_remediation_review_completion()
     errors = (
         validate_schemas()
         + validate_profiles()
