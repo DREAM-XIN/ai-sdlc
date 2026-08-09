@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validated registry for autonomous Gate-role gh-aw worker variants."""
+"""Validated registry for specialized autonomous gh-aw role-worker variants."""
 
 from __future__ import annotations
 
@@ -13,7 +13,9 @@ from gh_aw_profile_routing import load_routing_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATH = ROOT / "runtimes" / "gh-aw" / "role-workers.yaml"
-ALLOWED_ROLE_STAGES = {("reviewer", "code-review"), ("qa", "verification")}
+AUTHORING_ROLE_STAGES = {("product", "requirement"), ("architect", "design"), ("orchestrator", "plan")}
+GATE_ROLE_STAGES = {("reviewer", "code-review"), ("qa", "verification")}
+ALLOWED_ROLE_STAGES = AUTHORING_ROLE_STAGES | GATE_ROLE_STAGES
 
 
 class RoleWorkerError(ValueError):
@@ -61,7 +63,7 @@ def load_role_workers(path: Path = DEFAULT_PATH):
         key = (row["role"], row["stage"])
         triple = (row["role"], row["stage"], row["profile"])
         if key not in ALLOWED_ROLE_STAGES:
-            raise RoleWorkerError(f"unsupported autonomous Gate role/stage: {key[0]}/{key[1]}")
+            raise RoleWorkerError(f"unsupported autonomous specialized role/stage: {key[0]}/{key[1]}")
         if row["id"] in seen_ids or triple in seen_keys:
             raise RoleWorkerError("duplicate role-worker identity")
         try:
@@ -78,11 +80,14 @@ def load_role_workers(path: Path = DEFAULT_PATH):
         seen_ids.add(row["id"]); seen_keys.add(triple); seen_sources.add(row["worker_source"]); seen_workflows.add(row["worker_workflow"])
 
     expected = {
+        ("product", "requirement", "claude"), ("product", "requirement", "copilot"),
+        ("architect", "design", "claude"), ("architect", "design", "copilot"),
+        ("orchestrator", "plan", "codex"), ("orchestrator", "plan", "copilot"),
         ("reviewer", "code-review", "claude"), ("reviewer", "code-review", "copilot"),
         ("qa", "verification", "gemini"), ("qa", "verification", "copilot"),
     }
     if seen_keys != expected:
-        raise RoleWorkerError(f"unexpected autonomous Gate-role worker set: {sorted(seen_keys)}")
+        raise RoleWorkerError(f"unexpected autonomous specialized worker set: {sorted(seen_keys)}")
     return tuple(workers)
 
 
