@@ -49,6 +49,7 @@ def main():
     presence = {
         "COPILOT_GITHUB_TOKEN": True,
         "OPENAI_API_KEY": True,
+        "CODEX_API_KEY": True,
         "ANTHROPIC_API_KEY": True,
         "GEMINI_API_KEY": True,
     }
@@ -60,6 +61,7 @@ def main():
 
     fallback_presence = dict(presence)
     fallback_presence["OPENAI_API_KEY"] = False
+    fallback_presence["CODEX_API_KEY"] = False
     resolution, profile = resolve_route(policy, registry, role="developer", stage="implementation", readiness=readiness_from_presence(registry, fallback_presence), validate_compiled_worker=False)
     payload = resolution_payload(resolution, profile)
     require(payload["selected"]["profile"] == "copilot", "Developer fallback route did not select Copilot")
@@ -76,6 +78,8 @@ def main():
     require(payload["entitlement_verified"] is False, "static routing overclaimed entitlement")
     require("OPENAI_API_KEY" not in json.dumps(payload), "credential identity leaked into routing audit")
     require("OPENAI_API_KEY" not in json.dumps(preferred_payload), "credential identity leaked into preferred routing audit")
+    require("CODEX_API_KEY" not in json.dumps(payload), "credential alias identity leaked into routing audit")
+    require("CODEX_API_KEY" not in json.dumps(preferred_payload), "credential alias identity leaked into preferred routing audit")
 
     no_ready = dict(fallback_presence)
     no_ready["COPILOT_GITHUB_TOKEN"] = False
