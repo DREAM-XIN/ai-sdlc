@@ -42,7 +42,7 @@ jobs:
         env:
           PROFILE: ${{ inputs.engine_profile }}
           # BEGIN AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
-          HAS_COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
+          HAS_COPILOT_GITHUB_TOKEN: ${{ github.token != '' }}
           HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
           HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
           HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
@@ -88,7 +88,7 @@ jobs:
             cat gh-aw-preflight.json
             echo '```'
             echo
-            echo '> `READY_FOR_ENTITLEMENT_PROBE` means the trusted lock and secret are present. It does not prove provider subscription, quota, billing, rate-limit headroom, or API entitlement.'
+            echo '> `READY_FOR_ENTITLEMENT_PROBE` means the trusted lock and credential source are present. It does not prove provider subscription, quota, billing, rate-limit headroom, or API entitlement.'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
