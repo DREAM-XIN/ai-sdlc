@@ -1,6 +1,30 @@
 version: 0.1.0
 default_profile: copilot
 rules:
+  - id: requirement-product
+    match:
+      role: product
+      stage: requirement
+    candidates:
+      - claude
+      - copilot
+    allow_experimental: false
+  - id: design-architect
+    match:
+      role: architect
+      stage: design
+    candidates:
+      - claude
+      - copilot
+    allow_experimental: false
+  - id: plan-orchestrator
+    match:
+      role: orchestrator
+      stage: plan
+    candidates:
+      - codex
+      - copilot
+    allow_experimental: false
   - id: implementation-developer
     match:
       role: developer
