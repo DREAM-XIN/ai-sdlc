@@ -11,6 +11,8 @@ PR_RE = re.compile(r"^/([^/]+)/([^/]+)/pull/(\d+)$")
 COMMIT_RE = re.compile(r"^/([^/]+)/([^/]+)/commit/([0-9a-f]{40})$")
 CANDIDATE_PREFIX = "implementation-candidate-"
 HEAD_PREFIX = "implementation-head-"
+REVIEWED_HEAD_PREFIX = "reviewed-candidate-head-"
+VERIFIED_HEAD_PREFIX = "verified-candidate-head-"
 
 
 class CandidateError(ValueError):
@@ -110,6 +112,30 @@ def resolve_current_candidate(manifest: dict, *, status: str) -> Candidate:
     )
 
 
+def _is_candidate_history_artifact(item: dict) -> bool:
+    artifact_id = str(item.get("id", ""))
+    artifact_type = item.get("type")
+    return (
+        (artifact_type == "implementation" and artifact_id.startswith("implementation-"))
+        or artifact_type == "implementation-head"
+        or artifact_type == "reviewed-candidate-head"
+        or artifact_type == "verified-candidate-head"
+    )
+
+
+def supersede_other_current_candidate_artifacts(manifest: dict, *, keep_ids: set[str]):
+    """Preserve history while making the newly approved candidate tuple uniquely current."""
+    changes = []
+    for item in manifest.get("artifacts", []):
+        if not isinstance(item, dict) or item.get("id") in keep_ids:
+            continue
+        if item.get("status") not in {"draft", "approved"}:
+            continue
+        if _is_candidate_history_artifact(item):
+            changes.append({"kind": "artifact", "id": item["id"], "status": "superseded"})
+    return changes
+
+
 def candidate_artifact_changes(manifest: dict, repository: str, pr_number: int, head_sha: str):
     new_artifacts = build_candidate_artifacts(repository, pr_number, head_sha)
     changes = []
@@ -117,10 +143,7 @@ def candidate_artifact_changes(manifest: dict, repository: str, pr_number: int, 
         if (
             isinstance(item, dict)
             and item.get("status") == "draft"
-            and (
-                str(item.get("id", "")).startswith(CANDIDATE_PREFIX)
-                or str(item.get("id", "")).startswith(HEAD_PREFIX)
-            )
+            and _is_candidate_history_artifact(item)
         ):
             changes.append({"kind": "artifact", "id": item["id"], "status": "superseded"})
     changes.extend({"kind": "artifact-record", "record": item} for item in new_artifacts)
