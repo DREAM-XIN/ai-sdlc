@@ -10,9 +10,11 @@ changes:
     type: review
     status: pass
     uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/design-review.md
-- kind: artifact-transition
+- kind: artifact
   id: design-v1
   status: approved
+  evidence:
+  - evidence-design-review-v1
 - kind: gate
   id: design-gate
   status: PASS
