@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-DONE
+feature_id: F-GHAW-ROLE-ROUTING-0001
+expected_revision: 9
+occurred_at: '2026-08-09T11:55:20Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-design-remediation-v1
+    type: implementation
+    status: pass
+    uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design-remediation.md
+- kind: task
+  id: F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-1
+  status: DONE
