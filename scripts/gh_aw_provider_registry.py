@@ -151,9 +151,16 @@ def _validate_worker_source(
 ) -> None:
     if "\\" in value:
         raise _error(profile_id, "worker_source", "must use repository-relative POSIX separators")
+    raw_parts = value.split("/")
+    if (
+        value.startswith("/")
+        or value.endswith("/")
+        or any(part in {"", ".", ".."} for part in raw_parts)
+    ):
+        raise _error(profile_id, "worker_source", "must be a normalized repository-relative path")
     path = PurePosixPath(value)
     parts = path.parts
-    if path.is_absolute() or not parts or ".." in parts or "." in parts or any(not part for part in parts):
+    if path.is_absolute() or not parts:
         raise _error(profile_id, "worker_source", "must be a normalized repository-relative path")
     if len(parts) < 3 or parts[0:2] != (".github", "workflows") or path.suffix != ".md":
         raise _error(profile_id, "worker_source", "must be a .md file under .github/workflows/")
@@ -305,6 +312,12 @@ def load_registry(
         base_url = None
         network_host = None
         if protocol == "openai-compatible":
+            if aliases:
+                raise _error(
+                    profile_id,
+                    "credential_aliases",
+                    "are not supported for openai-compatible profiles until worker credential fallback is rendered explicitly",
+                )
             if engine != "copilot":
                 raise _error(
                     profile_id,
