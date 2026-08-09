@@ -9,6 +9,8 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from apply_feature_event import validate_event
+from gh_aw_candidate import CandidateError, resolve_current_candidate
+from gh_aw_role_workers import ALLOWED_ROLE_STAGES, RoleWorkerError, require_role_worker_workflow
 from manual_dispatch import build_task, schema_errors
 from project_adapter import load_project_adapter
 from runtime_router import load_yaml
@@ -111,6 +113,23 @@ def build_runtime_payload(task, manifest, repository=None, project=None, project
     return payload
 
 
+def _gate_candidate(manifest, role: str, stage: str, worker_workflow: str):
+    if (role, stage) not in ALLOWED_ROLE_STAGES:
+        return None, "gh-aw-worker-result-v0.1"
+    try:
+        require_role_worker_workflow(role, stage, worker_workflow)
+        status = "draft" if (role, stage) == ("reviewer", "code-review") else "approved"
+        candidate = resolve_current_candidate(manifest, status=status)
+    except (RoleWorkerError, CandidateError) as exc:
+        raise ValueError(str(exc)) from exc
+    contract = (
+        "ai-sdlc-gh-aw-reviewer-result-v0.1"
+        if (role, stage) == ("reviewer", "code-review")
+        else "ai-sdlc-gh-aw-qa-result-v0.1"
+    )
+    return candidate, contract
+
+
 def build_dispatch_plan(
     manifest,
     commander_plan,
@@ -152,6 +171,9 @@ def build_dispatch_plan(
             continue
         try:
             task = build_task(manifest, action, template, runtime)
+            candidate, result_contract = _gate_candidate(
+                manifest, action["role"], action["stage"], worker_workflow
+            )
         except ValueError as exc:
             errors.append(str(exc))
             continue
@@ -164,6 +186,23 @@ def build_dispatch_plan(
 
         payload = build_runtime_payload(task, manifest, repository=repository, project=project, project_ref=project_ref)
         work_kind = task.get("kind", "stage")
+        inputs = {
+            "feature_id": manifest["feature"]["id"],
+            "expected_revision": result_revision,
+            "target_repository": repository,
+            "target_owner": target_owner,
+            "target_repo_name": target_repo_name,
+            "target_ref": target_ref,
+            "stage": action["stage"],
+            "role": action["role"],
+            "task_payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        }
+        if candidate is not None:
+            if candidate.repository != repository:
+                errors.append("Gate-role candidate repository differs from dispatch repository")
+                continue
+            inputs["candidate_pr_number"] = candidate.pr_number
+            inputs["candidate_head_sha"] = candidate.head_sha
         dispatches.append({
             "stage": action["stage"],
             "role": action["role"],
@@ -172,19 +211,9 @@ def build_dispatch_plan(
             "route_ids": dispatch["route_ids"],
             "workflow": worker_workflow,
             "ref": target_ref,
-            "inputs": {
-                "feature_id": manifest["feature"]["id"],
-                "expected_revision": result_revision,
-                "target_repository": repository,
-                "target_owner": target_owner,
-                "target_repo_name": target_repo_name,
-                "target_ref": target_ref,
-                "stage": action["stage"],
-                "role": action["role"],
-                "task_payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            },
+            "inputs": inputs,
             "expected_result": {
-                "contract": "gh-aw-worker-result-v0.1",
+                "contract": result_contract,
                 "event_path_prefix": f"state/events/{manifest['feature']['id']}/",
             },
         })
