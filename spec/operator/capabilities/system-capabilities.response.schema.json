@@ -1,1 +1,6 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/system-capabilities.response.schema.json","title":"system.capabilities response payload","type":"object","properties":{"supported_api_versions":{"type":"array","items":{"const":"ai-sdlc.operator/v1"}},"capabilities":{"type":"array"}},"required":["supported_api_versions","capabilities"],"additionalProperties":false}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/capabilities/system-capabilities.response.schema.json",
+  "title": "system.capabilities response payload",
+  "$ref": "https://ai-sdlc.dev/schema/operator/capabilities.schema.json"
+}
