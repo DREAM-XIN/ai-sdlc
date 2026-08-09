@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from gh_aw_role_workers import load_role_workers
+from validate_gh_aw_gate_provenance import main as validate_gate_provenance
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNED_SOURCE_TOKENS = (
@@ -42,6 +43,12 @@ def main():
         require("  add-comment:" in source, f"{worker.id}: add-comment Safe Output is required")
         require("ref: ${{ inputs.candidate_head_sha }}" in source, f"{worker.id}: checkout must pin candidate SHA")
         require("candidate_head_sha" in source and "candidate_pr_number" in source, f"{worker.id}: candidate identity inputs are required")
+        require("fromJSON(inputs.task_payload).task.id" in source, f"{worker.id}: run/task provenance must derive task id from trusted task payload")
+        require("SOURCE_RUN_ID: ${{ github.run_id }}" in source, f"{worker.id}: trusted source run id is required")
+        require("SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}" in source, f"{worker.id}: trusted source workflow ref is required")
+        require("--field task_id=\"$TRUSTED_TASK_ID\"" in source, f"{worker.id}: collector transport must include trusted task id")
+        require("--field source_run_id=\"$SOURCE_RUN_ID\"" in source, f"{worker.id}: collector transport must include source run id")
+        require("--field source_workflow_ref=\"$SOURCE_WORKFLOW_REF\"" in source, f"{worker.id}: collector transport must include source workflow ref")
         for token in BANNED_SOURCE_TOKENS:
             require(token not in source, f"{worker.id}: banned source-write capability token present: {token}")
         for token in BANNED_LOCK_TOKENS:
@@ -49,6 +56,7 @@ def main():
         require("AI-SDLC-GATE-RESULT" in source, f"{worker.id}: machine Gate result envelope marker is required")
         require("ai-sdlc-gh-aw-gate-result.yml" in source, f"{worker.id}: trusted Gate collector dispatch is required")
 
+    validate_gate_provenance()
     print("gh-aw Gate-role read-only worker security validation passed")
 
 
