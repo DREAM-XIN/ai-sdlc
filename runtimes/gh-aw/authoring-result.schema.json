@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/runtime/gh-aw/authoring-result.schema.json",
+  "title": "AI-SDLC gh-aw Authoring Result",
+  "type": "object",
+  "required": ["contract", "feature_id", "task_id", "work_kind", "expected_revision", "target_repository", "target_ref", "stage", "role", "status", "artifact_body", "summary"],
+  "properties": {
+    "contract": {"const": "ai-sdlc-gh-aw-authoring-result-v0.1"},
+    "feature_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "work_kind": {"enum": ["stage", "remediation"]},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "target_repository": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "target_ref": {"type": "string", "minLength": 1},
+    "stage": {"enum": ["requirement", "design", "plan"]},
+    "role": {"enum": ["product", "architect", "orchestrator"]},
+    "status": {"enum": ["COMPLETED", "BLOCKED"]},
+    "artifact_body": {"type": "string", "maxLength": 200000},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 4000}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"role": {"const": "product"}}, "required": ["role"]},
+      "then": {"properties": {"stage": {"const": "requirement"}}}
+    },
+    {
+      "if": {"properties": {"role": {"const": "architect"}}, "required": ["role"]},
+      "then": {"properties": {"stage": {"const": "design"}}}
+    },
+    {
+      "if": {"properties": {"role": {"const": "orchestrator"}}, "required": ["role"]},
+      "then": {"properties": {"stage": {"const": "plan"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "COMPLETED"}}, "required": ["status"]},
+      "then": {"properties": {"artifact_body": {"minLength": 1}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "BLOCKED"}}, "required": ["status"]},
+      "then": {"required": ["reason"]}
+    }
+  ],
+  "additionalProperties": false
+}
