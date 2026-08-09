@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-ROLES-0001-CODE-REVIEW-START
+feature_id: F-GHAW-AUTONOMOUS-ROLES-0001
+expected_revision: 15
+occurred_at: '2026-08-09T14:13:30Z'
+changes:
+- kind: stage
+  id: code-review
+  status: WORKING
