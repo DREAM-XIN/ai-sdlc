@@ -89,9 +89,12 @@ def validate_manifest(doc):
             errors.append(
                 f"semantic: remediation task {task_id} references unknown source_stage {source_stage}"
             )
-        elif stage_by_id[source_stage]["status"] in {"DONE", "SKIPPED"}:
+        elif (
+            task.get("status") != "DONE"
+            and stage_by_id[source_stage]["status"] in {"DONE", "SKIPPED"}
+        ):
             errors.append(
-                f"semantic: remediation task {task_id} source_stage {source_stage} is already complete"
+                f"semantic: unfinished remediation task {task_id} source_stage {source_stage} is already complete"
             )
 
     for gate in doc.get("gates", []):
