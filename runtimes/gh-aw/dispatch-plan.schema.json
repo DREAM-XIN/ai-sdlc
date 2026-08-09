@@ -43,6 +43,7 @@
               "target_ref": {"type": "string", "minLength": 1},
               "stage": {"type": "string", "minLength": 1},
               "role": {"type": "string", "minLength": 1},
+              "feature_issue_number": {"type": "integer", "minimum": 1},
               "candidate_pr_number": {"type": "integer", "minimum": 1},
               "candidate_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
               "task_payload": {"type": "string", "minLength": 2}
@@ -53,13 +54,26 @@
             "type": "object",
             "required": ["contract", "event_path_prefix"],
             "properties": {
-              "contract": {"enum": ["gh-aw-worker-result-v0.1", "ai-sdlc-gh-aw-reviewer-result-v0.1", "ai-sdlc-gh-aw-qa-result-v0.1"]},
+              "contract": {"enum": ["gh-aw-worker-result-v0.1", "ai-sdlc-gh-aw-authoring-result-v0.1", "ai-sdlc-gh-aw-reviewer-result-v0.1", "ai-sdlc-gh-aw-qa-result-v0.1"]},
               "event_path_prefix": {"type": "string", "pattern": "^state/events/[^/]+/$"}
             },
             "additionalProperties": false
           }
         },
         "allOf": [
+          {
+            "if": {"anyOf": [
+              {"properties": {"role": {"const": "product"}, "stage": {"const": "requirement"}}, "required": ["role", "stage"]},
+              {"properties": {"role": {"const": "architect"}, "stage": {"const": "design"}}, "required": ["role", "stage"]},
+              {"properties": {"role": {"const": "orchestrator"}, "stage": {"const": "plan"}}, "required": ["role", "stage"]}
+            ]},
+            "then": {
+              "properties": {
+                "inputs": {"required": ["feature_issue_number"]},
+                "expected_result": {"properties": {"contract": {"const": "ai-sdlc-gh-aw-authoring-result-v0.1"}}}
+              }
+            }
+          },
           {
             "if": {"properties": {"role": {"const": "reviewer"}, "stage": {"const": "code-review"}}, "required": ["role", "stage"]},
             "then": {
@@ -80,6 +94,9 @@
           },
           {
             "if": {"not": {"anyOf": [
+              {"properties": {"role": {"const": "product"}, "stage": {"const": "requirement"}}, "required": ["role", "stage"]},
+              {"properties": {"role": {"const": "architect"}, "stage": {"const": "design"}}, "required": ["role", "stage"]},
+              {"properties": {"role": {"const": "orchestrator"}, "stage": {"const": "plan"}}, "required": ["role", "stage"]},
               {"properties": {"role": {"const": "reviewer"}, "stage": {"const": "code-review"}}, "required": ["role", "stage"]},
               {"properties": {"role": {"const": "qa"}, "stage": {"const": "verification"}}, "required": ["role", "stage"]}
             ]}},
