@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 14
+revision: 15
 feature:
   id: F-GHAW-PROVIDER-REGISTRY-0001
   title: Generalize gh-aw trusted provider registry and certification pipeline
@@ -43,7 +43,7 @@ tasks:
     profiles and CR-MINOR-1 raw worker_source normalization validation; add deterministic
     negative fixtures and rerun required PR-head CI.
   target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/196
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -105,4 +105,5 @@ applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-IMPL-DONE
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-REWORK
-updated_at: '2026-08-09T10:05:00Z'
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-START
+updated_at: '2026-08-09T10:07:00Z'
