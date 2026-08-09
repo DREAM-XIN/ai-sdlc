@@ -1,0 +1,43 @@
+name: Prune Merged Work Branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete branches selected by the fail-safe merged-branch helper
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/branch-prune-trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Show automatically safe candidates
+        run: scripts/prune_merged_branches.sh
+
+      - name: Configure authenticated origin
+        if: github.event_name == 'push' || inputs.apply == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Delete automatically safe merged work branches
+        if: github.event_name == 'push' || inputs.apply == true
+        env:
+          CONFIRM_DELETE_MERGED_BRANCHES: 'yes'
+        run: scripts/prune_merged_branches.sh --apply
