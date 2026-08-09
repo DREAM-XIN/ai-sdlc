@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Audit retained GitHub Actions logs and artifacts before making a repo public.
+"""Audit retained GitHub Actions data before making a repository public.
 
-The script intentionally reports only finding type and location; it never prints
-matched secret values. It expects GITHUB_TOKEN and GITHUB_REPOSITORY.
+The script supports two modes:
+
+* full: enumerate and scan every retained run log/artifact;
+* baseline+delta: trust one reviewed full PASS baseline and scan every run or
+  artifact created/updated since a conservative overlap timestamp.
+
+Reports contain only finding type and location; matched credential values are
+never printed. GITHUB_TOKEN and GITHUB_REPOSITORY are required.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -55,6 +62,62 @@ def request_headers(token: str) -> dict[str, str]:
     }
 
 
+def parse_github_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def item_changed_since(item: Mapping[str, Any], cutoff: datetime) -> bool:
+    timestamps = [
+        parsed
+        for parsed in (
+            parse_github_time(item.get("created_at")),
+            parse_github_time(item.get("updated_at")),
+        )
+        if parsed is not None
+    ]
+    # Missing/unparseable timestamps fail safe by selecting the item.
+    return not timestamps or max(timestamps) >= cutoff
+
+
+def load_baseline(path: Path, repository: str) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("version") != 1:
+        raise ValueError("unsupported public audit baseline version")
+    if payload.get("repository") != repository:
+        raise ValueError("public audit baseline repository does not match GITHUB_REPOSITORY")
+    audit = payload.get("full_actions_audit")
+    if not isinstance(audit, dict):
+        raise ValueError("public audit baseline is missing full_actions_audit")
+    if audit.get("outcome") != "PASS" or audit.get("commit_status_state") != "success":
+        raise ValueError("public audit baseline is not a reviewed successful full audit")
+    commit = audit.get("commit")
+    run_id = audit.get("run_id")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("public audit baseline commit is invalid")
+    if not isinstance(run_id, int) or run_id <= 0:
+        raise ValueError("public audit baseline run_id is invalid")
+    cutoff = parse_github_time(audit.get("incremental_since"))
+    if cutoff is None:
+        raise ValueError("public audit baseline incremental_since is invalid")
+    return {
+        "commit": commit,
+        "run_id": run_id,
+        "incremental_since": cutoff,
+        "incremental_since_text": audit["incremental_since"],
+        "workflow_runs_enumerated": audit.get("workflow_runs_enumerated"),
+        "retained_log_archives_scanned": audit.get("retained_log_archives_scanned"),
+        "retained_artifacts_scanned": audit.get("retained_artifacts_scanned"),
+    }
+
+
 def retry_delay_seconds(
     status: int,
     headers: Mapping[str, str],
@@ -63,12 +126,7 @@ def retry_delay_seconds(
     *,
     now: float | None = None,
 ) -> float | None:
-    """Return a bounded retry delay only for clearly transient HTTP failures.
-
-    A plain permission-denied 403 is never retried. A 403 is retryable only
-    when GitHub exposes rate-limit evidence through Retry-After,
-    X-RateLimit-Remaining=0, or the standard rate-limit error message.
-    """
+    """Return bounded delay only for clearly transient GitHub failures."""
 
     now_value = time.time() if now is None else now
     retry_after = headers.get("Retry-After")
@@ -80,9 +138,8 @@ def retry_delay_seconds(
         or remaining == "0"
         or "secondary rate limit" in message
         or "rate limit exceeded" in message
-        or "rate limit" in message and status == 403
+        or ("rate limit" in message and status == 403)
     )
-
     retryable = status in {429, 500, 502, 503, 504} or (status == 403 and rate_limited)
     if not retryable or attempt >= MAX_HTTP_ATTEMPTS - 1:
         return None
@@ -120,8 +177,8 @@ def github_json(repository: str, token: str, path: str) -> dict[str, Any]:
             if delay is None:
                 raise
             print(
-                f"GitHub API transient HTTP {error.code}; retrying request after bounded backoff "
-                f"(attempt {attempt + 2}/{MAX_HTTP_ATTEMPTS}).",
+                f"GitHub API transient HTTP {error.code}; bounded retry "
+                f"{attempt + 2}/{MAX_HTTP_ATTEMPTS}.",
                 file=sys.stderr,
             )
             time.sleep(delay)
@@ -135,7 +192,6 @@ def github_json(repository: str, token: str, path: str) -> dict[str, Any]:
 def download_github_archive(repository: str, token: str, path: str) -> bytes | None:
     url = f"{API_ROOT}/repos/{repository}{path}"
     opener = urllib.request.build_opener(NoRedirect)
-
     for attempt in range(MAX_HTTP_ATTEMPTS):
         req = urllib.request.Request(url, headers=request_headers(token))
         try:
@@ -155,13 +211,12 @@ def download_github_archive(repository: str, token: str, path: str) -> bytes | N
                     if delay is None:
                         raise
                     print(
-                        f"GitHub archive endpoint transient HTTP {error.code}; retrying after bounded backoff "
-                        f"(attempt {attempt + 2}/{MAX_HTTP_ATTEMPTS}).",
+                        f"GitHub archive endpoint transient HTTP {error.code}; bounded retry "
+                        f"{attempt + 2}/{MAX_HTTP_ATTEMPTS}.",
                         file=sys.stderr,
                     )
                     time.sleep(delay)
                     continue
-
             with response:
                 data = response.read(MAX_DOWNLOAD_BYTES + 1)
             if len(data) > MAX_DOWNLOAD_BYTES:
@@ -171,7 +226,6 @@ def download_github_archive(repository: str, token: str, path: str) -> bytes | N
             if attempt >= MAX_HTTP_ATTEMPTS - 1:
                 raise
             time.sleep(float(min(2**attempt, 16)))
-
     raise RuntimeError("GitHub archive request retry loop exhausted")
 
 
@@ -196,13 +250,11 @@ def scan_text(text: str, location: str) -> list[dict[str, str | int]]:
     for label, pattern in PATTERNS:
         match = pattern.search(text)
         if match:
-            findings.append(
-                {
-                    "location": location,
-                    "line": text.count("\n", 0, match.start()) + 1,
-                    "kind": label,
-                }
-            )
+            findings.append({
+                "location": location,
+                "line": text.count("\n", 0, match.start()) + 1,
+                "kind": label,
+            })
     return findings
 
 
@@ -211,8 +263,7 @@ def scan_zip_bytes(data: bytes, location: str, depth: int = 0) -> list[dict[str,
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
-        text = data.decode("utf-8", errors="ignore")
-        return scan_text(text, location)
+        return scan_text(data.decode("utf-8", errors="ignore"), location)
 
     with archive:
         for info in archive.infolist():
@@ -269,55 +320,44 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         "# Public release historical Actions audit",
         "",
         f"**Outcome:** `{report['outcome']}`",
+        f"**Mode:** `{report['mode']}`",
         "",
-        f"- Workflow runs enumerated: {report['workflow_runs_enumerated']}",
+    ]
+    if report.get("baseline_commit"):
+        lines.extend([
+            f"- Trusted full baseline commit: `{report['baseline_commit']}`",
+            f"- Trusted full baseline run: `{report['baseline_run_id']}`",
+            f"- Incremental overlap begins: `{report['incremental_since']}`",
+        ])
+    lines.extend([
+        f"- Workflow runs in current inventory: {report['workflow_runs_enumerated']}",
+        f"- Workflow runs selected for archive scan: {report['workflow_runs_selected']}",
         f"- Retained run log archives scanned: {report['run_logs_scanned']}",
         f"- Run logs unavailable/expired: {report['run_logs_unavailable']}",
-        f"- Artifacts enumerated: {report['artifacts_enumerated']}",
+        f"- Artifacts in current inventory: {report['artifacts_enumerated']}",
+        f"- Artifacts selected for archive scan: {report['artifacts_selected']}",
         f"- Retained artifacts scanned: {report['artifacts_scanned']}",
         f"- Expired artifacts skipped: {report['artifacts_expired']}",
         "",
-    ]
+    ])
     if report["findings"]:
         lines.extend(["## Blocking findings", ""])
         for finding in report["findings"]:
             line = f":{finding['line']}" if finding.get("line") else ""
             lines.append(f"- `{finding['location']}{line}` — {finding['kind']}")
     else:
-        lines.append("No retained Actions log or artifact credential findings were detected.")
+        if report["mode"] == "baseline+delta":
+            lines.append("Trusted full baseline plus the selected post-baseline Actions delta contain no blocking findings.")
+        else:
+            lines.append("No retained Actions log or artifact credential findings were detected.")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def write_report(
-    args: argparse.Namespace,
-    *,
-    runs: list[dict[str, Any]],
-    artifacts: list[dict[str, Any]],
-    logs_scanned: int,
-    logs_unavailable: int,
-    artifacts_scanned: int,
-    artifacts_expired: int,
-    findings: list[dict[str, str | int]],
-) -> dict[str, Any]:
-    report: dict[str, Any] = {
-        "outcome": "BLOCKED" if findings else "PASS",
-        "workflow_runs_enumerated": len(runs),
-        "run_logs_scanned": logs_scanned,
-        "run_logs_unavailable": logs_unavailable,
-        "artifacts_enumerated": len(artifacts),
-        "artifacts_scanned": artifacts_scanned,
-        "artifacts_expired": artifacts_expired,
-        "findings": findings,
-    }
-    args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    write_markdown(args.markdown_output, report)
-    return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json-output", type=Path, default=Path("public-actions-audit.json"))
     parser.add_argument("--markdown-output", type=Path, default=Path("public-actions-audit.md"))
+    parser.add_argument("--baseline-file", type=Path)
     args = parser.parse_args()
 
     repository = os.environ.get("GITHUB_REPOSITORY", "")
@@ -327,65 +367,82 @@ def main() -> int:
         return 2
 
     findings: list[dict[str, str | int]] = []
+    baseline: dict[str, Any] | None = None
+    if args.baseline_file:
+        try:
+            baseline = load_baseline(args.baseline_file, repository)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            findings.append({
+                "location": str(args.baseline_file),
+                "line": 0,
+                "kind": f"invalid full Actions audit baseline: {type(error).__name__}",
+            })
+
     runs: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
-
-    # Enumerate both collections before the high-volume archive downloads. This
-    # ensures a later transient throttle cannot prevent the audit from knowing
-    # the complete retained run/artifact inventory.
     try:
         runs = paged_items(repository, token, "/actions/runs", "workflow_runs")
     except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
-        findings.append({
-            "location": "actions:runs",
-            "line": 0,
-            "kind": safe_http_error_kind("workflow-run enumeration error", error),
-        })
+        findings.append({"location": "actions:runs", "line": 0, "kind": safe_http_error_kind("workflow-run enumeration error", error)})
     try:
         artifacts = paged_items(repository, token, "/actions/artifacts", "artifacts")
     except (ValueError, urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as error:
-        findings.append({
-            "location": "actions:artifacts",
-            "line": 0,
-            "kind": safe_http_error_kind("artifact enumeration error", error),
-        })
+        findings.append({"location": "actions:artifacts", "line": 0, "kind": safe_http_error_kind("artifact enumeration error", error)})
+
+    mode = "baseline+delta" if baseline is not None else "full"
+    if baseline is not None:
+        cutoff = baseline["incremental_since"]
+        selected_runs = [item for item in runs if item_changed_since(item, cutoff)]
+        selected_artifacts = [item for item in artifacts if item_changed_since(item, cutoff)]
+    else:
+        selected_runs = runs
+        selected_artifacts = artifacts
 
     logs_scanned = 0
     logs_unavailable = 0
-    if runs:
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in runs]
-            for future in as_completed(futures):
-                scanned, unavailable, run_findings = future.result()
-                logs_scanned += scanned
-                logs_unavailable += unavailable
-                findings.extend(run_findings)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = [pool.submit(scan_run_log, repository, token, int(run["id"])) for run in selected_runs]
+        for future in as_completed(futures):
+            scanned, unavailable, run_findings = future.result()
+            logs_scanned += scanned
+            logs_unavailable += unavailable
+            findings.extend(run_findings)
 
     artifacts_scanned = 0
     artifacts_expired = 0
-    if artifacts:
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in artifacts]
-            for future in as_completed(futures):
-                scanned, expired, artifact_findings = future.result()
-                artifacts_scanned += scanned
-                artifacts_expired += expired
-                findings.extend(artifact_findings)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = [pool.submit(scan_artifact, repository, token, artifact) for artifact in selected_artifacts]
+        for future in as_completed(futures):
+            scanned, expired, artifact_findings = future.result()
+            artifacts_scanned += scanned
+            artifacts_expired += expired
+            findings.extend(artifact_findings)
 
-    report = write_report(
-        args,
-        runs=runs,
-        artifacts=artifacts,
-        logs_scanned=logs_scanned,
-        logs_unavailable=logs_unavailable,
-        artifacts_scanned=artifacts_scanned,
-        artifacts_expired=artifacts_expired,
-        findings=findings,
-    )
+    report: dict[str, Any] = {
+        "outcome": "BLOCKED" if findings else "PASS",
+        "mode": mode,
+        "baseline_commit": baseline["commit"] if baseline else None,
+        "baseline_run_id": baseline["run_id"] if baseline else None,
+        "incremental_since": baseline["incremental_since_text"] if baseline else None,
+        "workflow_runs_enumerated": len(runs),
+        "workflow_runs_selected": len(selected_runs),
+        "run_logs_scanned": logs_scanned,
+        "run_logs_unavailable": logs_unavailable,
+        "artifacts_enumerated": len(artifacts),
+        "artifacts_selected": len(selected_artifacts),
+        "artifacts_scanned": artifacts_scanned,
+        "artifacts_expired": artifacts_expired,
+        "findings": findings,
+    }
+    args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_markdown(args.markdown_output, report)
 
     print(
-        f"Historical Actions audit {report['outcome']}: "
-        f"{len(runs)} runs, {logs_scanned} retained log archives, {artifacts_scanned} retained artifacts scanned."
+        f"Historical Actions audit {report['outcome']} ({mode}): "
+        f"{len(runs)} runs in inventory / {len(selected_runs)} selected, "
+        f"{logs_scanned} retained log archives scanned; "
+        f"{len(artifacts)} artifacts in inventory / {len(selected_artifacts)} selected, "
+        f"{artifacts_scanned} retained artifacts scanned."
     )
     return 1 if findings else 0
 
