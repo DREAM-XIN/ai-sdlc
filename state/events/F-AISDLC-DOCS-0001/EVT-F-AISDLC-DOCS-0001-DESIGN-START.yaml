@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-AISDLC-DOCS-0001-DESIGN-START
+feature_id: F-AISDLC-DOCS-0001
+expected_revision: 4
+occurred_at: '2026-08-09T07:45:00Z'
+changes:
+- kind: stage
+  id: design
+  status: WORKING
