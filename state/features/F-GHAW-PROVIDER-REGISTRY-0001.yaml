@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 22
+revision: 23
 feature:
   id: F-GHAW-PROVIDER-REGISTRY-0001
   title: Generalize gh-aw trusted provider registry and certification pipeline
@@ -31,7 +31,7 @@ workflow:
     status: DONE
     gate: verification-gate
   - id: acceptance
-    status: READY
+    status: WORKING
     gate: release-gate
 tasks:
 - id: F-GHAW-PROVIDER-REGISTRY-0001-CODE-REMEDIATION-1
@@ -148,4 +148,5 @@ applied_events:
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-CODE-REVIEW-PASS
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-VERIFICATION-START
 - EVT-F-GHAW-PROVIDER-REGISTRY-0001-VERIFICATION-PASS
-updated_at: '2026-08-09T10:38:00Z'
+- EVT-F-GHAW-PROVIDER-REGISTRY-0001-ACCEPTANCE-START
+updated_at: '2026-08-09T10:39:30Z'
