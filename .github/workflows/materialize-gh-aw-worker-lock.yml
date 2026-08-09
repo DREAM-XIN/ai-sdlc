@@ -1,6 +1,7 @@
 name: Materialize AI-SDLC gh-aw Worker Locks
 
 # Dedicated gh-aw/compile-* branches exist only to materialize compiler-generated worker sources and lock files; pushing a trusted source/provider change here is the supported one-shot materialization path.
+# trigger: authoring-role materialization
 on:
   push:
     branches:
