@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 17
+revision: 18
 feature:
   id: F-GHAW-ROLE-ROUTING-0001
   title: Add trusted role-aware gh-aw profile routing and fallback policy
@@ -55,7 +55,7 @@ tasks:
     explicitly record the complete ordered candidate list independently from evaluated
     decisions; add deterministic preferred/fallback/no-ready and non-secret regressions
     without expanding scope or adding provider/profile-name-specific branches.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -128,4 +128,5 @@ applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-IMPL-DONE
 - EVT-F-GHAW-ROLE-ROUTING-0001-CODE-REVIEW-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-CODE-REVIEW-REWORK
-updated_at: '2026-08-09T12:40:00Z'
+- EVT-F-GHAW-ROLE-ROUTING-0001-CODE-REMEDIATION-START
+updated_at: '2026-08-09T12:41:30Z'
