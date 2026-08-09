@@ -1,0 +1,27 @@
+name: Required PR Gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  required-pr-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Run stable required PR gate
+        run: |
+          python scripts/validate_public_readiness.py
+          python scripts/validate.py
+          python scripts/validate_github_workflow_security.py
+          python scripts/validate_target_installation_examples.py
+          python scripts/validate_cross_repo_transport.py
+          python scripts/validate_git_write_precondition.py
+          python scripts/validate_action_security.py
+          python scripts/validate_release_readiness.py
