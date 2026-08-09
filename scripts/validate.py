@@ -9,6 +9,7 @@ from evaluate_gate import evaluate
 from render_task_package import build_package
 from validate_artifact_event_lifecycle import main as validate_artifact_event_lifecycle
 from validate_gh_aw_autonomous_roles import main as validate_gh_aw_autonomous_roles
+from validate_gh_aw_candidate_history import validate_manual_candidate, validate_multi_round_supersession
 from validate_gh_aw_gate_worker_security import main as validate_gh_aw_gate_worker_security
 from validate_gh_aw_profile_routing import main as validate_gh_aw_profile_routing
 from validate_remediation_review_completion import main as validate_remediation_review_completion
@@ -201,6 +202,8 @@ def main():
     validate_remediation_review_completion()
     validate_gh_aw_profile_routing()
     validate_gh_aw_autonomous_roles()
+    validate_manual_candidate()
+    validate_multi_round_supersession()
     validate_gh_aw_gate_worker_security()
     errors = (
         validate_schemas()
