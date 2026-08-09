@@ -1,0 +1,510 @@
+version: 0.3.0
+status: planning
+base_version: 0.2.0
+tracking_issue: '#205'
+final_manifest: release/v0.3.0.yaml
+release_theme: ai-operated-sdlc
+canonical_api_version: ai-sdlc.operator/v1
+operation_event_version: ai-sdlc.operation-event/v1
+
+release_intent: >-
+  Productize the deterministic AI-SDLC control kernel behind a durable typed
+  Operator surface while preserving lifecycle authority, independent role
+  execution, immutable candidate evidence, explicit external-launch and
+  Feature-Persist linearization, and trusted GitHub-backed audit.
+
+required_release_slice:
+  starting_condition: installed-project-with-eligible-feature
+  lifecycle:
+    - ai-client-capability-status-and-inbox
+    - durable-operation-start-or-discovery
+    - developer
+    - independent-code-review
+    - durable-review-remediation-when-required
+    - independent-re-review
+    - qa-verification
+    - needs-user-or-done
+  user_experience:
+    repeated_continue_messages_required: false
+    routine_manual_github_operations_after_installation: false
+    session_survival_required: true
+
+client_contract:
+  canonical_api: ai-sdlc.operator/v1
+  required_supported_ai_client_adapters: 2
+  materially_independent: true
+  common_conformance_subset:
+    - system.capabilities
+    - feature.status
+    - operator.inbox
+    - operation.status
+    - decision.list
+    - notification.list
+  both_require:
+    - api-version-semantics
+    - structured-error-semantics
+    - identity-propagation
+    - unsupported-capability-behavior
+  minimum_write_capable_adapters: 1
+  required_write_slice:
+    - operation.start
+    - operation.cancel
+    - decision.respond
+    - notification.ack
+
+worker_result_contract:
+  arbitrary_executable_feature_events: forbidden
+  trusted_translation_required: true
+  trusted_context_fields:
+    - operation-id
+    - operation-generation
+    - semantic-effect-key
+    - external-dispatch-key
+    - dispatch-id
+    - target-repository
+    - feature-id
+    - expected-revision
+    - target-ref
+    - candidate-pr-number-when-applicable
+    - candidate-head-sha-when-applicable
+    - task-id
+    - role
+    - runtime-receipt-identity
+  reviewer_qa_candidate_head_sha_required: true
+  current_head_revalidation_before_persist: true
+  head_change_requires_new_semantic_dispatch: true
+  required_translators:
+    - developer-result-translator
+    - review-verdict-translator
+    - verification-verdict-translator
+
+operation_store:
+  authority: orchestration-only
+  trusted_location: control-repository-protected-state-ref
+  target_feature_branch_write_access: forbidden
+  append_only_journal: required
+  deterministic_projection: required
+  git_ref_compare_and_set: required
+  state_ref_selected_by_feature_branch: forbidden
+  operation_generation_fencing: required
+  one_active_generation_per_feature: true
+
+external_semantic_reservation:
+  required: true
+  generation_independent_identity: true
+  identity_fields:
+    - target-repository
+    - feature-id
+    - expected-revision
+    - current-stage
+    - task-identity
+    - role
+    - candidate-head-sha-when-candidate-bound
+  operation_generation_in_identity: false
+  stable_external_dispatch_key: required
+  reservation_survives_generation_takeover: true
+  invariant: >-
+    One semantic external side effect has at most one durable external dispatch
+    identity even when Operation ownership moves across generations.
+
+semantic_dispatch_claim:
+  generation_specific_ownership: true
+  references_generation_independent_reservation: true
+  claim_before_launch_processing: true
+  equivalent_retry_returns_existing_reservation_or_claim: true
+
+launch_linearization:
+  required: true
+  linearization_event: dispatch.launch.authorized
+  durable_before_external_call: true
+  binds:
+    - operation-id
+    - operation-generation
+    - semantic-effect-key
+    - external-dispatch-key
+    - dispatch-id
+    - feature-id
+    - expected-revision
+    - stage
+    - role
+    - candidate-head-sha-when-applicable
+  ordering:
+    cancellation_or_supersession_before_linearization: launch-forbidden
+    linearization_before_cancellation_or_supersession: exact-authorized-launch-may-complete
+  post_cancel_rule: >-
+    A launch linearized before cancellation may still execute using the exact
+    existing external dispatch key, but its eventual result does not gain
+    automatic lifecycle Persist authority.
+  stale_generation_new_launch: forbidden
+
+external_dispatch_recovery:
+  stable_external_dispatch_key: required
+  trusted_launch_receipt_lookup: required
+  lookup_states:
+    - NOT_LAUNCHED
+    - LAUNCHED
+    - UNKNOWN
+  not_launched_behavior: retry-same-key-only-after-current-generation-launch-authorization
+  launched_behavior: adopt-existing-receipt-no-relaunch
+  unknown_behavior: blocked-no-speculative-relaunch
+  missing_local_worker_dispatched_event_does_not_prove_absence: true
+
+unknown_reservation_takeover:
+  required: true
+  unresolved_reservation_survives_operation_generation: true
+  new_generation_inherits_same_semantic_effect_key: true
+  new_generation_inherits_same_external_dispatch_key: true
+  new_key_for_same_semantic_task_while_unknown: forbidden
+  generation_change_alone_can_retire_unknown: false
+  unresolved_state: BLOCKED
+
+persist_linearization:
+  required: true
+  persist_requested_record: required
+  final_generation_cancel_fence_before_feature_write: required
+  candidate_head_revalidation_when_applicable: required
+  linearization_event: persist.linearized
+  linearization_receipt: required
+  rules:
+    cancellation_before_linearization: reject-feature-write
+    linearization_before_cancellation: exact-inflight-write-may-complete
+    cancellation_after_linearization: no-subsequent-automatic-progression
+    feature_write_ack_loss: query-exact-event-receipt-before-retry
+  launch_authorization_does_not_imply_persist_authorization: true
+
+operation_cancel:
+  distinct_from_feature_cancel: true
+  reports_already_linearized_work: required
+  after_cancel:
+    unlinearized_external_launches: forbidden
+    launch_linearized_exact_dispatch: may-complete
+    unlinearized_feature_persist: forbidden
+    persist_linearized_exact_write: may-complete
+    late_worker_result_auto_persist: forbidden
+
+operation_states:
+  top_level:
+    - RUNNING
+    - WAITING_EXTERNAL
+    - NEEDS_USER
+    - BLOCKED
+    - DONE
+    - CANCELLED
+  waiting_external:
+    - WAITING_WORKER
+    - WAITING_CI
+    - WAITING_PR
+    - WAITING_CALLBACK
+  needs_user:
+    - NEEDS_CLARIFICATION
+    - NEEDS_AUTHORIZATION
+    - NEEDS_ACCEPTANCE
+    - NEEDS_CREDENTIAL_SETUP
+  terminal:
+    - DONE
+    - CANCELLED
+  recoverable_suspended:
+    - BLOCKED
+
+authorization_model:
+  trusted_sources:
+    - protected-default-branch-configuration
+    - installation-level-configuration
+    - trusted-control-repository-policy
+  feature_branch_can_tighten: true
+  feature_branch_can_expand: false
+  generic_natural_language_approval_is_sufficient: false
+  decision_binding:
+    - decision-id
+    - decision-type
+    - feature-id
+    - operation-id
+    - operation-generation
+    - expected-revision
+    - target-ref
+    - candidate-head-sha-when-applicable
+    - allowed-choice
+    - trusted-policy-ref-or-digest
+    - responder-identity
+    - expiry
+
+notification_outbox:
+  required: true
+  required_types:
+    - decision.requested
+    - operation.blocked
+    - operation.completed
+    - authorization.expiring
+  new_session_discovery:
+    - unfinished-operations
+    - pending-decisions
+    - unread-notifications
+  bounded_ack_operation: notification.ack
+
+acceptance_policy:
+  default_standard_feature:
+    ai_recommendation_allowed: true
+    ai_recommendation_is_human_acceptance_evidence: false
+    human_product_decision_required: true
+
+required_workstreams:
+  - id: operator-canonical-api-and-ai-client-adapters
+    status: proposed
+    includes:
+      - transport-independent-typed-api
+      - exact-api-versioning
+      - capability-discovery
+      - structured-error-model
+      - identity-and-idempotency-contract
+      - operator-inbox
+      - two-supported-materially-independent-ai-client-adapters
+      - one-write-capable-release-slice-adapter
+      - canonical-conformance-tests
+  - id: durable-operation-store-reservation-and-fencing
+    status: proposed
+    includes:
+      - append-only-operation-events
+      - deterministic-operation-projection
+      - protected-control-state-ref
+      - git-ref-cas
+      - active-operation-generation
+      - generation-independent-semantic-effect-reservation
+      - stable-external-dispatch-key
+      - generation-specific-dispatch-claim
+      - launch-linearization-receipt
+      - trusted-launch-receipt-lookup
+      - unknown-reservation-generation-inheritance
+      - candidate-head-sha-binding
+      - callback-correlation
+  - id: operator-vertical-loop
+    status: proposed
+    includes:
+      - developer-dispatch
+      - trusted-developer-result-translation
+      - independent-reviewer-dispatch
+      - trusted-review-verdict-translation
+      - durable-developer-remediation
+      - independent-re-review
+      - qa-dispatch
+      - trusted-verification-verdict-translation
+  - id: operator-recovery-concurrency-and-linearization
+    status: proposed
+    includes:
+      - stale-revision-reread-and-replan
+      - duplicate-request-and-callback-suppression
+      - candidate-head-change-invalidation
+      - claim-and-launch-crash-recovery
+      - launch-linearization-cancel-ordering
+      - unknown-reservation-cross-generation-fencing
+      - persist-cancel-linearization
+      - persist-ack-loss-recovery
+      - concurrent-resume-safety
+  - id: operator-decisions-authorization-notifications
+    status: proposed
+    includes:
+      - bounded-decision-object
+      - exact-revision-ref-sha-generation-binding
+      - trusted-authorization-policy-resolution
+      - operation-cancel-feature-cancel-separation
+      - notification-outbox
+      - new-session-discovery
+  - id: planning-manifest-validation
+    status: proposed
+    includes:
+      - deterministic-draft-schema-or-validator
+      - release-blocker-id-validation
+      - client-conformance-count-validation
+      - release-spec-consistency-validation
+
+required_tests:
+  tool_contract:
+    - api-version-negotiation
+    - capability-discovery
+    - invalid-schema-rejection
+    - structured-error-codes
+    - identity-propagation
+    - idempotency
+    - expected-revision-rejection
+  authorization_adversarial:
+    - feature-policy-expansion-rejected
+    - broader-credential-scope-rejected
+    - developer-gate-pass-rejected
+    - reviewer-prohibited-write-rejected
+    - stale-authorization-replay-rejected
+    - wrong-ref-sha-generation-authorization-rejected
+    - expired-decision-rejected
+  candidate_binding:
+    - reviewer-result-after-head-change-rejected
+    - qa-result-after-head-change-rejected
+    - new-head-requires-new-semantic-dispatch
+  launch_linearization_race:
+    - launch-authorized-then-cancel-stale-runner-exact-key-only
+    - cancel-before-launch-authorized-no-external-launch
+    - supersede-before-launch-authorized-no-external-launch
+  unknown_reservation_takeover:
+    - generation-g-unknown-blocked
+    - takeover-to-generation-g-plus-one
+    - same-semantic-effect-key-inherited
+    - same-external-dispatch-key-inherited
+    - no-new-key-while-unknown
+  claim_launch_crash_recovery:
+    - reservation-committed-crash-before-launch-authorization
+    - launch-authorized-crash-before-external-call
+    - external-call-success-local-receipt-lost
+    - receipt-not-launched
+    - receipt-launched
+    - receipt-unknown
+  persist_cancel_race:
+    - cancel-before-persist-requested
+    - cancel-after-request-before-linearization
+    - cancel-after-linearization-before-feature-write-ack
+    - cancel-after-feature-write-before-confirmed
+  operation_replay:
+    - duplicate-callback
+    - out-of-order-callback
+    - duplicate-worker-completion
+    - concurrent-runner-resume
+    - projection-rebuild
+    - client-session-loss-and-resume
+  client_conformance:
+    minimum_supported_ai_client_adapters: 2
+    materially_independent: true
+    minimum_write_capable_adapters: 1
+
+required_dogfood:
+  happy_path:
+    status: pending
+    requirement: vertical-loop-without-repeated-user-continue
+  review_remediation:
+    status: pending
+    requirement: reviewer-change-request-through-remediation-re-review-and-qa
+  session_recovery:
+    status: pending
+    requirement: new-session-discovers-durable-operation-and-user-items
+  failure_injection:
+    status: pending
+    required_cases:
+      - stale-revision
+      - candidate-head-change-result-arrival
+      - duplicate-callback
+      - concurrent-resume
+      - launch-authorized-then-cancel-or-supersede
+      - cancel-or-supersede-before-launch-authorization
+      - claim-launch-crash-recovery
+      - unknown-reservation-takeover-across-generation
+      - persist-cancel-linearization
+      - persist-acknowledgement-loss
+  external_transport_matrix:
+    status: pending-release-decision
+    requirement: preserve-v0.2-public-private-trust-boundaries
+
+known_release_blockers:
+  - id: arbitrary-worker-event-mutation
+    status: unresolved
+  - id: missing-role-specific-trusted-translators
+    status: unresolved
+  - id: reviewer-qa-candidate-head-binding-gap
+    status: unresolved
+  - id: candidate-head-not-revalidated-before-persist
+    status: unresolved
+  - id: authorization-not-exactly-bound
+    status: unresolved
+  - id: feature-branch-policy-escalation
+    status: unresolved
+  - id: multiple-active-operation-generations
+    status: unresolved
+  - id: semantic-effect-reservation-generation-coupled
+    status: unresolved
+  - id: duplicate-external-dispatch-key-for-same-semantic-effect
+    status: unresolved
+  - id: missing-launch-linearization-point
+    status: unresolved
+  - id: cancel-before-launch-linearization-can-still-launch
+    status: unresolved
+  - id: post-launch-linearization-can-create-different-dispatch-or-auto-persist
+    status: unresolved
+  - id: claim-launch-crash-recovery-gap
+    status: unresolved
+  - id: unknown-launch-can-be-bypassed-by-generation-takeover
+    status: unresolved
+  - id: operation-store-cas-or-rebuild-gap
+    status: unresolved
+  - id: callback-replay-side-effects
+    status: unresolved
+  - id: persist-cancel-linearization-gap
+    status: unresolved
+  - id: operation-cancel-feature-cancel-ambiguity
+    status: unresolved
+  - id: new-session-discovery-gap
+    status: unresolved
+  - id: offline-user-stalls-durable-execution
+    status: unresolved
+  - id: normal-feature-requires-manual-github-after-install
+    status: unresolved
+  - id: typed-api-version-or-capability-gap
+    status: unresolved
+  - id: fewer-than-two-supported-ai-client-adapters
+    status: unresolved
+  - id: no-write-capable-ai-client-adapter
+    status: unresolved
+  - id: decision-data-minimization-gap
+    status: unresolved
+  - id: ai-can-synthesize-human-acceptance-evidence
+    status: unresolved
+  - id: planning-manifest-validator-gap
+    status: unresolved
+  - id: v0.2-authority-invariant-regression
+    status: unresolved
+
+deferred_v0_3_x:
+  - full-product-requirement-architecture-design-orchestration
+  - broader-role-autonomy-beyond-release-slice
+  - project-takeover-install-upgrade
+  - enhanced-client-notification-delivery
+
+deferred_later:
+  - custom-web-dashboard
+  - organization-portfolio-orchestration
+  - complex-multi-repository-central-scheduling
+  - dynamic-provider-cost-optimization
+  - automatic-production-deployment
+  - unaudited-high-risk-gate-automation
+
+release_invariants:
+  lifecycle_authority:
+    - operator-cannot-edit-authoritative-feature-manifest-directly
+    - workers-cannot-emit-arbitrary-executable-feature-events
+    - workers-cannot-pass-or-waive-gates
+    - expected-revision-remains-lifecycle-write-precondition
+    - lifecycle-mutations-remain-feature-event-plus-trusted-persist
+  candidate_evidence:
+    - reviewer-and-qa-bind-exact-candidate-head
+    - candidate-head-revalidated-before-persist
+  orchestration:
+    - operation-state-does-not-become-feature-lifecycle-truth
+    - operation-generation-does-not-define-external-semantic-effect-identity
+    - one-semantic-effect-has-one-external-dispatch-key
+    - launch-authorization-is-explicit-linearization-point
+    - unknown-external-reservation-survives-generation-takeover
+    - chat-session-lifetime-does-not-own-operation-lifetime
+  cancellation:
+    - cancel-before-launch-linearization-prevents-launch
+    - cancel-after-launch-linearization-cannot-retroactively-revoke-exact-dispatch
+    - launch-linearization-never-implies-persist-authority
+    - cancel-before-persist-linearization-prevents-feature-write
+    - cancel-after-persist-linearization-does-not-roll-back-exact-write
+  authorization:
+    - feature-branch-cannot-expand-authorization-policy
+    - user-authorization-is-bound-to-exact-target-state
+  independence:
+    - developer-reviewer-and-qa-remain-separate-execution-identities
+    - reviewer-or-qa-cannot-self-remediate-and-pass-own-result
+
+release_policy:
+  keep_version_at_current_release_until_candidate_ready: true
+  change_VERSION_during_planning: false
+  create_release_candidate_manifest_during_planning: false
+  require_green_repository_validation: true
+  require_two_supported_ai_client_adapters: true
+  require_repeated_cross_repo_dogfood: true
+  production_callers_pin_full_commit_sha: true
