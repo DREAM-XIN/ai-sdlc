@@ -87,6 +87,7 @@ class RoutingResolution:
     rule_id: str
     role: str
     stage: str
+    candidate_order: tuple[str, ...]
     decisions: tuple[CandidateDecision, ...]
     selected_profile: str
     fallback: bool
@@ -261,6 +262,7 @@ def resolve_route(
             rule_id=rule.rule_id,
             role=role,
             stage=stage,
+            candidate_order=rule.candidates,
             decisions=tuple(decisions),
             selected_profile=selected.profile_id,
             fallback=fallback,
@@ -278,6 +280,7 @@ def resolution_payload(resolution: RoutingResolution, profile) -> dict:
         "rule_id": resolution.rule_id,
         "role": resolution.role,
         "stage": resolution.stage,
+        "candidate_order": list(resolution.candidate_order),
         "candidates": [
             {"profile": item.profile, "ready": item.ready, "reason": item.reason}
             for item in resolution.decisions
