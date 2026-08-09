@@ -1,6 +1,6 @@
 ---
 name: AI-SDLC gh-aw Code Reviewer (claude)
-run-name: "AI-SDLC gh-aw gate reviewer ${{ inputs.dispatch_key != '' && inputs.dispatch_key || github.run_id }}"
+run-name: "AI-SDLC gh-aw gate reviewer ${{ inputs.feature_id }}:${{ fromJSON(inputs.task_payload).task.id }}:r${{ inputs.expected_revision }}:${{ inputs.candidate_head_sha }}"
 on:
   workflow_dispatch:
     inputs:
@@ -90,17 +90,23 @@ jobs:
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
           TARGET_REF: ${{ inputs.target_ref }}
           FEATURE_ID: ${{ inputs.feature_id }}
+          TRUSTED_TASK_ID: ${{ fromJSON(inputs.task_payload).task.id }}
           EXPECTED_REVISION: ${{ inputs.expected_revision }}
           STAGE: ${{ inputs.stage }}
           ROLE: ${{ inputs.role }}
           CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
           CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}
           COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
           COMMENT_URL: ${{ needs.safe_outputs.outputs.comment_url }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           test -n "${TRIGGER_TOKEN:-}"
+          test -n "$TRUSTED_TASK_ID"
+          test -n "$SOURCE_RUN_ID"
+          test -n "$SOURCE_WORKFLOW_REF"
           test -n "$COMMENT_ID"
           test -n "$COMMENT_URL"
           GH_TOKEN="$TRIGGER_TOKEN" gh workflow run ai-sdlc-gh-aw-gate-result.yml \
@@ -109,11 +115,14 @@ jobs:
             --field target_repository="$TARGET_REPOSITORY" \
             --field target_ref="$TARGET_REF" \
             --field feature_id="$FEATURE_ID" \
+            --field task_id="$TRUSTED_TASK_ID" \
             --field expected_revision="$EXPECTED_REVISION" \
             --field stage="$STAGE" \
             --field role="$ROLE" \
             --field candidate_pr_number="$CANDIDATE_PR_NUMBER" \
             --field candidate_head_sha="$CANDIDATE_HEAD_SHA" \
+            --field source_run_id="$SOURCE_RUN_ID" \
+            --field source_workflow_ref="$SOURCE_WORKFLOW_REF" \
             --field comment_id="$COMMENT_ID" \
             --field comment_url="$COMMENT_URL" \
             --field persist=true
@@ -129,6 +138,6 @@ You are the independent AI-SDLC Code Reviewer worker for stage `code-review`. Yo
 5. Call the `add_comment` Safe Output exactly once. The body must begin with `<!-- AI-SDLC-GATE-RESULT` on its own line, contain exactly one JSON object satisfying contract `ai-sdlc-gh-aw-reviewer-result-v0.1`, then end the machine envelope with `AI-SDLC-GATE-RESULT -->` on its own line. Follow it with a concise human-readable summary.
 6. The JSON must include the exact trusted feature/task/stage/role/revision/repository/ref/PR/head identities from the inputs and task payload. Evidence URIs must be durable references such as the candidate PR, repository artifact path, CI run, or this workflow run. Never include secrets or credentials.
 7. A PASS recommendation is allowed only when the required independent evidence supports it. Use PASS, REWORK, or BLOCKED only; PASS cannot coexist with BLOCKER/MAJOR findings.
-8. The posted comment is explicitly non-authoritative. After `add_comment`, stop. The trusted collector re-fetches the comment and candidate, validates the closed schema and current Manifest revision, and alone decides whether a Feature Event can be constructed.
+8. The posted comment is explicitly non-authoritative. After `add_comment`, stop. The trusted collector re-fetches the comment and candidate, verifies the exact trusted role-worker run/workflow/task provenance, validates the closed schema and current Manifest revision, and alone decides whether a Feature Event can be constructed.
 
 If evidence is incomplete, candidate identity moved, required context cannot be read, or independent verification cannot establish the requested verdict, use the non-PASS verdict defined by the contract rather than guessing.
