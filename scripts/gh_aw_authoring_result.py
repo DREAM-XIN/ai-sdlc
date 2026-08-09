@@ -68,6 +68,17 @@ def _source_run_uri(control_repository: str, source_run_id: int):
     return f"https://github.com/{control_repository}/actions/runs/{source_run_id}"
 
 
+def _trusted_source_run(path: Path = Path("source-run.json")):
+    try:
+        run=json.loads(path.read_text(encoding="utf-8"))
+    except (OSError,json.JSONDecodeError) as exc:
+        raise AuthoringResultError("validated source-run.json is required for durable authoring provenance") from exc
+    source_run_id=run.get("id")
+    control_repository=(run.get("repository") or {}).get("full_name")
+    _source_run_uri(control_repository,source_run_id)
+    return source_run_id,control_repository
+
+
 def translate(manifest, result, *, comment_url: str, source_run_id: int, control_repository: str, occurred_at: str):
     errors=_schema_errors(result)
     if errors: raise AuthoringResultError("; ".join(errors))
@@ -129,17 +140,23 @@ def main():
     parser.add_argument("manifest",type=Path)
     parser.add_argument("result",type=Path)
     parser.add_argument("--comment-url",required=True)
-    parser.add_argument("--source-run-id",required=True,type=int)
-    parser.add_argument("--control-repository",required=True)
+    parser.add_argument("--source-run-id",type=int)
+    parser.add_argument("--control-repository")
     parser.add_argument("--occurred-at",required=True)
     parser.add_argument("--event-output",type=Path,required=True)
     parser.add_argument("--artifact-output",type=Path)
     args=parser.parse_args()
     manifest=yaml.safe_load(args.manifest.read_text(encoding="utf-8")); result=json.loads(args.result.read_text(encoding="utf-8"))
     try:
+        if args.source_run_id is None or args.control_repository is None:
+            trusted_run_id,trusted_repository=_trusted_source_run()
+            source_run_id=args.source_run_id if args.source_run_id is not None else trusted_run_id
+            control_repository=args.control_repository if args.control_repository is not None else trusted_repository
+        else:
+            source_run_id=args.source_run_id; control_repository=args.control_repository
         translated=translate(
-            manifest,result,comment_url=args.comment_url,source_run_id=args.source_run_id,
-            control_repository=args.control_repository,occurred_at=args.occurred_at,
+            manifest,result,comment_url=args.comment_url,source_run_id=source_run_id,
+            control_repository=control_repository,occurred_at=args.occurred_at,
         )
     except AuthoringResultError as exc:
         print(json.dumps({"outcome":"INVALID","errors":[str(exc)]},indent=2)); raise SystemExit(2)
