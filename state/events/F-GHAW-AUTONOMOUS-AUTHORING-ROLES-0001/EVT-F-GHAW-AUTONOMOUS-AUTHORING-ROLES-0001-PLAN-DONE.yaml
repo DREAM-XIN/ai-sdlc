@@ -1,0 +1,18 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-PLAN-DONE
+feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
+expected_revision: 9
+occurred_at: '2026-08-09T15:22:30Z'
+changes:
+- kind: artifact-record
+  record:
+    id: plan-v1
+    type: plan
+    uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/plan.md
+    status: draft
+- kind: stage
+  id: plan
+  status: DONE
+- kind: stage
+  id: implementation
+  status: READY

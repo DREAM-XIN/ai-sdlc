@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-PASS-2
+feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
+expected_revision: 17
+occurred_at: '2026-08-09T16:24:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v2
+    type: review
+    status: pass
+    uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/code-review-v2.md
+- kind: artifact
+  id: implementation-v1
+  status: approved
+  evidence:
+  - evidence-code-review-v2
+- kind: gate
+  id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v2
+- kind: stage
+  id: code-review
+  status: DONE
+- kind: stage
+  id: verification
+  status: READY

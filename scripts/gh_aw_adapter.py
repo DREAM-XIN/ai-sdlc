@@ -11,7 +11,14 @@ from jsonschema import Draft202012Validator
 from apply_feature_event import validate_event
 from gh_aw_candidate import CandidateError, resolve_current_candidate
 from gh_aw_provider_registry import RegistryValidationError, load_registry
-from gh_aw_role_workers import ALLOWED_ROLE_STAGES, RoleWorkerError, require_role_worker_workflow, resolve_role_worker
+from gh_aw_role_workers import (
+    ALLOWED_ROLE_STAGES,
+    AUTHORING_ROLE_STAGES,
+    GATE_ROLE_STAGES,
+    RoleWorkerError,
+    require_role_worker_workflow,
+    resolve_role_worker,
+)
 from manual_dispatch import build_task, schema_errors
 from project_adapter import load_project_adapter
 from runtime_router import load_yaml
@@ -38,6 +45,16 @@ def split_repository(repository: str):
     parts=repository.split("/")
     if len(parts)!=2 or not all(parts): raise ValueError("repository must be owner/repo")
     return parts[0],parts[1]
+
+
+def parse_feature_issue_number(manifest):
+    raw=manifest.get("feature",{}).get("issue")
+    if isinstance(raw,int) and raw>0: return raw
+    if isinstance(raw,str):
+        value=raw.strip()
+        if value.startswith("#"): value=value[1:]
+        if value.isdigit() and int(value)>0: return int(value)
+    raise ValueError("autonomous authoring requires a canonical numeric Feature Issue")
 
 
 def build_feature_context(manifest, repository=None):
@@ -78,7 +95,7 @@ def build_runtime_payload(task, manifest, repository=None, project=None, project
     return payload
 
 
-def _gate_dispatch(manifest, role, stage, requested_workflow):
+def _specialized_dispatch(manifest, role, stage, requested_workflow):
     if (role,stage) not in ALLOWED_ROLE_STAGES:
         return None,"gh-aw-worker-result-v0.1",requested_workflow
     registry=load_registry()
@@ -88,6 +105,8 @@ def _gate_dispatch(manifest, role, stage, requested_workflow):
         except RoleWorkerError:
             profile=registry.require_worker_workflow(requested_workflow)
             role_worker=resolve_role_worker(role,stage,profile.profile_id)
+        if (role,stage) in AUTHORING_ROLE_STAGES:
+            return None,"ai-sdlc-gh-aw-authoring-result-v0.1",role_worker.worker_workflow
         status="draft" if (role,stage)==("reviewer","code-review") else "approved"
         candidate=resolve_current_candidate(manifest,status=status)
     except (RoleWorkerError,RegistryValidationError,CandidateError) as exc:
@@ -110,13 +129,16 @@ def build_dispatch_plan(manifest,commander_plan,policy,*,repository,target_ref,w
         if not template: errors.append(f"no task template for gh-aw stage: {action['stage']}"); continue
         try:
             task=build_task(manifest,action,template,dispatch["runtime"])
-            candidate,result_contract,effective_workflow=_gate_dispatch(manifest,action["role"],action["stage"],worker_workflow)
+            candidate,result_contract,effective_workflow=_specialized_dispatch(manifest,action["role"],action["stage"],worker_workflow)
         except ValueError as exc: errors.append(str(exc)); continue
         if project: task["inputs"]=unique([project_ref]+project["context"]["rules"]+project["context"]["read"]+task.get("inputs",[]))
         problems=schema_errors(task,TASK_SCHEMA,task["id"])
         if problems: errors.extend(problems); continue
         payload=build_runtime_payload(task,manifest,repository=repository,project=project,project_ref=project_ref)
         inputs={"feature_id":manifest["feature"]["id"],"expected_revision":result_revision,"target_repository":repository,"target_owner":target_owner,"target_repo_name":target_repo_name,"target_ref":target_ref,"stage":action["stage"],"role":action["role"],"task_payload":json.dumps(payload,sort_keys=True,separators=(",",":"))}
+        if (action["role"],action["stage"]) in AUTHORING_ROLE_STAGES:
+            try: inputs["feature_issue_number"]=parse_feature_issue_number(manifest)
+            except ValueError as exc: errors.append(str(exc)); continue
         if candidate is not None:
             if candidate.repository!=repository: errors.append("Gate-role candidate repository differs from dispatch repository"); continue
             inputs["candidate_pr_number"]=candidate.pr_number; inputs["candidate_head_sha"]=candidate.head_sha

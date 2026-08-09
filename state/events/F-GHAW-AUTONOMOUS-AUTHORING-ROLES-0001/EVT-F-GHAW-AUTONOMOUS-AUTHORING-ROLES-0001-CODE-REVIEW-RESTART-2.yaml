@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-RESTART-2
+feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
+expected_revision: 16
+occurred_at: '2026-08-09T16:19:00Z'
+changes:
+- kind: stage
+  id: code-review
+  status: WORKING
