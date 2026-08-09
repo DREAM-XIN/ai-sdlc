@@ -11,7 +11,11 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from apply_feature_event import validate_event
-from gh_aw_candidate import CandidateError, resolve_current_candidate
+from gh_aw_candidate import (
+    CandidateError,
+    resolve_current_candidate,
+    supersede_other_current_candidate_artifacts,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEWER_SCHEMA = ROOT / "runtimes" / "gh-aw" / "reviewer-result.schema.json"
@@ -88,6 +92,8 @@ def reviewer_event(result: dict, manifest: dict, *, repository: str, target_ref:
             raise GateResultError("Reviewer PASS requires pass Evidence")
         evidence_ids = [item["id"] for item in result["evidence"]]
         reviewed_id = f"reviewed-candidate-head-{candidate.head_sha[:12]}"
+        keep_ids = {candidate.artifact_id, candidate.head_artifact_id, reviewed_id}
+        changes.extend(supersede_other_current_candidate_artifacts(manifest, keep_ids=keep_ids))
         changes.extend([
             {"kind": "artifact", "id": candidate.artifact_id, "status": "approved", "evidence": evidence_ids},
             {"kind": "artifact", "id": candidate.head_artifact_id, "status": "approved", "evidence": evidence_ids},
