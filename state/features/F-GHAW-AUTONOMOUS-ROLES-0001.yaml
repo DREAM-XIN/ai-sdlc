@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 8
+revision: 9
 feature:
   id: F-GHAW-AUTONOMOUS-ROLES-0001
   title: Add bounded autonomous Reviewer and QA gh-aw roles
@@ -44,7 +44,7 @@ tasks:
     preserve/manual coexistence and supersession semantics, and make Reviewer PASS
     resolve/approve that trusted candidate artifact without hard-coded implementation
     artifact ids.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -86,4 +86,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-DONE
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-START
 - EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REVIEW-REWORK
-updated_at: '2026-08-09T13:14:10Z'
+- EVT-F-GHAW-AUTONOMOUS-ROLES-0001-DESIGN-REMEDIATION-START
+updated_at: '2026-08-09T13:15:10Z'
