@@ -5,11 +5,17 @@ on:
     paths:
       - '.github/workflows/ai-sdlc-gh-aw-worker.md'
       - '.github/workflows/ai-sdlc-gh-aw-worker-*.md'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-*.md'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-*.md'
       - '.github/workflows/compile-gh-aw-worker.yml'
       - '.github/workflows/materialize-gh-aw-worker-lock.yml'
       - 'runtimes/gh-aw/engine-profiles.yaml'
+      - 'runtimes/gh-aw/profile-routing.yaml'
+      - 'runtimes/gh-aw/role-workers.yaml'
       - 'scripts/gh_aw_provider_registry.py'
+      - 'scripts/gh_aw_role_workers.py'
       - 'scripts/render_gh_aw_workers.py'
+      - 'scripts/render_gh_aw_role_workers.py'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +27,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     outputs:
-      profiles: ${{ steps.registry.outputs.profiles }}
+      workers: ${{ steps.registry.outputs.workers }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -29,14 +35,19 @@ jobs:
           python-version: '3.12'
       - name: Install Registry dependency
         run: pip install 'PyYAML>=6.0,<7'
-      - name: Discover trusted profiles from validated Registry
+      - name: Discover trusted workers from validated registries
         id: registry
         run: |
           PYTHONPATH=scripts python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           from gh_aw_provider_registry import load_registry
-          registry = load_registry()
-          print('profiles=' + json.dumps(list(registry.profile_ids()), separators=(',', ':')))
+          from gh_aw_role_workers import load_role_workers
+          items=[]
+          for profile in load_registry().profiles:
+              items.append({'id':'profile-' + profile.profile_id,'kind':'profile','profile':profile.profile_id,'source':profile.worker_source,'lock':profile.worker_workflow})
+          for worker in load_role_workers():
+              items.append({'id':'role-' + worker.id,'kind':'role','profile':worker.profile,'source':worker.worker_source,'lock':worker.worker_workflow})
+          print('workers=' + json.dumps(items,separators=(',',':')))
           PY
 
   validate-compile:
@@ -47,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(needs.discover.outputs.profiles) }}
+        worker: ${{ fromJSON(needs.discover.outputs.workers) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -55,34 +66,31 @@ jobs:
           python-version: '3.12'
       - name: Install renderer dependency
         run: pip install 'PyYAML>=6.0,<7'
-      - name: Verify trusted engine worker source
-        run: python scripts/render_gh_aw_workers.py --profile '${{ matrix.profile }}' --check
+      - name: Verify trusted worker source
+        env:
+          KIND: ${{ matrix.worker.kind }}
+          PROFILE: ${{ matrix.worker.profile }}
+        run: |
+          if [[ "$KIND" == "profile" ]]; then
+            python scripts/render_gh_aw_workers.py --profile "$PROFILE" --check
+          else
+            PYTHONPATH=scripts python scripts/render_gh_aw_role_workers.py --check
+          fi
       - name: Install pinned gh-aw compiler
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh extension install github/gh-aw --pin v0.83.4 --force
-      - name: Resolve worker identity from validated Registry
-        id: worker
-        env:
-          PROFILE: ${{ matrix.profile }}
-        run: |
-          PYTHONPATH=scripts python - <<'PY' >> "$GITHUB_OUTPUT"
-          import os
-          from gh_aw_provider_registry import load_registry
-          profile = load_registry().require_profile(os.environ['PROFILE'])
-          source = profile.worker_source.split('/')[-1]
-          if not source.endswith('.md'):
-              raise SystemExit('worker_source must end in .md')
-          print('name=' + source[:-3])
-          print('lock=' + profile.worker_workflow)
-          PY
       - name: Compile worker with strict validation
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh aw compile '${{ steps.worker.outputs.name }}' --strict
+          SOURCE: ${{ matrix.worker.source }}
+        run: |
+          source_name="${SOURCE##*/}"
+          [[ "$source_name" == *.md ]]
+          gh aw compile "${source_name%.md}" --strict
       - name: Verify expected lock path
-        run: test -f ".github/workflows/${{ steps.worker.outputs.lock }}"
+        run: test -f ".github/workflows/${{ matrix.worker.lock }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ai-sdlc-gh-aw-worker-${{ matrix.profile }}-lock
-          path: .github/workflows/${{ steps.worker.outputs.lock }}
+          name: ai-sdlc-gh-aw-${{ matrix.worker.id }}-lock
+          path: .github/workflows/${{ matrix.worker.lock }}
