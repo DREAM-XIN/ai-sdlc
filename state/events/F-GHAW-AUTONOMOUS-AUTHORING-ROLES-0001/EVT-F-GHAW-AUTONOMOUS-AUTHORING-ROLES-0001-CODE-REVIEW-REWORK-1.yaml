@@ -1,0 +1,30 @@
+version: 0.1.0
+id: EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-REWORK-1
+feature_id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
+expected_revision: 13
+occurred_at: '2026-08-09T16:08:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001/code-review-v1.md
+- kind: task-record
+  record:
+    id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: code-review
+    feedback: >-
+      Bind trusted source_run_id into durable autonomous-authoring evidence and replay identity;
+      persist an exact source Actions-run reference; add explicit traversal, arbitrary docs/**,
+      state/**, and .github/** model-path negative fixtures required by Design Review DR-MINOR-1.
+      Do not alter routing, Gate authority, provider maturity, merge/release authority, or broader scope.
+    target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/207
+    status: READY
+    runtime: gh-aw
+- kind: stage
+  id: code-review
+  status: READY
