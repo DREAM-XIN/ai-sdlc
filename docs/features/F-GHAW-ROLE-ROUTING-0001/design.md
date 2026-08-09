@@ -4,351 +4,291 @@ Feature: `F-GHAW-ROLE-ROUTING-0001`
 
 Issue: `#200`
 
-## Design intent
+Revision intent: Design v2 after DR-MAJOR-1 remediation.
 
-Introduce a trusted, deterministic routing layer between lifecycle dispatch context and the existing gh-aw Provider Registry. Routing chooses an ordered profile candidate based on trusted `role` + `stage`, applies static readiness checks, and emits auditable non-secret evidence. It does not change lifecycle authority, autonomous-role eligibility, or runtime failure semantics.
-
-## Current baseline
-
-- `runtimes/gh-aw/runtime.yaml` defines `default_engine_profile: copilot`.
-- `runtimes/gh-aw/engine-profiles.yaml` is the authoritative trusted profile Registry.
-- `scripts/resolve_gh_aw_engine.py` resolves one explicitly supplied trusted profile to worker identity.
-- `.github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml` is an explicit trusted operator workflow with manual `engine_profile` selection.
-- `dispatch/gh-aw-developer.yaml` makes Developer autonomous through gh-aw while Product/Architect/Reviewer/QA remain manual.
-- `scripts/gh_aw_runtime_preflight.py` validates one trusted profile and accepts only a boolean `--credential-present` signal.
-
-The new routing layer must sit above explicit profile resolution and must not weaken any of those boundaries.
-
-## Architecture overview
+## Architecture
 
 ```text
-trusted lifecycle context
-  role + stage
-       |
-       v
+trusted lifecycle context (role, stage)
+        |
+        v
 runtimes/gh-aw/profile-routing.yaml
-       |
-       v
-strict routing policy loader/validator
-       |
-       +----> validated Provider Registry
-       |
-       +----> trusted readiness map (boolean only)
-       |
-       v
-role-aware route resolver
-       |
-       +---- selected profile + worker identity
-       +---- candidate decisions / skip reasons
-       +---- audit JSON
-       |
-       v
-existing trusted gh-aw dispatch gateway
+        |
+        +---- validated Provider Registry
+        |
+        +---- generated profile readiness booleans
+        |
+        v
+scripts/gh_aw_profile_routing.py
+        |
+        +---- selected exact registered worker
+        +---- deterministic non-secret audit
+        |
+        v
+existing gh-aw dispatch gateway
 ```
 
-## 1. Trusted policy file
+Routing changes profile selection only. It does not change lifecycle authority, autonomous-role eligibility, Safe Output, Feature Event/Gate semantics, merge authority, or release authority.
 
-Add:
+## 1. Trusted routing policy
 
-`runtimes/gh-aw/profile-routing.yaml`
-
-Proposed schema:
+Add `runtimes/gh-aw/profile-routing.yaml`:
 
 ```yaml
 version: 0.1.0
 default_profile: copilot
 rules:
   - id: implementation-developer
-    match:
-      role: developer
-      stage: implementation
+    match: {role: developer, stage: implementation}
     candidates: [codex, copilot]
     allow_experimental: false
   - id: code-review-reviewer
-    match:
-      role: reviewer
-      stage: code-review
+    match: {role: reviewer, stage: code-review}
     candidates: [claude, copilot]
     allow_experimental: false
   - id: verification-qa
-    match:
-      role: qa
-      stage: verification
+    match: {role: qa, stage: verification}
     candidates: [gemini, copilot]
     allow_experimental: false
 ```
 
-The file is trusted control-plane configuration. Target repositories do not supply or override it.
+Strict validation rejects duplicate YAML keys, unknown fields, unsupported version, duplicate rule ids, duplicate role/stage matches, empty/duplicate candidates, unknown profiles, invalid default profile, malformed role/stage ids, and experimental candidates when `allow_experimental` is false.
+
+Policy is trusted control-plane data. Target repositories cannot supply the path, candidates, candidate order, or experimental opt-in.
+
+## 2. Credential-source metadata — DR-MAJOR-1 remediation
+
+The Provider Registry must describe not only credential identity but also **credential source semantics**.
+
+Extend the validated `EngineProfile` contract with:
+
+```yaml
+credential: OPENAI_API_KEY
+credential_source: secret
+```
+
+Allowed v1 values are exactly:
+
+- `secret`
+- `github-token`
+
+All existing profiles receive an explicit source in the Registry:
+
+- Copilot: `credential_source: github-token`
+- Codex, Claude, Gemini, DeepSeek, Qwen, GLM, MiniMax: `credential_source: secret`
+
+This is capability metadata, not a provider-name routing branch.
 
 ### Validation rules
 
-The loader must fail closed on:
+- `credential_source` is required for every profile after migration.
+- unknown source values fail closed;
+- `secret` permits primary `credential` plus Registry-approved `credential_aliases`;
+- `github-token` requires a single canonical credential identity and forbids `credential_aliases` in v1;
+- source metadata participates in immutable Registry validation and synthetic extension fixtures;
+- source metadata does not contain any secret value.
 
-- duplicate YAML mapping keys;
-- unsupported policy version;
-- unknown top-level/rule/match fields;
-- duplicate rule ids;
-- duplicate `(role, stage)` matches;
-- empty candidate list;
-- duplicate candidate profile ids;
-- unregistered profiles;
-- invalid role/stage syntax;
-- `default_profile` not registered;
-- experimental candidate while `allow_experimental: false`;
-- any maturity value not recognized by the Provider Registry contract.
+This eliminates the need for `if profile == "copilot"` or equivalent logic in readiness generation.
 
-The policy is validated atomically against a fully validated Provider Registry.
+## 3. Generated readiness expressions
 
-## 2. Routing library
+Extend `scripts/render_gh_aw_profile_surfaces.py` or add a narrow companion renderer to generate **presence-only** workflow expressions from `credential_source` capability.
 
-Add `scripts/gh_aw_profile_routing.py` as the shared trusted library and CLI.
+Pseudo-rendering by capability:
 
-Primary immutable structures:
+```text
+credential_source == secret
+    -> primary/aliases use `${{ secrets.NAME != '' }}`
+
+credential_source == github-token
+    -> canonical identity uses `${{ github.token != '' }}`
+```
+
+The implementation branch is on bounded source capability (`secret` vs `github-token`), never profile/provider identity.
+
+Generated workflow wiring reduces all allowed identities for a profile to one boolean readiness value. Secret values themselves are never passed to Python.
+
+Positive/negative fixtures must prove:
+
+- secret primary present => ready;
+- secret alias present => ready;
+- no secret identity present => not ready;
+- github-token present => ready;
+- unsupported source => Registry invalid;
+- github-token + alias => Registry invalid;
+- generated surfaces contain source-appropriate expressions without literal secret values.
+
+## 4. Routing library
+
+Add `scripts/gh_aw_profile_routing.py`.
+
+Immutable structures:
 
 - `RoutingRule`
 - `RoutingPolicy`
-- `CandidateReadiness`
 - `CandidateDecision`
 - `RoutingResolution`
 
-Key APIs:
+Key functions:
 
 ```python
-load_routing_policy(path=DEFAULT_ROUTING_POLICY, registry=None) -> RoutingPolicy
-resolve_route(policy, registry, role, stage, readiness) -> RoutingResolution
+load_routing_policy(path, registry) -> RoutingPolicy
+resolve_route(policy, registry, role, stage, readiness_by_profile) -> RoutingResolution
 ```
 
-The resolver branches only on policy fields, Registry metadata, maturity, and readiness state. It must not contain provider-name-specific `if profile == ...` control branches.
+The resolver receives only profile-level booleans, never secret names/values.
 
-## 3. Trusted credential-readiness abstraction
+Algorithm:
 
-Requirement Review MINOR-1 is resolved through a dedicated adapter rather than teaching the resolver about secret names.
+1. require exactly one validated `(role, stage)` rule;
+2. iterate candidates in configured order;
+3. require exact Registry profile identity;
+4. enforce rule maturity permission;
+5. require an explicit boolean readiness entry for that profile;
+6. false => record `MISSING_CREDENTIAL` and continue;
+7. true => validate exact registered compiled worker identity and select first ready candidate;
+8. none ready => fail closed `NO_READY_CANDIDATE`.
 
-### Input contract
+No provider HTTP call occurs.
 
-The resolver receives a mapping keyed by **profile id**:
+## 5. Routing audit contract
 
-```json
-{
-  "copilot": true,
-  "codex": false,
-  "claude": true
-}
-```
+Every resolution emits deterministic non-secret JSON containing:
 
-It does not receive secret values or raw environment variable values.
+- `selection_mode: policy`;
+- policy version;
+- rule id;
+- role/stage;
+- ordered candidates;
+- per-candidate readiness and skip reason;
+- selected profile/engine/provider/protocol/model/worker/maturity;
+- fallback boolean and reason;
+- `entitlement_verified: false`.
 
-### Readiness adapter
-
-Add a helper/CLI, either inside `gh_aw_profile_routing.py` or a narrow companion module, that derives per-profile boolean readiness from trusted presence-only signals generated from Registry credential metadata.
-
-For each profile, readiness is true when any approved credential identity is present:
-
-- primary `credential`;
-- any Registry-approved `credential_aliases`.
-
-This preserves native Codex alias behavior generically.
-
-System-provided credentials are handled by trusted workflow wiring, not special-cased in the resolver. For Copilot, the workflow may map availability of the trusted GitHub runtime token to the profile-level boolean readiness signal. The resolver sees only `copilot: true/false`.
-
-Unsupported/ambiguous readiness input fails closed.
-
-### No secret serialization
-
-Secret values must never be passed to Python. Workflow expressions produce booleans first. The resolver receives only booleans.
-
-## 4. Routing algorithm
-
-Given trusted `role`, `stage`, validated policy, Registry, and readiness map:
-
-1. Find exactly one rule matching `(role, stage)`.
-2. Iterate candidates in policy order.
-3. For each candidate:
-   - resolve exact profile from Registry;
-   - verify maturity allowed by the rule;
-   - verify profile readiness boolean exists;
-   - if false, emit `MISSING_CREDENTIAL` candidate decision and continue;
-   - validate registered compiled worker through existing compiled-worker/trusted worker boundary;
-   - first ready candidate is selected.
-4. If no candidate is selected, return fail-closed `NO_READY_CANDIDATE`.
-5. Emit deterministic audit result.
-
-No live provider HTTP request occurs during routing.
-
-## 5. Audit/result contract
-
-Successful JSON shape:
-
-```json
-{
-  "status": "SELECTED",
-  "policy_version": "0.1.0",
-  "rule_id": "implementation-developer",
-  "role": "developer",
-  "stage": "implementation",
-  "candidates": [
-    {"profile":"codex","ready":false,"reason":"MISSING_CREDENTIAL"},
-    {"profile":"copilot","ready":true,"reason":"SELECTED"}
-  ],
-  "selected": {
-    "profile":"copilot",
-    "engine":"copilot",
-    "provider":"copilot",
-    "protocol":"native",
-    "model":null,
-    "worker_workflow":"ai-sdlc-gh-aw-worker.lock.yml",
-    "maturity":"reference"
-  },
-  "fallback": true,
-  "fallback_reason": "PREFERRED_CANDIDATE_NOT_READY",
-  "entitlement_verified": false
-}
-```
-
-Failure JSON must be equally deterministic and must not expose secrets.
-
-The exact provider field follows normalized Registry semantics rather than being inferred from profile id in downstream code.
+No secret values or raw environment values are serialized.
 
 ## 6. Dispatch integration
 
-### Normal autonomous lifecycle path
+Normal autonomous lifecycle dispatch derives profile selection from trusted role/stage policy before passing a `worker_workflow` to the existing dispatch gateway.
 
-The existing autonomous Developer dispatch path must call the role-aware resolver before choosing `worker_workflow`.
+Current runtime authority remains unchanged:
 
-Trusted lifecycle inputs already contain `stage` and `role`; these become the routing context. The workflow constructs profile readiness booleans from trusted credential-presence expressions, invokes routing, then passes only the selected registered `worker_workflow` into the existing dispatch gateway.
+- Developer/implementation is the only gh-aw autonomous lifecycle route currently enabled by `dispatch/gh-aw-developer.yaml`;
+- Reviewer/code-review and QA/verification rules are resolvable/testable policy data only;
+- Product, Architect, Orchestrator, Reviewer, QA and Acceptance do not become autonomous in this Feature.
 
-Cross-repository target inputs continue to lack engine/profile/model/provider/credential/worker selectors.
+For Developer:
 
-### Manual trusted diagnostic path
+- Codex ready => select Codex;
+- Codex not ready + Copilot ready => select Copilot and record fallback;
+- neither ready => fail closed.
 
-Requirement Review MINOR-2 is resolved by retaining `.github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml` as a separate **operator-explicit diagnostic/manual selection** workflow.
+## 7. Manual trusted profile dispatch boundary
 
-Rules:
+`.github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml` remains a trusted operator diagnostic/manual workflow.
 
-- normal autonomous lifecycle routing never delegates profile choice to this workflow;
-- target repository caller inputs cannot invoke arbitrary `engine_profile` selection;
-- manual diagnostic invocation remains trusted-control-plane-only;
-- its summary should identify selection mode as `manual-trusted-profile`, while role-routing audit identifies `selection_mode: policy`;
-- manual selection is not treated as a fallback mechanism and does not mutate routing policy.
+It is **not** called by normal policy routing and is not a policy fallback mechanism.
 
-## 7. Autonomous-role boundary
+Target repository commands/project inputs cannot set `engine_profile`, provider/model/credential/worker, candidate order, policy path, or `allow_experimental`.
 
-`dispatch/gh-aw-developer.yaml` continues to define only Developer as autonomous.
+Manual workflow summaries identify `selection_mode: manual-trusted-profile`; automatic routing evidence uses `selection_mode: policy`.
 
-Reviewer and QA routes are validated by policy tests and may be resolved by the routing CLI for audit, but no workflow in this Feature changes their runtime from `chatgpt-web/manual` to gh-aw autonomous.
+This closes Requirement Review MINOR-2.
 
-A later `F-GHAW-AUTONOMOUS-ROLES-0001` may consume these routes after independent lifecycle approval.
+## 8. Experimental maturity
 
-## 8. Experimental profile handling
+Default policy contains only reference profiles plus Copilot fallback.
 
-Default policy contains no experimental profiles.
-
-If a future trusted rule contains an experimental candidate, validation requires `allow_experimental: true` on that rule. This is a trusted policy property only.
-
-No Issue Comment, Project Adapter, Feature Manifest, Task Package, or target repository field may override it.
-
-The resolver emits maturity in audit evidence but never upgrades it.
+A future trusted rule may list an experimental profile only with `allow_experimental: true`. This field is trusted policy data and cannot be target-controlled. It does not promote maturity or imply live entitlement.
 
 ## 9. Backward compatibility
 
-- `runtimes/gh-aw/runtime.yaml` retains `default_engine_profile: copilot`.
-- `scripts/resolve_gh_aw_engine.py <profile>` remains supported.
-- direct manual profile dispatch remains supported for trusted diagnostics.
-- all eight Provider Registry profiles remain unchanged.
-- existing generated worker sources/locks remain unchanged unless another independent reason requires regeneration.
-- compiled worker exact allowlisting remains Registry-derived.
+- `default_engine_profile: copilot` remains in `runtime.yaml` as global compatibility default/fallback.
+- existing `resolve_gh_aw_engine.py <profile>` remains valid;
+- manual trusted profile dispatch remains valid;
+- eight profile ids, models, endpoints and worker identities remain unchanged;
+- only credential-source capability metadata is added to Registry entries;
+- strict worker compilation and exact allowlisting remain Registry-derived.
 
 ## 10. Validation strategy
 
-Add deterministic validator coverage for:
+### Registry credential-source tests
 
-### Policy validation
+- all eight profiles have valid source metadata;
+- unknown source rejected;
+- github-token alias rejected;
+- synthetic secret-backed and github-token-backed fixtures validated;
+- source selection has no profile-name AST branch.
 
-- valid default three-rule policy;
-- duplicate rule id;
-- duplicate role/stage match;
-- duplicate candidate;
-- empty candidates;
-- unknown profile;
-- experimental candidate without opt-in;
-- experimental candidate with trusted opt-in;
-- malformed/unknown fields;
-- invalid default profile.
+### Policy tests
 
-### Resolution
+- valid default policy;
+- duplicate ids/matches/candidates rejected;
+- empty candidate list rejected;
+- unknown profile rejected;
+- experimental candidate rejected without opt-in and accepted with trusted opt-in;
+- unknown fields/version/default profile rejected.
 
-- Developer: Codex ready => Codex selected;
-- Developer: Codex missing + Copilot ready => Copilot selected with fallback evidence;
-- Developer: both missing => fail closed;
-- Reviewer: Claude preferred;
-- QA: Gemini preferred;
-- unknown role/stage => fail closed;
-- missing readiness key => fail closed rather than assume false/true;
-- selected worker must match Registry exact worker identity.
+### Resolution tests
 
-### Credential semantics
+- Developer Codex preferred;
+- Developer Copilot fallback;
+- no-ready failure;
+- Reviewer Claude preferred;
+- QA Gemini preferred;
+- unknown role/stage failure;
+- missing readiness key failure;
+- selected worker equals exact Registry workflow.
 
-- Codex primary present => ready;
-- Codex alias present => ready;
-- neither present => not ready;
-- Copilot system-token boolean wiring => ready without secret value entering Python;
-- no emitted JSON contains known fixture secret strings.
+### Readiness tests
+
+- Codex primary and alias semantics;
+- Copilot github-token semantics;
+- secret values absent from resolver args/output;
+- generated readiness surfaces drift check.
 
 ### Boundary tests
 
-Extend command/project/dispatch boundary validators to reject target-controlled:
+Target command/project/dispatch inputs continue rejecting profile/provider/model/credential/worker/policy/candidate/experimental selectors.
 
-- `engine_profile`
-- `provider`
-- `model`
-- `credential`
-- `worker_workflow`
-- candidate ordering
-- `allow_experimental`
-- routing policy path override where target-controlled.
+### Regression envelope
 
-### Compatibility regressions
+All existing Registry/render/preflight/effective-model/security/cross-repo validations and eight-profile strict compile CI must remain green, plus protocol/public-runtime/Required PR Gate.
 
-Run existing:
+## 11. Security and failure properties
 
-- Provider Registry validation;
-- renderer/surface drift checks;
-- runtime preflight tests;
-- effective-model audit;
-- command/security boundary validation;
-- cross-repository runtime allowlist tests;
-- 8-profile strict compile CI;
-- protocol/public-runtime/Required PR Gate.
+- Registry + routing policy are atomically trusted inputs.
+- unsupported credential source fails closed.
+- no target-controlled provider identity enters routing.
+- no secret value enters Python.
+- no provider network probe occurs during selection.
+- missing readiness never implies ready.
+- selected worker remains exact registered compiled workflow.
+- routing grants no lifecycle/Gate/merge/release authority.
 
-## 11. Security properties
+## 12. Migration and rollback
 
-- Policy and Registry are trusted default-branch control-plane data.
-- Routing never accepts provider HTTP URLs or credentials from the target.
-- Routing makes no provider network call.
-- Secret values never enter resolver input/output.
-- Unknown policy/role/stage/profile/readiness fails closed.
-- Selected worker remains exact Registry-registered compiled workflow identity.
-- Routing selection grants no lifecycle/Gate/merge/release authority.
+Migration is additive:
 
-## 12. Migration
+1. add explicit `credential_source` to all Registry profiles;
+2. extend Registry validator and generated surface renderer;
+3. add routing policy/resolver;
+4. integrate only autonomous Developer dispatch.
 
-No migration is required for existing Features.
-
-Before dispatch integration is enabled, behavior remains global Copilot default. After integration, only autonomous Developer dispatch uses policy selection, with Copilot as fallback. Existing manual trusted profile dispatch remains available.
-
-The routing policy is additive and can be rolled back by reverting dispatch integration while leaving Provider Registry entries intact.
+Rollback can remove Developer policy integration and retain the global Copilot default. No Feature Manifest migration is required.
 
 ## 13. Implementation work units
 
-1. Routing policy schema/file + strict loader.
-2. Deterministic resolver + audit model.
-3. Registry-derived readiness adapter including alias/system-token wiring.
-4. Autonomous Developer dispatch integration.
-5. Manual diagnostic selection-mode labeling and boundary hardening.
-6. Validator/negative-fixture suite.
-7. Documentation and verification evidence.
+1. Registry credential-source contract + migration + fixtures.
+2. Routing policy + strict validator.
+3. Metadata-driven readiness renderer/adapter.
+4. Routing resolver + audit output.
+5. Developer dispatch integration.
+6. Manual diagnostic/boundary hardening.
+7. Regression/CI/documentation evidence.
 
-## Design decisions carried from Requirement Review
+## Review note disposition
 
-- RR-MINOR-1 resolved: readiness is profile-level boolean data derived generically from Registry primary/alias credential identities; system tokens are translated by trusted workflow wiring before Python.
-- RR-MINOR-2 resolved: automatic policy routing and manual trusted profile dispatch are separate modes; manual selection is diagnostic/operator-explicit and cannot be supplied by target repositories.
+- RR-MINOR-1: resolved by explicit validated `credential_source` metadata and profile-level boolean readiness generation.
+- RR-MINOR-2: resolved by separate `policy` and `manual-trusted-profile` selection modes.
+- DR-MAJOR-1: resolved; both `secret` and `github-token` are bounded capability values, aliases are source-constrained, and generated readiness branches on source capability rather than profile identity.
