@@ -9,7 +9,7 @@ changes:
       id: plan-v1
       type: plan
       uri: docs/features/F-OPERATOR-CANONICAL-API-0001/plan.md
-      status: approved
+      status: draft
   - kind: stage
     id: plan
     status: DONE
