@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 10
+revision: 11
 feature:
   id: F-GHAW-ROLE-ROUTING-0001
   title: Add trusted role-aware gh-aw profile routing and fallback policy
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: design-review
+  current_stage: plan
   stages:
   - id: requirement
     status: DONE
@@ -18,10 +18,10 @@ workflow:
   - id: design
     status: DONE
   - id: design-review
-    status: WORKING
+    status: DONE
     gate: design-gate
   - id: plan
-    status: TODO
+    status: READY
   - id: implementation
     status: TODO
   - id: code-review
@@ -54,14 +54,16 @@ artifacts:
 - id: design-v1
   type: design
   uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
   status: PASS
   evidence:
   - evidence-requirement-review-v1
 - id: design-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-design-review-v2
 - id: code-gate
   status: PENDING
 - id: verification-gate
@@ -81,6 +83,10 @@ evidence:
   type: implementation
   status: pass
   uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design-remediation.md
+- id: evidence-design-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design-review-v2.md
 applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-REQ-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-REQ-DONE
@@ -92,4 +98,5 @@ applied_events:
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-REWORK
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-START
 - EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-DONE
-updated_at: '2026-08-09T11:55:20Z'
+- EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-PASS
+updated_at: '2026-08-09T11:55:22Z'
