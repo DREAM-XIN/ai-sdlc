@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 14
+revision: 15
 feature:
   id: F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001
   title: Add bounded autonomous Product, Architect, and Orchestrator gh-aw roles
@@ -45,7 +45,7 @@ tasks:
     required by Design Review DR-MINOR-1. Do not alter routing, Gate authority, provider
     maturity, merge/release authority, or broader scope.
   target_pr: https://github.com/DREAM-XIN/ai-sdlc/pull/207
-  status: READY
+  status: WORKING
   runtime: gh-aw
 artifacts:
 - id: requirement-v1
@@ -107,4 +107,5 @@ applied_events:
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-IMPL-DONE
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-START
 - EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REVIEW-REWORK-1
-updated_at: '2026-08-09T16:08:00Z'
+- EVT-F-GHAW-AUTONOMOUS-AUTHORING-ROLES-0001-CODE-REMEDIATION-START-1
+updated_at: '2026-08-09T16:09:00Z'
