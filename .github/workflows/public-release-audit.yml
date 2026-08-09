@@ -11,6 +11,7 @@ on:
       - 'scripts/validate_public_release_audit_examples.py'
       - 'release/public-release-audit-baseline.json'
       - 'release/public-settings-prechange.json'
+      - 'release/public-settings-postchange.json'
       - '.github/workflows/public-release-audit.yml'
       - 'docs/public-release-readiness.md'
   pull_request:
@@ -20,6 +21,7 @@ on:
       - 'scripts/validate_public_release_audit_examples.py'
       - 'release/public-release-audit-baseline.json'
       - 'release/public-settings-prechange.json'
+      - 'release/public-settings-postchange.json'
       - '.github/workflows/public-release-audit.yml'
       - 'docs/public-release-readiness.md'
 
