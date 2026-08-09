@@ -9,7 +9,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION"
-RELEASE_MANIFEST = ROOT / "release" / "v0.1.0.yaml"
 VALIDATE_WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 CHANGELOG = ROOT / "CHANGELOG.md"
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
@@ -30,7 +29,6 @@ def main():
     errors = []
 
     require(VERSION_FILE.exists(), "VERSION file is missing", errors)
-    require(RELEASE_MANIFEST.exists(), "release/v0.1.0.yaml is missing", errors)
     require(CHANGELOG.exists(), "CHANGELOG.md is missing", errors)
     require(VALIDATE_WORKFLOW.exists(), "validation workflow is missing", errors)
     if errors:
@@ -39,13 +37,21 @@ def main():
         raise SystemExit(2)
 
     version = VERSION_FILE.read_text(encoding="utf-8").strip()
-    release = load_yaml(RELEASE_MANIFEST)
+    require(bool(SEMVER.fullmatch(version)), f"VERSION is not MAJOR.MINOR.PATCH: {version!r}", errors)
+
+    release_manifest = ROOT / "release" / f"v{version}.yaml"
+    require(release_manifest.exists(), f"release/v{version}.yaml is missing", errors)
+    if errors:
+        for error in errors:
+            print(error)
+        raise SystemExit(2)
+
+    release = load_yaml(release_manifest)
     validate_workflow = VALIDATE_WORKFLOW.read_text(encoding="utf-8")
     changelog = CHANGELOG.read_text(encoding="utf-8")
 
-    require(bool(SEMVER.fullmatch(version)), f"VERSION is not MAJOR.MINOR.PATCH: {version!r}", errors)
     require(release.get("version") == version, f"release manifest version {release.get('version')!r} != VERSION {version!r}", errors)
-    require(release.get("status") == "release-candidate", "v0.1 baseline must remain release-candidate until tag publication", errors)
+    require(release.get("status") == "release-candidate", f"v{version} baseline must remain release-candidate until tag publication", errors)
     require(f"## {version}" in changelog, f"CHANGELOG.md does not contain a {version} section", errors)
 
     declared_schemas = release.get("normative_schemas", [])
@@ -109,8 +115,9 @@ def main():
                 blocker_ids.append(blocker_id)
     require(len(blocker_ids) == len(set(blocker_ids)), "release manifest contains duplicate blocker ids", errors)
 
-    require(release.get("release_policy", {}).get("publish_tag_after_blockers_clear") is True, "release policy must keep tag publication behind declared blockers", errors)
-    require(release.get("release_policy", {}).get("production_caller_pin") == "full-commit-sha", "release policy must require full-commit-sha production caller pins", errors)
+    release_policy = release.get("release_policy", {})
+    require(release_policy.get("publish_tag_after_blockers_clear") is True, "release policy must keep tag publication behind declared blockers", errors)
+    require(release_policy.get("production_caller_pin") == "full-commit-sha", "release policy must require full-commit-sha production caller pins", errors)
 
     for critical in (
         "scripts/validate_action_security.py",

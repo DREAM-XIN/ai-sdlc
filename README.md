@@ -93,7 +93,7 @@ See `docs/project-adapter.md` and `templates/project-adapter.yaml`.
 
 ## Status
 
-`0.1.0` remains the declared release baseline. The current `main` branch has moved into v0.2 stabilization and now includes the original v0.1 control-plane surface plus production-oriented autonomous and cross-repository execution capabilities.
+`0.2.0` is the declared release baseline. It preserves the v0.1 durable lifecycle authority model while stabilizing production-oriented autonomous and cross-repository execution.
 
 Implemented and dogfooded capabilities include:
 
@@ -110,11 +110,12 @@ Implemented and dogfooded capabilities include:
 - workflow-profile-aware Commander task contracts, including `small-change` lifecycles that do not inherit nonexistent standard-feature design/plan context;
 - compiled-worker allowlisting and strict materialization of provider workers, including the current Gemini CLI `0.52.0` worker/lock;
 - a completed external Feature lifecycle in the public dogfood target, including requirement, design, implementation, code review, verification, acceptance, and release Gates;
+- a completed private repeated-dogfood lifecycle through independent code review and verification;
 - successful target-installation preflight dogfood across multiple materially different private repositories.
 
-The project is now stabilizing these capabilities for a formal v0.2 baseline. Remaining release work is intentionally limited to lifecycle completion rather than more control-plane expansion: the Feature-context dogfood still needs real green CI evidence, one private repeated-dogfood target is waiting at independent review, and another correctly failed closed on a security-sensitive compatibility issue that was split into a higher-risk Feature requiring independent review. The earlier stale Gemini materialization PR has already been reconciled through a current-main rematerialization and is no longer a blocker.
+The v0.2 release matrix was explicitly narrowed after those proofs completed. A separate security-sensitive private Target B remains active post-v0.2 hardening work; it is not marked DONE and no remaining Gate is waived or bypassed for the release.
 
-See `docs/v0.2-stabilization.md` and `release/v0.2.0-draft.yaml` for the current stabilization boundary and release criteria.
+See `docs/v0.2-stabilization.md`, `docs/v0.2-release-readiness.md`, and `release/v0.2.0.yaml` for the release boundary, evidence, and policy.
 
 ## Public repository readiness
 
