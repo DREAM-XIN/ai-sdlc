@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-GHAW-ROLE-ROUTING-0001-DESIGN-REVIEW-REWORK
+feature_id: F-GHAW-ROLE-ROUTING-0001
+expected_revision: 7
+occurred_at: '2026-08-09T11:55:16Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-design-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-ROLE-ROUTING-0001/design-review.md
+- kind: task-record
+  record:
+    id: F-GHAW-ROLE-ROUTING-0001-DESIGN-REMEDIATION-1
+    kind: remediation
+    stage: design
+    role: architect
+    source_stage: design-review
+    feedback: Introduce a validated metadata-driven credential-source abstraction so secret-backed and trusted GitHub-token-backed profile readiness can be generated without profile/provider-name-specific branches; define alias compatibility and positive/negative tests while preserving secret non-serialization and eight-profile compatibility.
+    status: TODO
+    runtime: manual
