@@ -47,12 +47,19 @@ def main():
         require(policy.require_rule(*key).candidates == candidates, f"candidate order drifted for {key}")
 
     presence = {
-        "COPILOT_GITHUB_TOKEN": True,
-        "OPENAI_API_KEY": True,
-        "CODEX_API_KEY": True,
-        "ANTHROPIC_API_KEY": True,
-        "GEMINI_API_KEY": True,
+        identity: False
+        for profile in registry.profiles
+        for identity in (profile.credential, *profile.credential_aliases)
     }
+    presence.update(
+        {
+            "COPILOT_GITHUB_TOKEN": True,
+            "OPENAI_API_KEY": True,
+            "CODEX_API_KEY": True,
+            "ANTHROPIC_API_KEY": True,
+            "GEMINI_API_KEY": True,
+        }
+    )
     readiness = readiness_from_presence(registry, presence)
     resolution, profile = resolve_route(policy, registry, role="developer", stage="implementation", readiness=readiness, validate_compiled_worker=False)
     preferred_payload = resolution_payload(resolution, profile)
@@ -76,10 +83,10 @@ def main():
     )
     require(payload["selection_mode"] == "policy", "policy selection mode missing")
     require(payload["entitlement_verified"] is False, "static routing overclaimed entitlement")
-    require("OPENAI_API_KEY" not in json.dumps(payload), "credential identity leaked into routing audit")
-    require("OPENAI_API_KEY" not in json.dumps(preferred_payload), "credential identity leaked into preferred routing audit")
-    require("CODEX_API_KEY" not in json.dumps(payload), "credential alias identity leaked into routing audit")
-    require("CODEX_API_KEY" not in json.dumps(preferred_payload), "credential alias identity leaked into preferred routing audit")
+    for profile in registry.profiles:
+        for identity in (profile.credential, *profile.credential_aliases):
+            require(identity not in json.dumps(payload), f"credential identity {identity!r} leaked into routing audit")
+            require(identity not in json.dumps(preferred_payload), f"credential identity {identity!r} leaked into preferred routing audit")
 
     no_ready = dict(fallback_presence)
     no_ready["COPILOT_GITHUB_TOKEN"] = False
