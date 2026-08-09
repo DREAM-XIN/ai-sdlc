@@ -109,10 +109,10 @@ Implemented and dogfooded capabilities include:
 - separate target-installation contract and Runtime App access preflights, so Project Adapter/context/caller defects fail before the first Feature and autonomous access remains exact-target;
 - workflow-profile-aware Commander task contracts, including `small-change` lifecycles that do not inherit nonexistent standard-feature design/plan context;
 - compiled-worker allowlisting and strict materialization of provider workers, including the current Gemini CLI `0.52.0` worker/lock;
-- a completed external Feature lifecycle in `DREAM-XIN/zhu-zhiliao-game`, including requirement, design, implementation, code review, verification, acceptance, and release Gates;
-- successful target-installation preflight dogfood in both `DREAM-XIN/SmartClipboard` and `DREAM-XIN/password-manager`.
+- a completed external Feature lifecycle in the public dogfood target, including requirement, design, implementation, code review, verification, acceptance, and release Gates;
+- successful target-installation preflight dogfood across multiple materially different private repositories.
 
-The project is now stabilizing these capabilities for a formal v0.2 baseline. Remaining release work is intentionally limited to lifecycle completion rather than more control-plane expansion: the Feature-context dogfood still needs real green CI evidence, SmartClipboard is waiting at independent review, and password-manager has split a security-sensitive Argon2 compatibility failure into a high-risk Feature waiting at independent requirement review. The earlier stale Gemini materialization PR has already been reconciled through a current-main rematerialization and is no longer a blocker.
+The project is now stabilizing these capabilities for a formal v0.2 baseline. Remaining release work is intentionally limited to lifecycle completion rather than more control-plane expansion: the Feature-context dogfood still needs real green CI evidence, one private repeated-dogfood target is waiting at independent review, and another correctly failed closed on a security-sensitive compatibility issue that was split into a higher-risk Feature requiring independent review. The earlier stale Gemini materialization PR has already been reconciled through a current-main rematerialization and is no longer a blocker.
 
 See `docs/v0.2-stabilization.md` and `release/v0.2.0-draft.yaml` for the current stabilization boundary and release criteria.
 

@@ -66,13 +66,13 @@ AI-SDLC v0.1.0 is the first externally consumable baseline of the vendor-neutral
 - Kept reviewer independence separate from implementation self-report.
 - Separated structural JSON Schema validation from semantic/state-machine validation.
 - Kept GitHub, gh-aw and future Agent Orchestrator integrations behind adapter boundaries rather than moving lifecycle rules into vendor-specific runtimes.
-- Completed StarringV6Test cross-repository installation dogfood with immutable Action pinning (Issue #52, run `31184971098`).
-- Completed a real bounded gh-aw autonomous dogfood through DeepSeek: runtime run `31241252417` produced PR #110 and durable evidence; review/gates/verification were persisted to Feature `F-GHAW-DEEPSEEK-0001` revision 7 / workflow `DONE`, with validation run `31241812708` green.
+- Completed cross-repository installation dogfood against a materially different private target with immutable Action pinning.
+- Completed a real bounded gh-aw autonomous dogfood through DeepSeek, producing a bounded PR and durable evidence; review, Gates and verification were persisted until the Feature workflow reached `DONE`.
 - Removed feature-specific one-shot/recovery workflows after durable evidence was captured; reusable provider/runtime infrastructure remains.
 
 ### Known limitations / release status
 
 - ChatGPT Web remains a manual transport; AI-SDLC generates durable Task Packages/prompts but does not automate browser tabs.
 - Agent Orchestrator remains routing-only.
-- The two previously declared v0.1 release blockers (#52 cross-repository dogfood and #6 autonomous-runtime dogfood) are complete and no longer block the release candidate.
+- The two previously declared v0.1 release blockers (cross-repository dogfood and autonomous-runtime dogfood) are complete and no longer block the release candidate.
 - v0.1 remains a release candidate until the release-readiness cleanup is merged and full repository CI is green on `main`; publication should use the reviewed full commit SHA for production caller pins.
