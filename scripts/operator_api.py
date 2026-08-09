@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = ROOT / "spec" / "operator"
 API_VERSION = "ai-sdlc.operator/v1"
 ERROR_CODES = ("INVALID_REQUEST","UNSUPPORTED_API_VERSION","CAPABILITY_UNAVAILABLE","UNAUTHORIZED","POLICY_DENIED","STALE_REVISION","ALREADY_CLAIMED","ALREADY_APPLIED","SUPERSEDED_GENERATION","CANCELLED_OPERATION","EXTERNAL_WAIT","NEEDS_USER","BLOCKED","TRANSIENT_FAILURE","INTERNAL_FAILURE")
+SAFE_AVAILABILITY_REASONS = frozenset(("AVAILABLE", "BACKEND_NOT_IMPLEMENTED", "BACKEND_NOT_CONFIGURED", "POLICY_RESTRICTED"))
 
 @dataclass(frozen=True)
 class Capability:
@@ -65,6 +66,14 @@ def _safe_details(message):
         return {"reason": "BACKEND_FAILURE_REDACTED"}
     return {"reason": text[:160]}
 
+def _bounded_availability_reason(available, reason):
+    """Normalize backend-owned availability text to the public bounded reason vocabulary."""
+    if available:
+        return "AVAILABLE"
+    if reason in SAFE_AVAILABILITY_REASONS and reason != "AVAILABLE":
+        return reason
+    return "BACKEND_NOT_CONFIGURED"
+
 def _response(request, *, result=None, code=None, message=None, details=None):
     body = {"api_version": API_VERSION, "request_id": request.get("request_id", "invalid"), "capability": request.get("capability", "unknown"), "ok": code is None}
     if code is None:
@@ -100,7 +109,7 @@ class SystemCapabilitiesBackend:
                 available, reason = False, "BACKEND_NOT_IMPLEMENTED"
             else:
                 available, reason = backend.availability(item.id, trusted_context)
-            rows.append({"id": item.id, "available": bool(available), "reason": reason})
+            rows.append({"id": item.id, "available": bool(available), "reason": _bounded_availability_reason(bool(available), reason)})
         return {"supported_api_versions": [API_VERSION], "capabilities": rows}
 
 def default_backends():
@@ -161,7 +170,7 @@ def dispatch(request, *, trusted_context=None, backends=None):
     try:
         available, reason = backend.availability(capability.id, trusted_context)
         if not available:
-            return _response(request, code="CAPABILITY_UNAVAILABLE", message="trusted backend unavailable", details={"reason": reason})
+            return _response(request, code="CAPABILITY_UNAVAILABLE", message="trusted backend unavailable", details={"reason": _bounded_availability_reason(False, reason)})
         result = backend.invoke(validated, trusted_context)
         result_errors = _errors(result, _payload_schema(capability.id, response=True))
         if result_errors:
