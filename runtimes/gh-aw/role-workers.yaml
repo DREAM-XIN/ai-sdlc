@@ -1,5 +1,4 @@
 version: 0.1.0
-# materialization trigger: autonomous role provenance remediation
 workers:
   - id: code-review-reviewer-claude
     role: reviewer
