@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-GHAW-ROLE-ROUTING-0001-VERIFICATION-PASS
+feature_id: F-GHAW-ROLE-ROUTING-0001
+expected_revision: 21
+occurred_at: '2026-08-09T12:49:15Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-verification-v1
+    type: verification
+    status: pass
+    uri: docs/features/F-GHAW-ROLE-ROUTING-0001/verification.md
+- kind: gate
+  id: verification-gate
+  status: PASS
+  evidence:
+  - evidence-verification-v1
+- kind: stage
+  id: verification
+  status: DONE
+- kind: stage
+  id: acceptance
+  status: READY

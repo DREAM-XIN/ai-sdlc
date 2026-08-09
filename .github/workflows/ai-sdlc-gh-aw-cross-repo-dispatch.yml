@@ -27,8 +27,9 @@ on:
         default: .ai-sdlc/project.yaml
         type: string
       worker_workflow:
-        description: Trusted compiled worker selected by the runtime profile gateway
-        required: true
+        description: Optional trusted operator worker override; empty uses role routing policy
+        required: false
+        default: ''
         type: string
       dry_run:
         description: Build the handoff without reserving/dispatching
@@ -40,8 +41,6 @@ permissions:
   contents: read
   actions: write
 
-# A Feature branch is the autonomous execution serialization boundary. Duplicate
-# requests queue instead of cancelling the in-flight trusted handoff.
 concurrency:
   group: ai-sdlc-gh-aw-xrepo-${{ inputs.target_repository }}-${{ inputs.target_ref }}
   cancel-in-progress: false
@@ -64,7 +63,7 @@ jobs:
       - name: Install trusted runtime identity dependency
         run: pip install 'PyYAML>=6.0,<7'
 
-      - name: Validate target identity, paths, and trusted worker
+      - name: Validate target identity and paths
         id: target
         shell: bash
         env:
@@ -72,11 +71,9 @@ jobs:
           TARGET_REF: ${{ inputs.target_ref }}
           MANIFEST_PATH: ${{ inputs.manifest_path }}
           PROJECT_PATH: ${{ inputs.project_path }}
-          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
         run: |
           set -euo pipefail
           python runtime/scripts/gh_aw_cross_repo_runtime.py target "$TARGET_REPOSITORY" > target-identity.json
-          python runtime/scripts/gh_aw_cross_repo_runtime.py worker "$WORKER_WORKFLOW" > trusted-worker.json
           python - <<'PY'
           import os
           from pathlib import PurePosixPath
@@ -88,8 +85,6 @@ jobs:
                   raise SystemExit(f'{name.lower()} is outside its allowed YAML path')
           PY
           git check-ref-format --branch "$TARGET_REF" >/dev/null
-          test -f "runtime/.github/workflows/$WORKER_WORKFLOW"
-          test ! -L "runtime/.github/workflows/$WORKER_WORKFLOW"
           owner=$(python -c "import json; print(json.load(open('target-identity.json'))['owner'])")
           repo_name=$(python -c "import json; print(json.load(open('target-identity.json'))['repo_name'])")
           echo "owner=$owner" >> "$GITHUB_OUTPUT"
@@ -148,8 +143,8 @@ jobs:
 
       - run: pip install -r runtime/requirements-dev.txt
 
-      - name: Build trusted Commander and runtime handoff
-        id: plan
+      - name: Build trusted Commander handoff
+        id: handoff_plan
         shell: bash
         env:
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
@@ -157,7 +152,6 @@ jobs:
           DEFAULT_BRANCH: ${{ steps.target_meta.outputs.default_branch }}
           MANIFEST_PATH: ${{ inputs.manifest_path }}
           PROJECT_PATH: ${{ inputs.project_path }}
-          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
         run: |
           set -euo pipefail
           test -f "workspace/$MANIFEST_PATH" && test ! -L "workspace/$MANIFEST_PATH"
@@ -176,14 +170,89 @@ jobs:
           open('commander-runtime-plan.json','w').write(json.dumps(d['commander_plan'],indent=2,sort_keys=True)+'\n')
           PY
           reserve=$(python -c "import json; print('true' if json.load(open('handoff.json'))['reserve_required'] else 'false')")
-          extra=(); [[ "$reserve" == "true" ]] || extra+=(--no-reservation)
+          echo "reserve_required=$reserve" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve trusted role-aware worker
+        id: route
+        shell: bash
+        env:
+          WORKER_OVERRIDE: ${{ inputs.worker_workflow }}
+          # BEGIN AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
+          HAS_COPILOT_GITHUB_TOKEN: ${{ github.token != '' }}
+          HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+          HAS_ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY != '' }}
+          HAS_MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY != '' }}
+          # END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
+        run: |
+          set -euo pipefail
+          if [[ -n "$WORKER_OVERRIDE" ]]; then
+            python runtime/scripts/gh_aw_cross_repo_runtime.py worker "$WORKER_OVERRIDE" > trusted-worker.json
+            WORKER_OVERRIDE="$WORKER_OVERRIDE" python - <<'PY'
+          import json, os
+          from gh_aw_provider_registry import load_registry
+          p=load_registry().require_worker_workflow(os.environ['WORKER_OVERRIDE'])
+          result={
+              'status':'SELECTED','selection_mode':'manual-trusted-profile',
+              'selected':{'profile':p.profile_id,'engine':p.engine,'provider':p.provider,'protocol':p.protocol,'model':p.model,'worker_workflow':p.worker_workflow,'maturity':p.maturity},
+              'fallback':False,'fallback_reason':None,'entitlement_verified':False,
+          }
+          open('gh-aw-routing.json','w').write(json.dumps(result,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          else
+            PYTHONPATH=runtime/scripts python - <<'PY'
+          import json
+          from gh_aw_profile_readiness import readiness_from_environment
+          from gh_aw_profile_routing import load_routing_policy, resolve_route, resolution_payload
+          from gh_aw_provider_registry import load_registry
+          commander=json.load(open('commander-runtime-plan.json'))
+          dispatches=commander.get('dispatches',[])
+          if len(dispatches) != 1:
+              raise SystemExit('role routing requires exactly one autonomous Commander dispatch')
+          action=dispatches[0]['action']
+          registry=load_registry()
+          policy=load_routing_policy(registry=registry)
+          readiness=readiness_from_environment(registry)
+          resolution,profile=resolve_route(policy,registry,role=action['role'],stage=action['stage'],readiness=readiness)
+          open('gh-aw-routing.json','w').write(json.dumps(resolution_payload(resolution,profile),sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          fi
+          worker=$(python -c "import json; print(json.load(open('gh-aw-routing.json'))['selected']['worker_workflow'])")
+          test -f "runtime/.github/workflows/$worker"
+          test ! -L "runtime/.github/workflows/$worker"
+          echo "worker_workflow=$worker" >> "$GITHUB_OUTPUT"
+          {
+            echo '### gh-aw trusted routing'
+            echo
+            echo '```json'
+            cat gh-aw-routing.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build trusted runtime dispatch plan
+        id: plan
+        shell: bash
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          WORKER_WORKFLOW: ${{ steps.route.outputs.worker_workflow }}
+          RESERVE_REQUIRED: ${{ steps.handoff_plan.outputs.reserve_required }}
+        run: |
+          set -euo pipefail
+          extra=(); [[ "$RESERVE_REQUIRED" == "true" ]] || extra+=(--no-reservation)
           python runtime/scripts/gh_aw_adapter.py plan "workspace/$MANIFEST_PATH" commander-runtime-plan.json \
             --repository "$TARGET_REPOSITORY" --target-ref "$TARGET_REF" --worker-workflow "$WORKER_WORKFLOW" \
             --policy runtime/dispatch/gh-aw-developer.yaml --project "workspace/$PROJECT_PATH" --project-ref "$PROJECT_PATH" \
             "${extra[@]}" --output gh-aw-dispatch-plan.json
           test "$(python -c "import json; print(json.load(open('gh-aw-dispatch-plan.json'))['outcome'])")" = "PLANNED"
           dispatch_key=$(python runtime/scripts/gh_aw_dispatch_identity.py key gh-aw-dispatch-plan.json)
-          echo "reserve_required=$reserve" >> "$GITHUB_OUTPUT"
+          echo "reserve_required=$RESERVE_REQUIRED" >> "$GITHUB_OUTPUT"
           echo "dispatch_key=$dispatch_key" >> "$GITHUB_OUTPUT"
           echo "worker_run_name=AI-SDLC gh-aw $dispatch_key" >> "$GITHUB_OUTPUT"
 
@@ -194,6 +263,7 @@ jobs:
             commander-plan.json
             commander-runtime-plan.json
             handoff.json
+            gh-aw-routing.json
             gh-aw-dispatch-plan.json
 
       - name: Check semantic worker lease
@@ -245,7 +315,7 @@ jobs:
         if: ${{ !inputs.dry_run && steps.dedupe.outputs.should_dispatch == 'true' }}
         shell: bash
         env:
-          SOURCE_SHA: ${{ steps.plan.outputs.source_sha }}
+          SOURCE_SHA: ${{ steps.handoff_plan.outputs.source_sha }}
           TARGET_REF: ${{ inputs.target_ref }}
           DEFAULT_BRANCH: ${{ steps.target_meta.outputs.default_branch }}
         run: |

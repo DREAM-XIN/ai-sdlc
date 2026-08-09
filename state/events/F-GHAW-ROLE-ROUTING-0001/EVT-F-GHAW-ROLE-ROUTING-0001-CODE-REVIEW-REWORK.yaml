@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-GHAW-ROLE-ROUTING-0001-CODE-REVIEW-REWORK
+feature_id: F-GHAW-ROLE-ROUTING-0001
+expected_revision: 16
+occurred_at: '2026-08-09T12:40:30Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v1
+    type: review
+    status: fail
+    uri: docs/features/F-GHAW-ROLE-ROUTING-0001/code-review.md
+- kind: task-record
+  record:
+    id: F-GHAW-ROLE-ROUTING-0001-CODE-REMEDIATION-1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: code-review
+    feedback: Preserve routing selection semantics but make durable routing audit evidence explicitly record the complete ordered candidate list independently from evaluated decisions; add deterministic preferred/fallback/no-ready and non-secret regressions without expanding scope or adding provider/profile-name-specific branches.
+    status: TODO
+    runtime: manual

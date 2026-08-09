@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-ROLE-ROUTING-0001-PLAN-START
+feature_id: F-GHAW-ROLE-ROUTING-0001
+expected_revision: 11
+occurred_at: '2026-08-09T11:55:24Z'
+changes:
+- kind: stage
+  id: plan
+  status: WORKING

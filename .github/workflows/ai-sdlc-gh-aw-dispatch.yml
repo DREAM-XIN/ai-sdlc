@@ -21,9 +21,9 @@ on:
         default: .ai-sdlc/project.yaml
         type: string
       worker_workflow:
-        description: Compiled gh-aw worker workflow filename
-        required: true
-        default: ai-sdlc-gh-aw-worker.lock.yml
+        description: Optional trusted operator worker override; empty uses role routing policy
+        required: false
+        default: ''
         type: string
       dry_run:
         description: Build the dispatch plan without reserving state or triggering the worker
@@ -42,6 +42,7 @@ jobs:
     outputs:
       outcome: ${{ steps.adapter.outputs.outcome }}
       plan_b64: ${{ steps.adapter.outputs.plan_b64 }}
+      worker_workflow: ${{ steps.route.outputs.worker_workflow }}
     steps:
       - name: Checkout trusted control plane
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -65,7 +66,7 @@ jobs:
           MANIFEST_PATH: ${{ inputs.manifest_path }}
           POLICY_PATH: ${{ inputs.policy_path }}
           PROJECT_PATH: ${{ inputs.project_path }}
-          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+          WORKER_OVERRIDE: ${{ inputs.worker_workflow }}
           TARGET_REF: ${{ inputs.target_ref }}
         run: |
           PYTHONPATH=runtime/scripts python - <<'PY'
@@ -82,7 +83,8 @@ jobs:
               path = PurePosixPath(value)
               if path.is_absolute() or '..' in path.parts or path.suffix not in {'.yaml', '.yml'}:
                   raise SystemExit(f'{label.lower()} must be a repository-relative YAML path without parent traversal')
-          if not re.fullmatch(r'[A-Za-z0-9._-]+\.ya?ml', os.environ['WORKER_WORKFLOW']):
+          override=os.environ['WORKER_OVERRIDE']
+          if override and not re.fullmatch(r'[A-Za-z0-9._-]+\.ya?ml', override):
               raise SystemExit('worker_workflow must be a workflow filename, not an arbitrary path')
           PY
           git -C workspace check-ref-format --branch "$TARGET_REF" >/dev/null
@@ -90,8 +92,10 @@ jobs:
           test -f "workspace/$POLICY_PATH"
           test ! -L "workspace/$MANIFEST_PATH"
           test ! -L "workspace/$POLICY_PATH"
-          test -f "runtime/.github/workflows/$WORKER_WORKFLOW"
-          test ! -L "runtime/.github/workflows/$WORKER_WORKFLOW"
+          if [[ -n "$WORKER_OVERRIDE" ]]; then
+            test -f "runtime/.github/workflows/$WORKER_OVERRIDE"
+            test ! -L "runtime/.github/workflows/$WORKER_OVERRIDE"
+          fi
           if [[ -n "$PROJECT_PATH" && -e "workspace/$PROJECT_PATH" ]]; then
             test -f "workspace/$PROJECT_PATH"
             test ! -L "workspace/$PROJECT_PATH"
@@ -112,6 +116,55 @@ jobs:
             --repository "$REPOSITORY" \
             --policy "workspace/$POLICY_PATH" \
             "${project_args[@]}" > commander-plan.json
+      - name: Resolve trusted role-aware worker
+        id: route
+        shell: bash
+        env:
+          WORKER_OVERRIDE: ${{ inputs.worker_workflow }}
+          # BEGIN AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
+          HAS_COPILOT_GITHUB_TOKEN: ${{ github.token != '' }}
+          HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+          HAS_ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY != '' }}
+          HAS_MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY != '' }}
+          # END AI-SDLC GENERATED GH-AW CREDENTIAL PRESENCE ENV
+        run: |
+          set -euo pipefail
+          if [[ -n "$WORKER_OVERRIDE" ]]; then
+            PYTHONPATH=runtime/scripts WORKER_OVERRIDE="$WORKER_OVERRIDE" python - <<'PY'
+          import json, os
+          from gh_aw_provider_registry import load_registry
+          p=load_registry().require_worker_workflow(os.environ['WORKER_OVERRIDE'])
+          result={'status':'SELECTED','selection_mode':'manual-trusted-profile','selected':{'profile':p.profile_id,'engine':p.engine,'provider':p.provider,'protocol':p.protocol,'model':p.model,'worker_workflow':p.worker_workflow,'maturity':p.maturity},'fallback':False,'fallback_reason':None,'entitlement_verified':False}
+          open('gh-aw-routing.json','w').write(json.dumps(result,sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          else
+            PYTHONPATH=runtime/scripts python - <<'PY'
+          import json
+          from gh_aw_profile_readiness import readiness_from_environment
+          from gh_aw_profile_routing import load_routing_policy, resolve_route, resolution_payload
+          from gh_aw_provider_registry import load_registry
+          commander=json.load(open('commander-plan.json'))
+          dispatches=[d for d in commander.get('dispatches',[]) if d.get('runtime') == {'id':'gh-aw','mode':'autonomous'}]
+          if len(dispatches) != 1:
+              raise SystemExit('role routing requires exactly one autonomous Commander dispatch')
+          action=dispatches[0]['action']
+          registry=load_registry()
+          policy=load_routing_policy(registry=registry)
+          readiness=readiness_from_environment(registry)
+          resolution,profile=resolve_route(policy,registry,role=action['role'],stage=action['stage'],readiness=readiness)
+          open('gh-aw-routing.json','w').write(json.dumps(resolution_payload(resolution,profile),sort_keys=True,separators=(',',':'))+'\n')
+          PY
+          fi
+          worker=$(python -c "import json; print(json.load(open('gh-aw-routing.json'))['selected']['worker_workflow'])")
+          test -f "runtime/.github/workflows/$worker"
+          test ! -L "runtime/.github/workflows/$worker"
+          printf 'worker_workflow=%s\n' "$worker" >> "$GITHUB_OUTPUT"
+          cat gh-aw-routing.json >> "$GITHUB_STEP_SUMMARY"
       - name: Build gh-aw Dispatch Plan
         id: adapter
         shell: bash
@@ -119,7 +172,7 @@ jobs:
           MANIFEST_PATH: ${{ inputs.manifest_path }}
           POLICY_PATH: ${{ inputs.policy_path }}
           PROJECT_PATH: ${{ inputs.project_path }}
-          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+          WORKER_WORKFLOW: ${{ steps.route.outputs.worker_workflow }}
           TARGET_REF: ${{ inputs.target_ref }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -143,6 +196,7 @@ jobs:
           name: ai-sdlc-gh-aw-dispatch-plan
           path: |
             commander-plan.json
+            gh-aw-routing.json
             gh-aw-dispatch-plan.json
       - name: Report no gh-aw route
         if: ${{ steps.adapter.outputs.outcome == 'NO_DISPATCH' }}
@@ -180,7 +234,7 @@ jobs:
           TARGET_REF: ${{ inputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MANIFEST_PATH: ${{ inputs.manifest_path }}
-          WORKER_WORKFLOW: ${{ inputs.worker_workflow }}
+          WORKER_WORKFLOW: ${{ needs.plan.outputs.worker_workflow }}
         run: |
           printf '%s' "$PLAN_B64" | base64 -d > gh-aw-dispatch-plan.json
           git -C workspace check-ref-format --branch "$TARGET_REF" >/dev/null
@@ -276,6 +330,3 @@ jobs:
           print('Dispatching', dispatch['task_id'], 'to trusted', dispatch['workflow'], 'on', os.environ['DEFAULT_BRANCH'])
           subprocess.run(cmd, check=True)
           PY
-          # If dispatch fails after START persistence, the Feature intentionally remains WORKING.
-          # AI-SDLC intentionally does not guess a rollback/block transition here.
-          # Operators can retry dispatch or persist an explicit BLOCKED event with evidence.

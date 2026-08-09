@@ -16,7 +16,6 @@ CROSS_REPO_PREFLIGHT = ROOT / ".github/workflows/ai-sdlc-gh-aw-cross-repo-prefli
 CROSS_REPO_GATEWAY = ROOT / ".github/workflows/ai-sdlc-gh-aw-cross-repo-dispatch.yml"
 COMMAND_BRIDGE = ROOT / "templates/github/ai-sdlc-command.yml"
 
-# Test-only legacy compatibility snapshot. Generic preflight execution iterates the Registry.
 LEGACY_COMPATIBILITY_BASELINE = {
     "copilot": ("native", "native", "reference"),
     "codex": ("native", "native", "reference"),
@@ -44,6 +43,18 @@ def fail(message: str) -> None:
 def require(condition: bool, message: str) -> None:
     if not condition:
         fail(message)
+
+
+def expected_presence_expression(profile, credential: str) -> str:
+    if profile.credential_source == "secret":
+        return f"secrets.{credential} != ''"
+    if profile.credential_source == "github-token":
+        require(
+            credential == profile.credential and not profile.credential_aliases,
+            f"{profile.profile_id}: github-token profile must have one canonical credential identity",
+        )
+        return "github.token != ''"
+    fail(f"{profile.profile_id}: unsupported credential source escaped Registry validation")
 
 
 def validate_provider_preflight() -> None:
@@ -96,10 +107,16 @@ def validate_provider_preflight() -> None:
         require(forbidden not in text, f"preflight workflow contains forbidden mutation/dispatch marker: {forbidden}")
     for profile in registry.profiles:
         for credential in (profile.credential, *profile.credential_aliases):
+            expected = expected_presence_expression(profile, credential)
             require(
-                f"secrets.{credential} != ''" in text,
-                f"preflight workflow must test credential presence without exposing values: {credential}",
+                expected in text,
+                f"preflight workflow must derive presence from Registry credential source without exposing values: {profile.profile_id}/{credential}",
             )
+            if profile.credential_source == "github-token":
+                require(
+                    f"secrets.{credential} != ''" not in text,
+                    f"{profile.profile_id}: github-token readiness regressed to repository secret lookup",
+                )
     require("READY_FOR_ENTITLEMENT_PROBE" in text, "preflight workflow must explain entitlement remains unverified")
     require("rate-limit headroom" in text, "preflight workflow must not imply static checks prove provider rate-limit capacity")
 
@@ -180,7 +197,7 @@ def validate_cross_repo_preflight() -> None:
 def main() -> int:
     validate_provider_preflight()
     validate_cross_repo_preflight()
-    print("gh-aw registry-driven and cross-repository runtime preflight checks passed")
+    print("gh-aw registry-driven credential-source and cross-repository runtime preflight checks passed")
     return 0
 
 

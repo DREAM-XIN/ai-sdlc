@@ -73,6 +73,8 @@ def main() -> int:
             current.require_worker_workflow(profile.worker_workflow).profile_id == profile_id,
             f"{profile_id}: worker index lost exact identity",
         )
+    require(current.require_profile("copilot").credential_source == "github-token", "Copilot credential source drifted")
+    require(all(p.credential_source == "secret" for p in current.profiles if p.profile_id != "copilot"), "secret-backed profile credential source drifted")
     expect_invalid(lambda: current.require_profile("not-registered"), "unknown gh-aw engine profile")
     expect_invalid(lambda: current.require_worker_workflow("unregistered.lock.yml"), "not registered")
 
@@ -93,6 +95,7 @@ def main() -> int:
             "worker_source": ".github/workflows/synthetic.md",
             "worker_workflow": "synthetic.lock.yml",
             "credential": "SYNTHETIC_API_KEY",
+            "credential_source": "secret",
             "maturity": "experimental",
         }
         registry = write_fixture(root, malformed)
@@ -141,6 +144,16 @@ def main() -> int:
         registry = write_fixture(root, compatible_alias)
         expect_invalid(lambda: load_registry(registry, repo_root=root), "credential_aliases")
 
+        invalid_source = copy.deepcopy(raw)
+        invalid_source["profiles"]["deepseek"]["credential_source"] = "environment"
+        registry = write_fixture(root, invalid_source)
+        expect_invalid(lambda: load_registry(registry, repo_root=root), "credential_source")
+
+        github_token_alias = copy.deepcopy(raw)
+        github_token_alias["profiles"]["copilot"]["credential_aliases"] = ["COPILOT_TOKEN_ALIAS"]
+        registry = write_fixture(root, github_token_alias)
+        expect_invalid(lambda: load_registry(registry, repo_root=root), "credential_aliases")
+
         valid_extension = copy.deepcopy(raw)
         valid_extension["profiles"]["fixture-provider"] = {
             "engine": "copilot",
@@ -154,6 +167,7 @@ def main() -> int:
             "worker_source": ".github/workflows/fixture-provider.md",
             "worker_workflow": "fixture-provider.lock.yml",
             "credential": "FIXTURE_PROVIDER_API_KEY",
+            "credential_source": "secret",
             "maturity": "experimental",
         }
         registry = write_fixture(root, valid_extension)

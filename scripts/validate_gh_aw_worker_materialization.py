@@ -29,6 +29,7 @@ profiles:
     worker_source: {source}
     worker_workflow: ai-sdlc-gh-aw-worker-fixture-provider.lock.yml
     credential: FIXTURE_PROVIDER_API_KEY
+    credential_source: secret
     maturity: experimental
 """
 

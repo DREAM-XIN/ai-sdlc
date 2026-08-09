@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-GHAW-ROLE-ROUTING-0001-VERIFICATION-START
+feature_id: F-GHAW-ROLE-ROUTING-0001
+expected_revision: 20
+occurred_at: '2026-08-09T12:47:00Z'
+changes:
+- kind: stage
+  id: verification
+  status: WORKING

@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtimes/gh-aw/runtime.yaml"
 PREFLIGHT = ROOT / ".github/workflows/ai-sdlc-gh-aw-preflight.yml"
 DISPATCH = ROOT / ".github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml"
+ROUTED_DISPATCH = ROOT / ".github/workflows/ai-sdlc-gh-aw-dispatch.yml"
+CROSS_REPO_DISPATCH = ROOT / ".github/workflows/ai-sdlc-gh-aw-cross-repo-dispatch.yml"
 
 OPTIONS_BEGIN = "# BEGIN AI-SDLC GENERATED GH-AW PROFILE OPTIONS"
 OPTIONS_END = "# END AI-SDLC GENERATED GH-AW PROFILE OPTIONS"
@@ -41,22 +43,38 @@ def render_options(profiles: tuple[EngineProfile, ...], indent: str = "        "
     return "\n".join(lines)
 
 
-def credential_env_name(secret_name: str) -> str:
-    return f"HAS_{secret_name}"
+def credential_env_name(credential_name: str) -> str:
+    return f"HAS_{credential_name}"
+
+
+def credential_presence_expression(profile: EngineProfile, credential_name: str) -> str:
+    if profile.credential_source == "secret":
+        return f"${{{{ secrets.{credential_name} != '' }}}}"
+    if profile.credential_source == "github-token":
+        if credential_name != profile.credential or profile.credential_aliases:
+            raise RegistryValidationError(
+                f"profile {profile.profile_id!r}: github-token readiness must use one canonical credential identity"
+            )
+        return "${{ github.token != '' }}"
+    raise RegistryValidationError(
+        f"profile {profile.profile_id!r}: unsupported credential source {profile.credential_source!r}"
+    )
 
 
 def render_credential_env(profiles: tuple[EngineProfile, ...], indent: str = "          ") -> str:
     seen: set[str] = set()
-    secrets: list[str] = []
+    rows: list[tuple[EngineProfile, str]] = []
     for profile in profiles:
-        for secret_name in (profile.credential, *profile.credential_aliases):
-            if secret_name not in seen:
-                seen.add(secret_name)
-                secrets.append(secret_name)
+        for credential_name in (profile.credential, *profile.credential_aliases):
+            if credential_name not in seen:
+                seen.add(credential_name)
+                rows.append((profile, credential_name))
     lines = [indent + CREDENTIAL_ENV_BEGIN]
     lines.extend(
-        indent + f"{credential_env_name(secret_name)}: ${{{{ secrets.{secret_name} != '' }}}}"
-        for secret_name in secrets
+        indent
+        + f"{credential_env_name(credential_name)}: "
+        + credential_presence_expression(profile, credential_name)
+        for profile, credential_name in rows
     )
     lines.append(indent + CREDENTIAL_ENV_END)
     return "\n".join(lines)
@@ -66,8 +84,8 @@ def render_credential_case(profiles: tuple[EngineProfile, ...], indent: str = " 
     lines = [indent + CREDENTIAL_CASE_BEGIN, indent + 'case "$PROFILE" in']
     for profile in profiles:
         names = tuple(
-            credential_env_name(secret_name)
-            for secret_name in (profile.credential, *profile.credential_aliases)
+            credential_env_name(credential_name)
+            for credential_name in (profile.credential, *profile.credential_aliases)
         )
         if len(names) == 1:
             lines.append(indent + f'  {profile.profile_id}) present="${names[0]}" ;;')
@@ -119,6 +137,15 @@ def render_dispatch(text: str, profiles: tuple[EngineProfile, ...]) -> str:
     return replace_block(text, OPTIONS_BEGIN, OPTIONS_END, render_options(profiles))
 
 
+def render_routed_dispatch(text: str, profiles: tuple[EngineProfile, ...]) -> str:
+    return replace_block(
+        text,
+        CREDENTIAL_ENV_BEGIN,
+        CREDENTIAL_ENV_END,
+        render_credential_env(profiles, indent="          "),
+    )
+
+
 def apply(path: Path, expected: str, check: bool) -> None:
     actual = path.read_text(encoding="utf-8")
     if check:
@@ -140,12 +167,18 @@ def main() -> int:
         registry = load_registry()
         profiles = registry.profiles
         validate_default_profile(registry.profile_ids())
-        preflight_text = PREFLIGHT.read_text(encoding="utf-8")
-        dispatch_text = DISPATCH.read_text(encoding="utf-8")
-        expected_preflight = render_preflight(preflight_text, profiles)
-        expected_dispatch = render_dispatch(dispatch_text, profiles)
+        expected_preflight = render_preflight(PREFLIGHT.read_text(encoding="utf-8"), profiles)
+        expected_dispatch = render_dispatch(DISPATCH.read_text(encoding="utf-8"), profiles)
+        expected_routed = render_routed_dispatch(
+            ROUTED_DISPATCH.read_text(encoding="utf-8"), profiles
+        )
+        expected_cross_repo = render_routed_dispatch(
+            CROSS_REPO_DISPATCH.read_text(encoding="utf-8"), profiles
+        )
         apply(PREFLIGHT, expected_preflight, args.check)
         apply(DISPATCH, expected_dispatch, args.check)
+        apply(ROUTED_DISPATCH, expected_routed, args.check)
+        apply(CROSS_REPO_DISPATCH, expected_cross_repo, args.check)
     except RegistryValidationError as exc:
         raise SystemExit(str(exc)) from None
 
