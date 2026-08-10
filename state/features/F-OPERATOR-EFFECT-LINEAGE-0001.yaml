@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 18
+revision: 19
 feature:
   id: F-OPERATOR-EFFECT-LINEAGE-0001
   title: Implement durable Effect Lineage and UNKNOWN resolution
@@ -65,7 +65,7 @@ tasks:
     protected policy changes while candidate/ref/revision/profile remain unchanged.
     Preserve the already-closed legacy migration, mixed-writer rollout/fence, stale-runner,
     candidate-lineage, CAS and release-contract semantics.'
-  status: WORKING
+  status: DONE
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -124,6 +124,10 @@ evidence:
   type: review
   status: fail
   uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/code-review-v2.md
+- id: evidence-code-remediation-v2
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/code-review-remediation-v2.md
 applied_events:
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-START
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-DONE
@@ -143,4 +147,5 @@ applied_events:
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-DONE
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REVIEW-REWORK-2
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-START-2
-updated_at: '2026-08-10T15:37:00Z'
+- EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-DONE-2
+updated_at: '2026-08-10T15:56:00Z'
