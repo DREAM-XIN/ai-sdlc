@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-START
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 18
+occurred_at: '2026-08-10T01:12:00Z'
+changes:
+- kind: stage
+  id: verification
+  status: WORKING
