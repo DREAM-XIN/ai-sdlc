@@ -46,6 +46,7 @@ def build_trusted_operator_store_runtime(
     *,
     protection_verifier: StateRefProtectionVerifier,
     clock=None,
+    plan_guard=None,
 ):
     """Compose the durable remote repository-backed runtime from trusted inputs."""
     _require_production_verifier(protection_verifier)
@@ -55,7 +56,11 @@ def build_trusted_operator_store_runtime(
         state_ref=config.state_ref,
         remote_name=config.remote_name,
     )
-    kwargs = {"backend": backend, "protection_verifier": protection_verifier}
+    kwargs = {
+        "backend": backend,
+        "protection_verifier": protection_verifier,
+        "plan_guard": plan_guard,
+    }
     if clock is not None:
         kwargs["clock"] = clock
     return OperatorStoreRuntime(**kwargs)
@@ -68,6 +73,7 @@ def build_github_operator_store_runtime(
     operator_app_slug: str,
     github_api_base: str = "https://api.github.com",
     clock=None,
+    plan_guard=None,
 ):
     """Concrete production path: remote Git CAS + GitHub protection proof."""
     verifier = GitHubBranchProtectionVerifier(
@@ -79,6 +85,7 @@ def build_github_operator_store_runtime(
         config,
         protection_verifier=verifier,
         clock=clock,
+        plan_guard=plan_guard,
     )
 
 
@@ -87,11 +94,13 @@ def build_trusted_operator_api_backends(
     *,
     protection_verifier: StateRefProtectionVerifier,
     clock=None,
+    plan_guard=None,
 ):
     """Return only the Store capabilities approved for this workstream."""
     runtime = build_trusted_operator_store_runtime(
         config,
         protection_verifier=protection_verifier,
         clock=clock,
+        plan_guard=plan_guard,
     )
     return store_backends(runtime)
