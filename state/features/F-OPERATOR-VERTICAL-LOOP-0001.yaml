@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 13
+revision: 14
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -23,7 +23,7 @@ workflow:
   - id: plan
     status: DONE
   - id: implementation
-    status: READY
+    status: WORKING
   - id: code-review
     status: TODO
     gate: code-gate
@@ -110,4 +110,5 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REVIEW-PASS-2
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-PLAN-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-PLAN-DONE
-updated_at: '2026-08-10T05:32:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-IMPL-START
+updated_at: '2026-08-10T05:34:00Z'
