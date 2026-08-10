@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/operation-cancel.request.schema.json","title":"operation.cancel request payload","type":"object","properties":{"reason":{"type":"string","maxLength":512}},"required":[],"additionalProperties":false}

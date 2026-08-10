@@ -1,0 +1,31 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-REWORK
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 13
+occurred_at: '2026-08-09T20:12:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-review.md
+  - kind: task-record
+    record:
+      id: remediation-code-review-v1
+      kind: remediation
+      stage: implementation
+      role: developer
+      source_stage: code-review
+      feedback: 'Fix MAJOR-1: bind system.capabilities response to the strict capability discovery schema; restrict availability reasons to safe bounded codes; add negative tests for malformed discovery rows/cardinality/ids and unsafe reason leakage; rerun exact-head validation and CI.'
+      target_pr: '#209'
+      status: READY
+  - kind: gate
+    id: code-gate
+    status: FAIL
+    evidence:
+      - evidence-code-review-v1
+  - kind: stage
+    id: code-review
+    status: BLOCKED
+    reason: 'Independent Code Review found MAJOR-1 in canonical system.capabilities result validation and availability-reason safety; Developer remediation required before re-review.'

@@ -1,0 +1,31 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REWORK
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 19
+occurred_at: '2026-08-10T01:19:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-verification-v1
+    type: verification
+    status: fail
+    uri: docs/features/F-OPERATOR-CANONICAL-API-0001/verification.md
+- kind: task-record
+  record:
+    id: remediation-verification-v1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: verification
+    feedback: 'Fix QA-MAJOR-1: implement a reusable transport-neutral adapter conformance harness; run one shared semantic assertion suite through at least two materially distinct fixture adapter implementations across the frozen conformance subset; reject alias/thin-wrapper independence based on real adapter/transport evidence; keep fixtures test-only and rerun exact-head validation/CI.'
+    target_pr: '#209'
+    status: READY
+- kind: gate
+  id: verification-gate
+  status: FAIL
+  evidence:
+  - evidence-verification-v1
+- kind: stage
+  id: verification
+  status: BLOCKED
+  reason: 'Independent QA found QA-MAJOR-1: current validator compares fixture backend identity/transport tuples but does not implement or execute the required reusable two-adapter conformance harness.'

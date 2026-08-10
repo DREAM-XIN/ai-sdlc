@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/response-envelope.schema.json",
+  "title": "AI-SDLC Operator canonical response envelope",
+  "type": "object",
+  "required": ["api_version", "request_id", "capability", "ok"],
+  "properties": {"api_version": {"const": "ai-sdlc.operator/v1"}, "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}, "capability": {"type": "string", "minLength": 1, "maxLength": 128}, "ok": {"type": "boolean"}, "result": {"type": "object"}, "error": {"$ref": "error.schema.json"}},
+  "oneOf": [{"required": ["result"], "properties": {"ok": {"const": true}}, "not": {"required": ["error"]}}, {"required": ["error"], "properties": {"ok": {"const": false}}, "not": {"required": ["result"]}}],
+  "additionalProperties": false
+}

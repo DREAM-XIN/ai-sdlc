@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-OPERATOR-CANONICAL-API-0001
+  title: Implement v0.3 canonical typed Operator API foundation
+  risk: medium
+  issue: '#208'
+profile: standard-feature
+created_at: '2026-08-09T15:57:00Z'

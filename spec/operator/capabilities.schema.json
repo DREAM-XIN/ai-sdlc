@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/capabilities.schema.json",
+  "title": "AI-SDLC Operator capability discovery",
+  "type": "object",
+  "required": ["supported_api_versions", "capabilities"],
+  "properties": {
+    "supported_api_versions": {
+      "type": "array",
+      "items": {"const": "ai-sdlc.operator/v1"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "required": ["id", "available"],
+        "properties": {
+          "id": {"enum": ["system.capabilities", "project.inspect", "feature.status", "operator.inbox", "operation.start", "operation.status", "operation.resume", "operation.cancel", "decision.list", "decision.respond", "notification.list", "notification.ack"]},
+          "available": {"type": "boolean"},
+          "reason": {"enum": ["AVAILABLE", "BACKEND_NOT_IMPLEMENTED", "BACKEND_NOT_CONFIGURED", "POLICY_RESTRICTED"]}
+        },
+        "additionalProperties": false
+      },
+      "allOf": [
+        {"contains": {"type": "object", "properties": {"id": {"const": "system.capabilities"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "project.inspect"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "feature.status"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "operator.inbox"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "operation.start"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "operation.status"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "operation.resume"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "operation.cancel"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "decision.list"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "decision.respond"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "notification.list"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "properties": {"id": {"const": "notification.ack"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1}
+      ]
+    }
+  },
+  "additionalProperties": false
+}

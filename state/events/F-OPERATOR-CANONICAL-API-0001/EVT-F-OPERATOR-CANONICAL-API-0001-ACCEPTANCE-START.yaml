@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-ACCEPTANCE-START
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 24
+occurred_at: '2026-08-10T01:35:00Z'
+changes:
+- kind: stage
+  id: acceptance
+  status: WORKING

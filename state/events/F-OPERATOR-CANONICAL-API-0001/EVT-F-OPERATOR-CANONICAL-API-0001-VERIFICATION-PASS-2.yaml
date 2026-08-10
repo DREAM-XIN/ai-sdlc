@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-PASS-2
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 23
+occurred_at: '2026-08-10T01:34:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-verification-v2
+    type: verification
+    status: pass
+    uri: docs/features/F-OPERATOR-CANONICAL-API-0001/verification-v2.md
+- kind: gate
+  id: verification-gate
+  status: PASS
+  evidence:
+  - evidence-verification-v2
+- kind: stage
+  id: verification
+  status: DONE
+- kind: stage
+  id: acceptance
+  status: READY

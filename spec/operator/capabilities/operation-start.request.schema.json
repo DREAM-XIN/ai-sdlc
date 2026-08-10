@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/operation-start.request.schema.json","title":"operation.start request payload","type":"object","properties":{"mode":{"type":"string","enum":["AUTO","ASSISTED"]}},"required":[],"additionalProperties":false}
