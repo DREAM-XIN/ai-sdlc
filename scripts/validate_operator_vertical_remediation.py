@@ -112,11 +112,11 @@ def validate_direct_callback_cannot_bypass_coordinator():
             feature=feature,
             worker_payload=payload,
             receipts=[receipt],
-            content_loader=lambda _uri: b"tampered collector bytes",
+            content_loader=lambda _uri: b"x" * len(good),
         )
         raise AssertionError("collector digest mismatch unexpectedly accepted")
     except VerticalInvariantError as exc:
-        assert exc.code == "BLOCKED"
+        assert exc.code == "BLOCKED" and "digest" in str(exc)
 
 
 def _lineage_snapshot() -> tuple[StoreSnapshot, str]:
