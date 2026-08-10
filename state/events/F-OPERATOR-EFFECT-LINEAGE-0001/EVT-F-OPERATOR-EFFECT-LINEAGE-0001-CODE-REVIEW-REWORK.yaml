@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REVIEW-REWORK
+feature_id: F-OPERATOR-EFFECT-LINEAGE-0001
+expected_revision: 13
+occurred_at: '2026-08-10T14:52:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/code-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-1
+      kind: remediation
+      stage: implementation
+      role: developer
+      source_stage: code-review
+      feedback: >-
+        Close exactly the three MAJOR findings from independent Code Review / PR Review 4898019303: make Effect Resolution re-verify fresh trusted Feature/candidate/profile-policy truth and replace caller-shaped strong evidence with a real trusted evidence verifier/source; replace LegacyMigrationEvidence.unique_lineage_proven and caller-selected causal slot/task assertions with durable Store/Feature/profile reconstruction that proves one unique lineage or remains LEGACY_UNRESOLVED_LINEAGE; and replace default booleans for effect_lineage_required/old_writers_quiesced with protected installation/runtime rollout state plus an authoritative mixed-writer fence that rejects old raw reservation/claim/authorization writers after enforcement. Add the deterministic adversarial cases required by code-review.md and preserve the accepted stale-runner/lineage/CAS semantics.
+      status: TODO
+      runtime: manual
