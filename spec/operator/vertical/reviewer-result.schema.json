@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/vertical/reviewer-result.schema.json",
+  "title": "AI-SDLC vertical Reviewer result",
+  "type": "object",
+  "required": ["verdict", "summary", "findings", "outputs"],
+  "properties": {
+    "verdict": {"enum": ["PASS", "REWORK", "BLOCKED", "NEEDS_USER"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "findings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["severity", "code", "summary"],
+        "properties": {
+          "severity": {"enum": ["BLOCKER", "MAJOR", "MINOR", "NOTE"]},
+          "code": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+          "summary": {"type": "string", "minLength": 1, "maxLength": 1000}
+        },
+        "additionalProperties": false
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": ["label", "kind"],
+        "properties": {
+          "label": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+          "kind": {"const": "evidence"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
