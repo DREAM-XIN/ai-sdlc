@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 15
+revision: 16
 feature:
   id: F-OPERATOR-MCP-ADAPTER-0001
   title: Implement v0.3 MCP read-only Operator adapter
@@ -25,7 +25,7 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: READY
+    status: WORKING
     gate: code-gate
   - id: verification
     status: TODO
@@ -116,4 +116,5 @@ applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-PLAN-DONE
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-IMPL-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-IMPL-DONE
-updated_at: '2026-08-10T03:08:00Z'
+- EVT-F-OPERATOR-MCP-ADAPTER-0001-CODE-REVIEW-START
+updated_at: '2026-08-10T03:11:00Z'
