@@ -19,6 +19,7 @@ from operator_effect_lineage_integration import assert_lineage_member
 ROLLOUT_SCHEMA = "ai-sdlc.effect-lineage-rollout/v1"
 WRITER_FENCE_SCHEMA = "ai-sdlc.writer-fence-receipt/v1"
 LINEAGE_WRITER_CAPABILITY = "lineage-aware-v1"
+TRUSTED_WRITER_RESULT_FIELD = "_trusted_writer_capability"
 REQUIRED_FENCED_CAPABILITIES = frozenset(
     {
         "raw-semantic-reservation",
@@ -58,11 +59,7 @@ def _policy_material(policy: dict[str, Any]) -> dict[str, Any]:
 
 
 class ProtectedEffectLineageRolloutVerifier:
-    """Verify protected/default-branch rollout policy plus an external writer-fence receipt.
-
-    The loader dependencies are trusted installation/control-plane dependencies. Canonical requests,
-    Feature branches and Workers never supply either loader or their returned documents.
-    """
+    """Verify protected/default-branch rollout policy plus an external writer-fence receipt."""
 
     def __init__(
         self,
@@ -148,12 +145,7 @@ def legacy_compatibility_rollout_for_tests(*, repository: str, state_ref: str, o
 
 
 class EffectLineageWriteFence:
-    """Guard every active runtime commit after lineage enforcement is verified.
-
-    This is defense in depth behind the externally verified old-writer quiescence receipt. It
-    prevents any retained raw planner inside the active runtime from creating a vertical-profile
-    reservation, claim or launch authorization without current lineage membership.
-    """
+    """Guard every active runtime commit after lineage enforcement is verified."""
 
     def __init__(self, rollout: VerifiedEffectLineageRollout):
         self.rollout = rollout
@@ -164,6 +156,7 @@ class EffectLineageWriteFence:
         resulting = apply_plan_to_snapshot(snapshot, plan)
         reservation_prefix = "state/operator/v1/reservations/external/"
         claim_prefix = "state/operator/v1/claims/dispatch/"
+        protected_writes: list[tuple[str, str]] = []
 
         for mutation in plan.mutations:
             value = mutation.value if isinstance(mutation.value, dict) else {}
@@ -186,10 +179,20 @@ class EffectLineageWriteFence:
                 raise StoreCommandError("MIXED_WRITER_FENCED", "external-effect write lacks durable Operation/profile binding") from exc
             if operation.get("operation_profile") != self.rollout.operation_profile:
                 continue
+            protected_writes.append((str(operation_id), str(semantic_key)))
+
+        if not protected_writes:
+            return
+        if plan.result.get(TRUSTED_WRITER_RESULT_FIELD) != self.rollout.writer_capability:
+            raise StoreCommandError(
+                "MIXED_WRITER_FENCED",
+                "raw vertical external-effect writer lacks the verified lineage-aware writer capability",
+            )
+        for _operation_id, semantic_key in protected_writes:
             try:
-                assert_lineage_member(resulting, str(semantic_key))
+                assert_lineage_member(resulting, semantic_key)
             except Exception as exc:
                 raise StoreCommandError(
                     "MIXED_WRITER_FENCED",
-                    "raw vertical reservation/claim/launch authorization is fenced after Effect Lineage enforcement",
+                    "vertical reservation/claim/launch authorization is not bound to the current Effect Lineage leaf",
                 ) from exc
