@@ -2,181 +2,116 @@
 
 ## Scope
 
-Developer-side deterministic implementation verification for the approved `F-OPERATOR-VERTICAL-LOOP-0001` scope only.
+Developer-side deterministic implementation and Code Review remediation verification for the approved `F-OPERATOR-VERTICAL-LOOP-0001` scope only.
 
-This evidence is **not** an independent Code Review, QA verdict, Product Acceptance decision, proof of overall v0.3 release readiness, or proof of release-level real-runtime effect safety. Real runtime fault injection remains assigned to Issue #221.
+This evidence is **not** an independent Code Re-review, QA verdict, Product Acceptance decision, proof of overall v0.3 release readiness, or proof of release-level real-runtime effect safety. Real-runtime fault injection remains assigned to Issue #221.
 
-## Functional candidate
+## Candidates
 
-Validated runtime candidate:
+Original validated functional candidate:
 
 `dc88354429e1a81468ca78971cc3c51f30c2af62`
 
-Branch:
+Validated Code Review remediation functional candidate:
 
-`feature/F-OPERATOR-VERTICAL-LOOP-0001`
+`c7b48b931c0ef99e43975391381f073dfa1eb381`
 
-PR:
+Branch: `feature/F-OPERATOR-VERTICAL-LOOP-0001`
 
-`#217`
+PR: `#217`
 
-The commits that add this evidence document and the later lifecycle Event are evidence/lifecycle-only changes. Independent Code Review must still bind its review to the actual PR head and inspect runtime equivalence rather than treating this Developer statement as review authority.
+Commits after the remediation functional candidate are documentation/evidence and legal lifecycle recording only. A fresh independent Code Reviewer must bind to the actual final PR head and verify that no later runtime source/test/schema change occurred.
 
-## Exact-head CI evidence
+## Exact remediation-candidate CI
 
-All required workflows for the functional candidate completed successfully:
+All required workflows for `c7b48b931c0ef99e43975391381f073dfa1eb381` completed successfully:
 
-- **Validate AI-SDLC protocol** — run `31361692236` — SUCCESS.
-  - `python scripts/validate.py` SUCCESS.
-  - Protocol log explicitly reports:
-    - `Operator Store deterministic validation passed`;
-    - `Operator Store remote durability/protection validation passed`;
-    - `Operator vertical loop validation passed`;
-    - `Operator vertical recovery validation passed`;
-    - `Operator vertical completion-path validation passed`;
-    - `Operator vertical deterministic fault/replay validation passed`;
-    - `Operator vertical gh-aw validation passed`;
-    - `AI-SDLC validation passed`.
-  - cross-repo-control job SUCCESS.
-- **Validate Public Runtime Distribution** — run `31361692195` — SUCCESS.
-- **Required PR Gate** — run `31361692254` — SUCCESS.
+- **Validate AI-SDLC protocol** — run `31367583591` — **SUCCESS**.
+  - `validate` job — SUCCESS.
+  - `python scripts/validate.py` — SUCCESS.
+  - `cross-repo-control` — SUCCESS.
+  - The main validator includes `validate_operator_vertical_remediation()`.
+- **Validate Public Runtime Distribution** — run `31367583602` — **SUCCESS**.
+- **Required PR Gate** — run `31367583576` — **SUCCESS**.
+  - protocol-validation — SUCCESS.
+  - cross-repo-control-validation — SUCCESS.
+  - required-pr-gate — SUCCESS.
 
-## Worker Result / authority evidence
+## Code Review MAJOR-1 evidence — callback ingress authority
 
-The vertical schemas and translator validation prove:
+The focused deterministic regression proves the production callback-to-lifecycle boundary cannot be bypassed:
 
-- Developer/Reviewer/QA payloads are strict `additionalProperties: false` data contracts;
-- Workers cannot return authoritative Feature Event/Manifest/gate mutation structures through the role result contracts;
-- Workers only declare logical output labels/kinds, not trusted artifact/evidence IDs or authoritative persisted URI provenance;
-- role-specific trusted translators create bounded Feature Events from fresh trusted Feature truth;
-- all Feature lifecycle mutation remains routed through the existing Feature Event + trusted Persist path;
-- Developer completion does not PASS code-gate;
-- QA PASS does not PASS release-gate or complete Product Acceptance.
+1. `TrustedVerticalExecutor.handle_worker_callback(...)` is non-authoritative and always returns `CAPABILITY_UNAVAILABLE`; it cannot record, translate or Persist lifecycle effects.
+2. `TrustedVerticalCallbackCoordinator` cannot be constructed without a callable trusted collector content loader.
+3. `plan_vertical_callback_record(...)` rejects a callback that lacks the exact durable semantic reservation and launch authorization binding.
+4. collected-output validation reloads materialized bytes and rejects same-size bytes whose SHA-256 does not match the trusted receipt.
+5. production callback translation reconstructs Reviewer/QA role independence from accepted durable callback history rather than a caller-supplied policy object.
 
-## Collected-output receipt evidence
+This closes the reviewed parallel-ingress bypass without adding another callback/effect protocol.
 
-Deterministic validation covers trusted receipt binding and fail-closed behavior for:
+## Code Review MAJOR-2 evidence — repeated REWORK lineage
 
-- Operation id/generation/profile;
-- semantic-effect and stable external-dispatch identities;
-- dispatch id / role / trusted Worker identity / trusted collector identity;
-- target repository / Feature id / exact expected revision;
-- candidate head where applicable;
-- trusted feature worker-run namespace;
-- materialized byte length and SHA-256 content digest;
-- declared logical output ↔ trusted collected output correspondence.
+`derive_role_independence_policy(...)` now reconstructs ordered durable lineage from accepted `worker.result.validated` callback facts and their trusted callback envelopes/reservations.
 
-Namespace traversal, content mismatch, stale revision/stage/candidate, provenance mismatch and duplicate/conflicting receipts are rejected.
+The deterministic two-REWORK fixture proves:
 
-## Role independence evidence
+- original Developer plus remediation Developer round 1 plus remediation Developer round 2 all remain in the candidate-contributor forbidden identity lineage;
+- the first remediation Developer is rejected as a later fresh Reviewer;
+- the first remediation Developer is rejected as QA;
+- all accepted Reviewer identities are retained for QA separation;
+- a copied/restarted Store reconstructs exactly the same contributor and Reviewer identity tuples;
+- a deliberately lexically larger older remediation task id does not become the re-review predecessor;
+- the re-review task binds the actual latest completed remediation from authoritative Feature task order;
+- a JSON-rebuilt Feature Manifest chooses exactly the same predecessor and task identity after restart.
 
-Reviewer/QA separation is reconstructed from accepted **durable callback history**, not from a caller-supplied mutable policy object.
+Compatibility scalar identity fields remain observable for existing callers, but Reviewer/QA authorization uses the complete durable lineage sets.
 
-Validation proves:
+## Existing authority and lifecycle evidence preserved
 
-- Reviewer identity cannot equal original Developer/remediation Developer identity;
-- QA identity cannot equal Developer, accepted Reviewer or remediation Developer identity;
-- fresh Reviewer work after remediation is bound to the post-remediation exact candidate;
-- callback replay after restart reconstructs accepted Worker identity history from durable Store facts.
+The remediation does not weaken the original verified boundaries:
 
-## Vertical lifecycle evidence
+- Developer/Reviewer/QA payload schemas remain strict `additionalProperties: false` contracts;
+- Workers cannot return authoritative Feature Event/Manifest/gate/URI/path/id mutations;
+- trusted role-specific translators remain bounded;
+- Developer completion cannot PASS code-gate;
+- Reviewer PASS remains the only bounded Code Review gate transition;
+- QA PASS cannot PASS release-gate or complete Product Acceptance;
+- dispatch/callback/Persist remain exact repository/Feature/revision/stage/role/task/candidate bound;
+- semantic reservation, stable external dispatch key, `dispatch.launch.authorized`, cancellation and Persist linearization remain inherited from `F-OPERATOR-OPERATION-STORE-0001`.
 
-The deterministic completion path covers:
+## Existing deterministic lifecycle coverage preserved
 
-1. Developer implementation completion;
-2. independent Reviewer PASS path;
-3. Reviewer REWORK producing one bounded Developer remediation task;
-4. remediation completion with candidate advancement;
-5. fresh independent Reviewer PASS against the new exact candidate;
-6. independent Verification QA PASS;
-7. final bounded Operation DONE while Feature remains **Acceptance READY / release-gate PENDING**.
+The validation suite continues to cover:
 
-The tests therefore distinguish Operator vertical-loop completion from Product Acceptance authority.
-
-## Exact binding evidence
-
-Dispatch, callback and Persist handling fail closed on stale or conflicting trusted state. The implementation checks:
-
-- target repository and ref;
-- Feature id;
-- exact Feature revision;
-- exact current stage;
-- task identity / role;
-- durable semantic reservation;
-- exactly one matching current-generation `dispatch.launch.authorized` fact;
-- immutable launch/reservation candidate consistency;
-- exact Reviewer/QA candidate head;
-- fresh current-result candidate binding before accepting Developer output.
-
-Developer work is allowed to advance the candidate head, but that new head is accepted only from fresh trusted Feature truth; the immutable launch authorization continues to represent the exact pre-work launch candidate.
-
-## Operation Store / effect-safety integration evidence
-
-The vertical loop reuses the completed `F-OPERATOR-OPERATION-STORE-0001` substrate:
-
-- generation-independent semantic-effect reservation;
-- stable external dispatch key;
-- durable dispatch claim;
-- `dispatch.launch.authorized` linearization;
-- cancellation fencing;
-- honest `NOT_LAUNCHED / LAUNCHED / UNKNOWN` lookup state;
-- Persist request → linearized → confirmed ordering;
-- protected remote Store CAS and semantic re-planning.
-
-No parallel Feature truth, alternate effect store, or direct authoritative Manifest writer was introduced.
-
-## Deterministic fault / replay evidence
-
-`scripts/validate_operator_vertical_reconcile.py` and the existing Store validators deterministically cover:
-
-- launch authorized but local acknowledgement missing;
-- lookup `NOT_LAUNCHED` → retry with the same stable external dispatch key;
-- lookup `LAUNCHED` → adopt existing launch without relaunch;
-- lookup `UNKNOWN` → fail closed, do not launch;
-- recorded UNKNOWN remains BLOCKED on a later resume and is **not** silently re-probed/cleared;
-- cancellation around a missing launch acknowledgement prevents new launch;
-- exact durable callback recording and restart replay;
-- conflicting callback dispatch binding rejection;
-- Persist translated Event durability;
-- Persist linearized but not confirmed → exact Event replay/confirmation;
-- Feature Persist already happened but local ack was lost → exact Event lookup/confirm without a duplicate write;
-- cancellation before Persist linearization prevents new Persist effect;
-- cancellation after Persist linearization permits only the already-linearized exact Event to complete.
-
-These are deterministic fixtures and protocol-level implementation tests. They intentionally do **not** claim the release-level real-runtime failure-injection coverage assigned to #221.
+1. Developer → Reviewer PASS → QA PASS;
+2. Reviewer REWORK → remediation Developer → fresh Reviewer PASS → QA PASS;
+3. Operation DONE while Feature remains Acceptance READY / release-gate PENDING;
+4. stale revision/stage/candidate fences;
+5. forbidden Worker authority fields;
+6. collector namespace/provenance/digest failures;
+7. duplicate/conflicting callbacks and callback restart recovery;
+8. NOT_LAUNCHED / LAUNCHED / UNKNOWN behavior;
+9. generation takeover inheritance for unresolved UNKNOWN under existing Store semantics;
+10. cancellation around launch and Persist linearization;
+11. CAS semantic re-plan;
+12. lost Persist acknowledgement exact reconciliation;
+13. unsupported profile resume and capability honesty.
 
 ## UNKNOWN / #219 boundary
 
-This implementation intentionally does not absorb Issue #219 `Effect Lineage / UNKNOWN Resolution` semantics.
+This remediation intentionally does not absorb Issue #219 `Effect Lineage / UNKNOWN Resolution` semantics.
 
-Within #216:
+- UNKNOWN remains fail closed.
+- No new proof/resolution mechanism was added.
+- No speculative relaunch or generation-based clearing was introduced.
 
-- UNKNOWN remains an honest fail-closed Store state;
-- restart recovery does not manufacture proof that an UNKNOWN effect did or did not occur;
-- recorded UNKNOWN is not cleared by generation change, resume, or speculative relaunch;
-- no new effect-lineage/resolution protocol was added.
+## #221 boundary
 
-Any future authoritative resolution mechanism must come through separately reviewed #219 semantics.
-
-## Regression evidence
-
-The same exact-head Protocol run also passed existing:
-
-- Feature lifecycle, Event/Persist and optimistic-precondition validation;
-- remediation review completion validation;
-- Operator API and MCP conformance, with MCP semantic writes still absent;
-- Operation Store deterministic and remote durability/protection validation;
-- cross-repository control/transport validation;
-- Git write-precondition validation;
-- GitHub workflow/action security validation;
-- gh-aw adapter, autonomous role, candidate history, gate provenance/security, registry/profile and runtime-preflight validation;
-- existing release-readiness baseline validation.
-
-Public Runtime Distribution and Required PR Gate also passed on the exact functional candidate.
+No real-runtime fault-injection or release-level effect-safety claim is made here. That work remains Issue #221.
 
 ## Explicit non-scope confirmation
 
-The implementation does **not** implement or claim completion of:
+The implementation/remediation does **not** implement or claim completion of:
 
 - Issue #219 Effect Lineage / UNKNOWN Resolution;
 - Issue #221 real-runtime fault injection / release-level effect-safety proof;
@@ -190,6 +125,6 @@ The implementation does **not** implement or claim completion of:
 
 ## Developer conclusion
 
-The approved #216 implementation scope is complete and deterministically verified at functional candidate `dc88354429e1a81468ca78971cc3c51f30c2af62`.
+The two Code Review MAJOR findings have bounded fixes and exact-candidate deterministic evidence at `c7b48b931c0ef99e43975391381f073dfa1eb381`.
 
-Evidence supports advancing only to **Implementation DONE / Code Review READY**. Independent Code Review is the next authority; this Developer does not PASS code-gate and does not continue into QA.
+The next authority is a **fresh independent Code Re-review** after legal remediation lifecycle recording. This Developer does not PASS `code-gate` and does not continue into QA.
