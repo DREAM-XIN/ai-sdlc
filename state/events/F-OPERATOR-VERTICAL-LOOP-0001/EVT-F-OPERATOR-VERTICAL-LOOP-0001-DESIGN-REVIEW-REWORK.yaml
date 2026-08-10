@@ -10,7 +10,7 @@ changes:
       type: review
       status: fail
       uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/design-review.md
-  - kind: task
+  - kind: task-record
     record:
       id: F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REMEDIATION-1
       kind: remediation
