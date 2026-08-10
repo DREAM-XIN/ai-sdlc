@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 5
+revision: 6
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -45,12 +45,16 @@ tasks:
     CAPABILITY_UNAVAILABLE until a later reviewed workstream can satisfy complete
     semantics or an independently approved canonical partial-availability contract
     exists.
-  status: WORKING
+  status: DONE
   runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement.md
+  status: draft
+- id: requirement-v2
+  type: requirement
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-v2.md
   status: draft
 gates:
 - id: requirement-gate
@@ -68,10 +72,15 @@ evidence:
   type: review
   status: fail
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review.md
+- id: evidence-requirement-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-remediation.md
 applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-REWORK
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-START
-updated_at: '2026-08-10T03:32:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-DONE
+updated_at: '2026-08-10T03:34:00Z'
