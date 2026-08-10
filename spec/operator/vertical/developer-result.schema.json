@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/vertical/developer-result.schema.json",
+  "title": "AI-SDLC vertical Developer result",
+  "type": "object",
+  "required": ["status", "summary", "outputs"],
+  "properties": {
+    "status": {"enum": ["COMPLETED", "BLOCKED", "NEEDS_USER"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "candidate_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "outputs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": ["label", "kind"],
+        "properties": {
+          "label": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+          "kind": {"enum": ["artifact", "evidence"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

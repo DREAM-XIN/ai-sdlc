@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REVIEW-REWORK
+feature_id: F-OPERATOR-VERTICAL-LOOP-0001
+expected_revision: 7
+occurred_at: '2026-08-10T05:21:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-design-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/design-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REMEDIATION-1
+      kind: remediation
+      stage: design
+      role: architect
+      source_stage: design-review
+      feedback: >-
+        Close two MAJORs: define trusted immutable vertical operation-profile
+        selection/binding from start through projection/resume with no client
+        override and profile-conflict convergence rules; and replace
+        Worker-supplied artifact/evidence URI authority with trusted collector
+        materialization receipts/digests bound to dispatch, role, revision and
+        candidate, with translators allowed to register only those trusted receipts.
+      status: TODO
+      runtime: manual

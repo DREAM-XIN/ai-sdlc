@@ -1,0 +1,31 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REWORK
+feature_id: F-OPERATOR-VERTICAL-LOOP-0001
+expected_revision: 21
+occurred_at: '2026-08-10T08:11:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-verification-v1
+    type: verification
+    status: fail
+    uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/verification.md
+- kind: task-record
+  record:
+    id: F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REMEDIATION-1
+    kind: remediation
+    stage: implementation
+    role: developer
+    source_stage: verification
+    feedback: 'Fix QA-MAJOR-1 only: wire scripts/validate_operator_vertical_completion.py and scripts/validate_operator_vertical_reconcile.py (or semantically identical required coverage) into the authoritative scripts/validate.py validation path, preserve all existing validators and scope boundaries, and produce exact-head Protocol/Public Runtime/Required PR Gate evidence proving those required vertical completion and fault/replay scenarios actually execute.'
+    target_pr: '#217'
+    status: READY
+- kind: gate
+  id: verification-gate
+  status: FAIL
+  evidence:
+  - evidence-verification-v1
+- kind: stage
+  id: verification
+  status: BLOCKED
+  reason: 'QA-MAJOR-1: required completion-path and fault/replay vertical validators exist but are not executed by the authoritative scripts/validate.py / exact-head CI path.'

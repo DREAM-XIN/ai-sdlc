@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/vertical/collected-output-receipt.schema.json",
+  "title": "AI-SDLC collected output receipt",
+  "type": "object",
+  "required": ["output_id", "label", "kind", "media_type", "trusted_uri", "sha256", "size_bytes", "operation_id", "operation_generation", "operation_profile", "semantic_effect_key", "external_dispatch_key", "dispatch_id", "worker_role", "worker_identity", "target_repository", "feature_id", "expected_revision", "collector_identity", "collected_at"],
+  "properties": {
+    "output_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,160}$"},
+    "label": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+    "kind": {"enum": ["artifact", "evidence"]},
+    "media_type": {"type": "string", "minLength": 1, "maxLength": 128},
+    "trusted_uri": {"type": "string", "minLength": 1, "maxLength": 512},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "size_bytes": {"type": "integer", "minimum": 0},
+    "operation_id": {"type": "string", "minLength": 1},
+    "operation_generation": {"type": "integer", "minimum": 0},
+    "operation_profile": {"type": "string", "minLength": 1},
+    "semantic_effect_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "external_dispatch_key": {"type": "string", "minLength": 1},
+    "dispatch_id": {"type": "string", "minLength": 1},
+    "worker_role": {"enum": ["developer", "reviewer", "qa"]},
+    "worker_identity": {"type": "string", "minLength": 1},
+    "target_repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "feature_id": {"type": "string", "minLength": 1},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "candidate_head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "collector_identity": {"type": "string", "minLength": 1},
+    "collected_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

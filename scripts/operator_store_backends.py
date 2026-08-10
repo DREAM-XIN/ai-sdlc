@@ -68,8 +68,9 @@ def _verified_feature(request, trusted_context):
 
 
 class OperationStartBackend:
-    def __init__(self, runtime: OperatorStoreRuntime):
+    def __init__(self, runtime: OperatorStoreRuntime, *, operation_profile: str | None = None):
         self.runtime = runtime
+        self.operation_profile = operation_profile
 
     def availability(self, capability, trusted_context):
         try:
@@ -93,6 +94,7 @@ class OperationStartBackend:
                 idempotency_key=idempotency_key,
                 occurred_at=occurred_at,
                 trusted_context_digest=trusted_digest,
+                operation_profile=self.operation_profile,
             )
         )
         return dict(result.result)
@@ -147,10 +149,18 @@ class OperationCancelBackend:
         return {"operation_id": public["operation_id"], "status": public["status"]}
 
 
-def store_backends(runtime: OperatorStoreRuntime):
-    """Compose only the capabilities honestly backed by this Feature."""
-    return {
-        "operation.start": OperationStartBackend(runtime),
+def store_backends(
+    runtime: OperatorStoreRuntime,
+    *,
+    operation_profile: str | None = None,
+    resume_backend=None,
+):
+    """Compose only capabilities backed by trusted runtime dependencies."""
+    backends = {
+        "operation.start": OperationStartBackend(runtime, operation_profile=operation_profile),
         "operation.status": OperationStatusBackend(runtime),
         "operation.cancel": OperationCancelBackend(runtime),
     }
+    if resume_backend is not None:
+        backends["operation.resume"] = resume_backend
+    return backends

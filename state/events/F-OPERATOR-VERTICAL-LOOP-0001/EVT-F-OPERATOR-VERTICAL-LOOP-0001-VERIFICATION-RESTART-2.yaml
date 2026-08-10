@@ -1,0 +1,12 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-RESTART-2
+feature_id: F-OPERATOR-VERTICAL-LOOP-0001
+expected_revision: 24
+occurred_at: '2026-08-10T08:25:00Z'
+changes:
+- kind: gate
+  id: verification-gate
+  status: PENDING
+- kind: stage
+  id: verification
+  status: WORKING

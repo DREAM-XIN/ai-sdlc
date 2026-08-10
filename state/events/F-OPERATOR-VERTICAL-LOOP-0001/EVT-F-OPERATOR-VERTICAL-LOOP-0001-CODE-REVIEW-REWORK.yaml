@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REVIEW-REWORK
+feature_id: F-OPERATOR-VERTICAL-LOOP-0001
+expected_revision: 16
+occurred_at: '2026-08-10T06:48:51Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-1
+      kind: remediation
+      stage: implementation
+      role: developer
+      source_stage: code-review
+      feedback: >-
+        Close exactly the two MAJOR findings from independent Code Review / PR Review 4894292495: remove or fail-close the parallel TrustedVerticalExecutor callback ingress so production callback translation can only pass through durable dispatch binding, durable role-independence reconstruction and mandatory collector content digest validation; and preserve complete repeated-REWORK candidate/remediation identity lineage plus authoritative latest-remediation predecessor order, with deterministic two-round REWORK/restart coverage.
+      status: TODO
+      runtime: manual
