@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from operator_store import StoreCommandError, plan_authorize_launch, plan_dispatch_claim
-from operator_store_model import StoreSnapshot, dispatch_claim_path
+from operator_store_model import StoreMutationPlan, StoreSnapshot, dispatch_claim_path
 from operator_effect_lineage_integration import assert_lineage_member
+
+LINEAGE_WRITER_CAPABILITY = "lineage-aware-v1"
+TRUSTED_WRITER_RESULT_FIELD = "_trusted_writer_capability"
+
+
+def _mark(plan: StoreMutationPlan) -> StoreMutationPlan:
+    result = dict(plan.result)
+    result[TRUSTED_WRITER_RESULT_FIELD] = LINEAGE_WRITER_CAPABILITY
+    return StoreMutationPlan(plan.expected_ref_sha, plan.mutations, result)
 
 
 def plan_lineage_dispatch_claim(
@@ -18,13 +27,15 @@ def plan_lineage_dispatch_claim(
     trusted_context_digest: str,
 ):
     assert_lineage_member(snapshot, effect_key, expected_lineage_id=effect_lineage_id)
-    return plan_dispatch_claim(
-        snapshot,
-        operation_id=operation_id,
-        generation=generation,
-        effect_key=effect_key,
-        occurred_at=occurred_at,
-        trusted_context_digest=trusted_context_digest,
+    return _mark(
+        plan_dispatch_claim(
+            snapshot,
+            operation_id=operation_id,
+            generation=generation,
+            effect_key=effect_key,
+            occurred_at=occurred_at,
+            trusted_context_digest=trusted_context_digest,
+        )
     )
 
 
@@ -50,15 +61,17 @@ def plan_lineage_authorize_launch(
         str(claim["semantic_effect_key"]),
         expected_lineage_id=effect_lineage_id,
     )
-    return plan_authorize_launch(
-        snapshot,
-        operation_id=operation_id,
-        generation=generation,
-        claim_id=claim_id,
-        dispatch_id=dispatch_id,
-        occurred_at=occurred_at,
-        trusted_context_digest=trusted_context_digest,
-        verified_expected_revision=verified_expected_revision,
-        verified_stage=verified_stage,
-        verified_candidate_head_sha=verified_candidate_head_sha,
+    return _mark(
+        plan_authorize_launch(
+            snapshot,
+            operation_id=operation_id,
+            generation=generation,
+            claim_id=claim_id,
+            dispatch_id=dispatch_id,
+            occurred_at=occurred_at,
+            trusted_context_digest=trusted_context_digest,
+            verified_expected_revision=verified_expected_revision,
+            verified_stage=verified_stage,
+            verified_candidate_head_sha=verified_candidate_head_sha,
+        )
     )
