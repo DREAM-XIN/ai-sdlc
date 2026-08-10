@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-START
+feature_id: F-OPERATOR-VERTICAL-LOOP-0001
+expected_revision: 20
+occurred_at: '2026-08-10T08:10:00Z'
+changes:
+- kind: stage
+  id: verification
+  status: WORKING
