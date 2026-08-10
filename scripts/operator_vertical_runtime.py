@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from operator_store_backends import store_backends
+from operator_store_model import normalize_repository
 from operator_store_runtime import TrustedOperatorStoreConfig, build_trusted_operator_store_runtime
 from operator_vertical import VERTICAL_PROFILE
 from operator_vertical_callback import TrustedVerticalCallbackCoordinator
@@ -13,6 +14,7 @@ from operator_vertical_controller import FeatureTruthGateway, VerticalLoopResume
 from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
 from operator_vertical_reconcile import TrustedRecoveringVerticalExecutor
 from operator_effect_rollout import EffectLineageWriteFence
+from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
 
 
 @dataclass(frozen=True)
@@ -67,17 +69,27 @@ def build_trusted_vertical_runtime(
     *,
     protection_verifier,
     rollout_verifier,
+    resolution_policy_verifier: ProtectedEffectResolutionPolicyVerifier,
     feature_gateway: FeatureTruthGateway,
     persist_gateway,
     dispatch_gateway,
     collector_content_loader,
     clock=None,
 ) -> TrustedVerticalRuntimeBundle:
-    """Build all vertical write surfaces only after trusted rollout/fence verification."""
+    """Build all vertical write surfaces only after trusted rollout/fence/policy verification."""
     if not callable(collector_content_loader):
         raise ValueError("trusted collector content loader is required")
     if rollout_verifier is None or not callable(getattr(rollout_verifier, "verify", None)):
         raise ValueError("trusted Effect Lineage rollout verifier is required")
+    if not isinstance(resolution_policy_verifier, ProtectedEffectResolutionPolicyVerifier):
+        raise ValueError("trusted current Effect Resolution policy verifier is required")
+    if (
+        resolution_policy_verifier.repository != normalize_repository(config.store.repository)
+        or resolution_policy_verifier.state_ref != config.store.state_ref
+        or resolution_policy_verifier.operation_profile != VERTICAL_PROFILE
+    ):
+        raise ValueError("Effect Resolution policy verifier is not bound to this production Store/profile")
+
     rollout = rollout_verifier.verify(
         repository=config.store.repository,
         state_ref=config.store.state_ref,
@@ -90,6 +102,8 @@ def build_trusted_vertical_runtime(
     )
     if bool(getattr(rollout, "test_only", False)):
         raise ValueError("test-only Effect Lineage rollout cannot enable production vertical runtime")
+
+    resolution_policy_verifier.verify_current()
 
     runtime = build_trusted_operator_store_runtime(
         config.store,
@@ -111,6 +125,7 @@ def build_trusted_vertical_runtime(
             writer_fence_receipt_digest=rollout.writer_fence_receipt_digest,
             max_auto_steps=config.max_auto_steps,
         ),
+        resolution_policy_verifier=resolution_policy_verifier,
     )
     executor = TrustedRecoveringVerticalExecutor(
         base_executor=base_executor,
@@ -151,6 +166,7 @@ def build_trusted_vertical_operator_api_backends(
     *,
     protection_verifier,
     rollout_verifier,
+    resolution_policy_verifier: ProtectedEffectResolutionPolicyVerifier,
     feature_gateway: FeatureTruthGateway,
     persist_gateway,
     dispatch_gateway,
@@ -162,6 +178,7 @@ def build_trusted_vertical_operator_api_backends(
         config,
         protection_verifier=protection_verifier,
         rollout_verifier=rollout_verifier,
+        resolution_policy_verifier=resolution_policy_verifier,
         feature_gateway=feature_gateway,
         persist_gateway=persist_gateway,
         dispatch_gateway=dispatch_gateway,
