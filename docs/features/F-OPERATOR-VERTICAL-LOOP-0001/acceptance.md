@@ -129,3 +129,9 @@ This Feature-level Acceptance does **not** claim completion or approval of:
 Feature-level `release-gate`: **PASS**.
 
 `F-OPERATOR-VERTICAL-LOOP-0001` may complete its standard Feature lifecycle. This decision proves the durable bounded Implementation→Review→Remediation→Re-review→QA vertical loop only and must not be interpreted as overall v0.3 release readiness.
+
+## Final lifecycle receipt
+
+Trusted Persist subsequently materialized the accepted Feature at authoritative Manifest revision `28` with `workflow.status: DONE`, all Feature lifecycle stages DONE, and requirement/design/code/verification/Feature-level release gates PASS.
+
+This final receipt records the completed lifecycle state only. It does not alter the validated executable candidate or expand the accepted scope.
