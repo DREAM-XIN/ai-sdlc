@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 1
+revision: 2
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -8,12 +8,12 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: requirement
+  current_stage: requirement-review
   stages:
   - id: requirement
-    status: WORKING
+    status: DONE
   - id: requirement-review
-    status: TODO
+    status: READY
     gate: requirement-gate
   - id: design
     status: TODO
@@ -34,7 +34,11 @@ workflow:
     status: TODO
     gate: release-gate
 tasks: []
-artifacts: []
+artifacts:
+- id: requirement-v1
+  type: requirement
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement.md
+  status: draft
 gates:
 - id: requirement-gate
   status: PENDING
@@ -49,4 +53,5 @@ gates:
 evidence: []
 applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
-updated_at: '2026-08-10T03:27:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
+updated_at: '2026-08-10T03:29:00Z'
