@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-PASS
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 6
+occurred_at: '2026-08-10T03:35:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-requirement-review-v2
+      type: review
+      status: pass
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review-v2.md
+  - kind: artifact
+    id: requirement-v2
+    status: approved
+    evidence:
+      - evidence-requirement-review-v2
+  - kind: gate
+    id: requirement-gate
+    status: PASS
+    evidence:
+      - evidence-requirement-review-v2
+  - kind: stage
+    id: requirement-review
+    status: DONE
+  - kind: stage
+    id: design
+    status: READY
