@@ -25,7 +25,7 @@ class FeatureTruthGateway(Protocol):
 
 
 class VerticalExecutor(Protocol):
-    def advance_action(self, *, operation_id: str, action: VerticalAction) -> dict[str, Any]: ...
+    def advance_until_stop(self, *, operation_id: str) -> dict[str, Any]: ...
 
 
 def _start_event(feature: FeatureSnapshot, changes: list[dict[str, Any]], purpose: str, occurred_at: str) -> dict[str, Any]:
@@ -134,8 +134,8 @@ class VerticalLoopResumeBackend:
     """Canonical operation.resume backend over a trusted vertical executor.
 
     The executor owns Store CAS, Feature/Persist gateways, dispatch/collector gateways and
-    callback reconciliation. This backend only authorizes the profile and delegates one
-    deterministic advance transaction; canonical input cannot choose a profile.
+    callback reconciliation. This backend authorizes the immutable profile and advances
+    only until a durable stable stop; canonical input cannot choose a profile.
     """
 
     def __init__(self, *, runtime, feature_gateway: FeatureTruthGateway, executor: VerticalExecutor):
@@ -159,11 +159,10 @@ class VerticalLoopResumeBackend:
         if projection.get("operation_profile") != VERTICAL_PROFILE:
             raise VerticalInvariantError("CAPABILITY_UNAVAILABLE", "Operation is not bound to the supported vertical profile")
         expected = (request.get("context") or {}).get("expected_feature_revision")
-        feature, manifest = self.feature_gateway.read_feature(operation_id=operation_id)
+        feature, _ = self.feature_gateway.read_feature(operation_id=operation_id)
         if expected != feature.revision:
             raise VerticalInvariantError("STALE_REVISION", "trusted Feature revision no longer matches resume request")
-        action = select_vertical_action(feature=feature, manifest=manifest, occurred_at=self.runtime.clock())
-        result = self.executor.advance_action(operation_id=operation_id, action=action)
+        result = self.executor.advance_until_stop(operation_id=operation_id)
         if not isinstance(result, dict) or result.get("operation_id") != operation_id:
             raise VerticalInvariantError("INTERNAL_FAILURE", "vertical executor returned invalid result")
         return result
