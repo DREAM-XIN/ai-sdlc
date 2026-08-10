@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 7
+revision: 8
 feature:
   id: F-OPERATOR-MCP-ADAPTER-0001
   title: Implement v0.3 MCP read-only Operator adapter
@@ -33,7 +33,20 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REMEDIATION-1
+  kind: remediation
+  stage: design
+  role: architect
+  source_stage: design-review
+  feedback: Define a bounded conformance ingress so unsupported-version, unknown-capability,
+    trusted-field-injection, unavailable-capability, and structured-error cases cross
+    the actual MCP stdio/translation path used by the supported adapter without exposing
+    a generic production capability/write escape hatch; the same shipped server/translation
+    implementation must be exercised and conformance-only behavior must be impossible
+    to activate accidentally in normal startup.
+  status: TODO
+  runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -61,6 +74,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/design-review.md
 applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-REQ-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-REQ-DONE
@@ -69,4 +86,5 @@ applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-DONE
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REVIEW-START
-updated_at: '2026-08-10T02:53:00Z'
+- EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REVIEW-REWORK
+updated_at: '2026-08-10T02:54:00Z'
