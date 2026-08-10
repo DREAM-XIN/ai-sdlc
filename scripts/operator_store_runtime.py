@@ -2,7 +2,7 @@
 """Trusted production composition boundary for the v0.3 Operator Store.
 
 This module is deliberately not a canonical capability or Worker-facing config parser.
-Trusted installation/control code owns repository, local trusted checkout, verifier,
+Trusted installation/control code owns repository, trusted checkout, remote, verifier,
 and state-ref selection. Client/Feature/Worker payloads cannot override them.
 """
 from __future__ import annotations
@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from operator_store_backends import OperatorStoreRuntime, store_backends
-from operator_store_git import GitStateRefBackend
+from operator_store_github_protection import GitHubBranchProtectionVerifier
 from operator_store_protection import StateRefProtectionVerifier
+from operator_store_remote_git import RemoteGitStateRefBackend
 
 DEFAULT_OPERATOR_STATE_REF = "refs/heads/ai-sdlc-operator-state"
 
@@ -22,6 +23,7 @@ class TrustedOperatorStoreConfig:
     repository: str
     trusted_checkout: Path
     state_ref: str = DEFAULT_OPERATOR_STATE_REF
+    remote_name: str = "origin"
 
     def __post_init__(self):
         if not self.repository or "/" not in self.repository:
@@ -30,6 +32,13 @@ class TrustedOperatorStoreConfig:
             raise ValueError("trusted Operator Store checkout is required")
         if not self.state_ref.startswith("refs/heads/"):
             raise ValueError("trusted Operator Store state ref must be a branch ref")
+        if not self.remote_name or any(ch.isspace() for ch in self.remote_name):
+            raise ValueError("trusted Operator Store remote name is invalid")
+
+
+def _require_production_verifier(protection_verifier: StateRefProtectionVerifier) -> None:
+    if bool(getattr(protection_verifier, "test_only", False)):
+        raise ValueError("test-only protection verifier cannot enable production Operator Store runtime")
 
 
 def build_trusted_operator_store_runtime(
@@ -38,20 +47,39 @@ def build_trusted_operator_store_runtime(
     protection_verifier: StateRefProtectionVerifier,
     clock=None,
 ):
-    """Compose the repository-backed runtime from trusted control inputs only.
-
-    The verifier remains authoritative for whether semantic writes are enabled.
-    Merely constructing this runtime never attests that the state ref is protected.
-    """
-    backend = GitStateRefBackend(
+    """Compose the durable remote repository-backed runtime from trusted inputs."""
+    _require_production_verifier(protection_verifier)
+    backend = RemoteGitStateRefBackend(
         repo_path=config.trusted_checkout,
         repository=config.repository,
         state_ref=config.state_ref,
+        remote_name=config.remote_name,
     )
     kwargs = {"backend": backend, "protection_verifier": protection_verifier}
     if clock is not None:
         kwargs["clock"] = clock
     return OperatorStoreRuntime(**kwargs)
+
+
+def build_github_operator_store_runtime(
+    config: TrustedOperatorStoreConfig,
+    *,
+    github_token: str,
+    operator_app_slug: str,
+    github_api_base: str = "https://api.github.com",
+    clock=None,
+):
+    """Concrete production path: remote Git CAS + GitHub protection proof."""
+    verifier = GitHubBranchProtectionVerifier(
+        token=github_token,
+        operator_app_slug=operator_app_slug,
+        api_base=github_api_base,
+    )
+    return build_trusted_operator_store_runtime(
+        config,
+        protection_verifier=verifier,
+        clock=clock,
+    )
 
 
 def build_trusted_operator_api_backends(
