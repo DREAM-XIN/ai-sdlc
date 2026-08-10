@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 9
+revision: 10
 feature:
   id: F-OPERATOR-MCP-ADAPTER-0001
   title: Implement v0.3 MCP read-only Operator adapter
@@ -45,7 +45,7 @@ tasks:
     a generic production capability/write escape hatch; the same shipped server/translation
     implementation must be exercised and conformance-only behavior must be impossible
     to activate accidentally in normal startup.
-  status: WORKING
+  status: DONE
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -78,6 +78,10 @@ evidence:
   type: review
   status: fail
   uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/design-review.md
+- id: evidence-design-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/design-remediation.md
 applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-REQ-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-REQ-DONE
@@ -88,4 +92,5 @@ applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REVIEW-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REVIEW-REWORK
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REMEDIATION-START
-updated_at: '2026-08-10T02:55:00Z'
+- EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REMEDIATION-DONE
+updated_at: '2026-08-10T02:57:00Z'
