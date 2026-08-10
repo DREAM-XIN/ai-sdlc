@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 19
+revision: 20
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: code-review
+  current_stage: verification
   stages:
   - id: requirement
     status: DONE
@@ -25,10 +25,10 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: WORKING
+    status: DONE
     gate: code-gate
   - id: verification
-    status: TODO
+    status: READY
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -81,7 +81,7 @@ artifacts:
 - id: implementation-v1
   type: implementation
   uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/implementation.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
   status: PASS
@@ -92,7 +92,9 @@ gates:
   evidence:
   - evidence-design-review-v2
 - id: code-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-code-review-v2
 - id: verification-gate
   status: PENDING
 - id: release-gate
@@ -126,6 +128,10 @@ evidence:
   type: implementation
   status: pass
   uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review-remediation.md
+- id: evidence-code-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review-v2.md
 applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-DONE
@@ -146,4 +152,5 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REVIEW-REWORK
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-DONE
-updated_at: '2026-08-10T07:58:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REVIEW-PASS-2
+updated_at: '2026-08-10T08:03:00Z'
