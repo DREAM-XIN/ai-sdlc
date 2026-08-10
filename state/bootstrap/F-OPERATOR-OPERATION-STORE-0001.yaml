@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-OPERATOR-OPERATION-STORE-0001
+  title: Implement durable Operator journal and dispatch safety core
+  risk: high
+  issue: '#214'
+profile: standard-feature
+created_at: '2026-08-10T03:25:37Z'
