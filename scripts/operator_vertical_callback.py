@@ -34,6 +34,10 @@ def process_recorded_callback(
     feature, _ = executor.feature_gateway.read_feature(operation_id=context.operation_id)
     if feature.target_ref != context.target_ref:
         raise VerticalInvariantError("STALE_REVISION", "callback Feature ref binding changed")
+    if feature.revision != context.expected_revision or feature.current_stage != context.feature_stage:
+        raise VerticalInvariantError("STALE_REVISION", "callback Feature revision/stage binding changed")
+    if feature.candidate_head_sha != context.candidate_head_sha:
+        raise VerticalInvariantError("STALE_REVISION", "callback candidate head binding changed")
     try:
         event = translate_result(
             context=context,
