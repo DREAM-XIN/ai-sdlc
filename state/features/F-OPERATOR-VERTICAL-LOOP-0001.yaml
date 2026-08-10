@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 20
+revision: 22
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -7,7 +7,7 @@ feature:
   issue: '#216'
 workflow:
   profile: standard-feature
-  status: ACTIVE
+  status: BLOCKED
   current_stage: verification
   stages:
   - id: requirement
@@ -28,7 +28,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: READY
+    status: BLOCKED
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -61,6 +61,19 @@ tasks:
     two-round REWORK/restart coverage.'
   status: DONE
   runtime: manual
+- id: F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: verification
+  feedback: 'Fix QA-MAJOR-1 only: wire scripts/validate_operator_vertical_completion.py
+    and scripts/validate_operator_vertical_reconcile.py (or semantically identical required
+    coverage) into the authoritative scripts/validate.py validation path, preserve all
+    existing validators and scope boundaries, and produce exact-head Protocol/Public
+    Runtime/Required PR Gate evidence proving those required vertical completion and
+    fault/replay scenarios actually execute.'
+  target_pr: '#217'
+  status: READY
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -96,7 +109,9 @@ gates:
   evidence:
   - evidence-code-review-v2
 - id: verification-gate
-  status: PENDING
+  status: FAIL
+  evidence:
+  - evidence-verification-v1
 - id: release-gate
   status: PENDING
 evidence:
@@ -132,6 +147,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review-v2.md
+- id: evidence-verification-v1
+  type: verification
+  status: fail
+  uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/verification.md
 applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-DONE
@@ -153,4 +172,6 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-DONE
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REVIEW-PASS-2
-updated_at: '2026-08-10T08:03:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-START
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REWORK
+updated_at: '2026-08-10T08:11:00Z'
