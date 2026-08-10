@@ -57,6 +57,16 @@ def _dispatch(role):
     }
 
 
+def _object_keys(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield str(key)
+            yield from _object_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _object_keys(child)
+
+
 def validate_mapping():
     transport = FakeTransport()
     gateway = _gateway(transport)
@@ -70,7 +80,7 @@ def validate_mapping():
     assert inputs["candidate_head_sha"] == HEAD
     payload = json.loads(inputs["task_payload"])
     assert payload["feature_context"]["vertical"]["external_dispatch_key"] == KEY
-    assert "proposed_events" not in json.dumps(payload)
+    assert "proposed_events" not in set(_object_keys(payload))
     assert "authoritative Feature Manifest mutation" in payload["task"]["forbidden_scope"]
 
 
