@@ -107,8 +107,6 @@ def build_trusted_vertical_runtime(
             trusted_context_digest=config.trusted_context_digest,
             effect_lineage_required=rollout.effect_lineage_required,
             old_writers_quiesced=bool(rollout.writer_fence_receipt_digest),
-            rollout_policy_digest=rollout.policy_digest,
-            writer_fence_receipt_digest=rollout.writer_fence_receipt_digest,
             max_auto_steps=config.max_auto_steps,
         ),
     )
