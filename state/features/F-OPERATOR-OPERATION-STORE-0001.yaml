@@ -1,0 +1,202 @@
+protocol_version: 0.1.0
+revision: 27
+feature:
+  id: F-OPERATOR-OPERATION-STORE-0001
+  title: Implement durable Operator journal and dispatch safety core
+  risk: high
+  issue: '#214'
+workflow:
+  profile: standard-feature
+  status: DONE
+  current_stage: acceptance
+  stages:
+  - id: requirement
+    status: DONE
+  - id: requirement-review
+    status: DONE
+    gate: requirement-gate
+  - id: design
+    status: DONE
+  - id: design-review
+    status: DONE
+    gate: design-gate
+  - id: plan
+    status: DONE
+  - id: implementation
+    status: DONE
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: DONE
+    gate: verification-gate
+  - id: acceptance
+    status: DONE
+    gate: release-gate
+tasks:
+- id: F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-1
+  kind: remediation
+  stage: requirement
+  role: product
+  source_stage: requirement-review
+  feedback: Keep a trusted internal unfinished-Operation query primitive, but do not
+    make canonical operator.inbox available while Decision/Notification backing is
+    absent under the frozen all-three-arrays response schema; keep operator.inbox
+    CAPABILITY_UNAVAILABLE until a later reviewed workstream can satisfy complete
+    semantics or an independently approved canonical partial-availability contract
+    exists.
+  status: DONE
+  runtime: manual
+- id: F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-1
+  kind: remediation
+  stage: design
+  role: architect
+  source_stage: design-review
+  feedback: Define a trusted fail-closed production boundary that verifies/provisions
+    actual protection for the Operator state ref before semantic writes are enabled,
+    including safe first-ref initialization and protected/unprotected/unknown tests;
+    and redesign semantic reservations plus consumed feature/dispatch claims so each
+    durable artifact is immutable after creation, with evolving launch/receipt/callback/takeover/release/Persist
+    state represented by immutable Operation journal events (or equivalently immutable
+    records), leaving only projection cache replaceable.
+  status: DONE
+  runtime: manual
+- id: F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: Replace the local-only Operator state-ref writer with a real durable remote
+    control-repository CAS path that reads the exact remote state ref, writes only
+    against that expected SHA, re-fetches and semantically re-plans on remote conflict,
+    and proves persistence across fresh checkout/concurrent writers; add a concrete
+    trusted production protection verifier that proves the exact remote state ref
+    is protected from repository/ruleset authority, fails closed as UNKNOWN/UNPROTECTED
+    on ambiguity/absence, and cannot be substituted by the StaticProtectionVerifier
+    in the normal production write path.
+  status: DONE
+  runtime: manual
+artifacts:
+- id: requirement-v1
+  type: requirement
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement.md
+  status: draft
+- id: requirement-v2
+  type: requirement
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-v2.md
+  status: approved
+- id: design-v1
+  type: design
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design.md
+  status: draft
+- id: design-v2
+  type: design
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-v2.md
+  status: approved
+- id: plan-v1
+  type: plan
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/plan.md
+  status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/implementation.md
+  status: approved
+gates:
+- id: requirement-gate
+  status: PASS
+  evidence:
+  - evidence-requirement-review-v2
+- id: design-gate
+  status: PASS
+  evidence:
+  - evidence-design-review-v2
+- id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v2
+- id: verification-gate
+  status: PASS
+  evidence:
+  - evidence-verification-v1
+- id: release-gate
+  status: PASS
+  evidence:
+  - evidence-acceptance-v1
+evidence:
+- id: evidence-requirement-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review.md
+- id: evidence-requirement-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-remediation.md
+- id: evidence-requirement-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review-v2.md
+- id: evidence-design-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-review.md
+- id: evidence-design-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-remediation.md
+- id: evidence-design-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-review-v2.md
+- id: evidence-implementation-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/evidence/implementation-verification.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/code-remediation.md
+- id: evidence-code-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/code-review-v2.md
+- id: evidence-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/verification.md
+- id: evidence-acceptance-v1
+  type: acceptance
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+applied_events:
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-REWORK
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-PASS
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REVIEW-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REVIEW-REWORK
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REVIEW-PASS
+- EVT-F-OPERATOR-OPERATION-STORE-0001-PLAN-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-PLAN-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-IMPL-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-IMPL-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-REWORK
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-DONE
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-PASS-2
+- EVT-F-OPERATOR-OPERATION-STORE-0001-VERIFICATION-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-VERIFICATION-PASS
+- EVT-F-OPERATOR-OPERATION-STORE-0001-ACCEPTANCE-START
+- EVT-F-OPERATOR-OPERATION-STORE-0001-ACCEPTANCE-PASS
+updated_at: '2026-08-10T04:56:00Z'

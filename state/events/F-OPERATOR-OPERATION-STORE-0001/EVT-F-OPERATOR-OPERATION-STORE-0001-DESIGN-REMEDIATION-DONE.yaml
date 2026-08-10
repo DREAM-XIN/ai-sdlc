@@ -1,0 +1,21 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-DONE
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 12
+occurred_at: '2026-08-10T03:43:00Z'
+changes:
+  - kind: artifact-record
+    record:
+      id: design-v2
+      type: design
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-v2.md
+      status: draft
+  - kind: evidence
+    record:
+      id: evidence-design-remediation-v1
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-remediation.md
+  - kind: task
+    id: F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-1
+    status: DONE

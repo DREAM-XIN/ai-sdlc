@@ -180,4 +180,7 @@ def dispatch(request, *, trusted_context=None, backends=None):
             return _response(request, code="INTERNAL_FAILURE", message="canonical response validation failed")
         return response
     except Exception as exc:
+        code = getattr(exc, "code", None)
+        if code in ERROR_CODES:
+            return _response(request, code=code, message=str(exc), details=_safe_details(exc))
         return _response(request, code="INTERNAL_FAILURE", message="backend invocation failed", details=_safe_details(exc))

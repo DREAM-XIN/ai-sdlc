@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-DONE
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 21
+occurred_at: '2026-08-10T04:48:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-remediation-v1
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/code-remediation.md
+  - kind: task
+    id: F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-1
+    status: DONE

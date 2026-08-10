@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 0
+occurred_at: '2026-08-10T03:27:00Z'
+changes:
+  - kind: stage
+    id: requirement
+    status: WORKING

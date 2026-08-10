@@ -1,0 +1,21 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-DONE
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 5
+occurred_at: '2026-08-10T03:34:00Z'
+changes:
+  - kind: artifact-record
+    record:
+      id: requirement-v2
+      type: requirement
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-v2.md
+      status: draft
+  - kind: evidence
+    record:
+      id: evidence-requirement-remediation-v1
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-remediation.md
+  - kind: task
+    id: F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-1
+    status: DONE

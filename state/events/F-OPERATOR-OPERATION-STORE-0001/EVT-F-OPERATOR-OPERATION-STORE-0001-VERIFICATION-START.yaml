@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-VERIFICATION-START
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 23
+occurred_at: '2026-08-10T04:52:00Z'
+changes:
+- kind: stage
+  id: verification
+  status: WORKING

@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-START
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 11
+occurred_at: '2026-08-10T03:41:00Z'
+changes:
+  - kind: task
+    id: F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-1
+    status: WORKING

@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REVIEW-REWORK
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 10
+occurred_at: '2026-08-10T03:40:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-design-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-1
+      kind: remediation
+      stage: design
+      role: architect
+      source_stage: design-review
+      feedback: Define a trusted fail-closed production boundary that verifies/provisions actual protection for the Operator state ref before semantic writes are enabled, including safe first-ref initialization and protected/unprotected/unknown tests; and redesign semantic reservations plus consumed feature/dispatch claims so each durable artifact is immutable after creation, with evolving launch/receipt/callback/takeover/release/Persist state represented by immutable Operation journal events (or equivalently immutable records), leaving only projection cache replaceable.
+      status: TODO
+      runtime: manual

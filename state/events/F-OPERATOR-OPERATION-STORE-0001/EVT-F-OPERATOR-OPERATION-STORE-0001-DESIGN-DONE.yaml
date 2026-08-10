@@ -1,0 +1,18 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-DONE
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 8
+occurred_at: '2026-08-10T03:38:00Z'
+changes:
+  - kind: artifact-record
+    record:
+      id: design-v1
+      type: design
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design.md
+      status: draft
+  - kind: stage
+    id: design
+    status: DONE
+  - kind: stage
+    id: design-review
+    status: READY
