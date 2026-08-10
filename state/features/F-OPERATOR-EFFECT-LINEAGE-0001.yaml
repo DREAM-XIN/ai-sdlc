@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 3
+revision: 4
 feature:
   id: F-OPERATOR-EFFECT-LINEAGE-0001
   title: Implement durable Effect Lineage and UNKNOWN resolution
@@ -8,15 +8,15 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: requirement-review
+  current_stage: design
   stages:
   - id: requirement
     status: DONE
   - id: requirement-review
-    status: WORKING
+    status: DONE
     gate: requirement-gate
   - id: design
-    status: TODO
+    status: READY
   - id: design-review
     status: TODO
     gate: design-gate
@@ -38,10 +38,12 @@ artifacts:
 - id: requirement-v1
   type: requirement
   uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/requirement.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-requirement-review-v1
 - id: design-gate
   status: PENDING
 - id: code-gate
@@ -50,9 +52,14 @@ gates:
   status: PENDING
 - id: release-gate
   status: PENDING
-evidence: []
+evidence:
+- id: evidence-requirement-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/requirement-review.md
 applied_events:
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-START
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-DONE
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-REVIEW-START
-updated_at: '2026-08-10T12:33:00Z'
+- EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-REVIEW-PASS
+updated_at: '2026-08-10T12:38:00Z'
