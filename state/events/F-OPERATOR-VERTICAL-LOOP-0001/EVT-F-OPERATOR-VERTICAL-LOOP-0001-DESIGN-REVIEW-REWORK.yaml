@@ -17,6 +17,12 @@ changes:
       stage: design
       role: architect
       source_stage: design-review
-      feedback: Close two MAJORs: define trusted immutable vertical operation-profile selection/binding from start through projection/resume with no client override and profile-conflict convergence rules; and replace Worker-supplied artifact/evidence URI authority with trusted collector materialization receipts/digests bound to dispatch, role, revision and candidate, with translators allowed to register only those trusted receipts.
+      feedback: >-
+        Close two MAJORs: define trusted immutable vertical operation-profile
+        selection/binding from start through projection/resume with no client
+        override and profile-conflict convergence rules; and replace
+        Worker-supplied artifact/evidence URI authority with trusted collector
+        materialization receipts/digests bound to dispatch, role, revision and
+        candidate, with translators allowed to register only those trusted receipts.
       status: TODO
       runtime: manual
