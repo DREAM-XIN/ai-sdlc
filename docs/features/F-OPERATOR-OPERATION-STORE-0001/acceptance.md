@@ -87,3 +87,7 @@ Acceptance relies on the approved Requirement/Design, fresh Code Re-review PASS 
 Feature-level `release-gate`: **PASS** and lifecycle may complete.
 
 This is a Feature acceptance decision only; it must not be interpreted as overall v0.3 release authorization.
+
+## Final lifecycle receipt
+
+Trusted Persist subsequently materialized the accepted Feature as authoritative Manifest revision `27` with `workflow.status: DONE` and requirement/design/code/verification/Feature-level release gates all `PASS`. This final receipt does not expand the accepted scope or alter the runtime candidate.
