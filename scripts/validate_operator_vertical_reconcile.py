@@ -219,6 +219,14 @@ def validate_launch_ack_recovery_and_unknown_boundary():
     assert dispatch.launch_calls[0]["external_dispatch_key"] == external_key
 
     snapshot, operation_id, _, external_key, _, _ = _authorized_without_lookup()
+    dispatch = DispatchGateway("LAUNCHED")
+    executor, _, _ = _executor(snapshot, dispatch)
+    result = executor.advance_until_stop(operation_id=operation_id)
+    assert result["status"] == "WAITING_EXTERNAL"
+    assert dispatch.lookup_calls == [external_key]
+    assert not dispatch.launch_calls
+
+    snapshot, operation_id, _, external_key, _, _ = _authorized_without_lookup()
     dispatch = DispatchGateway("UNKNOWN")
     executor, _, _ = _executor(snapshot, dispatch)
     result = executor.advance_until_stop(operation_id=operation_id)
