@@ -7,10 +7,22 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from operator_store import StoreCommandError, plan_needs_user, plan_operation_start
+from operator_store import (
+    StoreCommandError,
+    plan_authorize_launch,
+    plan_dispatch_claim,
+    plan_launch_lookup,
+    plan_needs_user,
+    plan_operation_start,
+)
 from operator_store_model import StoreSnapshot, apply_plan_to_snapshot
-from operator_vertical import FeatureSnapshot, VERTICAL_PROFILE, VerticalInvariantError
+from operator_vertical import FeatureSnapshot, TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_controller import VerticalLoopResumeBackend, select_vertical_action
+from operator_vertical_recovery import (
+    plan_vertical_callback_record,
+    plan_vertical_takeover,
+    recover_vertical_callback,
+)
 from operator_vertical_store import (
     plan_vertical_persist_confirmed,
     plan_vertical_persist_linearized,
@@ -43,6 +55,66 @@ def _start(profile=VERTICAL_PROFILE):
         operation_profile=profile,
     )
     return _apply(snapshot, plan, "s1"), plan.result["operation_id"]
+
+
+def _authorized_dispatch(snapshot, operation_id):
+    reservation = plan_vertical_semantic_reservation(
+        snapshot,
+        operation_id=operation_id,
+        generation=0,
+        target_repository=REPO,
+        feature_id=FEATURE,
+        expected_revision=10,
+        current_stage="implementation",
+        task_identity="vertical:implementation:10",
+        role="developer",
+        candidate_head_sha=HEAD,
+        occurred_at=NOW,
+        trusted_context_digest="trusted",
+    )
+    snapshot = _apply(snapshot, reservation, "s2")
+    effect_key = reservation.result["semantic_effect_key"]
+    claim = plan_dispatch_claim(
+        snapshot,
+        operation_id=operation_id,
+        generation=0,
+        effect_key=effect_key,
+        occurred_at=NOW,
+        trusted_context_digest="trusted",
+    )
+    snapshot = _apply(snapshot, claim, "s3")
+    external_key = claim.result["external_dispatch_key"]
+    snapshot = _apply(
+        snapshot,
+        plan_authorize_launch(
+            snapshot,
+            operation_id=operation_id,
+            generation=0,
+            claim_id=claim.result["claim_id"],
+            dispatch_id="vertical-dispatch-1",
+            occurred_at=NOW,
+            trusted_context_digest="trusted",
+            verified_expected_revision=10,
+            verified_stage="implementation",
+            verified_candidate_head_sha=HEAD,
+        ),
+        "s4",
+    )
+    snapshot = _apply(
+        snapshot,
+        plan_launch_lookup(
+            snapshot,
+            operation_id=operation_id,
+            generation=0,
+            external_dispatch_key_value=external_key,
+            lookup_state="LAUNCHED",
+            receipt_id="run-1",
+            occurred_at=NOW,
+            trusted_context_digest="trusted",
+        ),
+        "s5",
+    )
+    return snapshot, effect_key, external_key
 
 
 def validate_cross_revision_fence():
@@ -97,7 +169,7 @@ def validate_cross_revision_fence():
         assert exc.code == "STALE_REVISION"
 
 
-def validate_needs_user_stops_effects():
+def validate_needs_user_stops_effects_and_takeover():
     snapshot, operation_id = _start()
     plan = plan_needs_user(
         snapshot,
@@ -128,6 +200,113 @@ def validate_needs_user_stops_effects():
         raise AssertionError("semantic effect unexpectedly planned after NEEDS_USER")
     except StoreCommandError as exc:
         assert exc.code == "NEEDS_USER"
+    try:
+        plan_vertical_takeover(
+            snapshot,
+            operation_id=operation_id,
+            occurred_at=NOW,
+            trusted_context_digest="trusted",
+        )
+        raise AssertionError("vertical takeover unexpectedly bypassed NEEDS_USER")
+    except StoreCommandError as exc:
+        assert exc.code == "NEEDS_USER"
+
+
+def validate_callback_recovery_and_conflict():
+    snapshot, operation_id = _start()
+    snapshot, effect_key, external_key = _authorized_dispatch(snapshot, operation_id)
+    context = TrustedDispatchContext(
+        operation_id=operation_id,
+        operation_generation=0,
+        operation_profile=VERTICAL_PROFILE,
+        semantic_effect_key=effect_key,
+        external_dispatch_key=external_key,
+        dispatch_id="vertical-dispatch-1",
+        runtime_receipt_identity="runtime-1",
+        target_repository=REPO,
+        target_ref="feature/test",
+        feature_id=FEATURE,
+        expected_revision=10,
+        feature_stage="implementation",
+        task_id="vertical:implementation:10",
+        role="developer",
+        candidate_pr_number=1,
+        candidate_head_sha=HEAD,
+        worker_identity="developer-worker",
+        collector_identity="collector-1",
+    )
+    worker_payload = {"status": "COMPLETED", "summary": "done", "outputs": []}
+    receipts = []
+    plan = plan_vertical_callback_record(
+        snapshot,
+        context=context,
+        callback_id="callback-1",
+        worker_payload=worker_payload,
+        receipts=receipts,
+        occurred_at=NOW,
+        trusted_context_digest="trusted",
+    )
+    snapshot = _apply(snapshot, plan, "s6")
+    envelope = recover_vertical_callback(snapshot, operation_id=operation_id, callback_id="callback-1")
+    assert envelope["trusted_context"]["dispatch_id"] == "vertical-dispatch-1"
+    assert envelope["worker_payload"] == worker_payload
+
+    # Exact duplicate converges to the same immutable callback fact.
+    duplicate = plan_vertical_callback_record(
+        snapshot,
+        context=context,
+        callback_id="callback-1",
+        worker_payload=worker_payload,
+        receipts=receipts,
+        occurred_at=NOW,
+        trusted_context_digest="trusted",
+    )
+    _apply(snapshot, duplicate, "s7")
+
+    try:
+        plan_vertical_callback_record(
+            snapshot,
+            context=context,
+            callback_id="callback-1",
+            worker_payload={"status": "BLOCKED", "summary": "different", "outputs": []},
+            receipts=receipts,
+            occurred_at=NOW,
+            trusted_context_digest="trusted",
+        )
+        raise AssertionError("conflicting duplicate callback unexpectedly accepted")
+    except StoreCommandError as exc:
+        assert exc.code == "ALREADY_APPLIED"
+
+
+def validate_unknown_takeover_inheritance():
+    snapshot, operation_id = _start()
+    snapshot, _, external_key = _authorized_dispatch(snapshot, operation_id)
+    snapshot = _apply(
+        snapshot,
+        plan_launch_lookup(
+            snapshot,
+            operation_id=operation_id,
+            generation=0,
+            external_dispatch_key_value=external_key,
+            lookup_state="UNKNOWN",
+            receipt_id=None,
+            occurred_at=NOW,
+            trusted_context_digest="trusted",
+        ),
+        "s6",
+    )
+    assert vertical_projection(snapshot, operation_id)["status"] == "BLOCKED"
+    takeover = plan_vertical_takeover(
+        snapshot,
+        operation_id=operation_id,
+        occurred_at=NOW,
+        trusted_context_digest="trusted",
+    )
+    snapshot = _apply(snapshot, takeover, "s7")
+    projection = vertical_projection(snapshot, operation_id)
+    assert projection["generation"] == 1
+    assert projection["status"] == "BLOCKED"
+    assert external_key in projection["unresolved_unknown"]
 
 
 def validate_rereview_identity():
@@ -215,7 +394,9 @@ def validate_legacy_resume_fails_closed():
 
 def main():
     validate_cross_revision_fence()
-    validate_needs_user_stops_effects()
+    validate_needs_user_stops_effects_and_takeover()
+    validate_callback_recovery_and_conflict()
+    validate_unknown_takeover_inheritance()
     validate_rereview_identity()
     validate_canonical_profile_injection_rejected()
     validate_legacy_resume_fails_closed()
