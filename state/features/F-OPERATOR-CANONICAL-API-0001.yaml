@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 20
+revision: 21
 feature:
   id: F-OPERATOR-CANONICAL-API-0001
   title: Implement v0.3 canonical typed Operator API foundation
@@ -56,7 +56,7 @@ tasks:
     reject alias/thin-wrapper independence based on real adapter/transport evidence;
     keep fixtures test-only and rerun exact-head validation/CI.'
   target_pr: '#209'
-  status: READY
+  status: WORKING
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -144,4 +144,5 @@ applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-PASS-2
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REWORK
-updated_at: '2026-08-10T01:19:00Z'
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REMEDIATION-START
+updated_at: '2026-08-10T01:27:00Z'
