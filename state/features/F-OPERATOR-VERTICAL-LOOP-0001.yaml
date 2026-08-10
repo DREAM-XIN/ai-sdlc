@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 8
+revision: 9
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -45,7 +45,7 @@ tasks:
     URI authority with trusted collector materialization receipts/digests bound to
     dispatch, role, revision and candidate, with translators allowed to register only
     those trusted receipts.'
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -87,4 +87,5 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-DONE
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REVIEW-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REVIEW-REWORK
-updated_at: '2026-08-10T05:21:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REMEDIATION-START
+updated_at: '2026-08-10T05:23:00Z'
