@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 6
+revision: 7
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -8,15 +8,15 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: requirement-review
+  current_stage: design
   stages:
   - id: requirement
     status: DONE
   - id: requirement-review
-    status: WORKING
+    status: DONE
     gate: requirement-gate
   - id: design
-    status: TODO
+    status: READY
   - id: design-review
     status: TODO
     gate: design-gate
@@ -55,10 +55,12 @@ artifacts:
 - id: requirement-v2
   type: requirement
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-v2.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-requirement-review-v2
 - id: design-gate
   status: PENDING
 - id: code-gate
@@ -76,6 +78,10 @@ evidence:
   type: implementation
   status: pass
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-remediation.md
+- id: evidence-requirement-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review-v2.md
 applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
@@ -83,4 +89,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-REWORK
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-DONE
-updated_at: '2026-08-10T03:34:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-PASS
+updated_at: '2026-08-10T03:35:00Z'
