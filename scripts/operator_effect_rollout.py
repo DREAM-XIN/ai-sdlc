@@ -156,22 +156,26 @@ class EffectLineageWriteFence:
         resulting = apply_plan_to_snapshot(snapshot, plan)
         reservation_prefix = "state/operator/v1/reservations/external/"
         claim_prefix = "state/operator/v1/claims/dispatch/"
-        protected_writes: list[tuple[str, str]] = []
+        protected_writes: list[tuple[str, str, str]] = []
 
         for mutation in plan.mutations:
             value = mutation.value if isinstance(mutation.value, dict) else {}
             operation_id = None
             semantic_key = None
+            kind = None
             if mutation.kind == "create_immutable" and mutation.path.startswith(reservation_prefix):
                 operation_id = value.get("created_operation_id")
                 semantic_key = value.get("semantic_effect_key")
+                kind = "reservation"
             elif mutation.kind == "create_immutable" and mutation.path.startswith(claim_prefix):
                 operation_id = value.get("operation_id")
                 semantic_key = value.get("semantic_effect_key")
+                kind = "claim"
             elif mutation.kind == "create_immutable" and value.get("event_type") == "dispatch.launch.authorized":
                 operation_id = value.get("operation_id")
                 semantic_key = (value.get("payload") or {}).get("semantic_effect_key")
-            if not operation_id or not semantic_key:
+                kind = "authorization"
+            if not operation_id or not semantic_key or not kind:
                 continue
             try:
                 operation = rebuild_projection(snapshot, str(operation_id))
@@ -179,16 +183,28 @@ class EffectLineageWriteFence:
                 raise StoreCommandError("MIXED_WRITER_FENCED", "external-effect write lacks durable Operation/profile binding") from exc
             if operation.get("operation_profile") != self.rollout.operation_profile:
                 continue
-            protected_writes.append((str(operation_id), str(semantic_key)))
+            protected_writes.append((kind, str(operation_id), str(semantic_key)))
 
         if not protected_writes:
             return
-        if plan.result.get(TRUSTED_WRITER_RESULT_FIELD) != self.rollout.writer_capability:
+
+        marker_ok = plan.result.get(TRUSTED_WRITER_RESULT_FIELD) == self.rollout.writer_capability
+        paths = [mutation.path for mutation in plan.mutations if mutation.kind == "create_immutable"]
+        atomic_lineage_activation = (
+            all(kind == "reservation" for kind, _operation_id, _semantic_key in protected_writes)
+            and any("/effect-lineages/members/" in path for path in paths)
+            and (
+                any("/effect-lineages/anchors/" in path for path in paths)
+                or any("/effect-lineages/resolutions/" in path for path in paths)
+            )
+        )
+        if not marker_ok and not atomic_lineage_activation:
             raise StoreCommandError(
                 "MIXED_WRITER_FENCED",
                 "raw vertical external-effect writer lacks the verified lineage-aware writer capability",
             )
-        for _operation_id, semantic_key in protected_writes:
+
+        for _kind, _operation_id, semantic_key in protected_writes:
             try:
                 assert_lineage_member(resulting, semantic_key)
             except Exception as exc:
