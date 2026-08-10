@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 7
+revision: 8
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -33,7 +33,20 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REMEDIATION-1
+  kind: remediation
+  stage: design
+  role: architect
+  source_stage: design-review
+  feedback: 'Close two MAJORs: define trusted immutable vertical operation-profile
+    selection/binding from start through projection/resume with no client override
+    and profile-conflict convergence rules; and replace Worker-supplied artifact/evidence
+    URI authority with trusted collector materialization receipts/digests bound to
+    dispatch, role, revision and candidate, with translators allowed to register only
+    those trusted receipts.'
+  status: TODO
+  runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -61,6 +74,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/design-review.md
 applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-DONE
@@ -69,4 +86,5 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-DONE
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REVIEW-START
-updated_at: '2026-08-10T05:19:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-DESIGN-REVIEW-REWORK
+updated_at: '2026-08-10T05:21:00Z'
