@@ -28,6 +28,12 @@ from operator_vertical_store import (
     plan_vertical_semantic_reservation,
     vertical_projection,
 )
+from operator_effect_lineage_integration import plan_lineage_gated_reservation
+from operator_effect_lineage_fences import (
+    plan_lineage_authorize_launch,
+    plan_lineage_dispatch_claim,
+)
+from operator_effect_migration import validate_lineage_rollout
 
 
 class VerticalFeatureGateway(Protocol):
@@ -49,12 +55,18 @@ class TrustedVerticalExecutorConfig:
     target_ref: str
     trusted_context_digest: str
     max_auto_steps: int = 16
+    effect_lineage_required: bool = True
+    old_writers_quiesced: bool = True
 
     def __post_init__(self):
         if not self.target_ref or not self.trusted_context_digest:
             raise ValueError("trusted vertical executor config is incomplete")
         if self.max_auto_steps < 1 or self.max_auto_steps > 64:
             raise ValueError("invalid vertical auto-step bound")
+        validate_lineage_rollout(
+            old_writers_quiesced=self.old_writers_quiesced,
+            effect_lineage_required=self.effect_lineage_required,
+        )
 
 
 class TrustedVerticalExecutor:
@@ -192,33 +204,77 @@ class TrustedVerticalExecutor:
         )
         generation = projection["generation"]
         occurred_at = self.runtime.clock()
-        reservation = self._commit(
-            lambda snapshot: plan_vertical_semantic_reservation(
-                snapshot,
-                operation_id=operation_id,
-                generation=generation,
-                target_repository=feature.repository,
-                feature_id=feature.feature_id,
-                expected_revision=feature.revision,
-                current_stage=feature.current_stage,
-                task_identity=str(action.task_identity),
-                role=str(action.role),
-                candidate_head_sha=action.candidate_head_sha,
-                occurred_at=occurred_at,
-                trusted_context_digest=self.config.trusted_context_digest,
-            )
-        ).result
+        lineage_id = None
+        if self.config.effect_lineage_required:
+            reservation = self._commit(
+                lambda snapshot: plan_lineage_gated_reservation(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    target_repository=feature.repository,
+                    feature_id=feature.feature_id,
+                    expected_revision=feature.revision,
+                    current_stage=feature.current_stage,
+                    task_identity=str(action.task_identity),
+                    role=str(action.role),
+                    candidate_head_sha=action.candidate_head_sha,
+                    current_target_ref=feature.target_ref,
+                    operation_profile=VERTICAL_PROFILE,
+                    effect_kind="worker-dispatch",
+                    logical_work_slot=action.step,
+                    task_id=action.task_id,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                    trusted_profile_digest=digest_json(
+                        {"operation_profile": VERTICAL_PROFILE, "effect_lineage_required": True}
+                    ),
+                )
+            ).result
+            if reservation.get("status") == "BLOCKED":
+                return self._public(operation_id)
+            lineage_id = str(reservation["effect_lineage_id"])
+        else:
+            reservation = self._commit(
+                lambda snapshot: plan_vertical_semantic_reservation(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    target_repository=feature.repository,
+                    feature_id=feature.feature_id,
+                    expected_revision=feature.revision,
+                    current_stage=feature.current_stage,
+                    task_identity=str(action.task_identity),
+                    role=str(action.role),
+                    candidate_head_sha=action.candidate_head_sha,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                )
+            ).result
+
         effect_key = reservation["semantic_effect_key"]
-        claim = self._commit(
-            lambda snapshot: plan_dispatch_claim(
-                snapshot,
-                operation_id=operation_id,
-                generation=generation,
-                effect_key=effect_key,
-                occurred_at=occurred_at,
-                trusted_context_digest=self.config.trusted_context_digest,
-            )
-        ).result
+        if self.config.effect_lineage_required:
+            claim = self._commit(
+                lambda snapshot: plan_lineage_dispatch_claim(
+                    snapshot,
+                    effect_lineage_id=str(lineage_id),
+                    operation_id=operation_id,
+                    generation=generation,
+                    effect_key=effect_key,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                )
+            ).result
+        else:
+            claim = self._commit(
+                lambda snapshot: plan_dispatch_claim(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    effect_key=effect_key,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                )
+            ).result
         external_key = claim["external_dispatch_key"]
         dispatch_id = "vertical-" + digest_json(
             {"operation_id": operation_id, "generation": generation, "external_dispatch_key": external_key}
@@ -231,20 +287,37 @@ class TrustedVerticalExecutor:
             stage=feature.current_stage,
             candidate=action.candidate_head_sha,
         )
-        self._commit(
-            lambda snapshot: plan_authorize_launch(
-                snapshot,
-                operation_id=operation_id,
-                generation=generation,
-                claim_id=claim["claim_id"],
-                dispatch_id=dispatch_id,
-                occurred_at=occurred_at,
-                trusted_context_digest=self.config.trusted_context_digest,
-                verified_expected_revision=feature.revision,
-                verified_stage=feature.current_stage,
-                verified_candidate_head_sha=action.candidate_head_sha,
+        if self.config.effect_lineage_required:
+            self._commit(
+                lambda snapshot: plan_lineage_authorize_launch(
+                    snapshot,
+                    effect_lineage_id=str(lineage_id),
+                    operation_id=operation_id,
+                    generation=generation,
+                    claim_id=claim["claim_id"],
+                    dispatch_id=dispatch_id,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                    verified_expected_revision=feature.revision,
+                    verified_stage=feature.current_stage,
+                    verified_candidate_head_sha=action.candidate_head_sha,
+                )
             )
-        )
+        else:
+            self._commit(
+                lambda snapshot: plan_authorize_launch(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    claim_id=claim["claim_id"],
+                    dispatch_id=dispatch_id,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                    verified_expected_revision=feature.revision,
+                    verified_stage=feature.current_stage,
+                    verified_candidate_head_sha=action.candidate_head_sha,
+                )
+            )
         dispatch = {
             "operation_id": operation_id,
             "operation_generation": generation,
