@@ -50,6 +50,7 @@ ALLOWED_EVIDENCE_TYPES = frozenset(
     }
 )
 STRONG_EVIDENCE_TYPES = frozenset({"EXTERNAL_KEY_INVALIDATED", "NON_OVERLAPPING_SCOPE"})
+EFFECT_RESOLUTION_POLICY_SCHEMA = "ai-sdlc.effect-resolution-policy/v1"
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ class EffectResolutionAuthority:
 
 
 class TrustedEffectEvidenceVerifier:
-    """Resolve evidence refs through a trusted source instead of trusting caller dictionaries."""
+    """Resolve evidence refs through one current trusted policy-selected source."""
 
     def __init__(
         self,
@@ -115,7 +116,7 @@ class TrustedEffectEvidenceVerifier:
             if kind in STRONG_EVIDENCE_TYPES and kind not in self.strong_evidence_types:
                 raise StoreCommandError(
                     "INSUFFICIENT_EVIDENCE",
-                    "no reviewed trusted strong-evidence capability is configured for this resolution type",
+                    "current protected resolution policy does not authorize this strong-evidence capability",
                 )
             if kind in {"EXTERNAL_LAUNCH_RECEIPT", "EXTERNAL_NOT_LAUNCHED", "EXTERNAL_KEY_INVALIDATED"}:
                 if row.get("external_dispatch_key") != predecessor_external_dispatch_key:
@@ -141,6 +142,127 @@ class TrustedEffectEvidenceVerifier:
             )
             verified.append(row)
         return tuple(verified)
+
+
+@dataclass(frozen=True)
+class VerifiedEffectResolutionPolicy:
+    authority: EffectResolutionAuthority
+    evidence_verifier: TrustedEffectEvidenceVerifier
+    policy_epoch: str
+    policy_digest: str
+    proposal_profile_digest: str
+
+
+def _policy_material(policy: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in policy.items() if key != "policy_digest"}
+
+
+class ProtectedEffectResolutionPolicyVerifier:
+    """Re-read protected/default-branch/installation resolution policy on every use.
+
+    The verifier itself is trusted composition state. Callers never supply an
+    EffectResolutionAuthority or a strong-evidence capability directly to the planner.
+    """
+
+    def __init__(
+        self,
+        *,
+        repository: str,
+        state_ref: str,
+        operation_profile: str,
+        policy_loader: Callable[[str, str, str], dict[str, Any]],
+        evidence_fact_loader: Callable[[str, str], dict[str, Any]],
+    ):
+        repository = normalize_repository(repository)
+        if not repository or "/" not in repository:
+            raise ValueError("trusted Effect Resolution repository binding is required")
+        if not state_ref.startswith("refs/heads/"):
+            raise ValueError("trusted Effect Resolution state ref must be a branch ref")
+        if operation_profile != VERTICAL_PROFILE:
+            raise ValueError("trusted Effect Resolution verifier must bind the reviewed vertical profile")
+        if not callable(policy_loader) or not callable(evidence_fact_loader):
+            raise ValueError("trusted Effect Resolution policy/evidence loaders are required")
+        self.repository = repository
+        self.state_ref = state_ref
+        self.operation_profile = operation_profile
+        self.policy_loader = policy_loader
+        self.evidence_fact_loader = evidence_fact_loader
+
+    def verify_current(self) -> VerifiedEffectResolutionPolicy:
+        policy = self.policy_loader(self.repository, self.state_ref, self.operation_profile)
+        if not isinstance(policy, dict) or policy.get("schema_version") != EFFECT_RESOLUTION_POLICY_SCHEMA:
+            raise StoreCommandError("POLICY_RESTRICTED", "invalid current protected Effect Resolution policy")
+        if normalize_repository(str(policy.get("repository", ""))) != self.repository:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy repository binding mismatch")
+        if policy.get("state_ref") != self.state_ref or policy.get("operation_profile") != self.operation_profile:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy state-ref/profile binding mismatch")
+
+        policy_ref = str(policy.get("policy_ref") or "")
+        if not policy_ref.startswith(("protected://", "default-branch://", "installation://")):
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy is not from trusted control state")
+        policy_epoch = str(policy.get("policy_epoch") or "")
+        if not policy_epoch:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy epoch is missing")
+
+        expected_digest = digest_json(_policy_material(policy))
+        if policy.get("policy_digest") != expected_digest:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy digest mismatch")
+
+        authority_id = str(policy.get("authority_id") or "")
+        if not authority_id:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy lacks authority identity")
+        allowed_choices = frozenset(str(value) for value in policy.get("allowed_choices", []))
+        if not allowed_choices or not allowed_choices.issubset(ALLOWED_RESOLUTION_CHOICES):
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy expands frozen choices")
+        allowed_resolvers = frozenset(str(value) for value in policy.get("allowed_resolvers", []))
+        if not allowed_resolvers or any(not value for value in allowed_resolvers):
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy lacks trusted resolver identities")
+
+        trusted_profile_digest = str(policy.get("trusted_profile_digest") or "")
+        if not trusted_profile_digest:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy lacks trusted profile digest")
+        strong_evidence_types = frozenset(str(value) for value in policy.get("strong_evidence_types", []))
+        if not strong_evidence_types.issubset(STRONG_EVIDENCE_TYPES):
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy declares unsupported strong evidence")
+
+        evidence_source_id = str(policy.get("evidence_source_id") or "")
+        evidence_source_digest = str(policy.get("evidence_source_digest") or "")
+        if not evidence_source_id or not evidence_source_digest:
+            raise StoreCommandError("POLICY_RESTRICTED", "Effect Resolution policy lacks trusted evidence-source binding")
+
+        proposal_profile_digest = digest_json(
+            {
+                "operation_profile": self.operation_profile,
+                "trusted_profile_digest": trusted_profile_digest,
+                "resolution_policy_epoch": policy_epoch,
+                "resolution_policy_digest": expected_digest,
+            }
+        )
+        authority = EffectResolutionAuthority(
+            authority_id=authority_id,
+            allowed_choices=allowed_choices,
+            allowed_resolvers=allowed_resolvers,
+            trusted_policy_ref=policy_ref,
+            trusted_policy_digest=expected_digest,
+            operation_profile=self.operation_profile,
+            trusted_profile_digest=proposal_profile_digest,
+        )
+        evidence_verifier = TrustedEffectEvidenceVerifier(
+            source_id=evidence_source_id,
+            source_digest=evidence_source_digest,
+            fact_loader=lambda ref: self.evidence_fact_loader(evidence_source_id, ref),
+            strong_evidence_types=strong_evidence_types,
+        )
+        return VerifiedEffectResolutionPolicy(
+            authority=authority,
+            evidence_verifier=evidence_verifier,
+            policy_epoch=policy_epoch,
+            policy_digest=expected_digest,
+            proposal_profile_digest=proposal_profile_digest,
+        )
+
+    def current_proposal_profile_digest(self) -> str:
+        return self.verify_current().proposal_profile_digest
 
 
 def resolution_identity(material: dict[str, Any]) -> str:
@@ -185,9 +307,8 @@ def _verify_fresh_feature(
 def plan_effect_resolution(
     snapshot: StoreSnapshot,
     *,
-    authority: EffectResolutionAuthority,
+    policy_verifier: ProtectedEffectResolutionPolicyVerifier,
     trusted_feature: FeatureSnapshot,
-    evidence_verifier: TrustedEffectEvidenceVerifier,
     resolution_id: str,
     effect_lineage_id: str,
     predecessor_semantic_effect_key: str,
@@ -202,12 +323,19 @@ def plan_effect_resolution(
     occurred_at: str,
     trusted_context_digest: str,
 ) -> StoreMutationPlan:
+    if not isinstance(policy_verifier, ProtectedEffectResolutionPolicyVerifier):
+        raise StoreCommandError(
+            "POLICY_RESTRICTED",
+            "current protected Effect Resolution policy verifier is required",
+        )
+    current_policy = policy_verifier.verify_current()
+    authority = current_policy.authority
+    evidence_verifier = current_policy.evidence_verifier
+
     if choice not in ALLOWED_RESOLUTION_CHOICES or choice not in authority.allowed_choices:
-        raise StoreCommandError("POLICY_RESTRICTED", "resolution choice is not allowed by frozen trusted authority")
+        raise StoreCommandError("POLICY_RESTRICTED", "resolution choice is not allowed by current trusted authority")
     if resolver_identity not in authority.allowed_resolvers:
-        raise StoreCommandError("POLICY_RESTRICTED", "resolver identity is not trusted for Effect Resolution")
-    if not isinstance(evidence_verifier, TrustedEffectEvidenceVerifier):
-        raise StoreCommandError("POLICY_RESTRICTED", "trusted Effect evidence verifier is required")
+        raise StoreCommandError("POLICY_RESTRICTED", "resolver identity is not trusted by current Effect Resolution policy")
 
     operation = vertical_projection(snapshot, current_operation_id)
     if operation["generation"] != current_operation_generation:
@@ -258,8 +386,11 @@ def plan_effect_resolution(
             raise StoreCommandError("STALE_RESOLUTION", "proposal candidate binding changed")
         if proposal.get("operation_id") != current_operation_id or proposal.get("operation_generation") != current_operation_generation:
             raise StoreCommandError("STALE_RESOLUTION", "proposal Operation binding changed")
-        if proposal.get("trusted_profile_digest") != authority.trusted_profile_digest:
-            raise StoreCommandError("STALE_RESOLUTION", "trusted profile/policy material changed after proposal creation")
+        if proposal.get("trusted_profile_digest") != current_policy.proposal_profile_digest:
+            raise StoreCommandError(
+                "STALE_RESOLUTION",
+                "protected Effect Resolution policy/profile changed after proposal creation",
+            )
     elif successor_proposed_semantic_effect_key is not None:
         raise StoreCommandError("INVALID_REQUEST", "successor effect key requires proposal id")
 
