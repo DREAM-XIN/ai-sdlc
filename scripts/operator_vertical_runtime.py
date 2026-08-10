@@ -12,6 +12,7 @@ from operator_vertical_callback import TrustedVerticalCallbackCoordinator
 from operator_vertical_controller import FeatureTruthGateway, VerticalLoopResumeBackend
 from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
 from operator_vertical_reconcile import TrustedRecoveringVerticalExecutor
+from operator_effect_rollout import EffectLineageWriteFence
 
 
 @dataclass(frozen=True)
@@ -65,19 +66,36 @@ def build_trusted_vertical_runtime(
     config: TrustedVerticalLoopConfig,
     *,
     protection_verifier,
+    rollout_verifier,
     feature_gateway: FeatureTruthGateway,
     persist_gateway,
     dispatch_gateway,
     collector_content_loader,
     clock=None,
 ) -> TrustedVerticalRuntimeBundle:
-    """Build all vertical write surfaces over one protected Store runtime instance."""
+    """Build all vertical write surfaces only after trusted rollout/fence verification."""
     if not callable(collector_content_loader):
         raise ValueError("trusted collector content loader is required")
+    if rollout_verifier is None or not callable(getattr(rollout_verifier, "verify", None)):
+        raise ValueError("trusted Effect Lineage rollout verifier is required")
+    rollout = rollout_verifier.verify(
+        repository=config.store.repository,
+        state_ref=config.store.state_ref,
+        operation_profile=VERTICAL_PROFILE,
+    )
+    rollout.validate_for(
+        repository=config.store.repository,
+        state_ref=config.store.state_ref,
+        operation_profile=VERTICAL_PROFILE,
+    )
+    if bool(getattr(rollout, "test_only", False)):
+        raise ValueError("test-only Effect Lineage rollout cannot enable production vertical runtime")
+
     runtime = build_trusted_operator_store_runtime(
         config.store,
         protection_verifier=protection_verifier,
         clock=clock,
+        plan_guard=EffectLineageWriteFence(rollout),
     )
     base_executor = TrustedVerticalExecutor(
         runtime=runtime,
@@ -87,6 +105,10 @@ def build_trusted_vertical_runtime(
         config=TrustedVerticalExecutorConfig(
             target_ref=config.target_ref,
             trusted_context_digest=config.trusted_context_digest,
+            effect_lineage_required=rollout.effect_lineage_required,
+            old_writers_quiesced=bool(rollout.writer_fence_receipt_digest),
+            rollout_policy_digest=rollout.policy_digest,
+            writer_fence_receipt_digest=rollout.writer_fence_receipt_digest,
             max_auto_steps=config.max_auto_steps,
         ),
     )
@@ -128,6 +150,7 @@ def build_trusted_vertical_operator_api_backends(
     config: TrustedVerticalLoopConfig,
     *,
     protection_verifier,
+    rollout_verifier,
     feature_gateway: FeatureTruthGateway,
     persist_gateway,
     dispatch_gateway,
@@ -138,6 +161,7 @@ def build_trusted_vertical_operator_api_backends(
     return build_trusted_vertical_runtime(
         config,
         protection_verifier=protection_verifier,
+        rollout_verifier=rollout_verifier,
         feature_gateway=feature_gateway,
         persist_gateway=persist_gateway,
         dispatch_gateway=dispatch_gateway,
