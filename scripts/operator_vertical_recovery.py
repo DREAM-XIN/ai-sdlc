@@ -13,7 +13,7 @@ from operator_store_model import (
     rebuild_projection,
     reservation_path,
 )
-from operator_vertical import RoleIndependencePolicy, TrustedDispatchContext, VERTICAL_PROFILE
+from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_store import vertical_projection
 
 
@@ -171,15 +171,55 @@ def recover_vertical_callback(snapshot: StoreSnapshot, *, operation_id: str, cal
     return envelope
 
 
+class DurableRoleIndependencePolicy:
+    """Role separation reconstructed from ordered accepted callback lineage.
+
+    Candidate contributors are every accepted implementation/remediation Developer identity
+    in journal order. Reviewer lineage is every accepted Reviewer identity in journal order.
+    Compatibility scalar attributes remain available for older read-only callers, but
+    authorization uses the complete immutable tuples below.
+    """
+
+    def __init__(
+        self,
+        *,
+        candidate_contributor_identities: tuple[str, ...],
+        reviewer_identities: tuple[str, ...],
+        developer_identity: str | None,
+        remediation_developer_identity: str | None,
+    ):
+        self.candidate_contributor_identities = candidate_contributor_identities
+        self.reviewer_identities = reviewer_identities
+        self.developer_identity = developer_identity
+        self.reviewer_identity = reviewer_identities[-1] if reviewer_identities else None
+        self.remediation_developer_identity = remediation_developer_identity
+
+    def verify(self, context: TrustedDispatchContext) -> None:
+        worker = context.worker_identity
+        if not worker:
+            raise VerticalInvariantError("BLOCKED", "trusted Worker identity is required")
+        contributors = set(self.candidate_contributor_identities)
+        reviewers = set(self.reviewer_identities)
+        if context.role == "reviewer":
+            if worker in contributors:
+                raise VerticalInvariantError("POLICY_DENIED", "reviewer identity is not independent from candidate lineage")
+        elif context.role == "qa":
+            if worker in contributors or worker in reviewers:
+                raise VerticalInvariantError("POLICY_DENIED", "QA identity is not independent from candidate/review lineage")
+        elif context.role != "developer":
+            raise VerticalInvariantError("INVALID_REQUEST", "unsupported vertical role")
+
+
 def derive_role_independence_policy(
     snapshot: StoreSnapshot,
     *,
     operation_id: str,
     exclude_callback_id: str | None = None,
-) -> RoleIndependencePolicy:
-    """Rebuild trusted role-separation identities only from accepted durable callbacks."""
+) -> DurableRoleIndependencePolicy:
+    """Rebuild ordered role-separation lineage only from accepted durable callbacks."""
     callback_by_id: dict[str, dict[str, Any]] = {}
     validated: list[str] = []
+    seen_validated: set[str] = set()
     for event in operation_events(snapshot, operation_id):
         payload = event.get("payload") or {}
         if event["event_type"] == "worker.callback.recorded":
@@ -189,11 +229,13 @@ def derive_role_independence_policy(
                 callback_by_id[callback_id] = envelope
         elif event["event_type"] == "worker.result.validated":
             callback_id = str(payload.get("callback_id") or "")
-            if callback_id:
+            if callback_id and callback_id not in seen_validated:
+                seen_validated.add(callback_id)
                 validated.append(callback_id)
 
+    contributors: list[str] = []
+    reviewers: list[str] = []
     developer_identity = None
-    reviewer_identity = None
     remediation_developer_identity = None
     for callback_id in validated:
         if callback_id == exclude_callback_id:
@@ -212,14 +254,20 @@ def derive_role_independence_policy(
         if role == "developer":
             if task_identity.startswith("vertical:code-remediation:"):
                 remediation_developer_identity = worker_identity
+                if worker_identity not in contributors:
+                    contributors.append(worker_identity)
             elif task_identity.startswith("vertical:implementation:"):
-                developer_identity = worker_identity
-        elif role == "reviewer":
-            reviewer_identity = worker_identity
+                if developer_identity is None:
+                    developer_identity = worker_identity
+                if worker_identity not in contributors:
+                    contributors.append(worker_identity)
+        elif role == "reviewer" and worker_identity not in reviewers:
+            reviewers.append(worker_identity)
 
-    return RoleIndependencePolicy(
+    return DurableRoleIndependencePolicy(
+        candidate_contributor_identities=tuple(contributors),
+        reviewer_identities=tuple(reviewers),
         developer_identity=developer_identity,
-        reviewer_identity=reviewer_identity,
         remediation_developer_identity=remediation_developer_identity,
     )
 
