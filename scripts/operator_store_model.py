@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""Pure deterministic model/reducer helpers for the v0.3 Operator Store."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import hashlib
+import json
+import re
+from typing import Any, Iterable
+
+STORE_ROOT = "state/operator/v1"
+EVENT_SCHEMA_VERSION = "ai-sdlc.operation-event/v1"
+TERMINAL_STATUSES = frozenset({"DONE", "CANCELLED"})
+VALID_STATUSES = frozenset({"RUNNING", "WAITING_EXTERNAL", "BLOCKED", "DONE", "CANCELLED"})
+_EVENT_RE = re.compile(r"^state/operator/v1/operations/([^/]+)/events/(\d+)-([^/]+)\.json$")
+
+
+class StoreInvariantError(ValueError):
+    pass
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def digest_json(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def normalize_repository(value: str) -> str:
+    text = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", text):
+        raise StoreInvariantError("invalid target repository")
+    return text.lower()
+
+
+def semantic_effect_material(
+    *,
+    target_repository: str,
+    feature_id: str,
+    expected_revision: int,
+    current_stage: str,
+    task_identity: str,
+    role: str,
+    candidate_head_sha: str | None = None,
+) -> dict[str, Any]:
+    if expected_revision < 0:
+        raise StoreInvariantError("expected revision must be non-negative")
+    values = {
+        "target_repository": normalize_repository(target_repository),
+        "feature_id": feature_id,
+        "expected_revision": expected_revision,
+        "current_stage": current_stage,
+        "task_identity": task_identity,
+        "role": role,
+        "candidate_head_sha": candidate_head_sha,
+    }
+    if any(not str(values[key]).strip() for key in ("feature_id", "current_stage", "task_identity", "role")):
+        raise StoreInvariantError("semantic effect identity fields must be non-empty")
+    return values
+
+
+def semantic_effect_key(**kwargs: Any) -> str:
+    return digest_json(semantic_effect_material(**kwargs))
+
+
+def external_dispatch_key(effect_key: str) -> str:
+    return "dispatch-" + hashlib.sha256(("ai-sdlc-external:" + effect_key).encode("utf-8")).hexdigest()[:40]
+
+
+def operation_id_for(target_repository: str, feature_id: str, idempotency_key: str) -> str:
+    material = {
+        "repository": normalize_repository(target_repository),
+        "feature_id": feature_id,
+        "idempotency_key": idempotency_key,
+    }
+    return "op-" + digest_json(material)[:40]
+
+
+def feature_claim_id(operation_id: str, generation: int) -> str:
+    return "fc-" + digest_json({"operation_id": operation_id, "generation": generation})[:40]
+
+
+def dispatch_claim_id(operation_id: str, generation: int, effect_key: str) -> str:
+    return "dc-" + digest_json({"operation_id": operation_id, "generation": generation, "effect_key": effect_key})[:40]
+
+
+def event_path(operation_id: str, sequence: int, event_id: str) -> str:
+    return f"{STORE_ROOT}/operations/{operation_id}/events/{sequence:08d}-{event_id}.json"
+
+
+def projection_path(operation_id: str) -> str:
+    return f"{STORE_ROOT}/projections/{operation_id}.json"
+
+
+def reservation_path(effect_key: str) -> str:
+    return f"{STORE_ROOT}/reservations/external/{effect_key}.json"
+
+
+def dispatch_claim_path(claim_id: str) -> str:
+    return f"{STORE_ROOT}/claims/dispatch/{claim_id}.json"
+
+
+def feature_claim_path(target_repository: str, feature_id: str, claim_id: str) -> str:
+    repo_hash = hashlib.sha256(normalize_repository(target_repository).encode("utf-8")).hexdigest()[:24]
+    return f"{STORE_ROOT}/claims/feature/{repo_hash}/{feature_id}/{claim_id}.json"
+
+
+def is_projection_path(path: str) -> bool:
+    return path.startswith(f"{STORE_ROOT}/projections/") and path.endswith(".json")
+
+
+def is_immutable_path(path: str) -> bool:
+    prefixes = (
+        f"{STORE_ROOT}/operations/",
+        f"{STORE_ROOT}/reservations/external/",
+        f"{STORE_ROOT}/claims/dispatch/",
+        f"{STORE_ROOT}/claims/feature/",
+    )
+    return path.startswith(prefixes) and path.endswith(".json") and not is_projection_path(path)
+
+
+def validate_store_path(path: str) -> None:
+    if not path.startswith(STORE_ROOT + "/"):
+        raise StoreInvariantError("store mutation outside state/operator/v1")
+    if ".." in path.split("/"):
+        raise StoreInvariantError("store path traversal is forbidden")
+
+
+@dataclass(frozen=True)
+class StoreSnapshot:
+    ref_sha: str | None = None
+    files: dict[str, Any] = field(default_factory=dict)
+
+    def get(self, path: str) -> Any | None:
+        return self.files.get(path)
+
+
+@dataclass(frozen=True)
+class StoreMutation:
+    kind: str
+    path: str
+    value: Any
+
+
+@dataclass(frozen=True)
+class StoreMutationPlan:
+    expected_ref_sha: str | None
+    mutations: tuple[StoreMutation, ...]
+    result: dict[str, Any]
+
+
+def apply_plan_to_snapshot(snapshot: StoreSnapshot, plan: StoreMutationPlan, *, new_ref_sha: str | None = None) -> StoreSnapshot:
+    if plan.expected_ref_sha != snapshot.ref_sha:
+        raise StoreInvariantError("plan expected ref does not match snapshot")
+    files = dict(snapshot.files)
+    for mutation in plan.mutations:
+        validate_store_path(mutation.path)
+        if mutation.kind == "create_immutable":
+            if not is_immutable_path(mutation.path):
+                raise StoreInvariantError("create_immutable used for non-immutable path")
+            if mutation.path in files:
+                if canonical_json(files[mutation.path]) != canonical_json(mutation.value):
+                    raise StoreInvariantError("immutable store artifact conflict")
+                continue
+            files[mutation.path] = mutation.value
+        elif mutation.kind == "replace_projection":
+            if not is_projection_path(mutation.path):
+                raise StoreInvariantError("only projection cache may be replaced")
+            files[mutation.path] = mutation.value
+        else:
+            raise StoreInvariantError(f"unsupported store mutation kind: {mutation.kind}")
+    return StoreSnapshot(ref_sha=new_ref_sha if new_ref_sha is not None else snapshot.ref_sha, files=files)
+
+
+def operation_events(snapshot: StoreSnapshot, operation_id: str) -> list[dict[str, Any]]:
+    rows: list[tuple[int, str, dict[str, Any]]] = []
+    for path, value in snapshot.files.items():
+        match = _EVENT_RE.match(path)
+        if not match or match.group(1) != operation_id:
+            continue
+        sequence = int(match.group(2))
+        event_id = match.group(3)
+        if not isinstance(value, dict):
+            raise StoreInvariantError("operation event must be an object")
+        rows.append((sequence, event_id, value))
+    rows.sort(key=lambda row: row[0])
+    for expected, (sequence, event_id, event) in enumerate(rows, start=1):
+        if sequence != expected:
+            raise StoreInvariantError("operation event sequence gap or duplicate")
+        if event.get("schema_version") != EVENT_SCHEMA_VERSION:
+            raise StoreInvariantError("unsupported operation event schema")
+        if event.get("operation_id") != operation_id:
+            raise StoreInvariantError("operation event id binding mismatch")
+        if event.get("sequence") != sequence or event.get("event_id") != event_id:
+            raise StoreInvariantError("operation event path/content binding mismatch")
+    return [row[2] for row in rows]
+
+
+def operation_ids(snapshot: StoreSnapshot) -> tuple[str, ...]:
+    values = set()
+    for path in snapshot.files:
+        match = _EVENT_RE.match(path)
+        if match:
+            values.add(match.group(1))
+    return tuple(sorted(values))
+
+
+def next_sequence(snapshot: StoreSnapshot, operation_id: str) -> int:
+    return len(operation_events(snapshot, operation_id)) + 1
+
+
+def make_event(
+    *,
+    operation_id: str,
+    generation: int,
+    sequence: int,
+    event_id: str,
+    event_type: str,
+    occurred_at: str,
+    payload: dict[str, Any] | None = None,
+    trusted_context_digest: str = "trusted",
+) -> dict[str, Any]:
+    if generation < 0 or sequence < 1:
+        raise StoreInvariantError("invalid operation event generation/sequence")
+    if not event_id or not event_type:
+        raise StoreInvariantError("operation event id/type required")
+    return {
+        "schema_version": EVENT_SCHEMA_VERSION,
+        "operation_id": operation_id,
+        "operation_generation": generation,
+        "sequence": sequence,
+        "event_id": event_id,
+        "event_type": event_type,
+        "occurred_at": occurred_at,
+        "trusted_context_digest": trusted_context_digest,
+        "payload": dict(payload or {}),
+    }
+
+
+def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, Any]:
+    events = operation_events(snapshot, operation_id)
+    if not events:
+        raise StoreInvariantError("operation not found")
+    status: str | None = None
+    generation = 0
+    target_repository = None
+    feature_id = None
+    expected_revision = None
+    authorized_dispatches: set[str] = set()
+    unresolved_unknown: set[str] = set()
+    linearized_persists: set[str] = set()
+    confirmed_persists: set[str] = set()
+    superseded_generations: set[int] = set()
+    callback_ids: dict[str, str] = {}
+    for event in events:
+        event_generation = int(event["operation_generation"])
+        event_type = event["event_type"]
+        payload = event.get("payload") or {}
+        if event_type == "operation.started":
+            if status is not None:
+                raise StoreInvariantError("duplicate operation.started")
+            generation = event_generation
+            status = "RUNNING"
+            target_repository = payload.get("target_repository")
+            feature_id = payload.get("feature_id")
+            expected_revision = payload.get("expected_revision")
+        elif event_type == "operation.superseded":
+            superseded_generations.add(event_generation)
+        elif event_type == "operation.generation.started":
+            if event_generation <= generation:
+                raise StoreInvariantError("generation must increase")
+            generation = event_generation
+            status = "RUNNING"
+        else:
+            if event_generation < generation or event_generation in superseded_generations:
+                raise StoreInvariantError("superseded generation attempted new operation fact")
+            if event_generation > generation:
+                raise StoreInvariantError("event generation lacks generation-start fact")
+            if status == "CANCELLED" and event_type not in {
+                "dispatch.launch.lookup-recorded", "worker.callback.recorded", "persist.confirmed"
+            }:
+                raise StoreInvariantError("new decision fact after cancellation")
+            if event_type == "dispatch.launch.authorized":
+                if status == "CANCELLED":
+                    raise StoreInvariantError("launch authorization after cancellation")
+                authorized_dispatches.add(str(payload["external_dispatch_key"]))
+                status = "WAITING_EXTERNAL"
+            elif event_type == "dispatch.launch.lookup-recorded":
+                key = str(payload["external_dispatch_key"])
+                lookup_state = payload["lookup_state"]
+                if lookup_state == "UNKNOWN":
+                    unresolved_unknown.add(key)
+                    status = "BLOCKED"
+                elif lookup_state == "LAUNCHED":
+                    unresolved_unknown.discard(key)
+                    if status != "CANCELLED":
+                        status = "WAITING_EXTERNAL"
+                elif lookup_state == "NOT_LAUNCHED":
+                    unresolved_unknown.discard(key)
+                    if status != "CANCELLED":
+                        status = "RUNNING"
+                else:
+                    raise StoreInvariantError("invalid launch lookup state")
+            elif event_type == "worker.callback.recorded":
+                callback_id = str(payload["callback_id"])
+                callback_digest = str(payload["callback_digest"])
+                if callback_id in callback_ids and callback_ids[callback_id] != callback_digest:
+                    raise StoreInvariantError("conflicting callback history")
+                callback_ids[callback_id] = callback_digest
+                if status not in TERMINAL_STATUSES and not unresolved_unknown:
+                    status = "RUNNING"
+            elif event_type == "operation.blocked":
+                status = "BLOCKED"
+            elif event_type == "operation.cancelled":
+                status = "CANCELLED"
+            elif event_type == "operation.done":
+                status = "DONE"
+            elif event_type == "persist.linearized":
+                linearized_persists.add(str(payload["feature_event_id"]))
+            elif event_type == "persist.confirmed":
+                confirmed_persists.add(str(payload["feature_event_id"]))
+            elif event_type in {"dispatch.claimed", "persist.requested"}:
+                pass
+            else:
+                raise StoreInvariantError(f"unsupported operation event type: {event_type}")
+    if status not in VALID_STATUSES:
+        raise StoreInvariantError("operation projection has invalid status")
+    return {
+        "operation_id": operation_id,
+        "generation": generation,
+        "status": status,
+        "target_repository": target_repository,
+        "feature_id": feature_id,
+        "expected_feature_revision": expected_revision,
+        "last_sequence": len(events),
+        "journal_digest": digest_json(events),
+        "authorized_dispatches": sorted(authorized_dispatches),
+        "unresolved_unknown": sorted(unresolved_unknown),
+        "linearized_persists": sorted(linearized_persists),
+        "confirmed_persists": sorted(confirmed_persists),
+    }
+
+
+def projection_public(projection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "operation_id": projection["operation_id"],
+        "generation": projection["generation"],
+        "status": projection["status"],
+    }
+
+
+def unfinished_operations(snapshot: StoreSnapshot, *, target_repository: str | None = None, feature_id: str | None = None) -> list[dict[str, Any]]:
+    rows = []
+    normalized = normalize_repository(target_repository) if target_repository else None
+    for operation_id in operation_ids(snapshot):
+        projection = rebuild_projection(snapshot, operation_id)
+        if projection["status"] in TERMINAL_STATUSES:
+            continue
+        if normalized and normalize_repository(str(projection["target_repository"])) != normalized:
+            continue
+        if feature_id and projection["feature_id"] != feature_id:
+            continue
+        rows.append(projection)
+    rows.sort(key=lambda row: row["operation_id"])
+    return rows
+
+
+def immutable_object(snapshot: StoreSnapshot, path: str) -> dict[str, Any] | None:
+    value = snapshot.get(path)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise StoreInvariantError("immutable store artifact must be object")
+    return value
+
+
+def ensure_exact_or_absent(snapshot: StoreSnapshot, path: str, value: dict[str, Any]) -> bool:
+    existing = immutable_object(snapshot, path)
+    if existing is None:
+        return False
+    if canonical_json(existing) != canonical_json(value):
+        raise StoreInvariantError("immutable store artifact identity conflict")
+    return True
