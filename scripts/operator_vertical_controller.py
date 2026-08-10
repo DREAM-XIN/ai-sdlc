@@ -99,7 +99,10 @@ def select_vertical_action(*, feature: FeatureSnapshot, manifest: dict[str, Any]
             raise VerticalInvariantError("BLOCKED", "code review requires trusted candidate head")
         completed = [row for row in remediations if row.get("status") == "DONE"]
         if completed:
-            latest = sorted(completed, key=lambda row: str(row["id"]))[-1]
+            # Feature Persist appends task-records in lifecycle order; preserve that authoritative
+            # order instead of sorting content-hashed task ids, whose lexical order is unrelated
+            # to chronology.
+            latest = completed[-1]
             identity = f"vertical:code-rereview:{latest['id']}:{feature.candidate_head_sha}"
             return VerticalAction(kind="dispatch", step="CODE_REREVIEW", role="reviewer", task_id=latest["id"], task_identity=identity, candidate_head_sha=feature.candidate_head_sha)
         identity = f"vertical:code-review:{feature.candidate_head_sha}"
