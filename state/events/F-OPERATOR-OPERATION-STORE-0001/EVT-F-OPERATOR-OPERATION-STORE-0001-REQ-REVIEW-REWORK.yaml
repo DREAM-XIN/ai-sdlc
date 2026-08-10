@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-REWORK
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 3
+occurred_at: '2026-08-10T03:31:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-requirement-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-1
+      kind: remediation
+      stage: requirement
+      role: product
+      source_stage: requirement-review
+      feedback: Keep a trusted internal unfinished-Operation query primitive, but do not make canonical operator.inbox available while Decision/Notification backing is absent under the frozen all-three-arrays response schema; keep operator.inbox CAPABILITY_UNAVAILABLE until a later reviewed workstream can satisfy complete semantics or an independently approved canonical partial-availability contract exists.
+      status: TODO
+      runtime: manual
