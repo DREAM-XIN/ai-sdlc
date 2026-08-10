@@ -13,6 +13,7 @@ from validate_gh_aw_candidate_history import validate_manual_candidate, validate
 from validate_gh_aw_gate_worker_security import main as validate_gh_aw_gate_worker_security
 from validate_gh_aw_profile_routing import main as validate_gh_aw_profile_routing
 from validate_operator_api import main as validate_operator_api
+from validate_operator_mcp import main as validate_operator_mcp
 from validate_remediation_review_completion import main as validate_remediation_review_completion
 from validate_transition import validate_schema as validate_execution_schema
 from validate_transition import validate_transition
@@ -207,6 +208,7 @@ def main():
     validate_multi_round_supersession()
     validate_gh_aw_gate_worker_security()
     validate_operator_api()
+    validate_operator_mcp()
     errors = (
         validate_schemas()
         + validate_profiles()
