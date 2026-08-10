@@ -1,0 +1,22 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REVIEW-REWORK
+feature_id: F-OPERATOR-MCP-ADAPTER-0001
+expected_revision: 7
+occurred_at: '2026-08-10T02:54:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-design-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/design-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REMEDIATION-1
+      kind: remediation
+      stage: design
+      role: architect
+      source_stage: design-review
+      feedback: Define a bounded conformance ingress so unsupported-version, unknown-capability, trusted-field-injection, unavailable-capability, and structured-error cases cross the actual MCP stdio/translation path used by the supported adapter without exposing a generic production capability/write escape hatch; the same shipped server/translation implementation must be exercised and conformance-only behavior must be impossible to activate accidentally in normal startup.
+      status: TODO
+      runtime: manual
