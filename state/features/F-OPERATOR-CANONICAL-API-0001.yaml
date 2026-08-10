@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 19
+revision: 20
 feature:
   id: F-OPERATOR-CANONICAL-API-0001
   title: Implement v0.3 canonical typed Operator API foundation
@@ -7,7 +7,7 @@ feature:
   issue: '#208'
 workflow:
   profile: standard-feature
-  status: ACTIVE
+  status: BLOCKED
   current_stage: verification
   stages:
   - id: requirement
@@ -28,7 +28,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: WORKING
+    status: BLOCKED
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -45,6 +45,18 @@ tasks:
     rerun exact-head validation and CI.'
   target_pr: '#209'
   status: DONE
+- id: remediation-verification-v1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: verification
+  feedback: 'Fix QA-MAJOR-1: implement a reusable transport-neutral adapter conformance
+    harness; run one shared semantic assertion suite through at least two materially
+    distinct fixture adapter implementations across the frozen conformance subset;
+    reject alias/thin-wrapper independence based on real adapter/transport evidence;
+    keep fixtures test-only and rerun exact-head validation/CI.'
+  target_pr: '#209'
+  status: READY
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -77,7 +89,9 @@ gates:
   - evidence-code-review-v1
   - evidence-code-review-v2
 - id: verification-gate
-  status: PENDING
+  status: FAIL
+  evidence:
+  - evidence-verification-v1
 - id: release-gate
   status: PENDING
 evidence:
@@ -105,6 +119,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-review-v2.md
+- id: evidence-verification-v1
+  type: verification
+  status: fail
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/verification.md
 applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-REQ-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-REQ-DONE
@@ -125,4 +143,5 @@ applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-RESTART-2
 - EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-PASS-2
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-START
-updated_at: '2026-08-10T01:12:00Z'
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REWORK
+updated_at: '2026-08-10T01:19:00Z'
