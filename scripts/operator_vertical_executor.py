@@ -26,6 +26,7 @@ from operator_vertical_store import (
 )
 from operator_effect_lineage_integration import plan_lineage_gated_reservation
 from operator_effect_lineage_fences import plan_lineage_authorize_launch, plan_lineage_dispatch_claim
+from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
 
 
 class VerticalFeatureGateway(Protocol):
@@ -78,12 +79,18 @@ class TrustedVerticalExecutor:
         persist_gateway: FeaturePersistGateway,
         dispatch_gateway: RoleDispatchGateway,
         config: TrustedVerticalExecutorConfig,
+        resolution_policy_verifier: ProtectedEffectResolutionPolicyVerifier | None = None,
     ):
+        if config.effect_lineage_required and not isinstance(
+            resolution_policy_verifier, ProtectedEffectResolutionPolicyVerifier
+        ):
+            raise ValueError("lineage-required vertical executor lacks current protected Effect Resolution policy verifier")
         self.runtime = runtime
         self.feature_gateway = feature_gateway
         self.persist_gateway = persist_gateway
         self.dispatch_gateway = dispatch_gateway
         self.config = config
+        self.resolution_policy_verifier = resolution_policy_verifier
 
     def _projection(self, operation_id: str):
         return vertical_projection(self.runtime.backend.read_snapshot(), operation_id)
@@ -191,11 +198,17 @@ class TrustedVerticalExecutor:
         return self._public(operation_id)
 
     def _dispatch(self, operation_id: str, action: VerticalAction, feature: FeatureSnapshot):
-        projection = self._assert_feature_fence(operation_id, feature, stage=feature.current_stage, candidate=action.candidate_head_sha)
+        projection = self._assert_feature_fence(
+            operation_id,
+            feature,
+            stage=feature.current_stage,
+            candidate=action.candidate_head_sha,
+        )
         generation = projection["generation"]
         occurred_at = self.runtime.clock()
         lineage_id = None
         if self.config.effect_lineage_required:
+            current_resolution_policy = self.resolution_policy_verifier.verify_current()
             reservation = self._commit(
                 lambda snapshot: plan_lineage_gated_reservation(
                     snapshot,
@@ -215,7 +228,7 @@ class TrustedVerticalExecutor:
                     task_id=action.task_id,
                     occurred_at=occurred_at,
                     trusted_context_digest=self.config.trusted_context_digest,
-                    trusted_profile_digest=digest_json({"operation_profile": VERTICAL_PROFILE, "effect_lineage_required": True}),
+                    trusted_profile_digest=current_resolution_policy.proposal_profile_digest,
                 )
             ).result
             if reservation.get("status") == "BLOCKED":
@@ -269,7 +282,12 @@ class TrustedVerticalExecutor:
         )[:32]
 
         fresh, _ = self.feature_gateway.read_feature(operation_id=operation_id)
-        self._assert_feature_fence(operation_id, fresh, stage=feature.current_stage, candidate=action.candidate_head_sha)
+        self._assert_feature_fence(
+            operation_id,
+            fresh,
+            stage=feature.current_stage,
+            candidate=action.candidate_head_sha,
+        )
         if self.config.effect_lineage_required:
             self._commit(
                 lambda snapshot: plan_lineage_authorize_launch(
@@ -348,7 +366,12 @@ class TrustedVerticalExecutor:
         self._record_fact(
             operation_id,
             "loop.step.selected",
-            {"step": action.step, "kind": action.kind, "feature_revision": feature.revision, "task_identity": action.task_identity},
+            {
+                "step": action.step,
+                "kind": action.kind,
+                "feature_revision": feature.revision,
+                "task_identity": action.task_identity,
+            },
         )
         if action.kind == "persist":
             if not action.feature_event:
