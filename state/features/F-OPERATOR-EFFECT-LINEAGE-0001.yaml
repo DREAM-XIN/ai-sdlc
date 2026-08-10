@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 14
+revision: 15
 feature:
   id: F-OPERATOR-EFFECT-LINEAGE-0001
   title: Implement durable Effect Lineage and UNKNOWN resolution
@@ -49,7 +49,7 @@ tasks:
     rollout state plus an authoritative mixed-writer fence that rejects old raw reservation/claim/authorization
     writers after enforcement. Add the deterministic adversarial cases required by
     code-review.md and preserve the accepted stale-runner/lineage/CAS semantics.'
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -115,4 +115,5 @@ applied_events:
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-IMPL-DONE
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REVIEW-START
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REVIEW-REWORK
-updated_at: '2026-08-10T14:52:00Z'
+- EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-START
+updated_at: '2026-08-10T14:56:00Z'
