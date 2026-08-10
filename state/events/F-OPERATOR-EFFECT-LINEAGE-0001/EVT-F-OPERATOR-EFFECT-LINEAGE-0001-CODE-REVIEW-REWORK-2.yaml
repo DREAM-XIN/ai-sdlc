@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REVIEW-REWORK-2
+feature_id: F-OPERATOR-EFFECT-LINEAGE-0001
+expected_revision: 16
+occurred_at: '2026-08-10T15:30:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-review-v2
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/code-review-v2.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-2
+      kind: remediation
+      stage: implementation
+      role: developer
+      source_stage: code-review
+      feedback: >-
+        Close only the remaining MAJOR from independent Code Re-review v2 / PR Review 4898427815: Effect Resolution must re-verify current protected/default-branch/installation resolution policy truth at application time instead of trusting a passed EffectResolutionAuthority object as current; bind proposal/resolution application and strong-evidence capability selection to the current trusted policy epoch/digest, reject stale Authority/verifier state after policy change, and add a deterministic case where only trusted_policy_digest/current protected policy changes while candidate/ref/revision/profile remain unchanged. Preserve the already-closed legacy migration, mixed-writer rollout/fence, stale-runner, candidate-lineage, CAS and release-contract semantics.
+      status: TODO
+      runtime: manual
