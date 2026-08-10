@@ -32,12 +32,6 @@ def _apply(snapshot, plan, index):
 
 
 def _authorized_without_lookup(*, candidate=HEAD, role="developer", stage="implementation", task_identity=None):
-    """Build a deliberately pre-Effect-Lineage durable dispatch fixture.
-
-    These reconciliation cases verify compatibility with the accepted Operation Store launch/lookup
-    recovery semantics. Production lineage-required behavior is exercised separately by
-    validate_operator_effect_lineage.py and must fail closed for an un-migrated legacy reservation.
-    """
     snapshot = StoreSnapshot(ref_sha="s0")
     start = plan_operation_start(
         snapshot,
@@ -180,9 +174,9 @@ def _executor(snapshot, dispatch_gateway, *, persist_gateway=None, feature_gatew
             target_ref="feature/test",
             trusted_context_digest="trusted",
             max_auto_steps=8,
-            # This fixture is intentionally constructed through the old direct-reservation path
-            # above. Keep only this legacy reconciliation harness in compatibility mode; the
-            # production runtime default remains effect_lineage_required=True.
+            # This historical fault/replay fixture intentionally starts from reservations
+            # created before Effect Lineage existed. Keep only this regression harness in
+            # compatibility mode; production runtime defaults remain lineage-required.
             effect_lineage_required=False,
             old_writers_quiesced=False,
         ),
@@ -270,41 +264,8 @@ def validate_cancel_fences_missing_launch():
     assert not dispatch.launch_calls
 
 
-def validate_persist_ack_reconciliation():
-    snapshot = StoreSnapshot(ref_sha="s0")
-    start = plan_operation_start(
-        snapshot,
-        target_repository=REPO,
-        feature_id=FEATURE,
-        expected_revision=10,
-        idempotency_key="persist-reconcile",
-        occurred_at=NOW,
-        trusted_context_digest="trusted",
-        operation_profile=VERTICAL_PROFILE,
-    )
-    snapshot = _apply(snapshot, start, 1)
-    operation_id = start.result["operation_id"]
-    feature_event_id = "EVT-IMPLEMENTATION-DONE"
-    common = dict(
-        operation_id=operation_id,
-        generation=0,
-        feature_event_id=feature_event_id,
-        expected_revision=10,
-        target_ref="feature/test",
-        candidate_head_sha=HEAD,
-        occurred_at=NOW,
-        trusted_context_digest="trusted",
-    )
-    snapshot = _apply(snapshot, plan_vertical_persist_requested(snapshot, **common), 2)
-    snapshot = _apply(snapshot, plan_vertical_persist_linearized(snapshot, **common), 3)
-    persist = PersistGateway(existing={feature_event_id: {"event_id": feature_event_id, "result_revision": 11}})
-    executor, _, _ = _executor(snapshot, DispatchGateway("UNKNOWN"), persist_gateway=persist)
-    executor.reconcile_persist(operation_id=operation_id, feature_event_id=feature_event_id)
-    assert feature_event_id in vertical_projection(executor.base.runtime.backend.snapshot, operation_id)["confirmed_persists"]
-
-
-def validate_callback_reconciliation_and_role_independence():
-    snapshot, operation_id, effect_key, external_key, dispatch_id, identity = _authorized_without_lookup()
+def validate_callback_binding_and_replay():
+    snapshot, operation_id, effect_key, external_key, dispatch_id, task_identity = _authorized_without_lookup()
     snapshot = _apply(
         snapshot,
         plan_launch_lookup(
@@ -319,73 +280,175 @@ def validate_callback_reconciliation_and_role_independence():
         ),
         5,
     )
-    context = _context(operation_id, effect_key, external_key, dispatch_id, identity)
-    policy = derive_role_independence_policy(snapshot, context)
-    assert policy.dispatched_worker_identity is None
-    callback = plan_vertical_callback_record(
+    context = _context(
+        operation_id,
+        effect_key,
+        external_key,
+        dispatch_id,
+        task_identity,
+        candidate=HEAD2,
+        worker="developer-worker",
+    )
+    plan = plan_vertical_callback_record(
         snapshot,
         context=context,
         callback_id="callback-1",
-        payload_digest=digest_json({"status": "ok"}),
+        worker_payload={"status": "BLOCKED", "summary": "fixture stop", "outputs": []},
+        receipts=[],
         occurred_at=NOW,
         trusted_context_digest="trusted",
     )
-    snapshot = _apply(snapshot, callback, 6)
-    policy = derive_role_independence_policy(snapshot, context)
-    assert policy.dispatched_worker_identity == "worker-1"
+    snapshot = _apply(snapshot, plan, 6)
 
-
-def validate_stale_candidate_rejected_before_reconcile():
-    snapshot, operation_id, effect_key, external_key, dispatch_id, identity = _authorized_without_lookup(
-        candidate=HEAD,
-        role="reviewer",
-        stage="code-review",
-        task_identity=f"vertical:code-review:{HEAD}",
+    bad = _context(
+        operation_id,
+        effect_key,
+        external_key,
+        "wrong-dispatch",
+        task_identity,
+        candidate=HEAD2,
+        worker="developer-worker",
     )
-    dispatch = DispatchGateway("LAUNCHED")
-    executor, _, _ = _executor(snapshot, dispatch, feature_gateway=FeatureGateway(head=HEAD2))
     try:
-        executor.advance_until_stop(operation_id=operation_id)
-        raise AssertionError("stale candidate recovery unexpectedly advanced")
-    except Exception as exc:
-        assert getattr(exc, "code", None) == "STALE_REVISION"
-    assert not dispatch.launch_calls
+        plan_vertical_callback_record(
+            snapshot,
+            context=bad,
+            callback_id="callback-bad",
+            worker_payload={"status": "BLOCKED", "summary": "bad", "outputs": []},
+            receipts=[],
+            occurred_at=NOW,
+            trusted_context_digest="trusted",
+        )
+        raise AssertionError("misbound callback unexpectedly accepted")
+    except StoreCommandError as exc:
+        assert exc.code == "STALE_REVISION"
+
+    feature_gateway = FeatureGateway(head=HEAD2)
+    dispatch = DispatchGateway("LAUNCHED")
+    executor, runtime, _ = _executor(snapshot, dispatch, feature_gateway=feature_gateway)
+    result = executor.advance_until_stop(operation_id=operation_id)
+    assert result["status"] == "BLOCKED"
+    events = operation_events(runtime.backend.read_snapshot(), operation_id)
+    assert any(
+        event["event_type"] == "worker.result.validated"
+        and (event.get("payload") or {}).get("callback_id") == "callback-1"
+        for event in events
+    )
+    policy = derive_role_independence_policy(runtime.backend.read_snapshot(), operation_id=operation_id)
+    assert policy.developer_identity == "developer-worker"
 
 
-def validate_cancelled_late_callback_kept_non_authoritative():
-    snapshot, operation_id, effect_key, external_key, dispatch_id, identity = _authorized_without_lookup()
+def _translated_persist_snapshot(*, linearized: bool, cancelled: bool):
+    snapshot = StoreSnapshot(ref_sha="p0")
+    start = plan_operation_start(
+        snapshot,
+        target_repository=REPO,
+        feature_id=FEATURE,
+        expected_revision=10,
+        idempotency_key=f"persist-{linearized}-{cancelled}",
+        occurred_at=NOW,
+        trusted_context_digest="trusted",
+        operation_profile=VERTICAL_PROFILE,
+    )
+    snapshot = _apply(snapshot, start, 1)
+    operation_id = start.result["operation_id"]
+    event = {
+        "version": "0.1.0",
+        "id": "EVT-PERSIST-RECOVERY",
+        "feature_id": FEATURE,
+        "expected_revision": 10,
+        "occurred_at": NOW,
+        "changes": [{"kind": "stage", "id": "implementation", "status": "DONE"}],
+    }
+    feature = _feature(_base_manifest(), head=HEAD)
+    translated = {
+        "feature_event_id": event["id"],
+        "feature_event_digest": digest_json(event),
+        "feature_event": event,
+        "feature_revision": feature.revision,
+        "feature_stage": feature.current_stage,
+        "feature_manifest_digest": feature.manifest_digest,
+        "candidate_head_sha": feature.candidate_head_sha,
+        "target_ref": feature.target_ref,
+    }
     snapshot = _apply(
         snapshot,
-        plan_cancel(
+        plan_operation_fact(
             snapshot,
             operation_id=operation_id,
-            reason="cancel",
+            generation=0,
+            event_type="feature.event.translated",
+            payload=translated,
             occurred_at=NOW,
             trusted_context_digest="trusted",
         ),
-        5,
+        2,
     )
-    context = _context(operation_id, effect_key, external_key, dispatch_id, identity)
-    callback = plan_vertical_callback_record(
-        snapshot,
-        context=context,
-        callback_id="late-callback",
-        payload_digest=digest_json({"late": True}),
+    common = dict(
+        operation_id=operation_id,
+        generation=0,
+        feature_event_id=event["id"],
+        expected_revision=10,
+        target_ref="feature/test",
+        candidate_head_sha=HEAD,
         occurred_at=NOW,
         trusted_context_digest="trusted",
     )
-    snapshot = _apply(snapshot, callback, 6)
-    assert vertical_projection(snapshot, operation_id)["status"] == "CANCELLED"
+    snapshot = _apply(snapshot, plan_vertical_persist_requested(snapshot, **common), 3)
+    if linearized:
+        snapshot = _apply(snapshot, plan_vertical_persist_linearized(snapshot, **common), 4)
+    if cancelled:
+        snapshot = _apply(
+            snapshot,
+            plan_cancel(
+                snapshot,
+                operation_id=operation_id,
+                reason="cancel around persist",
+                occurred_at=NOW,
+                trusted_context_digest="trusted",
+            ),
+            5,
+        )
+    return snapshot, operation_id, event
+
+
+def validate_persist_linearization_recovery_and_cancel_order():
+    snapshot, operation_id, event = _translated_persist_snapshot(linearized=True, cancelled=False)
+    persist = PersistGateway()
+    executor, runtime, _ = _executor(snapshot, DispatchGateway("LAUNCHED"), persist_gateway=persist)
+    assert executor._reconcile_persist(operation_id) is True
+    assert persist.persisted == [(event, "feature/test")]
+    projection = vertical_projection(runtime.backend.read_snapshot(), operation_id)
+    assert event["id"] in projection["confirmed_persists"]
+    assert projection["expected_feature_revision"] == 11
+
+    snapshot, operation_id, event = _translated_persist_snapshot(linearized=True, cancelled=False)
+    persist = PersistGateway(existing={event["id"]: {"event_id": event["id"], "result_revision": 11}})
+    executor, runtime, _ = _executor(snapshot, DispatchGateway("LAUNCHED"), persist_gateway=persist)
+    assert executor._reconcile_persist(operation_id) is True
+    assert not persist.persisted
+    assert event["id"] in vertical_projection(runtime.backend.read_snapshot(), operation_id)["confirmed_persists"]
+
+    snapshot, operation_id, _ = _translated_persist_snapshot(linearized=False, cancelled=True)
+    persist = PersistGateway()
+    executor, _, _ = _executor(snapshot, DispatchGateway("LAUNCHED"), persist_gateway=persist)
+    assert executor._reconcile_persist(operation_id) is None
+    assert not persist.persisted
+
+    snapshot, operation_id, event = _translated_persist_snapshot(linearized=True, cancelled=True)
+    persist = PersistGateway()
+    executor, runtime, _ = _executor(snapshot, DispatchGateway("LAUNCHED"), persist_gateway=persist)
+    assert executor._reconcile_persist(operation_id) is True
+    assert persist.persisted == [(event, "feature/test")]
+    assert vertical_projection(runtime.backend.read_snapshot(), operation_id)["status"] == "CANCELLED"
 
 
 def main():
     validate_launch_ack_recovery_and_unknown_boundary()
     validate_cancel_fences_missing_launch()
-    validate_persist_ack_reconciliation()
-    validate_callback_reconciliation_and_role_independence()
-    validate_stale_candidate_rejected_before_reconcile()
-    validate_cancelled_late_callback_kept_non_authoritative()
-    print("Operator vertical reconciliation validation passed")
+    validate_callback_binding_and_replay()
+    validate_persist_linearization_recovery_and_cancel_order()
+    print("Operator vertical deterministic fault/replay validation passed")
 
 
 if __name__ == "__main__":
