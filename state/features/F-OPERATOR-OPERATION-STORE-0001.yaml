@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 17
+revision: 18
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: implementation
+  current_stage: code-review
   stages:
   - id: requirement
     status: DONE
@@ -23,9 +23,9 @@ workflow:
   - id: plan
     status: DONE
   - id: implementation
-    status: WORKING
+    status: DONE
   - id: code-review
-    status: TODO
+    status: READY
     gate: code-gate
   - id: verification
     status: TODO
@@ -82,6 +82,10 @@ artifacts:
   type: plan
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/plan.md
   status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/implementation.md
+  status: draft
 gates:
 - id: requirement-gate
   status: PASS
@@ -122,6 +126,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/design-review-v2.md
+- id: evidence-implementation-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/evidence/implementation-verification.md
 applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
@@ -140,4 +148,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-PLAN-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-PLAN-DONE
 - EVT-F-OPERATOR-OPERATION-STORE-0001-IMPL-START
-updated_at: '2026-08-10T03:47:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-IMPL-DONE
+updated_at: '2026-08-10T04:20:00Z'
