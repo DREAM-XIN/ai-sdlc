@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 16
+revision: 17
 feature:
   id: F-OPERATOR-MCP-ADAPTER-0001
   title: Implement v0.3 MCP read-only Operator adapter
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: code-review
+  current_stage: verification
   stages:
   - id: requirement
     status: DONE
@@ -25,10 +25,10 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: WORKING
+    status: DONE
     gate: code-gate
   - id: verification
-    status: TODO
+    status: READY
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -63,7 +63,7 @@ artifacts:
 - id: implementation-v1
   type: implementation
   uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/implementation.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
   status: PASS
@@ -74,7 +74,9 @@ gates:
   evidence:
   - evidence-design-review-v2
 - id: code-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-code-review-v1
 - id: verification-gate
   status: PENDING
 - id: release-gate
@@ -100,6 +102,10 @@ evidence:
   type: verification
   status: pass
   uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/evidence/implementation-verification.md
+- id: evidence-code-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/code-review.md
 applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-REQ-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-REQ-DONE
@@ -117,4 +123,5 @@ applied_events:
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-IMPL-START
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-IMPL-DONE
 - EVT-F-OPERATOR-MCP-ADAPTER-0001-CODE-REVIEW-START
-updated_at: '2026-08-10T03:11:00Z'
+- EVT-F-OPERATOR-MCP-ADAPTER-0001-CODE-REVIEW-PASS
+updated_at: '2026-08-10T03:13:00Z'
