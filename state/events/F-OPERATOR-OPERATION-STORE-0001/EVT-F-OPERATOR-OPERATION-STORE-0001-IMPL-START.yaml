@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPERATION-STORE-0001-IMPL-START
+feature_id: F-OPERATOR-OPERATION-STORE-0001
+expected_revision: 16
+occurred_at: '2026-08-10T03:47:00Z'
+changes:
+  - kind: stage
+    id: implementation
+    status: WORKING
