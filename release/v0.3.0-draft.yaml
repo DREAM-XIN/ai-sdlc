@@ -7,6 +7,13 @@ release_theme: ai-operated-sdlc
 canonical_api_version: ai-sdlc.operator/v1
 operation_event_version: ai-sdlc.operation-event/v1
 
+release_spec_amendments:
+  - issue: '#219'
+    proposal_pr: '#224'
+    reviewed_head: e809f587ce3c52cb18468a49700c8eb07b9123bd
+    independent_review_id: '4896122306'
+    disposition: PASS_FOR_AMENDMENT_FREEZE
+
 release_intent: >-
   Productize the deterministic AI-SDLC control kernel behind a durable typed
   Operator surface while preserving lifecycle authority, independent role
@@ -72,7 +79,10 @@ worker_result_contract:
     - runtime-receipt-identity
   reviewer_qa_candidate_head_sha_required: true
   current_head_revalidation_before_persist: true
-  head_change_requires_new_semantic_dispatch: true
+  head_change_invalidates_stale_candidate_evidence: true
+  head_change_requires_fresh_exact_candidate_bound_work: true
+  head_change_alone_authorizes_new_external_dispatch: false
+  fresh_candidate_external_dispatch_requires_effect_lineage_clearance: true
   required_translators:
     - developer-result-translator
     - review-verdict-translator
@@ -104,8 +114,36 @@ external_semantic_reservation:
   stable_external_dispatch_key: required
   reservation_survives_generation_takeover: true
   invariant: >-
-    One semantic external side effect has at most one durable external dispatch
-    identity even when Operation ownership moves across generations.
+    One exact semantic reservation has at most one durable external dispatch
+    identity even when Operation ownership moves across generations. Cross-revision
+    continuity is additionally governed by Effect Lineage.
+
+effect_lineage:
+  required: true
+  stable_across_when_causal_work_same:
+    - operation-generation
+    - feature-revision
+    - candidate-projection
+    - operation-restart-or-takeover
+  exact_semantic_effect_key_remains_revision_stage_candidate_bound: true
+  trusted_causal_work_identity_required: true
+  causal_work_id_from_durable_lifecycle_or_task_provenance: true
+  required_relations:
+    - predecessor
+    - blocks_on
+    - supersedes
+    - adopts
+  launch_eligible_members_shape: ordered-chain
+  lineage_gate_before_new_exact_reservation: true
+  unresolved_predecessor_blocks_new_external_identity: true
+  successor_proposal_has_independent_external_identity: false
+  concurrent_active_descendants: forbidden
+  candidate_or_revision_change_alone_proves_new_effect: false
+  schema_version_required: true
+  conceptual_schema_identifiers:
+    - ai-sdlc.effect-lineage/v1
+    - ai-sdlc.effect-lineage-event/v1
+  exact_schema_names_implementation_reviewable: true
 
 semantic_dispatch_claim:
   generation_specific_ownership: true
@@ -144,7 +182,10 @@ external_dispatch_recovery:
     - NOT_LAUNCHED
     - LAUNCHED
     - UNKNOWN
-  not_launched_behavior: retry-same-key-only-after-current-generation-launch-authorization
+  not_launched_behavior: retry-same-key-under-existing-fences
+  not_launched_after_durable_launch_authorization_revokes_authority: false
+  launch_authorized_not_launched_successor_behavior: same-existing-key-or-blocked
+  stronger_no_duplicate_proof_required_for_authorized_predecessor_retirement: true
   launched_behavior: adopt-existing-receipt-no-relaunch
   unknown_behavior: blocked-no-speculative-relaunch
   missing_local_worker_dispatched_event_does_not_prove_absence: true
@@ -156,7 +197,29 @@ unknown_reservation_takeover:
   new_generation_inherits_same_external_dispatch_key: true
   new_key_for_same_semantic_task_while_unknown: forbidden
   generation_change_alone_can_retire_unknown: false
+  revision_or_candidate_change_alone_can_retire_unknown: false
   unresolved_state: BLOCKED
+
+unknown_resolution:
+  allowed_outcomes:
+    - CORRELATE_EXISTING_RECEIPT
+    - PROVE_NOT_LAUNCHED
+    - RETIRE_OBSOLETE_NO_DUPLICATE_PROVEN
+    - REMAIN_BLOCKED
+  generic_retry_or_ignore_bypass: forbidden
+  generation_revision_candidate_or_restart_bypass: forbidden
+  bounded_trusted_resolution_authority: required
+  exact_state_policy_and_evidence_binding: required
+  stale_resolution_rejected: true
+  prove_not_launched_successor_activation_requires_no_executable_launch_authorization: true
+  launch_authorized_not_launched_is_revocation_proof: false
+  resolution_itself_dispatches: false
+
+legacy_effect_migration:
+  no_lineage_unresolved_behavior: fail-closed
+  safe_lineage_attachment_when_provable: allowed
+  ambiguous_overlap_state: LEGACY_UNRESOLVED_LINEAGE
+  mixed_old_new_semantic_writers: forbidden
 
 persist_linearization:
   required: true
@@ -276,6 +339,10 @@ required_workstreams:
       - unknown-reservation-generation-inheritance
       - candidate-head-sha-binding
       - callback-correlation
+      - durable-effect-lineage-anchor-member-proposal-event-state
+      - lineage-gate-before-new-exact-reservation
+      - bounded-effect-resolution-authority-and-audit
+      - fail-closed-legacy-lineage-migration
   - id: operator-vertical-loop
     status: proposed
     includes:
@@ -296,6 +363,9 @@ required_workstreams:
       - claim-and-launch-crash-recovery
       - launch-linearization-cancel-ordering
       - unknown-reservation-cross-generation-fencing
+      - cross-revision-and-candidate-effect-lineage-fencing
+      - launch-authorized-not-launched-stale-runner-fencing
+      - concurrent-lineage-successor-cas
       - persist-cancel-linearization
       - persist-ack-loss-recovery
       - concurrent-resume-safety
@@ -315,6 +385,8 @@ required_workstreams:
       - release-blocker-id-validation
       - client-conformance-count-validation
       - release-spec-consistency-validation
+      - legacy-head-change-semantic-dispatch-contract-rejected
+      - effect-lineage-candidate-contract-validation
 
 required_tests:
   tool_contract:
@@ -336,7 +408,8 @@ required_tests:
   candidate_binding:
     - reviewer-result-after-head-change-rejected
     - qa-result-after-head-change-rejected
-    - new-head-requires-new-semantic-dispatch
+    - new-head-requires-fresh-exact-candidate-work
+    - unresolved-predecessor-blocks-new-head-external-dispatch
   launch_linearization_race:
     - launch-authorized-then-cancel-stale-runner-exact-key-only
     - cancel-before-launch-authorized-no-external-launch
@@ -347,6 +420,18 @@ required_tests:
     - same-semantic-effect-key-inherited
     - same-external-dispatch-key-inherited
     - no-new-key-while-unknown
+  effect_lineage:
+    - unknown-revision-advance-same-work-same-lineage-no-new-key
+    - unknown-candidate-change-fresh-proposal-no-new-key
+    - never-authorized-not-launched-retirement-before-successor
+    - launched-predecessor-correlated-no-relaunch
+    - no-trustworthy-proof-remains-blocked
+    - generation-takeover-preserves-lineage-block
+    - concurrent-planners-no-sibling-active-descendants
+    - stale-resolution-rejected
+    - cancellation-does-not-retire-unresolved-lineage
+    - legacy-unresolved-no-lineage-fails-closed
+    - launch-authorized-not-launched-stale-runner-blocks-successor
   claim_launch_crash_recovery:
     - reservation-committed-crash-before-launch-authorization
     - launch-authorized-crash-before-external-call
@@ -392,6 +477,8 @@ required_dogfood:
       - cancel-or-supersede-before-launch-authorization
       - claim-launch-crash-recovery
       - unknown-reservation-takeover-across-generation
+      - unknown-predecessor-across-feature-revision-or-candidate-change
+      - launch-authorized-not-launched-stale-runner-successor-attempt
       - persist-cancel-linearization
       - persist-acknowledgement-loss
   external_transport_matrix:
@@ -453,6 +540,20 @@ known_release_blockers:
     status: unresolved
   - id: planning-manifest-validator-gap
     status: unresolved
+  - id: missing-cross-revision-effect-lineage
+    status: unresolved
+  - id: unknown-launch-can-be-bypassed-by-feature-revision-or-candidate-change
+    status: unresolved
+  - id: unresolved-predecessor-can-create-independent-successor-dispatch
+    status: unresolved
+  - id: unbounded-unknown-resolution-authority
+    status: unresolved
+  - id: stale-effect-resolution-can-apply-to-wrong-lineage-or-candidate
+    status: unresolved
+  - id: legacy-unresolved-reservation-lineage-gap
+    status: unresolved
+  - id: mixed-writer-lineage-enforcement-gap
+    status: unresolved
   - id: v0.2-authority-invariant-regression
     status: unresolved
 
@@ -480,12 +581,18 @@ release_invariants:
   candidate_evidence:
     - reviewer-and-qa-bind-exact-candidate-head
     - candidate-head-revalidated-before-persist
+    - head-change-invalidates-stale-evidence-and-requires-fresh-exact-work
+    - head-change-alone-never-authorizes-overlapping-external-dispatch
   orchestration:
     - operation-state-does-not-become-feature-lifecycle-truth
     - operation-generation-does-not-define-external-semantic-effect-identity
     - one-semantic-effect-has-one-external-dispatch-key
     - launch-authorization-is-explicit-linearization-point
     - unknown-external-reservation-survives-generation-takeover
+    - effect-lineage-stable-across-revision-candidate-generation-when-causal-work-same
+    - lineage-gate-precedes-new-exact-reservation
+    - unresolved-predecessor-blocks-independent-successor-external-identity
+    - launch-authorized-not-launched-observation-does-not-revoke-launch-authority
     - chat-session-lifetime-does-not-own-operation-lifetime
   cancellation:
     - cancel-before-launch-linearization-prevents-launch
