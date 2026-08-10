@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 15
+revision: 19
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -25,7 +25,7 @@ workflow:
   - id: implementation
     status: DONE
   - id: code-review
-    status: READY
+    status: WORKING
     gate: code-gate
   - id: verification
     status: TODO
@@ -45,6 +45,20 @@ tasks:
     URI authority with trusted collector materialization receipts/digests bound to
     dispatch, role, revision and candidate, with translators allowed to register only
     those trusted receipts.'
+  status: DONE
+  runtime: manual
+- id: F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: 'Close exactly the two MAJOR findings from independent Code Review / PR Review
+    4894292495: remove or fail-close the parallel TrustedVerticalExecutor callback ingress
+    so production callback translation can only pass through durable dispatch binding,
+    durable role-independence reconstruction and mandatory collector content digest
+    validation; and preserve complete repeated-REWORK candidate/remediation identity
+    lineage plus authoritative latest-remediation predecessor order, with deterministic
+    two-round REWORK/restart coverage.'
   status: DONE
   runtime: manual
 artifacts:
@@ -104,6 +118,14 @@ evidence:
   type: verification
   status: pass
   uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/evidence/implementation-verification.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review-remediation.md
 applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-DONE
@@ -120,4 +142,8 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-PLAN-DONE
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-IMPL-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-IMPL-DONE
-updated_at: '2026-08-10T06:23:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REVIEW-START
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REVIEW-REWORK
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-START
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-CODE-REMEDIATION-DONE
+updated_at: '2026-08-10T07:58:00Z'
