@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 24
+revision: 25
 feature:
   id: F-OPERATOR-CANONICAL-API-0001
   title: Implement v0.3 canonical typed Operator API foundation
@@ -31,7 +31,7 @@ workflow:
     status: DONE
     gate: verification-gate
   - id: acceptance
-    status: READY
+    status: WORKING
     gate: release-gate
 tasks:
 - id: remediation-code-review-v1
@@ -157,4 +157,5 @@ applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REMEDIATION-DONE
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-RESTART-2
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-PASS-2
-updated_at: '2026-08-10T01:34:00Z'
+- EVT-F-OPERATOR-CANONICAL-API-0001-ACCEPTANCE-START
+updated_at: '2026-08-10T01:35:00Z'
