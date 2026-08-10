@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/vertical/qa-result.schema.json",
+  "title": "AI-SDLC vertical QA result",
+  "type": "object",
+  "required": ["verdict", "summary", "checks", "outputs"],
+  "properties": {
+    "verdict": {"enum": ["PASS", "REWORK", "BLOCKED", "NEEDS_USER"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "checks": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "required": ["code", "status", "summary"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+          "status": {"enum": ["PASS", "FAIL", "SKIP"]},
+          "summary": {"type": "string", "minLength": 1, "maxLength": 1000}
+        },
+        "additionalProperties": false
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "required": ["label", "kind"],
+        "properties": {
+          "label": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+          "kind": {"const": "evidence"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
