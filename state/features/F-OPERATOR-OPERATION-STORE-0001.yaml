@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 3
+revision: 4
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -33,7 +33,20 @@ workflow:
   - id: acceptance
     status: TODO
     gate: release-gate
-tasks: []
+tasks:
+- id: F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-1
+  kind: remediation
+  stage: requirement
+  role: product
+  source_stage: requirement-review
+  feedback: Keep a trusted internal unfinished-Operation query primitive, but do not
+    make canonical operator.inbox available while Decision/Notification backing is
+    absent under the frozen all-three-arrays response schema; keep operator.inbox
+    CAPABILITY_UNAVAILABLE until a later reviewed workstream can satisfy complete
+    semantics or an independently approved canonical partial-availability contract
+    exists.
+  status: TODO
+  runtime: manual
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -50,9 +63,14 @@ gates:
   status: PENDING
 - id: release-gate
   status: PENDING
-evidence: []
+evidence:
+- id: evidence-requirement-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/requirement-review.md
 applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-START
-updated_at: '2026-08-10T03:30:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-REWORK
+updated_at: '2026-08-10T03:31:00Z'
