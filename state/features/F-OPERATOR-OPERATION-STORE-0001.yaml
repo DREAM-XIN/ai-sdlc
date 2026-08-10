@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 20
+revision: 21
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -74,7 +74,7 @@ tasks:
     is protected from repository/ruleset authority, fails closed as UNKNOWN/UNPROTECTED
     on ambiguity/absence, and cannot be substituted by the StaticProtectionVerifier
     in the normal production write path.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -170,4 +170,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-IMPL-DONE
 - EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-REWORK
-updated_at: '2026-08-10T04:24:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-START
+updated_at: '2026-08-10T04:25:00Z'
