@@ -69,7 +69,6 @@ def _validate_durable_dispatch_binding(snapshot: StoreSnapshot, context: Trusted
         "expected_revision": context.expected_revision,
         "current_stage": context.feature_stage,
         "role": context.role,
-        "candidate_head_sha": context.candidate_head_sha,
     }
     for field, expected in expected_reservation.items():
         actual = reservation.get(field)
@@ -101,11 +100,16 @@ def _validate_durable_dispatch_binding(snapshot: StoreSnapshot, context: Trusted
         "expected_revision": context.expected_revision,
         "stage": context.feature_stage,
         "role": context.role,
-        "candidate_head_sha": context.candidate_head_sha,
     }
     for field, expected in expected_launch.items():
         if launch.get(field) != expected:
             raise StoreCommandError("STALE_REVISION", f"callback launch binding mismatch: {field}")
+    launch_candidate = launch.get("candidate_head_sha")
+    reservation_candidate = reservation.get("candidate_head_sha")
+    if launch_candidate != reservation_candidate:
+        raise StoreCommandError("INTERNAL_FAILURE", "launch/reservation candidate binding mismatch")
+    if context.role != "developer" and context.candidate_head_sha != launch_candidate:
+        raise StoreCommandError("STALE_REVISION", "gate-role callback candidate binding mismatch")
 
 
 def plan_vertical_callback_record(
