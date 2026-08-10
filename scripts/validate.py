@@ -16,6 +16,7 @@ from validate_operator_api import main as validate_operator_api
 from validate_operator_mcp import main as validate_operator_mcp
 from validate_operator_store import main as validate_operator_store
 from validate_operator_store_runtime import main as validate_operator_store_runtime
+from validate_operator_effect_lineage import main as validate_operator_effect_lineage
 from validate_operator_vertical import main as validate_operator_vertical
 from validate_operator_vertical_completion import main as validate_operator_vertical_completion
 from validate_operator_vertical_gh_aw import main as validate_operator_vertical_gh_aw
@@ -58,7 +59,9 @@ def validate_with_schema(data, schema_path: Path, label: str):
 
 def validate_schemas():
     errors = []
-    for path in sorted(SPEC.glob("*.schema.json")):
+    schema_paths = list(SPEC.glob("*.schema.json"))
+    schema_paths += list((SPEC / "operator" / "effect-lineage").glob("*.schema.json"))
+    for path in sorted(schema_paths):
         schema = load_json(path)
         try:
             Draft202012Validator.check_schema(schema)
@@ -219,6 +222,7 @@ def main():
     validate_operator_mcp()
     validate_operator_store()
     validate_operator_store_runtime()
+    validate_operator_effect_lineage()
     validate_operator_vertical()
     validate_operator_vertical_completion()
     validate_operator_vertical_recovery()
