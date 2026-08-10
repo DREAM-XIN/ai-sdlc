@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 23
+revision: 24
 feature:
   id: F-OPERATOR-VERTICAL-LOOP-0001
   title: Implement durable Developer to Review to Remediation to QA Operator loop
@@ -73,7 +73,7 @@ tasks:
     Protocol/Public Runtime/Required PR Gate evidence proving those required vertical
     completion and fault/replay scenarios actually execute.'
   target_pr: '#217'
-  status: WORKING
+  status: DONE
 artifacts:
 - id: requirement-v1
   type: requirement
@@ -151,6 +151,10 @@ evidence:
   type: verification
   status: fail
   uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/verification.md
+- id: evidence-verification-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-VERTICAL-LOOP-0001/verification-remediation.md
 applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-REQ-DONE
@@ -175,4 +179,5 @@ applied_events:
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-START
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REWORK
 - EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REMEDIATION-START
-updated_at: '2026-08-10T08:18:00Z'
+- EVT-F-OPERATOR-VERTICAL-LOOP-0001-VERIFICATION-REMEDIATION-DONE
+updated_at: '2026-08-10T08:22:00Z'
