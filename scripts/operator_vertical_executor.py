@@ -14,11 +14,7 @@ from operator_store import (
     plan_operation_fact,
 )
 from operator_store_model import digest_json, projection_public, rebuild_projection
-from operator_vertical import (
-    FeatureSnapshot,
-    VERTICAL_PROFILE,
-    VerticalInvariantError,
-)
+from operator_vertical import FeatureSnapshot, VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_controller import VerticalAction, select_vertical_action
 from operator_vertical_store import (
     plan_vertical_done,
@@ -29,11 +25,7 @@ from operator_vertical_store import (
     vertical_projection,
 )
 from operator_effect_lineage_integration import plan_lineage_gated_reservation
-from operator_effect_lineage_fences import (
-    plan_lineage_authorize_launch,
-    plan_lineage_dispatch_claim,
-)
-from operator_effect_migration import validate_lineage_rollout
+from operator_effect_lineage_fences import plan_lineage_authorize_launch, plan_lineage_dispatch_claim
 
 
 class VerticalFeatureGateway(Protocol):
@@ -55,18 +47,26 @@ class TrustedVerticalExecutorConfig:
     target_ref: str
     trusted_context_digest: str
     max_auto_steps: int = 16
-    effect_lineage_required: bool = True
-    old_writers_quiesced: bool = True
+    effect_lineage_required: bool = False
+    old_writers_quiesced: bool = False
+    rollout_policy_digest: str | None = None
+    writer_fence_receipt_digest: str | None = None
+    legacy_compatibility_mode: bool = False
 
     def __post_init__(self):
         if not self.target_ref or not self.trusted_context_digest:
             raise ValueError("trusted vertical executor config is incomplete")
         if self.max_auto_steps < 1 or self.max_auto_steps > 64:
             raise ValueError("invalid vertical auto-step bound")
-        validate_lineage_rollout(
-            old_writers_quiesced=self.old_writers_quiesced,
-            effect_lineage_required=self.effect_lineage_required,
-        )
+        if self.effect_lineage_required:
+            if self.legacy_compatibility_mode:
+                raise ValueError("legacy compatibility cannot coexist with lineage-required production writes")
+            if not self.old_writers_quiesced:
+                raise ValueError("lineage-required executor lacks verified old-writer quiescence")
+            if not self.rollout_policy_digest or not self.writer_fence_receipt_digest:
+                raise ValueError("lineage-required executor lacks verified rollout/fence proof digests")
+        elif not self.legacy_compatibility_mode:
+            raise ValueError("non-lineage vertical execution is allowed only in explicit test-only legacy compatibility mode")
 
 
 class TrustedVerticalExecutor:
@@ -168,12 +168,7 @@ class TrustedVerticalExecutor:
         self._commit(lambda snapshot: plan_vertical_persist_requested(snapshot, **common))
 
         fresh, _ = self.feature_gateway.read_feature(operation_id=operation_id)
-        self._assert_feature_fence(
-            operation_id,
-            fresh,
-            stage=feature.current_stage,
-            candidate=feature.candidate_head_sha,
-        )
+        self._assert_feature_fence(operation_id, fresh, stage=feature.current_stage, candidate=feature.candidate_head_sha)
         if fresh.revision != feature.revision or fresh.manifest_digest != feature.manifest_digest:
             raise VerticalInvariantError("STALE_REVISION", "Feature truth changed before Persist linearization")
         self._commit(lambda snapshot: plan_vertical_persist_linearized(snapshot, **common))
@@ -196,12 +191,7 @@ class TrustedVerticalExecutor:
         return self._public(operation_id)
 
     def _dispatch(self, operation_id: str, action: VerticalAction, feature: FeatureSnapshot):
-        projection = self._assert_feature_fence(
-            operation_id,
-            feature,
-            stage=feature.current_stage,
-            candidate=action.candidate_head_sha,
-        )
+        projection = self._assert_feature_fence(operation_id, feature, stage=feature.current_stage, candidate=action.candidate_head_sha)
         generation = projection["generation"]
         occurred_at = self.runtime.clock()
         lineage_id = None
@@ -225,9 +215,7 @@ class TrustedVerticalExecutor:
                     task_id=action.task_id,
                     occurred_at=occurred_at,
                     trusted_context_digest=self.config.trusted_context_digest,
-                    trusted_profile_digest=digest_json(
-                        {"operation_profile": VERTICAL_PROFILE, "effect_lineage_required": True}
-                    ),
+                    trusted_profile_digest=digest_json({"operation_profile": VERTICAL_PROFILE, "effect_lineage_required": True}),
                 )
             ).result
             if reservation.get("status") == "BLOCKED":
@@ -281,12 +269,7 @@ class TrustedVerticalExecutor:
         )[:32]
 
         fresh, _ = self.feature_gateway.read_feature(operation_id=operation_id)
-        self._assert_feature_fence(
-            operation_id,
-            fresh,
-            stage=feature.current_stage,
-            candidate=action.candidate_head_sha,
-        )
+        self._assert_feature_fence(operation_id, fresh, stage=feature.current_stage, candidate=action.candidate_head_sha)
         if self.config.effect_lineage_required:
             self._commit(
                 lambda snapshot: plan_lineage_authorize_launch(
@@ -404,13 +387,7 @@ class TrustedVerticalExecutor:
         return self._stable_stop(operation_id, status="BLOCKED", reason="vertical auto-step bound exceeded")
 
     def handle_worker_callback(self, **_kwargs) -> dict[str, Any]:
-        """Non-authoritative compatibility trap.
-
-        Production callback handling is intentionally available only through
-        TrustedVerticalCallbackCoordinator, which validates the durable launch/reservation
-        binding, reconstructs role independence from durable history, and always reloads
-        collector bytes before translation.
-        """
+        """Non-authoritative compatibility trap."""
         raise VerticalInvariantError(
             "CAPABILITY_UNAVAILABLE",
             "direct vertical callback handling is disabled; use TrustedVerticalCallbackCoordinator",
