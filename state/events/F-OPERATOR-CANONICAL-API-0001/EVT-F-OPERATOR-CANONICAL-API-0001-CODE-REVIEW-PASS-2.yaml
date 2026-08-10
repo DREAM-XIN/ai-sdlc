@@ -1,8 +1,8 @@
 version: 0.1.0
 id: EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-PASS-2
 feature_id: F-OPERATOR-CANONICAL-API-0001
-expected_revision: 16
-occurred_at: '2026-08-09T22:05:00Z'
+expected_revision: 17
+occurred_at: '2026-08-10T01:08:00Z'
 changes:
 - kind: evidence
   record:
@@ -26,4 +26,3 @@ changes:
 - kind: stage
   id: verification
   status: READY
-# transport retry: re-trigger trusted automatic Event persistence; no semantic Event fields changed
