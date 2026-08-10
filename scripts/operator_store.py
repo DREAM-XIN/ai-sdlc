@@ -8,10 +8,10 @@ class StoreCommandError(RuntimeError):
     def __init__(self, code:str, message:str): super().__init__(message); self.code=code
 
 def _event_id(t:str,m:dict[str,Any])->str:return t.replace('.', '-')+'-'+digest_json(m)[:32]
-def _projection(snapshot:StoreSnapshot,operation_id:str,generation:int|None=None,*,allow_blocked:bool=False)->dict[str,Any]:
+def _projection(snapshot:StoreSnapshot,operation_id:str,generation:int|None=None,*,allow_blocked:bool=False,allow_cancelled:bool=False)->dict[str,Any]:
     p=rebuild_projection(snapshot,operation_id)
     if generation is not None and p['generation']!=generation: raise StoreCommandError('SUPERSEDED_GENERATION','operation generation is no longer current')
-    if p['status']=='CANCELLED': raise StoreCommandError('CANCELLED_OPERATION','operation is cancelled')
+    if p['status']=='CANCELLED' and not allow_cancelled: raise StoreCommandError('CANCELLED_OPERATION','operation is cancelled')
     if p['status']=='BLOCKED' and not allow_blocked: raise StoreCommandError('BLOCKED','operation is blocked by unresolved safety state')
     return p
 
@@ -84,12 +84,12 @@ def plan_authorize_launch(snapshot:StoreSnapshot,*,operation_id:str,generation:i
 
 def plan_launch_lookup(snapshot:StoreSnapshot,*,operation_id:str,generation:int,external_dispatch_key_value:str,lookup_state:str,receipt_id:str|None,occurred_at:str,trusted_context_digest:str)->StoreMutationPlan:
     if lookup_state not in {'NOT_LAUNCHED','LAUNCHED','UNKNOWN'}: raise StoreCommandError('INVALID_REQUEST','invalid launch receipt state')
-    p=_projection(snapshot,operation_id,generation,allow_blocked=True)
+    p=_projection(snapshot,operation_id,generation,allow_blocked=True,allow_cancelled=True)
     if external_dispatch_key_value not in p['authorized_dispatches']: raise StoreCommandError('INVALID_REQUEST','lookup is not correlated to an authorized dispatch')
     payload={'external_dispatch_key':external_dispatch_key_value,'lookup_state':lookup_state,'receipt_id':receipt_id}; working,e=_append_event(snapshot,operation_id=operation_id,generation=generation,event_type='dispatch.launch.lookup-recorded',occurred_at=occurred_at,payload=payload,trusted_context_digest=trusted_context_digest,identity_material=payload); return _finalize(snapshot,working,[e],operation_id)
 
 def plan_callback(snapshot:StoreSnapshot,*,operation_id:str,generation:int,callback_id:str,callback_payload:dict[str,Any],external_dispatch_key_value:str,occurred_at:str,trusted_context_digest:str)->StoreMutationPlan:
-    p=_projection(snapshot,operation_id,generation,allow_blocked=True)
+    p=_projection(snapshot,operation_id,generation,allow_blocked=True,allow_cancelled=True)
     if external_dispatch_key_value not in p['authorized_dispatches']: raise StoreCommandError('INVALID_REQUEST','callback is not correlated to an authorized dispatch')
     payload={'callback_id':callback_id,'callback_digest':digest_json(callback_payload),'external_dispatch_key':external_dispatch_key_value}; working,e=_append_event(snapshot,operation_id=operation_id,generation=generation,event_type='worker.callback.recorded',occurred_at=occurred_at,payload=payload,trusted_context_digest=trusted_context_digest,identity_material={'callback_id':callback_id}); return _finalize(snapshot,working,[e],operation_id)
 
@@ -111,7 +111,7 @@ def plan_takeover(snapshot:StoreSnapshot,*,operation_id:str,occurred_at:str,trus
     working,e2=_append_event(working,operation_id=operation_id,generation=new,event_type='operation.generation.started',occurred_at=occurred_at,payload={'previous_generation':old},trusted_context_digest=trusted_context_digest,identity_material={'generation':new}); muts.append(e2); return _finalize(snapshot,working,muts,operation_id)
 
 def _plan_persist_event(snapshot:StoreSnapshot,*,operation_id:str,generation:int,event_type:str,feature_event_id:str,expected_revision:int,target_ref:str,candidate_head_sha:str|None,occurred_at:str,trusted_context_digest:str)->StoreMutationPlan:
-    p=_projection(snapshot,operation_id,generation,allow_blocked=(event_type=='persist.confirmed'))
+    p=_projection(snapshot,operation_id,generation,allow_blocked=(event_type=='persist.confirmed'),allow_cancelled=(event_type=='persist.confirmed'))
     if p['expected_feature_revision']!=expected_revision: raise StoreCommandError('STALE_REVISION','persist expected revision does not match operation')
     if event_type=='persist.linearized' and feature_event_id not in p['requested_persists']: raise StoreCommandError('INVALID_REQUEST','persist linearization lacks requested record')
     if event_type=='persist.confirmed' and feature_event_id not in p['linearized_persists']: raise StoreCommandError('INVALID_REQUEST','persist confirmation lacks linearization')
