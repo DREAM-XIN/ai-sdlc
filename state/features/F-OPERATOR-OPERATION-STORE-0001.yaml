@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 4
+revision: 5
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -45,7 +45,7 @@ tasks:
     CAPABILITY_UNAVAILABLE until a later reviewed workstream can satisfy complete
     semantics or an independently approved canonical partial-availability contract
     exists.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -73,4 +73,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REVIEW-REWORK
-updated_at: '2026-08-10T03:31:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-START
+updated_at: '2026-08-10T03:32:00Z'
