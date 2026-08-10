@@ -8,7 +8,6 @@ from typing import Any, Protocol
 from operator_store import (
     StoreCommandError,
     plan_authorize_launch,
-    plan_callback,
     plan_dispatch_claim,
     plan_launch_lookup,
     plan_needs_user,
@@ -17,11 +16,8 @@ from operator_store import (
 from operator_store_model import digest_json, projection_public, rebuild_projection
 from operator_vertical import (
     FeatureSnapshot,
-    RoleIndependencePolicy,
-    TrustedDispatchContext,
     VERTICAL_PROFILE,
     VerticalInvariantError,
-    translate_result,
 )
 from operator_vertical_controller import VerticalAction, select_vertical_action
 from operator_vertical_store import (
@@ -334,55 +330,15 @@ class TrustedVerticalExecutor:
             current = self.advance_action(operation_id=operation_id, action=action)
         return self._stable_stop(operation_id, status="BLOCKED", reason="vertical auto-step bound exceeded")
 
-    def handle_worker_callback(
-        self,
-        *,
-        context: TrustedDispatchContext,
-        callback_id: str,
-        worker_payload: dict[str, Any],
-        receipts: list[dict[str, Any]],
-        independence_policy: RoleIndependencePolicy,
-        content_loader=None,
-    ) -> dict[str, Any]:
-        projection = self._projection(context.operation_id)
-        if projection["generation"] != context.operation_generation:
-            raise VerticalInvariantError("SUPERSEDED_GENERATION", "callback belongs to a superseded generation")
-        self._commit(
-            lambda snapshot: plan_callback(
-                snapshot,
-                operation_id=context.operation_id,
-                generation=context.operation_generation,
-                callback_id=callback_id,
-                callback_payload={"worker_payload": worker_payload, "receipts": receipts},
-                external_dispatch_key_value=context.external_dispatch_key,
-                occurred_at=self.runtime.clock(),
-                trusted_context_digest=self.config.trusted_context_digest,
-            )
+    def handle_worker_callback(self, **_kwargs) -> dict[str, Any]:
+        """Non-authoritative compatibility trap.
+
+        Production callback handling is intentionally available only through
+        TrustedVerticalCallbackCoordinator, which validates the durable launch/reservation
+        binding, reconstructs role independence from durable history, and always reloads
+        collector bytes before translation.
+        """
+        raise VerticalInvariantError(
+            "CAPABILITY_UNAVAILABLE",
+            "direct vertical callback handling is disabled; use TrustedVerticalCallbackCoordinator",
         )
-        feature, _ = self.feature_gateway.read_feature(operation_id=context.operation_id)
-        try:
-            event = translate_result(
-                context=context,
-                feature=feature,
-                worker_payload=worker_payload,
-                receipts=receipts,
-                independence_policy=independence_policy,
-                occurred_at=self.runtime.clock(),
-                content_loader=content_loader,
-            )
-        except VerticalInvariantError as exc:
-            self._record_fact(context.operation_id, "worker.result.rejected", {"code": exc.code, "reason": str(exc)[:512]})
-            if exc.code == "NEEDS_USER":
-                return self._stable_stop(context.operation_id, status="NEEDS_USER", reason=str(exc))
-            if exc.code in {"BLOCKED", "POLICY_DENIED", "STALE_REVISION"}:
-                return self._stable_stop(context.operation_id, status="BLOCKED", reason=str(exc))
-            raise
-        self._record_fact(context.operation_id, "worker.result.validated", {"role": context.role, "dispatch_id": context.dispatch_id})
-        if event is None:
-            worker_state = worker_payload.get("status") or worker_payload.get("verdict")
-            if worker_state == "NEEDS_USER":
-                return self._stable_stop(context.operation_id, status="NEEDS_USER", reason=str(worker_payload.get("summary", "Worker needs user input")))
-            return self._stable_stop(context.operation_id, status="BLOCKED", reason=str(worker_payload.get("summary", "Worker blocked")))
-        self._record_fact(context.operation_id, "feature.event.translated", {"feature_event_id": event["id"], "feature_revision": feature.revision})
-        self._persist(context.operation_id, event, feature)
-        return self.advance_until_stop(operation_id=context.operation_id)
