@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REMEDIATION-DONE
+feature_id: F-OPERATOR-MCP-ADAPTER-0001
+expected_revision: 9
+occurred_at: '2026-08-10T02:57:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-design-remediation-v1
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/design-remediation.md
+  - kind: task
+    id: F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REMEDIATION-1
+    status: DONE

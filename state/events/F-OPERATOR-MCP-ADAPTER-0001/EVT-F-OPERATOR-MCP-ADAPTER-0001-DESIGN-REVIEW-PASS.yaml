@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-MCP-ADAPTER-0001-DESIGN-REVIEW-PASS
+feature_id: F-OPERATOR-MCP-ADAPTER-0001
+expected_revision: 10
+occurred_at: '2026-08-10T02:59:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-design-review-v2
+      type: review
+      status: pass
+      uri: docs/features/F-OPERATOR-MCP-ADAPTER-0001/design-review-v2.md
+  - kind: artifact
+    id: design-v1
+    status: approved
+    evidence:
+      - evidence-design-review-v2
+  - kind: gate
+    id: design-gate
+    status: PASS
+    evidence:
+      - evidence-design-review-v2
+  - kind: stage
+    id: design-review
+    status: DONE
+  - kind: stage
+    id: plan
+    status: READY
