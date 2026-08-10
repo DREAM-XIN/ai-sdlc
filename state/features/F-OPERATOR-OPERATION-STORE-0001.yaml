@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 25
+revision: 26
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -31,7 +31,7 @@ workflow:
     status: DONE
     gate: verification-gate
   - id: acceptance
-    status: READY
+    status: WORKING
     gate: release-gate
 tasks:
 - id: F-OPERATOR-OPERATION-STORE-0001-REQ-REMEDIATION-1
@@ -191,4 +191,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-PASS-2
 - EVT-F-OPERATOR-OPERATION-STORE-0001-VERIFICATION-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-VERIFICATION-PASS
-updated_at: '2026-08-10T04:54:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-ACCEPTANCE-START
+updated_at: '2026-08-10T04:55:00Z'
