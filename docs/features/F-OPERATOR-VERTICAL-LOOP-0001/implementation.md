@@ -2,17 +2,46 @@
 
 ## Status
 
-Implementation complete for the approved `F-OPERATOR-VERTICAL-LOOP-0001` scope at functional candidate:
+Implementation plus the bounded remediation for the independent Code Review is complete for the approved `F-OPERATOR-VERTICAL-LOOP-0001` scope.
+
+Original functional candidate:
 
 `dc88354429e1a81468ca78971cc3c51f30c2af62`
 
+Code Review remediation functional candidate:
+
+`c7b48b931c0ef99e43975391381f073dfa1eb381`
+
 PR: `#217`
 
-This document is Developer implementation output only. It is not an independent Code Review, QA verdict, Product Acceptance decision, or v0.3 release-readiness claim.
+This document is Developer implementation output only. It is not an independent Code Re-review, QA verdict, Product Acceptance decision, or v0.3 release-readiness claim. `code-gate` remains PENDING.
+
+## Code Review remediation
+
+The independent Code Review recorded `REWORK — 0 BLOCKER / 2 MAJOR / 0 MINOR`. The remediation is intentionally limited to those two MAJOR findings.
+
+### MAJOR-1 — one authoritative callback boundary
+
+- `TrustedVerticalExecutor.handle_worker_callback(...)` no longer performs callback translation or Persist. It is a non-authoritative compatibility trap that always fails closed with `CAPABILITY_UNAVAILABLE`.
+- Production lifecycle-driving callbacks flow only through `TrustedVerticalCallbackCoordinator`.
+- The coordinator requires durable reservation/launch authorization validation through `plan_vertical_callback_record(...)` before translation.
+- Reviewer/QA independence is reconstructed from accepted durable callback history rather than supplied by a caller.
+- Production callback composition requires a trusted collector content loader, and collected repository output bytes are reloaded and checked against exact size/SHA-256 before translation.
+- Adversarial deterministic tests prove direct invocation, missing durable launch binding, missing collector loader and same-size digest mismatch cannot bypass the coordinator boundary.
+
+### MAJOR-2 — repeated REWORK identity/predecessor lineage
+
+- Durable independence reconstruction now retains the full ordered set of original/remediation Developer identities contributing to the candidate and the accepted Reviewer lineage.
+- A fresh Reviewer is rejected if its identity appears anywhere in the candidate-contributor lineage, including an earlier remediation round.
+- QA is rejected if its identity appears in any candidate-contributor or accepted Reviewer lineage.
+- Re-review predecessor selection uses authoritative Feature remediation task order instead of lexicographic ordering of content-hashed task ids.
+- Two-REWORK deterministic coverage proves earlier remediation identity exclusion, binding to the actual latest remediation/candidate predecessor, and identical reconstruction after restart.
+
+Detailed remediation evidence is in `docs/features/F-OPERATOR-VERTICAL-LOOP-0001/code-review-remediation.md`.
 
 ## Implemented vertical loop
 
-The trusted Operator runtime now implements the approved bounded vertical slice:
+The trusted Operator runtime implements the approved bounded vertical slice:
 
 `Implementation → independent Code Review → remediation → fresh Re-review → Verification QA → Operation DONE`
 
@@ -44,15 +73,15 @@ Trusted collected-output receipts bind materialized output to:
 - bounded feature worker-run namespace;
 - size and SHA-256 content identity.
 
-The trusted runtime requires a collector content loader and fails closed on missing materialization, namespace escape, digest/size mismatch, stale revision/stage/candidate, or dispatch/role/identity mismatch.
+The trusted production callback path requires a collector content loader and fails closed on missing materialization, namespace escape, digest/size mismatch, stale revision/stage/candidate, or dispatch/role/identity mismatch.
 
 ### Reviewer / QA independence
 
-Reviewer and QA independence is enforced from trusted identities reconstructed from accepted durable callback history. The caller cannot pass a weaker role-separation policy into callback processing.
+Reviewer and QA independence is enforced from trusted identities reconstructed from accepted durable callback history.
 
-- Reviewer cannot equal the original Developer or remediation Developer identity.
-- QA cannot equal Developer, accepted Reviewer, or remediation Developer identities.
-- a fresh Reviewer result after remediation is bound to the post-remediation exact candidate head.
+- Reviewer cannot equal any Developer/remediation Developer identity contributing to the candidate lineage.
+- QA cannot equal any candidate-contributor identity or any accepted Reviewer identity.
+- a fresh Reviewer result after remediation is bound to the post-remediation exact candidate head and actual latest remediation predecessor.
 
 ### Exact Feature and candidate fencing
 
@@ -90,7 +119,8 @@ Recorded `UNKNOWN` remains a fail-closed BLOCKED state. This Feature does not in
 - durable callback recorded before local translation completion: reconstruct trusted envelope and continue under trusted role/collector policy;
 - translated Feature Event recorded before Persist completion: recover the exact stored Event;
 - Persist linearized but local acknowledgement lost: exact Event lookup/confirmation, or exact idempotent Event replay when lookup proves it absent;
-- cancellation before launch/Persist linearization fences new side effects; cancellation after Persist linearization permits only the already-linearized exact Event to finish.
+- cancellation before launch/Persist linearization fences new side effects; cancellation after Persist linearization permits only the already-linearized exact Event to finish;
+- repeated Review/remediation identity lineage is rebuilt from ordered durable accepted callback facts after restart.
 
 The reconciler is bounded by the configured auto-step limit and stable-stops rather than spinning indefinitely.
 
@@ -111,7 +141,8 @@ The bounded translators preserve role authority:
 The repository validators cover:
 
 - strict Worker/result and collected-output provenance failures;
-- trusted role independence rejection;
+- trusted role independence rejection, including multi-REWORK contributor lineage;
+- direct/alternate callback bypass rejection;
 - Developer → Reviewer PASS → QA PASS;
 - Reviewer REWORK → remediation → fresh Re-review PASS → QA PASS;
 - Acceptance READY / release-gate PENDING boundary after QA PASS;
@@ -122,7 +153,7 @@ The repository validators cover:
 - fresh runtime reconstruction and bounded resume;
 - existing Operator Store, canonical API/MCP, lifecycle and repository regression suites.
 
-Exact validation evidence is recorded separately in `evidence/implementation-verification.md`.
+The remediation-specific exact validation is recorded in `evidence/implementation-verification.md` and `code-review-remediation.md`.
 
 ## Explicit non-scope
 
