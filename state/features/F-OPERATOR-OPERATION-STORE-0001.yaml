@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 11
+revision: 12
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -59,7 +59,7 @@ tasks:
     durable artifact is immutable after creation, with evolving launch/receipt/callback/takeover/release/Persist
     state represented by immutable Operation journal events (or equivalently immutable
     records), leaving only projection cache replaceable.
-  status: TODO
+  status: WORKING
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -116,4 +116,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-DONE
 - EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REVIEW-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REVIEW-REWORK
-updated_at: '2026-08-10T03:40:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-DESIGN-REMEDIATION-START
+updated_at: '2026-08-10T03:41:00Z'
