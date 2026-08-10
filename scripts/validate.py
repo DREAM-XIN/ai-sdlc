@@ -17,7 +17,9 @@ from validate_operator_mcp import main as validate_operator_mcp
 from validate_operator_store import main as validate_operator_store
 from validate_operator_store_runtime import main as validate_operator_store_runtime
 from validate_operator_vertical import main as validate_operator_vertical
+from validate_operator_vertical_completion import main as validate_operator_vertical_completion
 from validate_operator_vertical_gh_aw import main as validate_operator_vertical_gh_aw
+from validate_operator_vertical_reconcile import main as validate_operator_vertical_reconcile
 from validate_operator_vertical_recovery import main as validate_operator_vertical_recovery
 from validate_operator_vertical_remediation import main as validate_operator_vertical_remediation
 from validate_remediation_review_completion import main as validate_remediation_review_completion
@@ -218,7 +220,9 @@ def main():
     validate_operator_store()
     validate_operator_store_runtime()
     validate_operator_vertical()
+    validate_operator_vertical_completion()
     validate_operator_vertical_recovery()
+    validate_operator_vertical_reconcile()
     validate_operator_vertical_remediation()
     validate_operator_vertical_gh_aw()
     errors = (
