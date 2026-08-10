@@ -36,12 +36,17 @@ class ProtectionReceipt:
 
 
 class StateRefProtectionVerifier(Protocol):
+    test_only: bool
+
     def verify(self, repository: str, state_ref: str) -> ProtectionReceipt:
         ...
 
 
 class StaticProtectionVerifier:
-    """Trusted test/control verifier; never construct it from client/Worker payload."""
+    """Deterministic test verifier; production composition rejects this class."""
+
+    test_only = True
+
     def __init__(self, *, status: str, verifier_identity: str = "trusted-test-verifier", policy_digest: str | None = "test-policy"):
         if status not in VALID_PROTECTION_STATES:
             raise ValueError("invalid protection state")
