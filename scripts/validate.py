@@ -16,6 +16,7 @@ from validate_operator_api import main as validate_operator_api
 from validate_operator_mcp import main as validate_operator_mcp
 from validate_operator_store import main as validate_operator_store
 from validate_operator_store_runtime import main as validate_operator_store_runtime
+from validate_operator_vertical import main as validate_operator_vertical
 from validate_remediation_review_completion import main as validate_remediation_review_completion
 from validate_transition import validate_schema as validate_execution_schema
 from validate_transition import validate_transition
@@ -213,6 +214,7 @@ def main():
     validate_operator_mcp()
     validate_operator_store()
     validate_operator_store_runtime()
+    validate_operator_vertical()
     errors = (
         validate_schemas()
         + validate_profiles()
