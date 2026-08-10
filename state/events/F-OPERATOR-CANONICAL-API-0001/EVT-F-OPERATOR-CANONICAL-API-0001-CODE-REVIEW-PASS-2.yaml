@@ -26,3 +26,4 @@ changes:
 - kind: stage
   id: verification
   status: READY
+# transport retry: re-trigger trusted automatic Event persistence; no semantic Event fields changed
