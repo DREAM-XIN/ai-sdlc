@@ -8,6 +8,14 @@ from jsonschema import Draft202012Validator
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from operator_api import API_VERSION, CAPABILITIES, REGISTRY, dispatch, registry_errors
+from operator_conformance import (
+    AliasFixtureAdapter,
+    DirectFixtureAdapter,
+    FROZEN_CONFORMANCE_SUBSET,
+    JsonRoundTripFixtureAdapter,
+    assert_materially_independent,
+    run_conformance_suite,
+)
 SCHEMA_ROOT = ROOT / "spec" / "operator"
 EXPECTED = {
 "system.capabilities": ("read", False, False, True),
@@ -24,8 +32,8 @@ EXPECTED = {
 "notification.ack": ("write", True, False, False),
 }
 class CounterBackend:
-    def __init__(self, result, identity="fixture-a", transport="fixture-transport-a", fail=None):
-        self.calls = 0; self.result = result; self.identity = identity; self.transport = transport; self.fail = fail
+    def __init__(self, result, fail=None):
+        self.calls = 0; self.result = result; self.fail = fail
     def availability(self, capability, trusted_context): return True, "AVAILABLE"
     def invoke(self, request, trusted_context):
         self.calls += 1
@@ -51,6 +59,7 @@ def main():
     for item in CAPABILITIES:
         kind, idem, rev, conf = EXPECTED[item.id]
         assert (item.kind,item.requires_idempotency,item.requires_expected_feature_revision,item.conformance_subset) == (kind,idem,rev,conf)
+    assert tuple(item.id for item in CAPABILITIES if item.conformance_subset) == FROZEN_CONFORMANCE_SUBSET
     probe = CounterBackend({})
     bad = req("system.capabilities"); bad["api_version"] = "ai-sdlc.operator/v999"
     assert_code(dispatch(bad, backends={"system.capabilities": probe}), "UNSUPPORTED_API_VERSION"); assert probe.calls == 0
@@ -93,15 +102,34 @@ def main():
     result = dispatch(req("feature.status"), backends={"feature.status": secret_backend}); assert_code(result, "INTERNAL_FAILURE")
     rendered = json.dumps(result); assert "TOP-SECRET" not in rendered and "password=abc" not in rendered
     prohibited = {"shell.exec","manifest.patch","feature.event","gate.pass","repo.write","merge","release"}; assert prohibited.isdisjoint(REGISTRY)
-    fixture_a = CounterBackend(status_result, identity="adapter-a", transport="fixture-a")
-    fixture_b = CounterBackend(status_result, identity="adapter-b", transport="fixture-b")
-    assert (fixture_a.identity, fixture_a.transport) != (fixture_b.identity, fixture_b.transport)
-    alias = CounterBackend(status_result, identity=fixture_a.identity, transport=fixture_a.transport)
-    assert (alias.identity, alias.transport) == (fixture_a.identity, fixture_a.transport)
+
+    direct = DirectFixtureAdapter()
+    json_roundtrip = JsonRoundTripFixtureAdapter()
+    direct_report = run_conformance_suite(direct)
+    json_report = run_conformance_suite(json_roundtrip)
+    assert direct_report.semantic_signature == json_report.semantic_signature
+    assert direct_report.exercised_capabilities == FROZEN_CONFORMANCE_SUBSET
+    assert json_report.exercised_capabilities == FROZEN_CONFORMANCE_SUBSET
+    direct_evidence, json_evidence = assert_materially_independent(direct, json_roundtrip)
+    alias = AliasFixtureAdapter(direct)
+    try:
+        assert_materially_independent(direct, alias)
+    except AssertionError as exc:
+        assert "wrapper/alias" in str(exc)
+    else:
+        raise AssertionError("thin wrapper incorrectly counted as independent adapter evidence")
+    try:
+        run_conformance_suite(alias)
+    except AssertionError as exc:
+        assert "aliases" in str(exc)
+    else:
+        raise AssertionError("alias fixture incorrectly accepted by standalone conformance suite")
+
     print("Operator API validation passed")
     print(f"- api_version: {API_VERSION}")
     print(f"- capabilities: {len(CAPABILITIES)}")
     print("- default_available: system.capabilities")
     print("- capability discovery: strict exact-vocabulary schema + bounded availability reasons")
-    print("- conformance fixture identities: 2 distinct; alias rejected as independent evidence")
+    print(f"- conformance subset: {len(FROZEN_CONFORMANCE_SUBSET)} shared semantics through 2 fixture adapters")
+    print(f"- adapter evidence: {direct_evidence.transport_kind} != {json_evidence.transport_kind}; alias/thin-wrapper rejected")
 if __name__ == "__main__": main()
