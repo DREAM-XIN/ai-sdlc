@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc.effect-lineage-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","effect_lineage_id","current_leaf_semantic_effect_key","current_leaf_external_dispatch_key","current_proposal_id","blocks_on_semantic_effect_key","predecessor_state","relations","last_sequence","history_digest"],
+  "properties": {
+    "schema_version": {"const": "ai-sdlc.effect-lineage-projection/v1"},
+    "effect_lineage_id": {"type": "string", "pattern": "^lin-[0-9a-f]{48}$"},
+    "current_leaf_semantic_effect_key": {"type": ["string","null"]},
+    "current_leaf_external_dispatch_key": {"type": ["string","null"]},
+    "current_proposal_id": {"type": ["string","null"]},
+    "blocks_on_semantic_effect_key": {"type": ["string","null"]},
+    "predecessor_state": {"type": ["string","null"], "enum": [null,"NEVER_AUTHORIZED","AUTHORIZED_UNCONFIRMED","AUTHORIZED_NOT_LAUNCHED_OBSERVED","LAUNCHED_CORRELATED","UNKNOWN","RETIRED_NO_DUPLICATE_PROVEN","LEGACY_UNRESOLVED"]},
+    "relations": {"type": "array", "items": {"type": "object"}},
+    "last_sequence": {"type": "integer", "minimum": 0},
+    "history_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
