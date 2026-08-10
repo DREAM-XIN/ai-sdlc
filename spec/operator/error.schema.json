@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-sdlc.dev/schema/operator/error.schema.json",
+  "title": "AI-SDLC Operator structured error",
+  "type": "object",
+  "required": ["code"],
+  "properties": {"code": {"enum": ["INVALID_REQUEST", "UNSUPPORTED_API_VERSION", "CAPABILITY_UNAVAILABLE", "UNAUTHORIZED", "POLICY_DENIED", "STALE_REVISION", "ALREADY_CLAIMED", "ALREADY_APPLIED", "SUPERSEDED_GENERATION", "CANCELLED_OPERATION", "EXTERNAL_WAIT", "NEEDS_USER", "BLOCKED", "TRANSIENT_FAILURE", "INTERNAL_FAILURE"]}, "message": {"type": "string", "maxLength": 512}, "details": {"type": "object", "maxProperties": 16}},
+  "additionalProperties": false
+}

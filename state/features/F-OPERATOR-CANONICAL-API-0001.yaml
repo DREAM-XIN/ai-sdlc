@@ -1,0 +1,168 @@
+protocol_version: 0.1.0
+revision: 26
+feature:
+  id: F-OPERATOR-CANONICAL-API-0001
+  title: Implement v0.3 canonical typed Operator API foundation
+  risk: medium
+  issue: '#208'
+workflow:
+  profile: standard-feature
+  status: DONE
+  current_stage: acceptance
+  stages:
+  - id: requirement
+    status: DONE
+  - id: requirement-review
+    status: DONE
+    gate: requirement-gate
+  - id: design
+    status: DONE
+  - id: design-review
+    status: DONE
+    gate: design-gate
+  - id: plan
+    status: DONE
+  - id: implementation
+    status: DONE
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: DONE
+    gate: verification-gate
+  - id: acceptance
+    status: DONE
+    gate: release-gate
+tasks:
+- id: remediation-code-review-v1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: code-review
+  feedback: 'Fix MAJOR-1: bind system.capabilities response to the strict capability
+    discovery schema; restrict availability reasons to safe bounded codes; add negative
+    tests for malformed discovery rows/cardinality/ids and unsafe reason leakage;
+    rerun exact-head validation and CI.'
+  target_pr: '#209'
+  status: DONE
+- id: remediation-verification-v1
+  kind: remediation
+  stage: implementation
+  role: developer
+  source_stage: verification
+  feedback: 'Fix QA-MAJOR-1: implement a reusable transport-neutral adapter conformance
+    harness; run one shared semantic assertion suite through at least two materially
+    distinct fixture adapter implementations across the frozen conformance subset;
+    reject alias/thin-wrapper independence based on real adapter/transport evidence;
+    keep fixtures test-only and rerun exact-head validation/CI.'
+  target_pr: '#209'
+  status: DONE
+artifacts:
+- id: requirement-v1
+  type: requirement
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/requirement.md
+  status: approved
+- id: design-v1
+  type: design
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/design.md
+  status: approved
+- id: plan-v1
+  type: plan
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/plan.md
+  status: draft
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/implementation.md
+  status: approved
+gates:
+- id: requirement-gate
+  status: PASS
+  evidence:
+  - evidence-requirement-review-v1
+- id: design-gate
+  status: PASS
+  evidence:
+  - evidence-design-review-v1
+- id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v1
+  - evidence-code-review-v2
+- id: verification-gate
+  status: PASS
+  evidence:
+  - evidence-verification-v1
+  - evidence-verification-v2
+- id: release-gate
+  status: PASS
+  evidence:
+  - evidence-acceptance-v1
+evidence:
+- id: evidence-requirement-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/design-review.md
+- id: evidence-implementation-verification-v1
+  type: verification
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/evidence/implementation-verification.md
+- id: evidence-code-review-v1
+  type: review
+  status: fail
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-remediation.md
+- id: evidence-code-review-v2
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-review-v2.md
+- id: evidence-verification-v1
+  type: verification
+  status: fail
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/verification.md
+- id: evidence-verification-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/verification-remediation.md
+- id: evidence-verification-v2
+  type: verification
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/verification-v2.md
+- id: evidence-acceptance-v1
+  type: acceptance
+  status: pass
+  uri: docs/features/F-OPERATOR-CANONICAL-API-0001/acceptance.md
+applied_events:
+- EVT-F-OPERATOR-CANONICAL-API-0001-REQ-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-REQ-DONE
+- EVT-F-OPERATOR-CANONICAL-API-0001-REQ-REVIEW-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-REQ-REVIEW-PASS
+- EVT-F-OPERATOR-CANONICAL-API-0001-DESIGN-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-DESIGN-DONE
+- EVT-F-OPERATOR-CANONICAL-API-0001-DESIGN-REVIEW-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-DESIGN-REVIEW-PASS
+- EVT-F-OPERATOR-CANONICAL-API-0001-PLAN-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-PLAN-DONE
+- EVT-F-OPERATOR-CANONICAL-API-0001-IMPL-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-IMPL-DONE
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-REWORK
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REMEDIATION-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REMEDIATION-DONE
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-RESTART-2
+- EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-PASS-2
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REWORK
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REMEDIATION-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REMEDIATION-DONE
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-RESTART-2
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-PASS-2
+- EVT-F-OPERATOR-CANONICAL-API-0001-ACCEPTANCE-START
+- EVT-F-OPERATOR-CANONICAL-API-0001-ACCEPTANCE-PASS
+updated_at: '2026-08-10T01:36:00Z'

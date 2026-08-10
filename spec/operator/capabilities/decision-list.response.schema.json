@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/decision-list.response.schema.json","title":"decision.list response payload","type":"object","properties":{"decisions":{"type":"array"}},"required":["decisions"],"additionalProperties":false}

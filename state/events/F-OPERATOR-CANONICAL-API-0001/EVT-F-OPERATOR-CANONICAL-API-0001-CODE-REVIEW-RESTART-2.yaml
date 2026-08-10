@@ -1,0 +1,12 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REVIEW-RESTART-2
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 16
+occurred_at: '2026-08-10T00:47:00Z'
+changes:
+- kind: gate
+  id: code-gate
+  status: PENDING
+- kind: stage
+  id: code-review
+  status: WORKING

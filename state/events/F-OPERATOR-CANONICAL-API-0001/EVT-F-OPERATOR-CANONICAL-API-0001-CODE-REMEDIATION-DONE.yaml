@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-CANONICAL-API-0001-CODE-REMEDIATION-DONE
+feature_id: F-OPERATOR-CANONICAL-API-0001
+expected_revision: 15
+occurred_at: '2026-08-09T21:08:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-remediation-v1
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-CANONICAL-API-0001/code-remediation.md
+  - kind: task
+    id: remediation-code-review-v1
+    status: DONE

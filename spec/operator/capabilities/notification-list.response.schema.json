@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/notification-list.response.schema.json","title":"notification.list response payload","type":"object","properties":{"notifications":{"type":"array"}},"required":["notifications"],"additionalProperties":false}

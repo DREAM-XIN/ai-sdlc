@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/project-inspect.request.schema.json","title":"project.inspect request payload","type":"object","properties":{},"required":[],"additionalProperties":false}

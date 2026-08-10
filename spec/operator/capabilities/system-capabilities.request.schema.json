@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://ai-sdlc.dev/schema/operator/capabilities/system-capabilities.request.schema.json","title":"system.capabilities request payload","type":"object","properties":{},"required":[],"additionalProperties":false}
