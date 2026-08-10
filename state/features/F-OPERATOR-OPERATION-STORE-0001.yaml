@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 21
+revision: 22
 feature:
   id: F-OPERATOR-OPERATION-STORE-0001
   title: Implement durable Operator journal and dispatch safety core
@@ -74,7 +74,7 @@ tasks:
     is protected from repository/ruleset authority, fails closed as UNKNOWN/UNPROTECTED
     on ambiguity/absence, and cannot be substituted by the StaticProtectionVerifier
     in the normal production write path.
-  status: WORKING
+  status: DONE
   runtime: manual
 artifacts:
 - id: requirement-v1
@@ -149,6 +149,10 @@ evidence:
   type: review
   status: fail
   uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/code-review.md
+- id: evidence-code-remediation-v1
+  type: implementation
+  status: pass
+  uri: docs/features/F-OPERATOR-OPERATION-STORE-0001/code-remediation.md
 applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-REQ-DONE
@@ -171,4 +175,5 @@ applied_events:
 - EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-START
 - EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REVIEW-REWORK
 - EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-START
-updated_at: '2026-08-10T04:25:00Z'
+- EVT-F-OPERATOR-OPERATION-STORE-0001-CODE-REMEDIATION-DONE
+updated_at: '2026-08-10T04:48:00Z'
