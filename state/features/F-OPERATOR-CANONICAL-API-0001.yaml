@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 22
+revision: 23
 feature:
   id: F-OPERATOR-CANONICAL-API-0001
   title: Implement v0.3 canonical typed Operator API foundation
@@ -7,7 +7,7 @@ feature:
   issue: '#208'
 workflow:
   profile: standard-feature
-  status: BLOCKED
+  status: ACTIVE
   current_stage: verification
   stages:
   - id: requirement
@@ -28,7 +28,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: BLOCKED
+    status: WORKING
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -89,7 +89,7 @@ gates:
   - evidence-code-review-v1
   - evidence-code-review-v2
 - id: verification-gate
-  status: FAIL
+  status: PENDING
   evidence:
   - evidence-verification-v1
 - id: release-gate
@@ -150,4 +150,5 @@ applied_events:
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REWORK
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REMEDIATION-START
 - EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-REMEDIATION-DONE
-updated_at: '2026-08-10T01:29:00Z'
+- EVT-F-OPERATOR-CANONICAL-API-0001-VERIFICATION-RESTART-2
+updated_at: '2026-08-10T01:33:00Z'
