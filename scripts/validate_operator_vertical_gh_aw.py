@@ -6,6 +6,8 @@ import json
 
 from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
+from validate_operator_vertical_completion import main as validate_vertical_completion
+from validate_operator_vertical_reconcile import main as validate_vertical_reconcile
 
 HEAD = "d" * 40
 KEY = "dispatch-" + "e" * 40
@@ -130,6 +132,8 @@ def main():
     validate_gate_candidate_required()
     validate_fresh_process_lookup()
     validate_unknown_is_honest()
+    validate_vertical_completion()
+    validate_vertical_reconcile()
     print("Operator vertical gh-aw validation passed")
 
 
