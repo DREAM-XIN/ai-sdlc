@@ -280,7 +280,11 @@ def _add_notification(
     path = notification_path(record["notification_id"])
     existing = working.get(path)
     if existing is not None:
-        if existing != record:
+        if not isinstance(existing, dict):
+            raise StoreCommandError("ALREADY_APPLIED", "Notification semantic identity conflicts with existing record")
+        replay_record = dict(record)
+        replay_record["created_at"] = existing.get("created_at")
+        if existing != replay_record:
             raise StoreCommandError("ALREADY_APPLIED", "Notification semantic identity conflicts with existing record")
         return working, rebuild_notification(working, record["notification_id"])
     mutation = StoreMutation("create_immutable", path, record)
