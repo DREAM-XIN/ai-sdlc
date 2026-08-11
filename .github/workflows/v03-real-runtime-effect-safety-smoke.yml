@@ -9,6 +9,13 @@ on:
       - '.github/workflows/v03-real-runtime-effect-safety-smoke.yml'
       - 'scripts/operator_github_actions_transport.py'
       - 'scripts/validate_operator_github_actions_transport.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-real-runtime-effect-safety-smoke.yml'
+      - 'scripts/operator_github_actions_transport.py'
+      - 'scripts/validate_operator_github_actions_transport.py'
 
 permissions:
   contents: read
@@ -109,7 +116,6 @@ jobs:
                   'worker_adapter': 'gh-aw',
               }
 
-          # Launch through the same production gateway used by the vertical runtime.
           transport_g0 = GitHubActionsWorkflowTransport(config)
           gateway_g0 = GhAwVerticalRoleDispatchGateway(
               workflow_map={'reviewer': workflow},
@@ -117,8 +123,6 @@ jobs:
           )
           _discarded_ack = gateway_g0.launch(make_dispatch(0, f'fi-g0-{sha[:16]}'))
 
-          # Simulate process/session loss: create a brand-new transport instance and
-          # recover only from GitHub's durable workflow run receipt.
           fresh = GitHubActionsWorkflowTransport(config)
           receipt = None
           for _ in range(12):
@@ -133,8 +137,6 @@ jobs:
           if receipt is None:
               raise SystemExit('real gh-aw dispatch was not durably correlated after lost ACK')
 
-          # Simulate trusted generation takeover. Same external key MUST converge
-          # on the existing run rather than dispatching a new real Worker effect.
           transport_g1 = GitHubActionsWorkflowTransport(config)
           gateway_g1 = GhAwVerticalRoleDispatchGateway(
               workflow_map={'reviewer': workflow},
