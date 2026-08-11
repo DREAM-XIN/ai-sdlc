@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the backed MCP production launcher remains strict and scope-safe."""
+"""Validate every backed MCP production path remains strict and scope-safe."""
 from __future__ import annotations
 
 import ast
@@ -10,7 +10,8 @@ import operator_mcp_production
 from operator_mcp import READ_TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
-LAUNCHER = ROOT / "scripts" / "operator_mcp_production.py"
+STRICT_LAUNCHER = ROOT / "scripts" / "operator_mcp_production.py"
+COMPATIBILITY_LAUNCHER = ROOT / "scripts" / "operator_mcp.py"
 WRITE_CAPABILITIES = {
     "operation.start",
     "operation.resume",
@@ -28,6 +29,16 @@ REQUIRED_ENV = (
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def imported_symbols(path: Path) -> set[str]:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imported.update(alias.name for alias in node.names)
+    return imported
 
 
 def validate_missing_config_fails_closed():
@@ -49,25 +60,62 @@ def validate_missing_config_fails_closed():
 
 
 def validate_static_authority_boundary():
-    source = LAUNCHER.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            imported.update(alias.name for alias in node.names)
-    require("build_trusted_operator_backend_bundle" in imported, "production launcher does not use authoritative scoped bundle")
-    require("build_trusted_operator_read_bundle" not in imported, "production launcher imported legacy unscoped helper")
-    require("extend_with_trusted_decision_writes" not in imported, "read-only MCP production launcher imported write extension")
-    require(set(READ_TOOLS.values()).isdisjoint(WRITE_CAPABILITIES), "MCP production tool registry exposes semantic writes")
-    require("enable_conformance_probe=False" in source, "production launcher did not explicitly disable test probe")
+    strict_source = STRICT_LAUNCHER.read_text(encoding="utf-8")
+    strict_imported = imported_symbols(STRICT_LAUNCHER)
+    require(
+        "build_trusted_operator_backend_bundle" in strict_imported,
+        "strict production launcher does not use authoritative scoped bundle",
+    )
+    require(
+        "build_trusted_operator_read_bundle" not in strict_imported,
+        "strict production launcher imported legacy unscoped helper",
+    )
+    require(
+        "extend_with_trusted_decision_writes" not in strict_imported,
+        "read-only MCP production launcher imported write extension",
+    )
+    require(
+        "enable_conformance_probe=False" in strict_source,
+        "strict production launcher did not explicitly disable test probe",
+    )
+
+    # The compatibility MCP entrypoint may remain honestly unbacked when no
+    # configuration is present. If environment backing is enabled, however, it
+    # must route through the exact same authoritative scoped bundle as the strict
+    # launcher. This prevents an alternate configured path from exposing raw
+    # Store operation.status by operation id.
+    compatibility_source = COMPATIBILITY_LAUNCHER.read_text(encoding="utf-8")
+    compatibility_imported = imported_symbols(COMPATIBILITY_LAUNCHER)
+    require(
+        "build_trusted_operator_backend_bundle" in compatibility_imported,
+        "configured compatibility MCP path does not use authoritative scoped bundle",
+    )
+    require(
+        "build_trusted_operator_read_bundle" not in compatibility_imported,
+        "configured compatibility MCP path imported legacy unscoped bundle",
+    )
+    require(
+        "build_production_server_from_environment" in compatibility_source,
+        "compatibility MCP configured production path disappeared unexpectedly",
+    )
+    require(
+        "enable_conformance_probe=False" in compatibility_source,
+        "compatibility production path can enable test probe",
+    )
+
+    require(
+        set(READ_TOOLS.values()).isdisjoint(WRITE_CAPABILITIES),
+        "MCP production tool registry exposes semantic writes",
+    )
 
 
 def main():
     validate_missing_config_fails_closed()
     validate_static_authority_boundary()
     print("Operator backed MCP production launcher validation passed")
-    print("- no unbacked fallback")
-    print("- authoritative target-scoped bundle required")
+    print("- strict launcher has no unbacked fallback")
+    print("- strict and configured compatibility paths both require authoritative target-scoped bundle")
+    print("- configured paths cannot import the legacy unscoped read bundle")
     print("- separate trusted runtime/target-read/Store inputs required")
     print("- no write extension imported and no MCP write tools registered")
     print("- test-only conformance probe disabled")
