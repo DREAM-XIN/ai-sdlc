@@ -27,16 +27,12 @@ READ_TOOLS: dict[str, str] = {
 
 
 class TrustedContextProvider(Protocol):
-    """Server-owned source for trusted runtime identity and authorization context."""
-
     def for_request(self, target: dict[str, Any] | None) -> dict[str, Any]:
         ...
 
 
 @dataclass(frozen=True)
 class StaticTrustedContextProvider:
-    """Explicit provider useful for trusted startup wiring and deterministic tests."""
-
     trusted_context: dict[str, Any]
 
     def for_request(self, target: dict[str, Any] | None) -> dict[str, Any]:
@@ -67,8 +63,6 @@ def invoke_canonical(
     backends: dict[str, Any],
     extra_envelope_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Construct one canonical envelope and preserve canonical structured responses."""
-
     request: dict[str, Any] = {
         "api_version": api_version,
         "request_id": _request_id(),
@@ -79,9 +73,8 @@ def invoke_canonical(
     if target is not None:
         request["target"] = dict(target)
     if context is not None:
-        # `context` is the bounded canonical request context only
-        # (operation id/generation/expected revision). It is not trusted
-        # identity or authorization context and remains schema-validated.
+        # Bounded canonical context only. Trusted identity/authorization stays
+        # server-owned and cannot be supplied through MCP tool arguments.
         request["context"] = dict(context)
     if extra_envelope_fields:
         request.update(extra_envelope_fields)
@@ -102,8 +95,6 @@ def _register_read_tool(
         context: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Invoke one fixed read-only canonical Operator capability."""
-
         trusted_context = trusted_context_provider.for_request(target)
         return invoke_canonical(
             capability=capability,
@@ -132,8 +123,6 @@ def _register_conformance_probe(
     async def conformance_probe(
         case: Literal["unknown_capability", "trusted_identity_injection"],
     ) -> dict[str, Any]:
-        """Closed, test-only negative probe. Never registered by production main()."""
-
         target = {"repository": "DREAM-XIN/fixture", "feature_id": "F-CONFORMANCE-0001"}
         trusted_context = trusted_context_provider.for_request(target)
         if case == "unknown_capability":
@@ -171,8 +160,6 @@ def build_server(
     backends: dict[str, Any] | None = None,
     enable_conformance_probe: bool = False,
 ) -> MCPServer:
-    """Build the supported server; the production entrypoint never enables the probe."""
-
     provider = trusted_context_provider or StaticTrustedContextProvider(DEFAULT_TRUSTED_CONTEXT)
     backend_map = dict(backends or {})
     server = MCPServer("AI-SDLC Operator")
@@ -194,23 +181,23 @@ def build_server(
 
 
 def build_production_server_from_environment() -> MCPServer:
-    """Compose production backing only when trusted process config is explicit.
+    """Enable trusted backing only when the server launcher supplies it.
 
-    The environment/config file is controlled by the MCP server launcher, not
-    by MCP tool arguments. Absence preserves the accepted fail-closed behavior:
-    tools remain registered but unconfigured canonical capabilities report
-    `CAPABILITY_UNAVAILABLE`.
+    Absence of config preserves the accepted fail-closed MCP behavior: read
+    tools remain discoverable, while unbacked canonical capabilities report
+    `CAPABILITY_UNAVAILABLE`. When configured, target-repository reads and Store
+    protection inspection use separately named credentials.
     """
     config_path = os.environ.get("AI_SDLC_OPERATOR_RUNTIME_CONFIG", "").strip()
     if not config_path:
         return build_server(enable_conformance_probe=False)
 
-    token = (
-        os.environ.get("AI_SDLC_OPERATOR_GITHUB_TOKEN", "").strip()
-        or os.environ.get("GITHUB_TOKEN", "").strip()
-    )
-    if not token:
-        raise RuntimeError("trusted Operator runtime config requires a GitHub token")
+    target_read_token = os.environ.get("AI_SDLC_OPERATOR_TARGET_READ_TOKEN", "").strip()
+    store_token = os.environ.get("AI_SDLC_OPERATOR_STORE_TOKEN", "").strip()
+    if not target_read_token or not store_token:
+        raise RuntimeError(
+            "trusted Operator runtime config requires separate target-read and Store credentials"
+        )
 
     from operator_production_runtime import (
         TrustedOperatorRuntimeConfig,
@@ -221,7 +208,8 @@ def build_production_server_from_environment() -> MCPServer:
     bundle = build_trusted_operator_read_bundle(
         config=config,
         adapter_id=ADAPTER_ID,
-        github_token=token,
+        target_read_token=target_read_token,
+        store_token=store_token,
         github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
     )
     return build_server(
@@ -232,11 +220,9 @@ def build_production_server_from_environment() -> MCPServer:
 
 
 def main() -> None:
-    # Security invariant: production startup has no flag/env/config path that
-    # enables the reserved conformance probe. Trusted runtime configuration may
-    # add canonical backends, but it cannot add MCP write tools.
-    server = build_production_server_from_environment()
-    server.run(transport="stdio")
+    # Production startup has no code path that enables the test-only probe and
+    # no MCP argument can widen configured repository/Feature scope.
+    build_production_server_from_environment().run(transport="stdio")
 
 
 if __name__ == "__main__":
