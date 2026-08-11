@@ -57,13 +57,18 @@ class ReceiptSafeCanonicalFeatureEventGateway(CanonicalExactRevisionGitHubFeatur
                     "INTERNAL_FAILURE",
                     "applied Event receipt has invalid Feature revision",
                 )
+            # Feature Event application is an optimistic-concurrency transition
+            # from exact `expected_revision` to exactly `expected_revision + 1`.
+            # The current Manifest may be further ahead because later Events were
+            # applied after this one; returning the latest revision would make a
+            # valid late-restart receipt look stale to Vertical Persist recovery.
             return FeatureEventReceipt(
                 APPLIED,
                 event_id,
                 expected_revision,
                 receipt.event_path,
                 event_blob_sha=None,
-                result_revision=revision,
+                result_revision=expected_revision + 1,
                 manifest_blob_sha=str(manifest_blob_sha) if manifest_blob_sha else None,
             )
         if not isinstance(revision, int):
