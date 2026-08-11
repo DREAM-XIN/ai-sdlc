@@ -24,6 +24,8 @@ FEATURE_REF = "feature/F-RUNTIME-COMPOSITION-0001"
 STATE_REF = "refs/heads/ai-sdlc-operator-state"
 NOW = "2026-08-11T05:00:00Z"
 
+WRITE_CAPABILITIES = {"operation.start", "operation.cancel"}
+
 
 def require(condition, message):
     if not condition:
@@ -62,15 +64,23 @@ def seed(backend, receipt, *, repository, feature_id, key):
 
 
 def req(capability, *, target, context, adapter_id=ADAPTER_ID, payload=None):
-    return {
+    canonical_context = {key: value for key, value in context.items() if key != "idempotency_key"}
+    operation_marker = canonical_context.get("operation_id", context.get("idempotency_key", "x"))
+    body = {
         "api_version": API_VERSION,
-        "request_id": f"scope-{capability.replace('.', '-')}-{context.get('operation_id', context.get('idempotency_key', 'x'))}",
+        "request_id": f"scope-{capability.replace('.', '-')}-{operation_marker}",
         "capability": capability,
         "target": dict(target),
-        "context": dict(context),
+        "context": canonical_context,
         "client_identity": {"adapter_id": adapter_id},
         "payload": dict(payload or {}),
     }
+    if capability in WRITE_CAPABILITIES:
+        body["idempotency_key"] = str(
+            context.get("idempotency_key")
+            or f"scope-{capability.replace('.', '-')}-{operation_marker}"
+        )
+    return body
 
 
 def main():
@@ -186,6 +196,7 @@ def main():
         require(wrong_adapter["ok"] is False and wrong_adapter["error"]["code"] == "UNAUTHORIZED", wrong_adapter)
 
     print("Operator production scope validation passed")
+    print("- write attack probes use canonically valid idempotent envelopes")
     print("- status/cancel authorize from durable Operation target, not client target claims")
     print("- unauthorized foreign Operation cancellation produced zero durable mutation")
     print("- operation.start re-reads trusted exact Feature revision before Store write")
