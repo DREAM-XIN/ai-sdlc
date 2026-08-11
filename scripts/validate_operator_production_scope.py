@@ -70,11 +70,12 @@ def req(capability, *, target, context, adapter_id=ADAPTER_ID, payload=None):
         "api_version": API_VERSION,
         "request_id": f"scope-{capability.replace('.', '-')}-{operation_marker}",
         "capability": capability,
-        "target": dict(target),
         "context": canonical_context,
         "client_identity": {"adapter_id": adapter_id},
         "payload": dict(payload or {}),
     }
+    if target is not None:
+        body["target"] = dict(target)
     if capability in WRITE_CAPABILITIES:
         body["idempotency_key"] = str(
             context.get("idempotency_key")
@@ -101,6 +102,13 @@ def main():
         verifier = FixtureVerifier()
         receipt = verifier.verify(STORE, STATE_REF)
         allowed_operation = seed(backend, receipt, repository=TARGET, feature_id=FEATURE, key="allowed-existing")
+        allowed_cancel_operation = seed(
+            backend,
+            receipt,
+            repository=TARGET,
+            feature_id=FEATURE,
+            key="allowed-cancel-existing",
+        )
         forbidden_operation = seed(backend, receipt, repository=OTHER, feature_id="F-OTHER", key="forbidden-existing")
 
         config = TrustedOperatorRuntimeConfig(
@@ -125,15 +133,76 @@ def main():
         trusted = bundle.trusted_context_provider.for_request({"repository": TARGET, "feature_id": FEATURE})
         allowed_target = {"repository": TARGET, "feature_id": FEATURE}
 
+        # Canonical operation.status is operation-id-bound. A client need not
+        # restate target authority; production scope comes from durable truth.
         allowed_status = dispatch(
-            req("operation.status", target=allowed_target, context={"operation_id": allowed_operation}),
+            req("operation.status", target=None, context={"operation_id": allowed_operation}),
             trusted_context=trusted,
             backends=bundle.backends,
         )
         require(allowed_status["ok"] is True, allowed_status)
 
-        # The client lies that the forbidden Operation belongs to the allowed
-        # target. Authorization must use the durable Store projection instead.
+        # A target hint remains an optional narrowing assertion and may match.
+        hinted_status = dispatch(
+            req("operation.status", target=allowed_target, context={"operation_id": allowed_operation}),
+            trusted_context=trusted,
+            backends=bundle.backends,
+        )
+        require(hinted_status["ok"] is True, hinted_status)
+
+        # Targetless operation.cancel is equally authorized from the durable
+        # projection + trusted scope, not from model/client target claims.
+        allowed_cancel = dispatch(
+            req(
+                "operation.cancel",
+                target=None,
+                context={"operation_id": allowed_cancel_operation},
+                payload={"reason": "targetless-authorized-cancel"},
+            ),
+            trusted_context=trusted,
+            backends=bundle.backends,
+        )
+        require(allowed_cancel["ok"] is True, allowed_cancel)
+        require(
+            rebuild_projection(backend.read_snapshot(), allowed_cancel_operation)["status"] == "CANCELLED",
+            "targetless authorized cancel did not durably cancel allowed Operation",
+        )
+
+        # Knowing a foreign Operation id is insufficient. With no client target,
+        # durable projection ownership still denies cross-scope reads/writes.
+        targetless_foreign_status = dispatch(
+            req("operation.status", target=None, context={"operation_id": forbidden_operation}),
+            trusted_context=trusted,
+            backends=bundle.backends,
+        )
+        require(
+            targetless_foreign_status["ok"] is False
+            and targetless_foreign_status["error"]["code"] == "UNAUTHORIZED",
+            targetless_foreign_status,
+        )
+
+        targetless_foreign_cancel = dispatch(
+            req(
+                "operation.cancel",
+                target=None,
+                context={"operation_id": forbidden_operation},
+                payload={"reason": "foreign-id-only"},
+            ),
+            trusted_context=trusted,
+            backends=bundle.backends,
+        )
+        require(
+            targetless_foreign_cancel["ok"] is False
+            and targetless_foreign_cancel["error"]["code"] == "UNAUTHORIZED",
+            targetless_foreign_cancel,
+        )
+        require(
+            rebuild_projection(backend.read_snapshot(), forbidden_operation)["status"] == "RUNNING",
+            "targetless unauthorized cancel mutated foreign durable Operation",
+        )
+
+        # If the client does supply an allowed-looking target while naming a
+        # foreign Operation, durable truth remains authoritative.
         forged_status = dispatch(
             req("operation.status", target=allowed_target, context={"operation_id": forbidden_operation}),
             trusted_context=trusted,
@@ -186,7 +255,7 @@ def main():
         wrong_adapter = dispatch(
             req(
                 "operation.status",
-                target=allowed_target,
+                target=None,
                 context={"operation_id": allowed_operation},
                 adapter_id="evil.adapter",
             ),
@@ -196,9 +265,10 @@ def main():
         require(wrong_adapter["ok"] is False and wrong_adapter["error"]["code"] == "UNAUTHORIZED", wrong_adapter)
 
     print("Operator production scope validation passed")
-    print("- write attack probes use canonically valid idempotent envelopes")
-    print("- status/cancel authorize from durable Operation target, not client target claims")
+    print("- targetless status/cancel authorize from durable Operation target + trusted scope")
+    print("- targetless foreign Operation status/cancel fail closed")
     print("- unauthorized foreign Operation cancellation produced zero durable mutation")
+    print("- supplied target is an optional narrowing hint and cannot override durable truth")
     print("- operation.start re-reads trusted exact Feature revision before Store write")
     print("- stale Feature revision and wrong adapter fail closed")
 
