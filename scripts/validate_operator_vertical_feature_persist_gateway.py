@@ -11,6 +11,7 @@ from operator_store_model import digest_json
 from operator_store_protection import PROTECTED, StaticProtectionVerifier
 from operator_vertical import VERTICAL_PROFILE
 from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+from operator_vertical_recovery import plan_vertical_takeover
 from operator_vertical_store import plan_vertical_persist_linearized, plan_vertical_persist_requested
 from validate_operator_github_feature_event_gateway import EVENT_ID, FEATURE, REF, REPO, REV
 from validate_operator_release_feature_event_gateway import HistoryFakeGitHub
@@ -69,6 +70,19 @@ def release_gateway(fake):
     )
 
 
+def translated_payload(event):
+    return {
+        "feature_event_id": event["id"],
+        "feature_event_digest": digest_json(event),
+        "feature_event": dict(event),
+        "feature_revision": REV,
+        "feature_stage": "acceptance",
+        "feature_manifest_digest": "manifest-fixture",
+        "candidate_head_sha": None,
+        "target_ref": REF,
+    }
+
+
 def start_and_translate(store, event):
     started = store.commit_replanned(
         lambda snapshot: plan_operation_start(
@@ -83,16 +97,7 @@ def start_and_translate(store, event):
         )
     )
     operation_id = str(started.result["operation_id"])
-    payload = {
-        "feature_event_id": event["id"],
-        "feature_event_digest": digest_json(event),
-        "feature_event": dict(event),
-        "feature_revision": REV,
-        "feature_stage": "acceptance",
-        "feature_manifest_digest": "manifest-fixture",
-        "candidate_head_sha": None,
-        "target_ref": REF,
-    }
+    payload = translated_payload(event)
     store.commit_replanned(
         lambda snapshot: plan_operation_fact(
             snapshot,
@@ -107,10 +112,10 @@ def start_and_translate(store, event):
     return operation_id, payload
 
 
-def linearize(store, operation_id):
+def linearize(store, operation_id, *, generation=0):
     common = {
         "operation_id": operation_id,
-        "generation": 0,
+        "generation": generation,
         "feature_event_id": EVENT_ID,
         "expected_revision": REV,
         "target_ref": REF,
@@ -122,6 +127,22 @@ def linearize(store, operation_id):
     store.commit_replanned(lambda snapshot: plan_vertical_persist_linearized(snapshot, **common))
 
 
+def takeover(store, operation_id):
+    result = store.commit_replanned(
+        lambda snapshot: plan_vertical_takeover(
+            snapshot,
+            operation_id=operation_id,
+            occurred_at="2026-08-11T06:00:01Z",
+            trusted_context_digest="vertical-persist-fixture",
+        )
+    )
+    require(result.result["generation"] == 1, "fixture takeover did not advance to G1")
+
+
+def transport_counts(fake):
+    return (fake.event_lookup_count, fake.history_lookup_count, fake.put_count)
+
+
 def assert_code(code, fn):
     try:
         fn()
@@ -129,6 +150,49 @@ def assert_code(code, fn):
         require(getattr(exc, "code", None) == code, (code, type(exc).__name__, str(exc)))
     else:
         raise AssertionError(f"expected {code}")
+
+
+def validate_cross_generation_linearization_is_denied(event):
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    operation_id, _ = start_and_translate(store, event)
+    takeover(store, operation_id)
+    linearize(store, operation_id, generation=1)
+
+    before = transport_counts(fake)
+    gateway = DurableVerticalFeaturePersistGateway(runtime=store, event_gateway=release_gateway(fake))
+    assert_code(
+        "INTERNAL_FAILURE",
+        lambda: gateway.lookup_feature_event(event_id=EVENT_ID, target_ref=REF),
+    )
+    require(transport_counts(fake) == before, "G0 translation + G1 linearization reached external Event transport")
+
+
+def validate_cross_generation_translation_is_denied(event):
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    operation_id, payload = start_and_translate(store, event)
+    takeover(store, operation_id)
+    store.commit_replanned(
+        lambda snapshot: plan_operation_fact(
+            snapshot,
+            operation_id=operation_id,
+            generation=1,
+            event_type="feature.event.translated",
+            payload=payload,
+            occurred_at="2026-08-11T06:00:02Z",
+            trusted_context_digest="vertical-persist-fixture",
+        )
+    )
+    linearize(store, operation_id, generation=1)
+
+    before = transport_counts(fake)
+    gateway = DurableVerticalFeaturePersistGateway(runtime=store, event_gateway=release_gateway(fake))
+    assert_code(
+        "INTERNAL_FAILURE",
+        lambda: gateway.persist_feature_event(event=event, target_ref=REF),
+    )
+    require(transport_counts(fake) == before, "same Event id translated across G0/G1 reached external Event transport")
 
 
 def main():
@@ -182,7 +246,7 @@ def main():
     require(fake.history_lookup_count == 1, "restart receipt did not prove historical exact Event digest")
     require(fake.put_count == 0, "restart receipt lookup recreated an already-applied Event")
 
-    # A conflicting second durable translation for the same Event id must block
+    # A conflicting second durable translation in the same generation must block
     # before any external lookup/write rather than choose one arbitrarily.
     bad_event = exact_event(stage_status="DONE")
     store.commit_replanned(
@@ -191,21 +255,12 @@ def main():
             operation_id=operation_id,
             generation=0,
             event_type="feature.event.translated",
-            payload={
-                "feature_event_id": EVENT_ID,
-                "feature_event_digest": digest_json(bad_event),
-                "feature_event": bad_event,
-                "feature_revision": REV,
-                "feature_stage": "acceptance",
-                "feature_manifest_digest": "manifest-fixture",
-                "candidate_head_sha": None,
-                "target_ref": REF,
-            },
-            occurred_at="2026-08-11T06:00:01Z",
+            payload=translated_payload(bad_event),
+            occurred_at="2026-08-11T06:00:03Z",
             trusted_context_digest="vertical-persist-fixture",
         )
     )
-    before_lookups = fake.event_lookup_count
+    before = transport_counts(fake)
     conflicted_restart = DurableVerticalFeaturePersistGateway(
         runtime=store,
         event_gateway=release_gateway(fake),
@@ -214,14 +269,19 @@ def main():
         "INTERNAL_FAILURE",
         lambda: conflicted_restart.lookup_feature_event(event_id=EVENT_ID, target_ref=REF),
     )
-    require(fake.event_lookup_count == before_lookups, "conflicting durable facts reached external Event lookup")
+    require(transport_counts(fake) == before, "conflicting durable facts reached external Event transport")
+
+    validate_cross_generation_linearization_is_denied(event)
+    validate_cross_generation_translation_is_denied(event)
 
     print("Vertical Feature Persist gateway validation passed")
-    print("- translated Event alone cannot bypass Persist linearization")
+    print("- translated Event alone cannot bypass same-generation Persist request/linearization")
+    print("- exact Persist authority binds operation id + operation generation + Event id/revision/ref/candidate")
+    print("- G0 translation + G1 same-id Persist request/linearization fails before external I/O")
+    print("- same Event id translated across generations fails before external I/O")
     print("- external Event body must match the unique durable translated fact")
     print("- fresh-process lookup reconstructs expected revision from protected Store")
     print("- inbox cleanup + later Feature advances prove exact historical digest and result_revision")
-    print("- conflicting durable translated facts fail before external lookup/write")
 
 
 if __name__ == "__main__":
