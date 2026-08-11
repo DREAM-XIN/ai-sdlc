@@ -9,6 +9,7 @@ from operator_store import StoreCommandError, plan_cancel, plan_operation_start
 from operator_store_git import CasConflict
 from operator_store_model import StoreInvariantError, projection_public, rebuild_projection
 from operator_store_protection import ProtectionError, StateRefProtectionVerifier
+from operator_store_spi import OperationStoreBackend, require_store_backend
 
 
 class StoreBackendError(RuntimeError):
@@ -25,12 +26,12 @@ class OperatorStoreRuntime:
     def __init__(
         self,
         *,
-        backend,
+        backend: OperationStoreBackend,
         protection_verifier: StateRefProtectionVerifier,
         clock: Callable[[], str] = _utc_now,
         plan_guard=None,
     ):
-        self.backend = backend
+        self.backend = require_store_backend(backend)
         self.protection_verifier = protection_verifier
         self.clock = clock
         self.plan_guard = plan_guard
