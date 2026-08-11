@@ -35,6 +35,8 @@ jobs:
           python-version: '3.12'
       - name: Install validation dependencies
         run: pip install -r requirements-dev.txt
+      - name: Compile restored classification runtime and validator
+        run: python -m py_compile scripts/operator_vertical_reconcile_classified.py scripts/operator_vertical_runtime.py scripts/validate_operator_persist_reconcile_classification.py
       - name: Validate deterministic/transient/cancelled Persist classification
         run: python scripts/validate_operator_persist_reconcile_classification.py
       - name: Re-run accepted Vertical reconcile regression suite
