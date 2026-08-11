@@ -23,6 +23,7 @@ on:
       - 'scripts/validate_operator_v03_vertical_write_factory.py'
       - 'scripts/validate_operator_v03_write_runtime.py'
       - 'scripts/operator_vertical_runtime.py'
+      - 'scripts/operator_vertical_reconcile.py'
       - 'scripts/operator_vertical_reconcile_classified.py'
       - 'scripts/operator_vertical_feature_persist_gateway.py'
       - 'scripts/validate_operator_persist_reconcile_classification.py'
@@ -56,6 +57,10 @@ jobs:
         run: python scripts/validate_operator_production_write_bundle.py
       - name: Re-run adapter-facing v0.3 semantic write runtime regression
         run: python scripts/validate_operator_v03_write_runtime.py
+      - name: Re-run accepted Vertical reconcile regression
+        run: python scripts/validate_operator_vertical_reconcile.py
+      - name: Re-run accepted Vertical recovery regression
+        run: python scripts/validate_operator_vertical_recovery.py
       - name: Re-run Persist reconcile classification regression
         run: python scripts/validate_operator_persist_reconcile_classification.py
       - name: Re-run generation-bound Durable Persist gateway regression
