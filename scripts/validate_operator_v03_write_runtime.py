@@ -7,9 +7,10 @@ import subprocess
 import tempfile
 
 from operator_api import API_VERSION, dispatch
+from operator_decision_policy import DECISION_POLICY_SCHEMA, ProtectedDecisionPolicyVerifier
 from operator_production_runtime import TrustedFeatureBinding, TrustedOperatorRuntimeConfig
 from operator_production_write_bundle import REQUIRED_V03_WRITE_SLICE
-from operator_store_model import rebuild_projection
+from operator_store_model import digest_json, rebuild_projection
 from operator_store_protection import PROTECTED, ProtectionReceipt
 from operator_v03_write_runtime import build_v03_write_ready_operator_bundle
 from operator_vertical import VERTICAL_PROFILE
@@ -46,12 +47,35 @@ class FixtureVerifier:
         )
 
 
-class FixturePolicyVerifier:
-    pass
-
-
 class FixtureFeatureGateway:
-    pass
+    """Bounded placeholder for composition; Decision invocation is tested elsewhere."""
+
+    def read_feature(self, *, operation_id):
+        raise AssertionError("v0.3 write-runtime surface test must not invoke Decision Feature gateway")
+
+
+def fixture_policy_loader(repository, state_ref, operation_profile):
+    material = {
+        "schema_version": DECISION_POLICY_SCHEMA,
+        "repository": repository,
+        "state_ref": state_ref,
+        "operation_profile": operation_profile,
+        "policy_ref": "protected://fixture/v03-write-policy",
+        "policy_epoch": "fixture-v1",
+        "allowed_target_repositories": [TARGET],
+        "decision_types": {
+            "release-authorization": {
+                "choices": {
+                    "APPROVE": "release.authorize",
+                    "REJECT": "release.reject",
+                },
+                "allowed_responders": ["future-write-principal"],
+                "ttl_seconds": 3600,
+                "warning_seconds": 300,
+            }
+        },
+    }
+    return {**material, "policy_digest": digest_json(material)}
 
 
 def require(condition, message):
@@ -83,12 +107,18 @@ def main():
             state_ref=STATE_REF,
         )
         github = FakeGitHubContents()
+        policy_verifier = ProtectedDecisionPolicyVerifier(
+            repository=STORE,
+            state_ref=STATE_REF,
+            operation_profile=VERTICAL_PROFILE,
+            policy_loader=fixture_policy_loader,
+        )
         bundle = build_v03_write_ready_operator_bundle(
             config=config,
             adapter_id=ADAPTER,
             target_read_token="target-token",
             store_token="store-token",
-            policy_verifier=FixturePolicyVerifier(),
+            policy_verifier=policy_verifier,
             feature_gateway=FixtureFeatureGateway(),
             trusted_context_digest="v03-write-runtime-digest",
             github_api_base="https://api.github.test",
@@ -107,10 +137,8 @@ def main():
                 "request_id": "v03-write-start",
                 "capability": "operation.start",
                 "target": target,
-                "context": {
-                    "expected_feature_revision": 7,
-                    "idempotency_key": "v03-write-ready-operation",
-                },
+                "context": {"expected_feature_revision": 7},
+                "idempotency_key": "v03-write-ready-operation",
                 "client_identity": {"adapter_id": ADAPTER},
                 "payload": {},
             },
@@ -128,6 +156,7 @@ def main():
     print("Operator v0.3 write-ready runtime validation passed")
     print(f"- operation profile: {VERTICAL_PROFILE}")
     print("- exact trusted Feature revision verified before start")
+    print("- Decision composition uses the real ProtectedDecisionPolicyVerifier type")
     print("- frozen semantic write surface: operation.start/cancel + decision.respond + notification.ack")
     print("- operation.resume is not exposed by the frozen AI-client write slice")
 
