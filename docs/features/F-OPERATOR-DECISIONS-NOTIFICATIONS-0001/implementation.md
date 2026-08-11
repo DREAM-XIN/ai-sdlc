@@ -4,7 +4,7 @@
 
 Implementation of the approved Requirement, Design, and Plan is complete for the bounded `F-OPERATOR-DECISIONS-NOTIFICATIONS-0001` scope.
 
-Validated functional candidate: `f5348697a1dc53d674af8d36d7e481f5829062c8`.
+Validated functional candidate: `e2d1d9ea60e34f64df6fdec50f60384f1845bc37`.
 
 PR: `#230`.
 
@@ -33,6 +33,8 @@ The Design Review expiry note is implemented explicitly: trusted-clock checks re
 Feature-side restrictions are tighten-only. Ordinary client or Worker input cannot select or expand protected policy origin, allowed Decision types/choices, privileged action mappings, responder authority, state ref, trusted clock, or Store write authority.
 
 A resolved Decision is bounded evidence for exactly one verified choice/action. It is not a Worker-launch or Persist linearization point. Existing `dispatch.launch.authorized`, Effect Lineage gating, cancellation/supersession fences, and `persist.linearized` remain independently required.
+
+Cancellation has explicit precedence for a late unresolved Decision response: once the owning Operation is durably `CANCELLED`, the response fails with `CANCELLED_OPERATION` even if projection rebuild also treats that stale pending Decision as superseded. This prevents stale Decision state from obscuring the stronger cancellation fence while preserving idempotent replay of an already-resolved equivalent response.
 
 ## Canonical production backends and trusted identity
 
