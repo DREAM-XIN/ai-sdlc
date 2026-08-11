@@ -126,9 +126,8 @@ def validate_invalid_event_fails_before_transport():
 
 
 def validate_canonical_schema_fixture():
-    fixture = canonical_fixture()
-    validated = validate_trusted_feature_event(fixture)
-    require(validated is not None, "self-contained canonical Feature Event did not validate")
+    # The contract is validation-by-exception; successful validation returns None.
+    validate_trusted_feature_event(canonical_fixture())
 
 
 def main():
