@@ -1,0 +1,67 @@
+name: Validate v0.3 Adapter Vertical Production Runtime
+
+on:
+  push:
+    branches:
+      - runtime/operator-production-vertical-252
+    paths:
+      - '.github/workflows/operator-v03-vertical-production-runtime.yml'
+      - 'scripts/operator_production_bundle.py'
+      - 'scripts/operator_v03_vertical_production_runtime.py'
+      - 'scripts/validate_operator_v03_vertical_production_runtime.py'
+      - 'scripts/operator_v03_write_runtime.py'
+      - 'scripts/validate_operator_v03_vertical_write_factory.py'
+  pull_request:
+    branches:
+      - runtime/persist-reconcile-classification
+    paths:
+      - '.github/workflows/operator-v03-vertical-production-runtime.yml'
+      - 'scripts/operator_production_bundle.py'
+      - 'scripts/operator_v03_vertical_production_runtime.py'
+      - 'scripts/validate_operator_v03_vertical_production_runtime.py'
+      - 'scripts/operator_v03_write_runtime.py'
+      - 'scripts/validate_operator_v03_vertical_write_factory.py'
+      - 'scripts/validate_operator_v03_write_runtime.py'
+      - 'scripts/operator_vertical_runtime.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/operator_vertical_reconcile_classified.py'
+      - 'scripts/operator_vertical_feature_persist_gateway.py'
+      - 'scripts/validate_operator_persist_reconcile_classification.py'
+      - 'scripts/validate_operator_vertical_feature_persist_gateway.py'
+
+permissions:
+  contents: read
+
+jobs:
+  adapter-vertical-production-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Compile full Vertical production integration
+        run: python -m py_compile scripts/operator_production_bundle.py scripts/operator_v03_vertical_production_runtime.py scripts/operator_v03_write_runtime.py scripts/validate_operator_v03_vertical_production_runtime.py scripts/validate_operator_v03_vertical_write_factory.py
+      - name: Validate shared adapter Vertical production runtime
+        run: python scripts/validate_operator_v03_vertical_production_runtime.py
+      - name: Validate authoritative full Vertical write factory routing
+        run: python scripts/validate_operator_v03_vertical_write_factory.py
+      - name: Re-run production runtime regression
+        run: python scripts/validate_operator_production_runtime.py
+      - name: Re-run production scope regression
+        run: python scripts/validate_operator_production_scope.py
+      - name: Re-run production write bundle regression
+        run: python scripts/validate_operator_production_write_bundle.py
+      - name: Re-run adapter-facing v0.3 semantic write runtime regression
+        run: python scripts/validate_operator_v03_write_runtime.py
+      - name: Re-run accepted Vertical reconcile regression
+        run: python scripts/validate_operator_vertical_reconcile.py
+      - name: Re-run accepted Vertical recovery regression
+        run: python scripts/validate_operator_vertical_recovery.py
+      - name: Re-run Persist reconcile classification regression
+        run: python scripts/validate_operator_persist_reconcile_classification.py
+      - name: Re-run generation-bound Durable Persist gateway regression
+        run: python scripts/validate_operator_vertical_feature_persist_gateway.py
