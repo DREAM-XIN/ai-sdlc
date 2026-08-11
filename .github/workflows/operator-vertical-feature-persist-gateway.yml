@@ -10,6 +10,7 @@ on:
       - 'scripts/operator_release_feature_event_gateway.py'
       - 'scripts/operator_vertical.py'
       - 'scripts/operator_vertical_store.py'
+      - 'scripts/operator_vertical_recovery.py'
       - 'scripts/operator_store.py'
       - 'scripts/operator_store_backends.py'
       - 'scripts/operator_store_model.py'
@@ -17,13 +18,14 @@ on:
       - '.github/workflows/operator-vertical-feature-persist-gateway.yml'
   push:
     branches:
-      - main
+      - runtime/vertical-feature-persist-gateway
     paths:
       - 'scripts/operator_vertical_feature_persist_gateway.py'
       - 'scripts/validate_operator_vertical_feature_persist_gateway.py'
       - 'scripts/operator_release_feature_event_gateway.py'
       - 'scripts/operator_vertical.py'
       - 'scripts/operator_vertical_store.py'
+      - 'scripts/operator_vertical_recovery.py'
       - 'scripts/operator_store.py'
       - 'scripts/operator_store_backends.py'
       - 'scripts/operator_store_model.py'
@@ -36,6 +38,7 @@ permissions:
 jobs:
   vertical-feature-persist-gateway:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -43,5 +46,5 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
-      - name: Validate durable Vertical Feature Persist gateway
+      - name: Validate generation-bound durable Vertical Feature Persist gateway
         run: python scripts/validate_operator_vertical_feature_persist_gateway.py
