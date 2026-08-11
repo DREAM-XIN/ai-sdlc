@@ -11,7 +11,6 @@ from operator_configured_feature_event_gateway import TrustedFeatureEventTarget
 from operator_github_feature_event_gateway import (
     ABSENT,
     APPLIED,
-    CONFLICT if False else ABSENT,
     UNKNOWN,
     FeatureEventGatewayError,
     FeatureEventReceipt,
