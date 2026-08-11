@@ -73,6 +73,23 @@ Accepted lifecycle head `cc7abfcd411587fb892c4a1ba3c6e004869cee73` was also inde
 - Validate Public Runtime Distribution run `31452823358` — SUCCESS;
 - Required PR Gate run `31452823356` — SUCCESS.
 
+## Trusted materialization record
+
+The `ACCEPTANCE-PASS` Feature Event was applied by the repository's trusted push-triggered Persist path and materialized the authoritative Manifest at commit:
+
+`222a5207cdb3b6e81521e49f5ba7d865f1037b26`
+
+The materialized Manifest records:
+
+- revision: `21`;
+- workflow status: `DONE`;
+- `acceptance: DONE`;
+- `release-gate: PASS`;
+- `evidence-acceptance-v1` bound to this document;
+- `EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-ACCEPTANCE-PASS` in `applied_events`.
+
+A later manual `/ai-sdlc persist` command for the same Event was intentionally not used to mutate state because the Event had already been materialized by the trusted push-triggered path.
+
 ## Explicit release boundary
 
 This Acceptance is Feature-scoped. It does **not** claim or approve:
