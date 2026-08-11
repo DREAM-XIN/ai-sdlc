@@ -1,0 +1,38 @@
+name: Validate Operator Decision Feature Gateway
+
+on:
+  push:
+    branches:
+      - runtime/decision-feature-gateway-246
+    paths:
+      - '.github/workflows/operator-decision-feature-gateway.yml'
+      - 'scripts/operator_*feature_event*.py'
+      - 'scripts/validate_operator_*feature_event*.py'
+      - 'spec/feature-event.schema.json'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-decision-feature-gateway.yml'
+      - 'scripts/operator_*feature_event*.py'
+      - 'scripts/validate_operator_*feature_event*.py'
+      - 'spec/feature-event.schema.json'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate Event inbox transport
+        run: python scripts/validate_operator_github_feature_event_gateway.py
+      - name: Validate schema and exact-revision fences
+        run: python scripts/validate_operator_exact_feature_event_gateway.py

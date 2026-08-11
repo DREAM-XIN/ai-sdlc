@@ -1,0 +1,76 @@
+name: Operator Decision Feature Gateway Evidence
+run-name: Operator Decision Feature gateway evidence ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - runtime/decision-feature-gateway-246
+    paths:
+      - '.github/workflows/operator-decision-feature-gateway*.yml'
+      - 'scripts/operator_*feature_event*.py'
+      - 'scripts/validate_operator_*feature_event*.py'
+      - 'spec/feature-event.schema.json'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate low-level Event inbox transport
+        run: python scripts/validate_operator_github_feature_event_gateway.py
+      - name: Validate schema and revision fences
+        run: python scripts/validate_operator_exact_feature_event_gateway.py
+      - name: Validate server-owned target binding
+        run: python scripts/validate_operator_configured_feature_event_gateway.py
+      - name: Publish implementation evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          TARGET_PR: '247'
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib import request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          body = (
+              '<!-- ai-sdlc-decision-feature-gateway-evidence -->\n'
+              '**Implementation evidence only — not Code Review / Gate evidence.**\n\n'
+              f'Exact head: `{os.environ["HEAD_SHA"]}`\n'
+              f'Workflow run: `{os.environ["RUN_ID"]}`\n\n'
+              'Passed in one job:\n'
+              '- create-only Feature Event inbox transport\n'
+              '- exact Event lost-ACK / conflict recovery\n'
+              '- Feature Event schema validation before write\n'
+              '- exact Feature revision fence before create and while pending\n'
+              '- server-owned repository/ref/Feature target binding\n'
+              '- no direct authoritative Manifest PUT path\n\n'
+              'This slice is the trusted Event transport/fencing layer only; full DecisionCoordinator integration is still pending.'
+          )
+          payload = json.dumps({'body': body}).encode()
+          req = request.Request(
+              f'{api}/repos/{repo}/issues/{os.environ["TARGET_PR"]}/comments',
+              data=payload,
+              method='POST',
+          )
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('Authorization', f'Bearer {os.environ["GITHUB_TOKEN"]}')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          req.add_header('Content-Type', 'application/json')
+          with request.urlopen(req, timeout=30) as response:
+              if response.status != 201:
+                  raise SystemExit(f'failed to publish implementation evidence: HTTP {response.status}')
+          PY
