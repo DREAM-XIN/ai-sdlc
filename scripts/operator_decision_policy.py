@@ -41,6 +41,11 @@ class ProtectedDecisionPolicyVerifier:
     source and state-ref authority. Target Feature repositories are a distinct,
     exact allowlist inside that trusted policy; they are never inferred from or
     broadened by client/Worker payloads.
+
+    For backward-compatible same-repository installations, an omitted
+    ``allowed_target_repositories`` field authorizes only the control repository
+    itself. Cross-repository authority always requires an explicit protected
+    allowlist entry.
     """
 
     def __init__(
@@ -79,15 +84,23 @@ class ProtectedDecisionPolicyVerifier:
             raise StoreCommandError("POLICY_DENIED", "Decision policy is not from trusted control state")
         if not str(policy.get("policy_epoch") or ""):
             raise StoreCommandError("POLICY_DENIED", "Decision policy epoch is missing")
+
         raw_targets = policy.get("allowed_target_repositories")
-        if not isinstance(raw_targets, list) or not raw_targets:
-            raise StoreCommandError("POLICY_DENIED", "Decision policy requires explicit target-repository scope")
-        try:
-            allowed_targets = frozenset(normalize_repository(str(value)) for value in raw_targets)
-        except Exception as exc:
-            raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope is invalid") from exc
-        if len(allowed_targets) != len(raw_targets):
-            raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope contains duplicates")
+        if raw_targets is None:
+            # Backward-compatible but fail-closed: legacy policy may authorize
+            # only its own trusted control repository. Any cross-repo target
+            # requires an explicit protected allowlist entry.
+            allowed_targets = frozenset({self.repository})
+        else:
+            if not isinstance(raw_targets, list) or not raw_targets:
+                raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope must be a non-empty list")
+            try:
+                allowed_targets = frozenset(normalize_repository(str(value)) for value in raw_targets)
+            except Exception as exc:
+                raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope is invalid") from exc
+            if len(allowed_targets) != len(raw_targets):
+                raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope contains duplicates")
+
         expected = digest_json(self._base_material(policy))
         if policy.get("policy_digest") != expected:
             raise StoreCommandError("POLICY_DENIED", "Decision policy digest mismatch")
