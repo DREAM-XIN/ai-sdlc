@@ -22,14 +22,6 @@ on:
     paths:
       - 'scripts/operator_vertical_feature_persist_gateway.py'
       - 'scripts/validate_operator_vertical_feature_persist_gateway.py'
-      - 'scripts/operator_release_feature_event_gateway.py'
-      - 'scripts/operator_vertical.py'
-      - 'scripts/operator_vertical_store.py'
-      - 'scripts/operator_vertical_recovery.py'
-      - 'scripts/operator_store.py'
-      - 'scripts/operator_store_backends.py'
-      - 'scripts/operator_store_model.py'
-      - 'scripts/validate.py'
       - '.github/workflows/operator-vertical-feature-persist-gateway.yml'
 
 permissions:
