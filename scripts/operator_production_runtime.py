@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Trusted production composition for canonical Operator adapter backends.
 
-This module supplies the shared server-owned read/runtime boundary used by AI
-client adapters. It is not a client configuration parser: repository, Feature
-refs, principal, Store ref and GitHub credential all come from trusted process
-startup configuration.
+Target repository truth and durable control/Store state are deliberately separate
+trust domains. Client requests can name a target inside the configured scope, but
+cannot select the control repository, Store ref, checkout, credentials, principal,
+or adapter identity.
 """
 from __future__ import annotations
 
@@ -48,24 +48,27 @@ class TrustedFeatureBinding:
 
 @dataclass(frozen=True)
 class TrustedOperatorRuntimeConfig:
-    repository: str
+    target_repository: str
+    store_repository: str
     installation_ref: str
-    trusted_checkout: Path
+    store_checkout: Path
     principal: str
     feature_bindings: tuple[TrustedFeatureBinding, ...]
     state_ref: str = "refs/heads/ai-sdlc-operator-state"
-    remote_name: str = "origin"
+    store_remote_name: str = "origin"
     operator_app_slug: str = "ai-sdlc-operator"
 
     def __post_init__(self):
-        normalized = normalize_repository(self.repository)
-        object.__setattr__(self, "repository", normalized)
+        object.__setattr__(self, "target_repository", normalize_repository(self.target_repository))
+        object.__setattr__(self, "store_repository", normalize_repository(self.store_repository))
         if not self.installation_ref or ".." in self.installation_ref:
             raise ValueError("trusted installation ref is invalid")
         if not self.principal:
             raise ValueError("trusted Operator principal is required")
         if not self.state_ref.startswith("refs/heads/"):
             raise ValueError("trusted Operator Store state ref must be a branch ref")
+        if not self.store_remote_name or any(ch.isspace() for ch in self.store_remote_name):
+            raise ValueError("trusted Store remote name is invalid")
         ids = [row.feature_id for row in self.feature_bindings]
         refs = [row.target_ref for row in self.feature_bindings]
         if len(ids) != len(set(ids)) or len(refs) != len(set(refs)):
@@ -77,13 +80,14 @@ class TrustedOperatorRuntimeConfig:
             raise ValueError("unsupported trusted Operator runtime config")
         allowed = {
             "version",
-            "repository",
+            "target_repository",
+            "store_repository",
             "installation_ref",
-            "trusted_checkout",
+            "store_checkout",
             "principal",
             "feature_refs",
             "state_ref",
-            "remote_name",
+            "store_remote_name",
             "operator_app_slug",
         }
         unknown = set(data) - allowed
@@ -96,17 +100,18 @@ class TrustedOperatorRuntimeConfig:
             TrustedFeatureBinding(str(feature_id), str(target_ref))
             for feature_id, target_ref in sorted(raw_refs.items())
         )
-        raw_checkout = Path(str(data.get("trusted_checkout") or "."))
+        raw_checkout = Path(str(data.get("store_checkout") or "."))
         if not raw_checkout.is_absolute() and config_base is not None:
             raw_checkout = (config_base / raw_checkout).resolve()
         return cls(
-            repository=str(data.get("repository") or ""),
+            target_repository=str(data.get("target_repository") or ""),
+            store_repository=str(data.get("store_repository") or ""),
             installation_ref=str(data.get("installation_ref") or "main"),
-            trusted_checkout=raw_checkout,
+            store_checkout=raw_checkout,
             principal=str(data.get("principal") or ""),
             feature_bindings=bindings,
             state_ref=str(data.get("state_ref") or "refs/heads/ai-sdlc-operator-state"),
-            remote_name=str(data.get("remote_name") or "origin"),
+            store_remote_name=str(data.get("store_remote_name") or "origin"),
             operator_app_slug=str(data.get("operator_app_slug") or "ai-sdlc-operator"),
         )
 
@@ -146,7 +151,7 @@ def _default_get(url: str, headers: dict[str, str]) -> tuple[int, object]:
 
 
 class GitHubTrustedProjectFeatureReader:
-    """Read exact trusted project/Feature truth from GitHub Contents API."""
+    """Read exact trusted target-project/Feature truth from GitHub Contents API."""
 
     def __init__(
         self,
@@ -157,7 +162,7 @@ class GitHubTrustedProjectFeatureReader:
         http_get: Callable[[str, dict[str, str]], tuple[int, object]] = _default_get,
     ):
         if not token:
-            raise ValueError("trusted GitHub read token is required")
+            raise ValueError("trusted target-repository read token is required")
         if not api_base.startswith("https://"):
             raise ValueError("GitHub API base must use HTTPS")
         self.config = config
@@ -176,7 +181,7 @@ class GitHubTrustedProjectFeatureReader:
     def _content(self, *, path: str, ref: str, missing_ok: bool = False) -> str | None:
         encoded_path = "/".join(quote(part, safe="") for part in path.split("/"))
         encoded_ref = quote(ref, safe="")
-        url = f"{self.api_base}/repos/{self.config.repository}/contents/{encoded_path}?ref={encoded_ref}"
+        url = f"{self.api_base}/repos/{self.config.target_repository}/contents/{encoded_path}?ref={encoded_ref}"
         status, payload = self.http_get(url, self._headers())
         if status == 404 and missing_ok:
             return None
@@ -201,7 +206,7 @@ class GitHubTrustedProjectFeatureReader:
         declared = ((project or {}).get("repository") or {}).get("full_name") if isinstance(project, dict) else None
         if not isinstance(declared, str):
             return False
-        return normalize_repository(declared) == self.config.repository
+        return normalize_repository(declared) == self.config.target_repository
 
     def feature_manifest(self, feature_id: str) -> dict[str, Any]:
         target_ref = self.config.feature_ref(feature_id)
@@ -233,7 +238,7 @@ class BoundedTrustedContextProvider:
                 "authorization_context": "trusted-installed-project-scope",
             },
             "trusted_scope": {
-                "repositories": [self.config.repository],
+                "repositories": [self.config.target_repository],
                 "feature_ids": sorted(self.config.feature_ids),
             },
             "trusted_principal": self.config.principal,
@@ -251,7 +256,7 @@ class _ScopedReadBackend:
             scope = TrustedOperatorScope.from_context(trusted_context)
             if scope.client_adapter_id != self.adapter_id:
                 return False, "POLICY_RESTRICTED"
-            if self.config.repository not in scope.repositories:
+            if self.config.target_repository not in scope.repositories:
                 return False, "POLICY_RESTRICTED"
         except Exception:
             return False, "POLICY_RESTRICTED"
@@ -274,7 +279,7 @@ class ProjectInspectBackend(_ScopedReadBackend):
         scope = self._scope(request, trusted_context)
         target = request.get("target") or {}
         repository = normalize_repository(str(target.get("repository") or ""))
-        if repository not in scope.repositories or repository != self.config.repository:
+        if repository not in scope.repositories or repository != self.config.target_repository:
             raise OperatorProductionRuntimeError("UNAUTHORIZED", "repository is outside trusted runtime scope")
         return {"repository": repository, "installed": self.reader.project_installed()}
 
@@ -291,7 +296,7 @@ class FeatureStatusBackend(_ScopedReadBackend):
         feature_id = str(target.get("feature_id") or "")
         if not feature_id or not scope.allows(repository, feature_id):
             raise OperatorProductionRuntimeError("UNAUTHORIZED", "Feature is outside trusted runtime scope")
-        if repository != self.config.repository:
+        if repository != self.config.target_repository:
             raise OperatorProductionRuntimeError("UNAUTHORIZED", "repository is outside trusted runtime scope")
         manifest = self.reader.feature_manifest(feature_id)
         workflow = manifest.get("workflow") or {}
@@ -315,28 +320,31 @@ def build_trusted_operator_read_bundle(
     *,
     config: TrustedOperatorRuntimeConfig,
     adapter_id: str,
-    github_token: str,
+    target_read_token: str,
+    store_token: str,
     github_api_base: str = "https://api.github.com",
     reader_http_get: Callable[[str, dict[str, str]], tuple[int, object]] = _default_get,
     protection_verifier=None,
 ) -> TrustedOperatorReadBundle:
-    """Compose the shared canonical read bundle from trusted process inputs.
+    """Compose the shared canonical runtime from separate trusted credentials.
 
-    Tests may inject an already-constructed production-like verifier. Normal
-    startup uses the existing GitHub protection verifier; Issue #241 extends
-    that concrete builder with personal-repository ruleset proof without
-    changing this adapter-facing composition boundary.
+    The target-read token is used only for target Project/Feature truth. The
+    Store token is used only for control-repository protection inspection. Git
+    authentication for the Store checkout remains separately configured by the
+    trusted launcher/installation layer.
     """
+    if not target_read_token or not store_token:
+        raise ValueError("separate trusted target-read and Store tokens are required")
     store_config = TrustedOperatorStoreConfig(
-        repository=config.repository,
-        trusted_checkout=config.trusted_checkout,
+        repository=config.store_repository,
+        trusted_checkout=config.store_checkout,
         state_ref=config.state_ref,
-        remote_name=config.remote_name,
+        remote_name=config.store_remote_name,
     )
     if protection_verifier is None:
         runtime = build_github_operator_store_runtime(
             store_config,
-            github_token=github_token,
+            github_token=store_token,
             operator_app_slug=config.operator_app_slug,
             github_api_base=github_api_base,
         )
@@ -349,7 +357,7 @@ def build_trusted_operator_read_bundle(
 
     reader = GitHubTrustedProjectFeatureReader(
         config=config,
-        token=github_token,
+        token=target_read_token,
         api_base=github_api_base,
         http_get=reader_http_get,
     )
@@ -362,9 +370,6 @@ def build_trusted_operator_read_bundle(
         "operation.status": OperationStatusBackend(runtime),
         "decision.list": DecisionListBackend(runtime),
         "notification.list": NotificationListBackend(runtime),
-        # Store-backed semantic writes are part of the same canonical runtime
-        # bundle. A transport such as MCP remains read-only simply by never
-        # registering write tools; future approved adapters may reuse them.
         "operation.start": store_map["operation.start"],
         "operation.cancel": store_map["operation.cancel"],
     }
