@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 22
+revision: 23
 feature:
   id: F-OPERATOR-EFFECT-LINEAGE-0001
   title: Implement durable Effect Lineage and UNKNOWN resolution
@@ -31,7 +31,7 @@ workflow:
     status: DONE
     gate: verification-gate
   - id: acceptance
-    status: READY
+    status: WORKING
     gate: release-gate
 tasks:
 - id: F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-1
@@ -163,4 +163,5 @@ applied_events:
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REVIEW-PASS-3
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-VERIFICATION-START
 - EVT-F-OPERATOR-EFFECT-LINEAGE-0001-VERIFICATION-PASS
-updated_at: '2026-08-10T16:30:00Z'
+- EVT-F-OPERATOR-EFFECT-LINEAGE-0001-ACCEPTANCE-START
+updated_at: '2026-08-10T16:57:00Z'
