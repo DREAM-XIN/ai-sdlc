@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 7
+revision: 8
 feature:
   id: F-OPERATOR-DECISIONS-NOTIFICATIONS-0001
   title: Implement durable Decisions, Authorization, Notifications and operator.inbox
@@ -8,7 +8,7 @@ feature:
 workflow:
   profile: standard-feature
   status: ACTIVE
-  current_stage: design-review
+  current_stage: plan
   stages:
   - id: requirement
     status: DONE
@@ -18,10 +18,10 @@ workflow:
   - id: design
     status: DONE
   - id: design-review
-    status: WORKING
+    status: DONE
     gate: design-gate
   - id: plan
-    status: TODO
+    status: READY
   - id: implementation
     status: TODO
   - id: code-review
@@ -42,14 +42,16 @@ artifacts:
 - id: design-v1
   type: design
   uri: docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/design.md
-  status: draft
+  status: approved
 gates:
 - id: requirement-gate
   status: PASS
   evidence:
   - evidence-requirement-review-v1
 - id: design-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - evidence-design-review-v1
 - id: code-gate
   status: PENDING
 - id: verification-gate
@@ -61,6 +63,10 @@ evidence:
   type: review
   status: pass
   uri: docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/requirement-review.md
+- id: evidence-design-review-v1
+  type: review
+  status: pass
+  uri: docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/design-review.md
 applied_events:
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-REQ-START
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-REQ-DONE
@@ -69,4 +75,5 @@ applied_events:
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-DESIGN-START
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-DESIGN-DONE
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-DESIGN-REVIEW-START
-updated_at: '2026-08-11T01:33:00Z'
+- EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-DESIGN-REVIEW-PASS
+updated_at: '2026-08-11T01:44:00Z'
