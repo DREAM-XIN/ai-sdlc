@@ -18,16 +18,13 @@ from validate_operator_github_feature_event_gateway import (
     REV,
     FakeGitHub,
     content_payload,
-    event,
 )
 
 EVENT_PATH = f"events/inbox/{EVENT_ID}.yaml"
 
 
 class FixtureReleaseGateway(ReceiptSafeCanonicalFeatureEventGateway):
-    @staticmethod
-    def _schema_validate(event):
-        return None
+    pass
 
 
 class HistoryFakeGitHub(FakeGitHub):
@@ -50,8 +47,6 @@ class HistoryFakeGitHub(FakeGitHub):
                 return 404, {}
             if unquote(query.get("path", [""])[0]) != EVENT_PATH:
                 return 404, {}
-            # The newest path touch is the cleanup/delete commit. Earlier rows
-            # model immutable commits where the exact Event file still existed.
             rows = [{"sha": "event-cleanup-sha"}]
             rows.extend({"sha": f"event-history-{index}"} for index, _ in enumerate(self.history_texts))
             return 200, rows
@@ -89,9 +84,28 @@ def transport(fake):
     )
 
 
-def canonical_event(summary="accepted"):
+def canonical_event(variant="accepted"):
+    # Both variants are independently schema-valid while intentionally reusing
+    # the same Event id/revision. Cleanup recovery therefore must bind exact
+    # canonical bytes/digest instead of treating applied_events id membership as
+    # exact Event identity.
+    stage_status = "DONE" if variant == "accepted" else "REVIEW"
+    event_doc = {
+        "version": "0.1.0",
+        "id": EVENT_ID,
+        "feature_id": FEATURE,
+        "expected_revision": REV,
+        "occurred_at": "2026-08-11T05:30:00Z",
+        "changes": [
+            {
+                "kind": "stage",
+                "id": "acceptance",
+                "status": stage_status,
+            }
+        ],
+    }
     _, text = FixtureReleaseGateway._validate_event(
-        event(summary=summary),
+        event_doc,
         feature_id=FEATURE,
         expected_revision=REV,
     )
@@ -145,7 +159,7 @@ def validate_applied_then_later_feature_advances():
 
 def validate_cleanup_content_conflict_fails_closed():
     fake, _ = applied_cleanup_fixture()
-    _, conflicting_digest = canonical_event(summary="different-exact-content")
+    _, conflicting_digest = canonical_event(variant="different-exact-content")
     try:
         lookup_applied(fake, expected_event_digest=conflicting_digest)
         raise AssertionError("different exact Event content reused applied id after cleanup")
@@ -156,7 +170,7 @@ def validate_cleanup_content_conflict_fails_closed():
 
 def validate_multiple_historical_contents_fail_closed():
     fake, digest = applied_cleanup_fixture()
-    conflicting_text, _ = canonical_event(summary="historical-conflict")
+    conflicting_text, _ = canonical_event(variant="historical-conflict")
     fake.history_texts.append(conflicting_text)
     try:
         lookup_applied(fake, expected_event_digest=digest)
