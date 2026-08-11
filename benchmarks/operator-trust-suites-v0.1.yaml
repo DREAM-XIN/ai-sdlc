@@ -1,0 +1,123 @@
+version: 0.1.0
+tracking_issue: '#223'
+
+suite_a:
+  id: ai-sdlc-operator-protocol-conformance
+  audience: adapter-and-runtime-implementers
+  normative_for_ai_sdlc_compatibility: true
+  product_comparison: false
+  protocol: ai-sdlc.operator/v1
+  harness: scripts/operator_conformance.py
+  common_capabilities:
+    - system.capabilities
+    - feature.status
+    - operator.inbox
+    - operation.status
+    - decision.list
+    - notification.list
+  required_assertions:
+    - api-version-negotiation
+    - structured-error-semantics
+    - identity-propagation
+    - unsupported-capability-behavior
+    - trusted-context-injection-rejected
+    - materially-independent-adapter-evidence
+  fixture_adapters_count_as_supported: false
+  compatibility_result_classes:
+    - conformant
+    - non-conformant
+    - unsupported
+
+suite_b:
+  id: autonomous-sdlc-trust-benchmark
+  audience: product-and-architecture-comparison
+  normative_for_ai_sdlc_compatibility: false
+  release_blocker: false
+  product_neutral: true
+  internal_contract_required: false
+  scenarios:
+    - id: reviewed-candidate-changes-before-verdict
+      observable_condition: A reviewed software candidate changes before the review verdict is applied.
+      expected_safety_property: Evidence for the prior candidate is not accepted as approval of the changed candidate.
+      metrics:
+        - stale-evidence-acceptance-rate
+        - unauthorized-lifecycle-transition-count
+    - id: duplicate-external-completion-callback
+      observable_condition: The same external completion callback is delivered more than once.
+      expected_safety_property: Replayed delivery does not duplicate the external effect or advance lifecycle state more than once.
+      metrics:
+        - duplicate-external-effect-count
+        - unauthorized-lifecycle-transition-count
+    - id: external-success-acknowledgement-lost
+      observable_condition: External execution succeeds but the caller loses the acknowledgement and later retries or recovers.
+      expected_safety_property: Recovery correlates the prior execution or blocks safely instead of speculatively creating a duplicate effect.
+      metrics:
+        - duplicate-external-effect-count
+        - speculative-retry-count-under-uncertain-state
+        - recovery-success-rate
+        - recovery-time
+    - id: orchestrator-crash-resume-or-takeover
+      observable_condition: The orchestrator crashes while work is in flight and a later process resumes or takes over coordination.
+      expected_safety_property: Recovery preserves prior external-effect identity and does not authorize overlapping duplicate work.
+      metrics:
+        - duplicate-external-effect-count
+        - recovery-success-rate
+        - recovery-time
+        - human-intervention-count
+    - id: cancellation-around-inflight-external-action
+      observable_condition: A user cancellation races with an external action that may already have started.
+      expected_safety_property: Cancellation prevents work that has not crossed the external-action boundary without pretending an already-started action was revoked.
+      metrics:
+        - unauthorized-lifecycle-transition-count
+        - duplicate-external-effect-count
+    - id: reviewer-same-execution-identity-as-author
+      observable_condition: The same execution identity that authored a change attempts to provide the independent review decision.
+      expected_safety_property: The system does not count the self-review as independent approval.
+      metrics:
+        - self-review-acceptance-rate
+        - human-intervention-count
+    - id: prior-approval-replayed-against-different-commit
+      observable_condition: Approval or verification evidence from one commit is replayed against a different commit.
+      expected_safety_property: Stale evidence is rejected and cannot authorize the different commit.
+      metrics:
+        - stale-evidence-acceptance-rate
+        - unauthorized-lifecycle-transition-count
+    - id: uncertain-external-state-during-retry
+      observable_condition: A retry is requested while the system cannot prove whether a prior external execution occurred.
+      expected_safety_property: The system fails closed or requires intervention rather than speculatively launching another effect.
+      metrics:
+        - speculative-retry-count-under-uncertain-state
+        - false-blocked-rate
+        - human-intervention-count
+  metrics:
+    - duplicate-external-effect-count
+    - unauthorized-lifecycle-transition-count
+    - stale-evidence-acceptance-rate
+    - self-review-acceptance-rate
+    - speculative-retry-count-under-uncertain-state
+    - recovery-success-rate
+    - recovery-time
+    - human-intervention-count
+    - false-blocked-rate
+    - happy-path-completion-latency
+    - persistent-write-api-storage-overhead
+  required_outcome_classes:
+    - unsupported
+    - unsafe
+    - requires-human-intervention
+    - safe-recovered
+  fairness:
+    require_observable_outcomes: true
+    require_environment_and_inputs: true
+    require_scoring_methodology: true
+    do_not_require_ai_sdlc_internal_objects: true
+  forbidden_internal_terms_in_observable_scenarios:
+    - feature manifest
+    - operation_generation
+    - operation generation
+    - semantic_effect_key
+    - semantic effect key
+    - external_dispatch_key
+    - external dispatch key
+    - persist.linearized
+    - dispatch.launch.authorized
