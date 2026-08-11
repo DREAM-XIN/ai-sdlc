@@ -17,6 +17,9 @@ def _projection(snapshot:StoreSnapshot,operation_id:str,generation:int|None=None
     return p
 
 def _append_event(snapshot:StoreSnapshot,*,operation_id:str,generation:int,event_type:str,occurred_at:str,payload:dict[str,Any],trusted_context_digest:str,identity_material:dict[str,Any]|None=None):
+    if event_type not in {'operation.started','operation.generation.started'}:
+        p=rebuild_projection(snapshot,operation_id)
+        if p['generation']!=generation: raise StoreCommandError('SUPERSEDED_GENERATION','operation generation is no longer current')
     material=dict(identity_material or payload); material.update({'operation_id':operation_id,'generation':generation,'event_type':event_type}); eid=_event_id(event_type,material)
     for event in operation_events(snapshot,operation_id):
         if event['event_id']==eid:
