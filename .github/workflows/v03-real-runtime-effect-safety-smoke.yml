@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install runtime validation dependencies
-        run: pip install -r runtime/requirements-dev.txt
+        run: pip install -r requirements-dev.txt
       - name: Validate transport semantics
         run: python scripts/validate_operator_github_actions_transport.py
       - name: Launch and recover a real gh-aw Reviewer dispatch
