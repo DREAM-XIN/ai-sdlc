@@ -57,7 +57,7 @@ jobs:
           sys.path.insert(0, 'scripts')
           from operator_github_actions_transport import GitHubActionsTransportConfig, GitHubActionsWorkflowTransport
           from operator_vertical import VERTICAL_PROFILE
-          from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway
+          from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
 
           repo = os.environ['GITHUB_REPOSITORY']
           api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
@@ -65,6 +65,7 @@ jobs:
           pr_number = os.environ['FI_PR_NUMBER']
           feature_id = os.environ['FI_FEATURE_ID']
           target_ref = os.environ['FI_TARGET_REF']
+          control_ref = 'main'
 
           def get_json(url):
               req = request.Request(url, method='GET')
@@ -87,6 +88,12 @@ jobs:
           sha = os.environ['GITHUB_SHA']
           external_key = f'dispatch-fi-real-{sha[:24]}'
           workflow = 'ai-sdlc-gh-aw-reviewer-claude.lock.yml'
+          workflows = GhAwVerticalWorkflowMap(
+              default_branch=control_ref,
+              developer_workflow='ai-sdlc-gh-aw-worker-codex.lock.yml',
+              reviewer_workflow=workflow,
+              qa_workflow='ai-sdlc-gh-aw-qa-gemini.lock.yml',
+          )
           config = GitHubActionsTransportConfig(
               repository=repo,
               token=token,
@@ -118,15 +125,15 @@ jobs:
 
           transport_g0 = GitHubActionsWorkflowTransport(config)
           gateway_g0 = GhAwVerticalRoleDispatchGateway(
-              workflow_map={'reviewer': workflow},
+              workflows=workflows,
               transport=transport_g0,
           )
-          _discarded_ack = gateway_g0.launch(make_dispatch(0, f'fi-g0-{sha[:16]}'))
+          _discarded_ack = gateway_g0.launch(dispatch=make_dispatch(0, f'fi-g0-{sha[:16]}'))
 
           fresh = GitHubActionsWorkflowTransport(config)
           receipt = None
           for _ in range(12):
-              observed = fresh.lookup(workflow=workflow, ref=target_ref, dispatch_key=external_key)
+              observed = fresh.lookup(workflow=workflow, ref=control_ref, dispatch_key=external_key)
               if observed['lookup_state'] == 'LAUNCHED':
                   receipt = observed
                   break
@@ -139,15 +146,15 @@ jobs:
 
           transport_g1 = GitHubActionsWorkflowTransport(config)
           gateway_g1 = GhAwVerticalRoleDispatchGateway(
-              workflow_map={'reviewer': workflow},
+              workflows=workflows,
               transport=transport_g1,
           )
-          takeover = gateway_g1.launch(make_dispatch(1, f'fi-g1-{sha[:16]}'))
+          takeover = gateway_g1.launch(dispatch=make_dispatch(1, f'fi-g1-{sha[:16]}'))
           if takeover.get('lookup_state') != 'LAUNCHED' or str(takeover.get('receipt_id')) != str(receipt['receipt_id']):
               raise SystemExit(f'generation takeover did not adopt exact existing receipt: {takeover} vs {receipt}')
 
           expected_title = f'AI-SDLC gh-aw {external_key}'
-          runs = fresh._runs(workflow=workflow, ref=target_ref)
+          runs = fresh._runs(workflow=workflow, ref=control_ref)
           exact = [row for row in runs if fresh._run_title(row) == expected_title]
           if len(exact) != 1:
               raise SystemExit(f'duplicate real Worker effect count is {len(exact)}, expected 1')
