@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Adversarial restart validation for durable Vertical Feature Persist adapter."""
+from __future__ import annotations
+
+from operator_canonical_feature_event_gateway import CanonicalExactRevisionGitHubFeatureEventGateway
+from operator_release_feature_event_gateway import build_release_decision_event_gateway
+from operator_store import plan_operation_fact, plan_operation_start
+from operator_store_backends import OperatorStoreRuntime
+from operator_store_git import MemoryStateRefBackend
+from operator_store_model import digest_json
+from operator_store_protection import PROTECTED, StaticProtectionVerifier
+from operator_vertical import VERTICAL_PROFILE
+from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+from operator_vertical_recovery import plan_vertical_takeover
+from operator_vertical_store import plan_vertical_persist_linearized, plan_vertical_persist_requested
+from validate_operator_github_feature_event_gateway import EVENT_ID, FEATURE, REF, REPO, REV
+from validate_operator_release_feature_event_gateway import HistoryFakeGitHub
+
+STATE_REF = "refs/heads/ai-sdlc-operator-state"
+NOW = "2026-08-11T06:00:00Z"
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def exact_event(*, stage_status="WORKING"):
+    return {
+        "version": "0.1.0",
+        "id": EVENT_ID,
+        "feature_id": FEATURE,
+        "expected_revision": REV,
+        "occurred_at": NOW,
+        "changes": [
+            {"kind": "stage", "id": "acceptance", "status": stage_status},
+        ],
+    }
+
+
+def canonical_event_text(event):
+    event_id, text = CanonicalExactRevisionGitHubFeatureEventGateway._validate_event(
+        event,
+        feature_id=FEATURE,
+        expected_revision=REV,
+    )
+    require(event_id == EVENT_ID, event_id)
+    return text
+
+
+def runtime():
+    return OperatorStoreRuntime(
+        backend=MemoryStateRefBackend(repository="dream-xin/control-fixture", state_ref=STATE_REF),
+        protection_verifier=StaticProtectionVerifier(status=PROTECTED),
+        clock=lambda: NOW,
+    )
+
+
+def release_gateway(fake):
+    return build_release_decision_event_gateway(
+        token="trusted-event-writer",
+        repository=REPO,
+        default_branch="main",
+        feature_refs={FEATURE: REF},
+        api_base="https://api.github.test",
+        http_request=fake,
+        sleeper=lambda _: None,
+        poll_attempts=1,
+        poll_seconds=0,
+    )
+
+
+def translated_payload(event):
+    return {
+        "feature_event_id": event["id"],
+        "feature_event_digest": digest_json(event),
+        "feature_event": dict(event),
+        "feature_revision": REV,
+        "feature_stage": "acceptance",
+        "feature_manifest_digest": "manifest-fixture",
+        "candidate_head_sha": None,
+        "target_ref": REF,
+    }
+
+
+def start_and_translate(store, event):
+    started = store.commit_replanned(
+        lambda snapshot: plan_operation_start(
+            snapshot,
+            target_repository=REPO,
+            feature_id=FEATURE,
+            expected_revision=REV,
+            idempotency_key="vertical-persist-gateway-fixture",
+            occurred_at=NOW,
+            trusted_context_digest="vertical-persist-fixture",
+            operation_profile=VERTICAL_PROFILE,
+        )
+    )
+    operation_id = str(started.result["operation_id"])
+    payload = translated_payload(event)
+    store.commit_replanned(
+        lambda snapshot: plan_operation_fact(
+            snapshot,
+            operation_id=operation_id,
+            generation=0,
+            event_type="feature.event.translated",
+            payload=payload,
+            occurred_at=NOW,
+            trusted_context_digest="vertical-persist-fixture",
+        )
+    )
+    return operation_id, payload
+
+
+def linearize(store, operation_id, *, generation=0):
+    common = {
+        "operation_id": operation_id,
+        "generation": generation,
+        "feature_event_id": EVENT_ID,
+        "expected_revision": REV,
+        "target_ref": REF,
+        "candidate_head_sha": None,
+        "occurred_at": NOW,
+        "trusted_context_digest": "vertical-persist-fixture",
+    }
+    store.commit_replanned(lambda snapshot: plan_vertical_persist_requested(snapshot, **common))
+    store.commit_replanned(lambda snapshot: plan_vertical_persist_linearized(snapshot, **common))
+
+
+def takeover(store, operation_id):
+    result = store.commit_replanned(
+        lambda snapshot: plan_vertical_takeover(
+            snapshot,
+            operation_id=operation_id,
+            occurred_at="2026-08-11T06:00:01Z",
+            trusted_context_digest="vertical-persist-fixture",
+        )
+    )
+    require(result.result["generation"] == 1, "fixture takeover did not advance to G1")
+
+
+def transport_counts(fake):
+    return (fake.event_lookup_count, fake.history_lookup_count, fake.put_count)
+
+
+def assert_code(code, fn):
+    try:
+        fn()
+    except Exception as exc:
+        require(getattr(exc, "code", None) == code, (code, type(exc).__name__, str(exc)))
+    else:
+        raise AssertionError(f"expected {code}")
+
+
+def validate_original_generation_recovery_survives_takeover(event):
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    operation_id, _ = start_and_translate(store, event)
+    linearize(store, operation_id, generation=0)
+    takeover(store, operation_id)
+
+    fake.history_texts = [canonical_event_text(event)]
+    fake.event_text = None
+    fake.event_sha = None
+    fake.manifest["applied_events"] = [EVENT_ID, "EVT-LATER-1", "EVT-LATER-2"]
+    fake.manifest["revision"] = REV + 3
+
+    restarted = DurableVerticalFeaturePersistGateway(runtime=store, event_gateway=release_gateway(fake))
+    receipt = restarted.lookup_feature_event(event_id=EVENT_ID, target_ref=REF)
+    require(receipt == {"event_id": EVENT_ID, "result_revision": REV + 1}, receipt)
+    require(fake.history_lookup_count == 1, "post-takeover recovery did not prove original historical Event digest")
+    require(fake.put_count == 0, "post-takeover recovery recreated an already-applied G0 Event")
+
+
+def validate_cross_generation_linearization_is_denied(event):
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    operation_id, _ = start_and_translate(store, event)
+    takeover(store, operation_id)
+    linearize(store, operation_id, generation=1)
+
+    before = transport_counts(fake)
+    gateway = DurableVerticalFeaturePersistGateway(runtime=store, event_gateway=release_gateway(fake))
+    assert_code(
+        "INTERNAL_FAILURE",
+        lambda: gateway.lookup_feature_event(event_id=EVENT_ID, target_ref=REF),
+    )
+    require(transport_counts(fake) == before, "G0 translation + G1 linearization reached external Event transport")
+
+
+def validate_cross_generation_translation_is_denied(event):
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    operation_id, payload = start_and_translate(store, event)
+    takeover(store, operation_id)
+    store.commit_replanned(
+        lambda snapshot: plan_operation_fact(
+            snapshot,
+            operation_id=operation_id,
+            generation=1,
+            event_type="feature.event.translated",
+            payload=payload,
+            occurred_at="2026-08-11T06:00:02Z",
+            trusted_context_digest="vertical-persist-fixture",
+        )
+    )
+    linearize(store, operation_id, generation=1)
+
+    before = transport_counts(fake)
+    gateway = DurableVerticalFeaturePersistGateway(runtime=store, event_gateway=release_gateway(fake))
+    assert_code(
+        "INTERNAL_FAILURE",
+        lambda: gateway.persist_feature_event(event=event, target_ref=REF),
+    )
+    require(transport_counts(fake) == before, "same Event id translated across G0/G1 reached external Event transport")
+
+
+def main():
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    event = exact_event()
+    operation_id, _ = start_and_translate(store, event)
+
+    unlinearized = DurableVerticalFeaturePersistGateway(
+        runtime=store,
+        event_gateway=release_gateway(fake),
+    )
+    assert_code(
+        "POLICY_DENIED",
+        lambda: unlinearized.persist_feature_event(event=event, target_ref=REF),
+    )
+    require(fake.put_count == 0, "translated-but-unlinearized Event reached GitHub write transport")
+
+    linearize(store, operation_id)
+
+    conflicting = exact_event(stage_status="DONE")
+    linearized_adapter = DurableVerticalFeaturePersistGateway(
+        runtime=store,
+        event_gateway=release_gateway(fake),
+    )
+    assert_code(
+        "CONFLICT",
+        lambda: linearized_adapter.persist_feature_event(event=conflicting, target_ref=REF),
+    )
+    require(fake.put_count == 0, "conflicting Event body reached GitHub write transport")
+
+    # Simulate trusted Persist having applied the exact Event, the inbox file
+    # being cleaned up, then two later Events advancing the Feature further.
+    # Current #247 semantics require the cleanup-safe receipt to prove the exact
+    # historical canonical bytes/digest rather than trust event-id membership.
+    fake.history_texts = [canonical_event_text(event)]
+    fake.event_text = None
+    fake.event_sha = None
+    fake.manifest["applied_events"] = [EVENT_ID, "EVT-LATER-1", "EVT-LATER-2"]
+    fake.manifest["revision"] = REV + 3
+
+    # New process: new adapter and new release gateway instances. No in-memory
+    # event->revision map survives; recovery must come from durable Store facts
+    # plus trusted immutable Git history for the exact Event bytes.
+    restarted = DurableVerticalFeaturePersistGateway(
+        runtime=store,
+        event_gateway=release_gateway(fake),
+    )
+    receipt = restarted.lookup_feature_event(event_id=EVENT_ID, target_ref=REF)
+    require(receipt == {"event_id": EVENT_ID, "result_revision": REV + 1}, receipt)
+    require(fake.history_lookup_count == 1, "restart receipt did not prove historical exact Event digest")
+    require(fake.put_count == 0, "restart receipt lookup recreated an already-applied Event")
+
+    # A conflicting second durable translation in the same generation must block
+    # before any external lookup/write rather than choose one arbitrarily.
+    bad_event = exact_event(stage_status="DONE")
+    store.commit_replanned(
+        lambda snapshot: plan_operation_fact(
+            snapshot,
+            operation_id=operation_id,
+            generation=0,
+            event_type="feature.event.translated",
+            payload=translated_payload(bad_event),
+            occurred_at="2026-08-11T06:00:03Z",
+            trusted_context_digest="vertical-persist-fixture",
+        )
+    )
+    before = transport_counts(fake)
+    conflicted_restart = DurableVerticalFeaturePersistGateway(
+        runtime=store,
+        event_gateway=release_gateway(fake),
+    )
+    assert_code(
+        "INTERNAL_FAILURE",
+        lambda: conflicted_restart.lookup_feature_event(event_id=EVENT_ID, target_ref=REF),
+    )
+    require(transport_counts(fake) == before, "conflicting durable facts reached external Event transport")
+
+    validate_original_generation_recovery_survives_takeover(event)
+    validate_cross_generation_linearization_is_denied(event)
+    validate_cross_generation_translation_is_denied(event)
+
+    print("Vertical Feature Persist gateway validation passed")
+    print("- translated Event alone cannot bypass same-generation Persist request/linearization")
+    print("- exact Persist authority binds operation id + operation generation + Event id/revision/ref/candidate")
+    print("- original G0 linearization remains recoverable after takeover without granting G1 new authority")
+    print("- G0 translation + G1 same-id Persist request/linearization fails before external I/O")
+    print("- same Event id translated across generations fails before external I/O")
+    print("- external Event body must match the unique durable translated fact")
+    print("- fresh-process lookup reconstructs expected revision from protected Store")
+    print("- inbox cleanup + later Feature advances prove exact historical digest and result_revision")
+
+
+if __name__ == "__main__":
+    main()
