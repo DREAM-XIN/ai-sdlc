@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
@@ -26,16 +27,12 @@ READ_TOOLS: dict[str, str] = {
 
 
 class TrustedContextProvider(Protocol):
-    """Server-owned source for trusted runtime identity and authorization context."""
-
     def for_request(self, target: dict[str, Any] | None) -> dict[str, Any]:
         ...
 
 
 @dataclass(frozen=True)
 class StaticTrustedContextProvider:
-    """Explicit provider useful for trusted startup wiring and deterministic tests."""
-
     trusted_context: dict[str, Any]
 
     def for_request(self, target: dict[str, Any] | None) -> dict[str, Any]:
@@ -60,13 +57,12 @@ def invoke_canonical(
     capability: str,
     api_version: str,
     target: dict[str, Any] | None,
+    context: dict[str, Any] | None,
     payload: dict[str, Any],
     trusted_context: dict[str, Any],
     backends: dict[str, Any],
     extra_envelope_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Construct one canonical envelope and preserve canonical structured responses."""
-
     request: dict[str, Any] = {
         "api_version": api_version,
         "request_id": _request_id(),
@@ -76,6 +72,10 @@ def invoke_canonical(
     }
     if target is not None:
         request["target"] = dict(target)
+    if context is not None:
+        # Bounded canonical context only. Trusted identity/authorization stays
+        # server-owned and cannot be supplied through MCP tool arguments.
+        request["context"] = dict(context)
     if extra_envelope_fields:
         request.update(extra_envelope_fields)
     return dispatch(request, trusted_context=trusted_context, backends=backends)
@@ -92,15 +92,15 @@ def _register_read_tool(
     async def read_tool(
         api_version: str = API_VERSION,
         target: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Invoke one fixed read-only canonical Operator capability."""
-
         trusted_context = trusted_context_provider.for_request(target)
         return invoke_canonical(
             capability=capability,
             api_version=api_version,
             target=target,
+            context=context,
             payload=dict(payload or {}),
             trusted_context=trusted_context,
             backends=backends,
@@ -123,8 +123,6 @@ def _register_conformance_probe(
     async def conformance_probe(
         case: Literal["unknown_capability", "trusted_identity_injection"],
     ) -> dict[str, Any]:
-        """Closed, test-only negative probe. Never registered by production main()."""
-
         target = {"repository": "DREAM-XIN/fixture", "feature_id": "F-CONFORMANCE-0001"}
         trusted_context = trusted_context_provider.for_request(target)
         if case == "unknown_capability":
@@ -132,6 +130,7 @@ def _register_conformance_probe(
                 capability="not.real",
                 api_version=API_VERSION,
                 target=target,
+                context=None,
                 payload={},
                 trusted_context=trusted_context,
                 backends=backends,
@@ -140,6 +139,7 @@ def _register_conformance_probe(
             capability="feature.status",
             api_version=API_VERSION,
             target=target,
+            context=None,
             payload={},
             trusted_context=trusted_context,
             backends=backends,
@@ -160,8 +160,6 @@ def build_server(
     backends: dict[str, Any] | None = None,
     enable_conformance_probe: bool = False,
 ) -> MCPServer:
-    """Build the supported server; the production entrypoint never enables the probe."""
-
     provider = trusted_context_provider or StaticTrustedContextProvider(DEFAULT_TRUSTED_CONTEXT)
     backend_map = dict(backends or {})
     server = MCPServer("AI-SDLC Operator")
@@ -182,11 +180,47 @@ def build_server(
     return server
 
 
+def build_production_server_from_environment() -> MCPServer:
+    """Enable trusted backing only when the server launcher supplies it.
+
+    Absence of config preserves the accepted fail-closed MCP behavior: read
+    tools remain discoverable, while unbacked canonical capabilities report
+    `CAPABILITY_UNAVAILABLE`. When configured, all backing flows through the
+    authoritative target-scoped production bundle used by the strict launcher.
+    """
+    config_path = os.environ.get("AI_SDLC_OPERATOR_RUNTIME_CONFIG", "").strip()
+    if not config_path:
+        return build_server(enable_conformance_probe=False)
+
+    target_read_token = os.environ.get("AI_SDLC_OPERATOR_TARGET_READ_TOKEN", "").strip()
+    store_token = os.environ.get("AI_SDLC_OPERATOR_STORE_TOKEN", "").strip()
+    if not target_read_token or not store_token:
+        raise RuntimeError(
+            "trusted Operator runtime config requires separate target-read and Store credentials"
+        )
+
+    from operator_production_bundle import build_trusted_operator_backend_bundle
+    from operator_production_runtime import TrustedOperatorRuntimeConfig
+
+    config = TrustedOperatorRuntimeConfig.from_file(config_path)
+    bundle = build_trusted_operator_backend_bundle(
+        config=config,
+        adapter_id=ADAPTER_ID,
+        target_read_token=target_read_token,
+        store_token=store_token,
+        github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+    )
+    return build_server(
+        trusted_context_provider=bundle.trusted_context_provider,
+        backends=bundle.backends,
+        enable_conformance_probe=False,
+    )
+
+
 def main() -> None:
-    # Security invariant: production startup has no flag/env/config path that enables
-    # the reserved conformance probe.
-    server = build_server(enable_conformance_probe=False)
-    server.run(transport="stdio")
+    # Production startup has no code path that enables the test-only probe and
+    # no MCP argument can widen configured repository/Feature scope.
+    build_production_server_from_environment().run(transport="stdio")
 
 
 if __name__ == "__main__":

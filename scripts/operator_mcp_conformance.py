@@ -94,6 +94,7 @@ class McpStdioConformanceAdapter:
         arguments = {
             "api_version": canonical_request.get("api_version"),
             "target": canonical_request.get("target"),
+            "context": canonical_request.get("context"),
             "payload": canonical_request.get("payload") or {},
         }
         return asyncio.run(_call_tool(CAPABILITY_TO_TOOL[capability], arguments))

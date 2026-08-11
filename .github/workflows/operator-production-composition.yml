@@ -1,0 +1,48 @@
+name: Validate Operator Production Composition
+
+on:
+  push:
+    branches:
+      - runtime/operator-production-composition-244
+    paths:
+      - '.github/workflows/operator-production-composition.yml'
+      - 'scripts/operator_production_*.py'
+      - 'scripts/operator_mcp.py'
+      - 'scripts/operator_mcp_conformance.py'
+      - 'scripts/operator_conformance.py'
+      - 'scripts/validate_operator_production_*.py'
+      - 'scripts/validate_operator_mcp.py'
+      - 'examples/operator/production-runtime-config.yaml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-production-composition.yml'
+      - 'scripts/operator_production_*.py'
+      - 'scripts/operator_mcp.py'
+      - 'scripts/operator_mcp_conformance.py'
+      - 'scripts/operator_conformance.py'
+      - 'scripts/validate_operator_production_*.py'
+      - 'scripts/validate_operator_mcp.py'
+      - 'examples/operator/production-runtime-config.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  production-composition:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate MCP and shared production runtime
+        run: python scripts/validate_operator_mcp.py
+      - name: Validate authoritative target-scoped production bundle
+        run: python scripts/validate_operator_production_scope.py
+      - name: Validate explicit write-bundle extension
+        run: python scripts/validate_operator_production_write_bundle.py

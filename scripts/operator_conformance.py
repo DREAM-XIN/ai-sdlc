@@ -195,7 +195,7 @@ def assert_materially_independent(first: CanonicalAdapter, second: CanonicalAdap
 
 
 def _request(adapter: CanonicalAdapter, capability: str, *, request_id: str, api_version: str = API_VERSION):
-    return {
+    request = {
         "api_version": api_version,
         "request_id": request_id,
         "capability": capability,
@@ -203,6 +203,9 @@ def _request(adapter: CanonicalAdapter, capability: str, *, request_id: str, api
         "client_identity": {"adapter_id": adapter.adapter_id, "human_principal": "fixture-user"},
         "payload": {},
     }
+    if capability == "operation.status":
+        request["context"] = {"operation_id": "op-conformance-1"}
+    return request
 
 
 def _assert_error(response: dict[str, Any], code: str):

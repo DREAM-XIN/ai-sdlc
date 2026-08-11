@@ -21,6 +21,7 @@ from operator_mcp_conformance import (
     call_project_inspect_with_backend,
     list_tools,
 )
+from validate_operator_production_runtime import main as validate_operator_production_runtime
 
 EXPECTED_PRODUCTION_TOOLS = tuple(READ_TOOLS)
 WRITE_CAPABILITIES = {
@@ -86,12 +87,18 @@ def main() -> None:
     assert direct_evidence.transport_kind != mcp_evidence.transport_kind
     assert mcp_evidence.root_implementation_type.endswith("McpStdioConformanceAdapter")
 
+    # Downstream production composition now supplies real trusted backends, but
+    # MCP's tool registry remains the same accepted seven read-only capabilities.
+    validate_operator_production_runtime()
+
     print("Operator MCP validation passed")
     print(f"- adapter_id: {ADAPTER_ID}")
     print(f"- transport_kind: {TRANSPORT_KIND}")
     print(f"- production_tools: {len(production_tools)} read-only")
     print(f"- canonical_registry: {len(rows)} capabilities")
     print(f"- conformance_subset: {len(report.exercised_capabilities)} over real MCP stdio")
+    print("- canonical context: preserved across MCP stdio")
+    print("- trusted production backend composition: validated")
     print("- conformance probe: test-only, absent from production tool list")
     print("- semantic writes: no MCP tool registration")
 
