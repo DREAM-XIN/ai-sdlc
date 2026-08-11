@@ -32,23 +32,40 @@ def transport(fake):
     )
 
 
-def validate_applied_without_inbox_file():
-    fake = FakeGitHub()
-    fake.event_text = None
-    fake.manifest["applied_events"] = [EVENT_ID]
-    fake.manifest["revision"] = REV + 1
-    gw = transport(fake)
-    receipt = gw.lookup_receipt(
+def lookup_applied(fake):
+    return transport(fake).lookup_receipt(
         repository=REPO,
         feature_id=FEATURE,
         target_ref=REF,
         event_id=EVENT_ID,
         expected_revision=REV,
     )
+
+
+def validate_applied_without_inbox_file():
+    fake = FakeGitHub()
+    fake.event_text = None
+    fake.manifest["applied_events"] = [EVENT_ID]
+    fake.manifest["revision"] = REV + 1
+    receipt = lookup_applied(fake)
     require(receipt.state == APPLIED, receipt)
     require(receipt.result_revision == REV + 1, receipt)
     require(receipt.event_blob_sha is None, receipt)
     require(fake.put_count == 0, "applied missing-inbox receipt caused a write")
+
+
+def validate_applied_then_later_feature_advances():
+    fake = FakeGitHub()
+    fake.event_text = None
+    fake.manifest["applied_events"] = [EVENT_ID, "EVT-LATER-1", "EVT-LATER-2"]
+    fake.manifest["revision"] = REV + 3
+    receipt = lookup_applied(fake)
+    require(receipt.state == APPLIED, receipt)
+    require(
+        receipt.result_revision == REV + 1,
+        f"late restart returned latest Feature revision instead of exact Event result: {receipt}",
+    )
+    require(fake.put_count == 0, "late applied receipt caused a speculative write")
 
 
 def validate_absent_event_after_unrelated_advance_is_stale():
@@ -89,12 +106,14 @@ def validate_release_factory_uses_receipt_safe_transport():
 
 def main():
     validate_applied_without_inbox_file()
+    validate_applied_then_later_feature_advances()
     validate_absent_event_after_unrelated_advance_is_stale()
     validate_release_factory_uses_receipt_safe_transport()
     print("Release-safe Feature Event receipt validation passed")
     print("- applied_events is authoritative even when inbox file is absent")
+    print("- late restart after later Events still returns expected_revision + 1")
     print("- unrelated Feature advance + missing Event => STALE_REVISION")
-    print("- both paths perform zero speculative Event writes")
+    print("- recovery paths perform zero speculative Event writes")
     print("- release factory fixes canonical receipt-safe transport")
 
 
