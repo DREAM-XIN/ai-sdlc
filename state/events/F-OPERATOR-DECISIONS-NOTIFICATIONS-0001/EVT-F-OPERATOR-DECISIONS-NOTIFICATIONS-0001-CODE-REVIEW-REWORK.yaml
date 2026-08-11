@@ -1,0 +1,23 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-CODE-REVIEW-REWORK
+feature_id: F-OPERATOR-DECISIONS-NOTIFICATIONS-0001
+expected_revision: 13
+occurred_at: '2026-08-11T02:20:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-review-v1
+      type: review
+      status: fail
+      uri: docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/code-review.md
+  - kind: task-record
+    record:
+      id: F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-CODE-REMEDIATION-1
+      kind: remediation
+      stage: implementation
+      role: developer
+      source_stage: code-review
+      feedback: >-
+        Close exactly Code Review 4902455599: separate trusted control/Store repository policy-source binding from target Feature repository scope so cross-repository Decisions work without caller-controlled policy expansion, bind effective policy digest to exact target repository/Feature/ref and add cross-repository positive/unauthorized-target negative tests; and add an explicit current Operation generation fence to Decision authorization consumption with deterministic resolved-Decision takeover rejection using SUPERSEDED_GENERATION. Preserve all existing policy, scope, cancellation, Effect Lineage, launch, Persist, identity, expiry and Acceptance boundaries.
+      status: TODO
+      runtime: manual
