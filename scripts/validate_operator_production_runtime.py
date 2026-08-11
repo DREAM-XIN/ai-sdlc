@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -15,7 +14,6 @@ from operator_api import API_VERSION, dispatch
 from operator_mcp import ADAPTER_ID, READ_TOOLS, build_server
 from operator_production_runtime import (
     BoundedTrustedContextProvider,
-    GitHubTrustedProjectFeatureReader,
     RUNTIME_CONFIG_VERSION,
     TrustedFeatureBinding,
     TrustedOperatorRuntimeConfig,
@@ -27,6 +25,7 @@ from operator_store_protection import PROTECTED, ProtectionReceipt
 from operator_store_remote_git import RemoteGitStateRefBackend
 
 REPOSITORY = "DREAM-XIN/fixture"
+NORMALIZED_REPOSITORY = "dream-xin/fixture"
 FEATURE_ID = "F-RUNTIME-COMPOSITION-0001"
 FEATURE_REF = "feature/F-RUNTIME-COMPOSITION-0001"
 STATE_REF = "refs/heads/ai-sdlc-operator-state"
@@ -86,7 +85,7 @@ class FakeGitHubContents:
     def __call__(self, url, headers):
         self.calls.append((url, dict(headers)))
         parsed = urlparse(url)
-        prefix = f"/repos/{REPOSITORY}/contents/"
+        prefix = f"/repos/{NORMALIZED_REPOSITORY}/contents/"
         if not parsed.path.startswith(prefix):
             return 404, {}
         path = "/".join(unquote(part) for part in parsed.path[len(prefix):].split("/"))
@@ -159,7 +158,7 @@ def validate_config_boundary(root: Path):
         encoding="utf-8",
     )
     config = TrustedOperatorRuntimeConfig.from_file(config_file)
-    require(config.repository == "dream-xin/fixture", "repository identity was not normalized")
+    require(config.repository == NORMALIZED_REPOSITORY, "repository identity was not normalized")
     require(config.trusted_checkout == (root / "checkout").resolve(), "relative trusted checkout did not bind to config file directory")
     require(config.feature_ref(FEATURE_ID) == FEATURE_REF, "Feature/ref binding changed")
     try:
@@ -196,12 +195,12 @@ def validate_bundle_and_scope(root: Path, config: TrustedOperatorRuntimeConfig, 
     trusted = bundle.trusted_context_provider.for_request({"repository": REPOSITORY, "feature_id": FEATURE_ID})
     require(trusted["trusted_client_adapter_id"] == ADAPTER_ID, "trusted adapter identity drifted")
     require(trusted["trusted_principal"] == "fixture-principal", "trusted principal drifted")
-    require(trusted["trusted_scope"] == {"repositories": ["dream-xin/fixture"], "feature_ids": [FEATURE_ID]}, "trusted scope drifted")
+    require(trusted["trusted_scope"] == {"repositories": [NORMALIZED_REPOSITORY], "feature_ids": [FEATURE_ID]}, "trusted scope drifted")
 
     target = {"repository": REPOSITORY, "feature_id": FEATURE_ID}
 
     project = dispatch(request("project.inspect", target=target), trusted_context=trusted, backends=bundle.backends)
-    require(project["ok"] is True and project["result"] == {"repository": "dream-xin/fixture", "installed": True}, f"project.inspect failed: {project}")
+    require(project["ok"] is True and project["result"] == {"repository": NORMALIZED_REPOSITORY, "installed": True}, f"project.inspect failed: {project}")
 
     feature = dispatch(request("feature.status", target=target), trusted_context=trusted, backends=bundle.backends)
     require(feature["ok"] is True, feature)
