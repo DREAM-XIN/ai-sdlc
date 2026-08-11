@@ -61,11 +61,17 @@ class _ScopedStoreBackend:
             raise OperatorProductionRuntimeError("UNAUTHORIZED", "Operation target is outside trusted runtime scope")
         if durable_repository != self.config.target_repository:
             raise OperatorProductionRuntimeError("UNAUTHORIZED", "Operation target repository is outside trusted runtime configuration")
-        request_repository, request_feature_id = self._target(request)
-        if request_repository != durable_repository:
-            raise OperatorProductionRuntimeError("UNAUTHORIZED", "request target does not match durable Operation repository")
-        if request_feature_id is not None and request_feature_id != durable_feature_id:
-            raise OperatorProductionRuntimeError("UNAUTHORIZED", "request target does not match durable Operation Feature")
+
+        # operation.status / operation.cancel are authorized from the durable
+        # Operation projection. Canonical clients are not required to restate
+        # target authority. If a target hint is supplied, it may only narrow the
+        # request and must match durable truth exactly.
+        if request.get("target") is not None:
+            request_repository, request_feature_id = self._target(request)
+            if request_repository != durable_repository:
+                raise OperatorProductionRuntimeError("UNAUTHORIZED", "request target does not match durable Operation repository")
+            if request_feature_id is not None and request_feature_id != durable_feature_id:
+                raise OperatorProductionRuntimeError("UNAUTHORIZED", "request target does not match durable Operation Feature")
 
 
 class ScopedOperationStartBackend(_ScopedStoreBackend):
