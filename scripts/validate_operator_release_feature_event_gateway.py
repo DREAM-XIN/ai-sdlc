@@ -12,7 +12,6 @@ from operator_release_feature_event_gateway import (
 )
 from validate_operator_github_feature_event_gateway import (
     EVENT_ID,
-    EVENT_PATH,
     FEATURE,
     REF,
     REPO,
@@ -21,6 +20,8 @@ from validate_operator_github_feature_event_gateway import (
     content_payload,
     event,
 )
+
+EVENT_PATH = f"events/inbox/{EVENT_ID}.yaml"
 
 
 class FixtureReleaseGateway(ReceiptSafeCanonicalFeatureEventGateway):
