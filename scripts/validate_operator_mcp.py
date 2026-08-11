@@ -21,6 +21,7 @@ from operator_mcp_conformance import (
     call_project_inspect_with_backend,
     list_tools,
 )
+from validate_operator_trust_suites import main as validate_operator_trust_suites
 
 EXPECTED_PRODUCTION_TOOLS = tuple(READ_TOOLS)
 WRITE_CAPABILITIES = {
@@ -85,6 +86,11 @@ def main() -> None:
     direct_evidence, mcp_evidence = assert_materially_independent(direct, adapter)
     assert direct_evidence.transport_kind != mcp_evidence.transport_kind
     assert mcp_evidence.root_implementation_type.endswith("McpStdioConformanceAdapter")
+
+    # Issue #223: the supported-adapter conformance path also validates the
+    # explicit boundary between normative protocol compatibility and the
+    # product-neutral autonomous-SDLC trust benchmark.
+    validate_operator_trust_suites()
 
     print("Operator MCP validation passed")
     print(f"- adapter_id: {ADAPTER_ID}")
