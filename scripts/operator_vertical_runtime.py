@@ -12,7 +12,7 @@ from operator_vertical import VERTICAL_PROFILE
 from operator_vertical_callback import TrustedVerticalCallbackCoordinator
 from operator_vertical_controller import FeatureTruthGateway, VerticalLoopResumeBackend
 from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
-from operator_vertical_reconcile import TrustedRecoveringVerticalExecutor
+from operator_vertical_reconcile_classified import FailureClassifyingTrustedRecoveringVerticalExecutor
 from operator_effect_rollout import EffectLineageWriteFence
 from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
 from operator_decision_policy import ProtectedDecisionPolicyVerifier
@@ -138,7 +138,7 @@ def build_trusted_vertical_runtime(
         ),
         resolution_policy_verifier=resolution_policy_verifier,
     )
-    executor = TrustedRecoveringVerticalExecutor(
+    executor = FailureClassifyingTrustedRecoveringVerticalExecutor(
         base_executor=base_executor,
         content_loader=collector_content_loader,
         trusted_role_policy=config.trusted_role_policy,
