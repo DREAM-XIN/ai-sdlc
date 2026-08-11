@@ -152,6 +152,26 @@ def assert_code(code, fn):
         raise AssertionError(f"expected {code}")
 
 
+def validate_original_generation_recovery_survives_takeover(event):
+    store = runtime()
+    fake = HistoryFakeGitHub()
+    operation_id, _ = start_and_translate(store, event)
+    linearize(store, operation_id, generation=0)
+    takeover(store, operation_id)
+
+    fake.history_texts = [canonical_event_text(event)]
+    fake.event_text = None
+    fake.event_sha = None
+    fake.manifest["applied_events"] = [EVENT_ID, "EVT-LATER-1", "EVT-LATER-2"]
+    fake.manifest["revision"] = REV + 3
+
+    restarted = DurableVerticalFeaturePersistGateway(runtime=store, event_gateway=release_gateway(fake))
+    receipt = restarted.lookup_feature_event(event_id=EVENT_ID, target_ref=REF)
+    require(receipt == {"event_id": EVENT_ID, "result_revision": REV + 1}, receipt)
+    require(fake.history_lookup_count == 1, "post-takeover recovery did not prove original historical Event digest")
+    require(fake.put_count == 0, "post-takeover recovery recreated an already-applied G0 Event")
+
+
 def validate_cross_generation_linearization_is_denied(event):
     store = runtime()
     fake = HistoryFakeGitHub()
@@ -271,12 +291,14 @@ def main():
     )
     require(transport_counts(fake) == before, "conflicting durable facts reached external Event transport")
 
+    validate_original_generation_recovery_survives_takeover(event)
     validate_cross_generation_linearization_is_denied(event)
     validate_cross_generation_translation_is_denied(event)
 
     print("Vertical Feature Persist gateway validation passed")
     print("- translated Event alone cannot bypass same-generation Persist request/linearization")
     print("- exact Persist authority binds operation id + operation generation + Event id/revision/ref/candidate")
+    print("- original G0 linearization remains recoverable after takeover without granting G1 new authority")
     print("- G0 translation + G1 same-id Persist request/linearization fails before external I/O")
     print("- same Event id translated across generations fails before external I/O")
     print("- external Event body must match the unique durable translated fact")
