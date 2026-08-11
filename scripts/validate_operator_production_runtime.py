@@ -24,8 +24,10 @@ from operator_store_model import StoreSnapshot
 from operator_store_protection import PROTECTED, ProtectionReceipt
 from operator_store_remote_git import RemoteGitStateRefBackend
 
-REPOSITORY = "DREAM-XIN/fixture"
-NORMALIZED_REPOSITORY = "dream-xin/fixture"
+TARGET_REPOSITORY = "DREAM-XIN/fixture"
+NORMALIZED_TARGET_REPOSITORY = "dream-xin/fixture"
+STORE_REPOSITORY = "DREAM-XIN/control-fixture"
+NORMALIZED_STORE_REPOSITORY = "dream-xin/control-fixture"
 FEATURE_ID = "F-RUNTIME-COMPOSITION-0001"
 FEATURE_REF = "feature/F-RUNTIME-COMPOSITION-0001"
 STATE_REF = "refs/heads/ai-sdlc-operator-state"
@@ -40,7 +42,11 @@ def require(condition, message):
 class FixtureProductionVerifier:
     test_only = False
 
+    def __init__(self):
+        self.calls = []
+
     def verify(self, repository, state_ref):
+        self.calls.append((repository, state_ref))
         return ProtectionReceipt(
             repository=repository,
             state_ref=state_ref,
@@ -58,7 +64,7 @@ class FakeGitHubContents:
             "project": {"id": "fixture", "name": "Fixture"},
             "repository": {
                 "provider": "github",
-                "full_name": REPOSITORY,
+                "full_name": TARGET_REPOSITORY,
                 "default_branch": "main",
             },
             "defaults": {"workflow_profile": "standard-feature", "runtime_policy": "default", "required_commands": []},
@@ -85,7 +91,7 @@ class FakeGitHubContents:
     def __call__(self, url, headers):
         self.calls.append((url, dict(headers)))
         parsed = urlparse(url)
-        prefix = f"/repos/{NORMALIZED_REPOSITORY}/contents/"
+        prefix = f"/repos/{NORMALIZED_TARGET_REPOSITORY}/contents/"
         if not parsed.path.startswith(prefix):
             return 404, {}
         path = "/".join(unquote(part) for part in parsed.path[len(prefix):].split("/"))
@@ -103,16 +109,16 @@ def git(*args, cwd=None, check=True):
 def seed_store(checkout: Path):
     backend = RemoteGitStateRefBackend(
         repo_path=checkout,
-        repository=REPOSITORY,
+        repository=STORE_REPOSITORY,
         state_ref=STATE_REF,
     )
     verifier = FixtureProductionVerifier()
-    receipt = verifier.verify(REPOSITORY, STATE_REF)
+    receipt = verifier.verify(STORE_REPOSITORY, STATE_REF)
     snapshot = backend.read_snapshot()
     require(snapshot == StoreSnapshot(ref_sha=None), "fixture Store did not begin empty")
     plan = plan_operation_start(
         snapshot,
-        target_repository=REPOSITORY,
+        target_repository=TARGET_REPOSITORY,
         feature_id=FEATURE_ID,
         expected_revision=7,
         idempotency_key="runtime-composition-op",
@@ -144,13 +150,14 @@ def validate_config_boundary(root: Path):
         yaml.safe_dump(
             {
                 "version": RUNTIME_CONFIG_VERSION,
-                "repository": REPOSITORY,
+                "target_repository": TARGET_REPOSITORY,
+                "store_repository": STORE_REPOSITORY,
                 "installation_ref": "main",
-                "trusted_checkout": "checkout",
+                "store_checkout": "checkout",
                 "principal": "fixture-principal",
                 "feature_refs": {FEATURE_ID: FEATURE_REF},
                 "state_ref": STATE_REF,
-                "remote_name": "origin",
+                "store_remote_name": "origin",
                 "operator_app_slug": "ai-sdlc-operator",
             },
             sort_keys=False,
@@ -158,8 +165,10 @@ def validate_config_boundary(root: Path):
         encoding="utf-8",
     )
     config = TrustedOperatorRuntimeConfig.from_file(config_file)
-    require(config.repository == NORMALIZED_REPOSITORY, "repository identity was not normalized")
-    require(config.trusted_checkout == (root / "checkout").resolve(), "relative trusted checkout did not bind to config file directory")
+    require(config.target_repository == NORMALIZED_TARGET_REPOSITORY, "target repository identity was not normalized")
+    require(config.store_repository == NORMALIZED_STORE_REPOSITORY, "Store repository identity was not normalized")
+    require(config.target_repository != config.store_repository, "fixture failed to prove target/Store separation")
+    require(config.store_checkout == (root / "checkout").resolve(), "relative Store checkout did not bind to config file directory")
     require(config.feature_ref(FEATURE_ID) == FEATURE_REF, "Feature/ref binding changed")
     try:
         config.feature_ref("F-NOT-ALLOWED")
@@ -169,7 +178,8 @@ def validate_config_boundary(root: Path):
 
     invalid = {
         "version": RUNTIME_CONFIG_VERSION,
-        "repository": REPOSITORY,
+        "target_repository": TARGET_REPOSITORY,
+        "store_repository": STORE_REPOSITORY,
         "principal": "fixture-principal",
         "feature_refs": {FEATURE_ID: FEATURE_REF},
         "client_selected_backend": "evil",
@@ -182,25 +192,26 @@ def validate_config_boundary(root: Path):
     return config
 
 
-def validate_bundle_and_scope(root: Path, config: TrustedOperatorRuntimeConfig, operation_id: str, verifier):
+def validate_bundle_and_scope(config: TrustedOperatorRuntimeConfig, operation_id: str, verifier):
     github = FakeGitHubContents()
     bundle = build_trusted_operator_read_bundle(
         config=config,
         adapter_id=ADAPTER_ID,
-        github_token="trusted-read-token",
+        target_read_token="target-read-token",
+        store_token="store-protection-token",
         github_api_base="https://api.github.test",
         reader_http_get=github,
         protection_verifier=verifier,
     )
-    trusted = bundle.trusted_context_provider.for_request({"repository": REPOSITORY, "feature_id": FEATURE_ID})
+    trusted = bundle.trusted_context_provider.for_request({"repository": TARGET_REPOSITORY, "feature_id": FEATURE_ID})
     require(trusted["trusted_client_adapter_id"] == ADAPTER_ID, "trusted adapter identity drifted")
     require(trusted["trusted_principal"] == "fixture-principal", "trusted principal drifted")
-    require(trusted["trusted_scope"] == {"repositories": [NORMALIZED_REPOSITORY], "feature_ids": [FEATURE_ID]}, "trusted scope drifted")
+    require(trusted["trusted_scope"] == {"repositories": [NORMALIZED_TARGET_REPOSITORY], "feature_ids": [FEATURE_ID]}, "trusted scope drifted")
 
-    target = {"repository": REPOSITORY, "feature_id": FEATURE_ID}
+    target = {"repository": TARGET_REPOSITORY, "feature_id": FEATURE_ID}
 
     project = dispatch(request("project.inspect", target=target), trusted_context=trusted, backends=bundle.backends)
-    require(project["ok"] is True and project["result"] == {"repository": NORMALIZED_REPOSITORY, "installed": True}, f"project.inspect failed: {project}")
+    require(project["ok"] is True and project["result"] == {"repository": NORMALIZED_TARGET_REPOSITORY, "installed": True}, f"project.inspect failed: {project}")
 
     feature = dispatch(request("feature.status", target=target), trusted_context=trusted, backends=bundle.backends)
     require(feature["ok"] is True, feature)
@@ -223,8 +234,6 @@ def validate_bundle_and_scope(root: Path, config: TrustedOperatorRuntimeConfig, 
     require(decisions == {"api_version": API_VERSION, "request_id": "runtime-decision-list", "capability": "decision.list", "ok": True, "result": {"decisions": []}}, decisions)
     require(notifications == {"api_version": API_VERSION, "request_id": "runtime-notification-list", "capability": "notification.list", "ok": True, "result": {"notifications": []}}, notifications)
 
-    # Same canonical bundle contains Store writes, but MCP remains read-only by
-    # registration: the adapter has no tool names for these capabilities.
     require("operation.start" in bundle.backends and "operation.cancel" in bundle.backends, "shared canonical bundle lost approved Store writes")
     require(set(READ_TOOLS.values()).isdisjoint({"operation.start", "operation.cancel", "decision.respond", "notification.ack"}), "MCP write-tool boundary regressed")
     build_server(trusted_context_provider=bundle.trusted_context_provider, backends=bundle.backends, enable_conformance_probe=False)
@@ -237,7 +246,7 @@ def validate_bundle_and_scope(root: Path, config: TrustedOperatorRuntimeConfig, 
     require(outside_repo["ok"] is False and outside_repo["error"]["code"] == "UNAUTHORIZED", outside_repo)
 
     outside_feature = dispatch(
-        request("feature.status", target={"repository": REPOSITORY, "feature_id": "F-OTHER"}),
+        request("feature.status", target={"repository": TARGET_REPOSITORY, "feature_id": "F-OTHER"}),
         trusted_context=trusted,
         backends=bundle.backends,
     )
@@ -250,18 +259,21 @@ def validate_bundle_and_scope(root: Path, config: TrustedOperatorRuntimeConfig, 
     )
     require(wrong_adapter["ok"] is False and wrong_adapter["error"]["code"] == "UNAUTHORIZED", wrong_adapter)
 
-    # Reader uses trusted refs, not a client-supplied ref. Every Feature read
-    # observed by fake GitHub must use the configured binding.
+    require(any(f"/repos/{NORMALIZED_TARGET_REPOSITORY}/contents/" in url for url, _ in github.calls), "target truth read used wrong repository")
     require(any(f"ref={FEATURE_REF.replace('/', '%2F')}" in url for url, _ in github.calls), "Feature read did not use trusted configured ref")
     for _, headers in github.calls:
-        require(headers.get("Authorization") == "Bearer trusted-read-token", "trusted GitHub credential was not server-owned")
+        require(headers.get("Authorization") == "Bearer target-read-token", "target read did not use the dedicated server-owned credential")
+
+    require(any(repo == NORMALIZED_STORE_REPOSITORY for repo, _ in verifier.calls), "Store protection did not use configured control repository")
+    require(not any(repo == NORMALIZED_TARGET_REPOSITORY for repo, _ in verifier.calls), "Store protection was incorrectly checked on target repository")
 
 
 def validate_context_provider_binding():
     config = TrustedOperatorRuntimeConfig(
-        repository=REPOSITORY,
+        target_repository=TARGET_REPOSITORY,
+        store_repository=STORE_REPOSITORY,
         installation_ref="main",
-        trusted_checkout=Path("."),
+        store_checkout=Path("."),
         principal="fixture-principal",
         feature_bindings=(TrustedFeatureBinding(FEATURE_ID, FEATURE_REF),),
     )
@@ -283,9 +295,11 @@ def main():
         git("config", "user.email", "ai-sdlc@example.invalid", cwd=checkout)
         operation_id, verifier = seed_store(checkout)
         config = validate_config_boundary(root)
-        validate_bundle_and_scope(root, config, operation_id, verifier)
+        validate_bundle_and_scope(config, operation_id, verifier)
 
     print("Operator production runtime composition validation passed")
+    print("- target repository truth and control/Store repository are separate trust domains")
+    print("- target reads and Store protection use separately named credentials")
     print("- project/Feature truth: exact trusted repository and Feature/ref bindings")
     print("- Store/inbox/decision/notification reads: shared durable canonical bundle")
     print("- operation.status: canonical context crosses adapter boundary")
