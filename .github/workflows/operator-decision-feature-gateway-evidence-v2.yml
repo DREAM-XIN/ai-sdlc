@@ -1,0 +1,91 @@
+name: Operator Decision Feature Gateway Evidence v2
+run-name: Operator Decision gateway evidence v2 ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - runtime/decision-feature-gateway-246
+    paths:
+      - '.github/workflows/operator-decision-feature-gateway*.yml'
+      - '.github/workflows/operator-decision-gateway-protocol-binding.yml'
+      - 'scripts/operator_*feature_event*.py'
+      - 'scripts/operator_decision_feature_gateway_adapter.py'
+      - 'scripts/validate_operator_*feature_event*.py'
+      - 'scripts/validate_operator_decision_*gateway*.py'
+      - 'spec/feature-event.schema.json'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate Event inbox transport
+        run: python scripts/validate_operator_github_feature_event_gateway.py
+      - name: Validate schema and exact revision fences
+        run: python scripts/validate_operator_exact_feature_event_gateway.py
+      - name: Validate configured server-owned target binding
+        run: python scripts/validate_operator_configured_feature_event_gateway.py
+      - name: Validate production default-branch denial
+        run: python scripts/validate_operator_production_feature_event_gateway.py
+      - name: Validate canonical exact Event bytes
+        run: python scripts/validate_operator_canonical_feature_event_gateway.py
+      - name: Validate release-safe missing-inbox receipt recovery
+        run: python scripts/validate_operator_release_feature_event_gateway.py
+      - name: Validate bounded Decision-to-Event bridge
+        run: python scripts/validate_operator_decision_feature_gateway_adapter.py
+      - name: Validate actual DecisionCoordinator protocol binding
+        run: python scripts/validate_operator_decision_gateway_protocol.py
+      - name: Publish non-review implementation evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          TARGET_PR: '247'
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from urllib import request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          body = (
+              '<!-- ai-sdlc-decision-feature-gateway-evidence-v2 -->\n'
+              '**Implementation evidence only — not Code Review / Gate evidence.**\n\n'
+              f'Exact head: `{os.environ["HEAD_SHA"]}`\n'
+              f'Workflow run: `{os.environ["RUN_ID"]}`\n\n'
+              'All passed in one job:\n'
+              '- at-most-once create-only Feature Event inbox transport\n'
+              '- schema + exact revision fences\n'
+              '- server-owned repository/ref scope + default-branch denial\n'
+              '- canonical exact Event bytes across reconstruction order\n'
+              '- authoritative applied_events recovery when inbox file is absent\n'
+              '- bounded Decision bridge rejects raw Event/changes authority\n'
+              '- bridge binds to current DecisionCoordinator named gateway calls\n'
+              '- no direct authoritative Manifest PUT path\n\n'
+              'Decision-type-specific outcome translation remains a separate implementation slice.'
+          )
+          payload = json.dumps({'body': body}).encode()
+          req = request.Request(
+              f'{api}/repos/{repo}/issues/{os.environ["TARGET_PR"]}/comments',
+              data=payload,
+              method='POST',
+          )
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('Authorization', f'Bearer {os.environ["GITHUB_TOKEN"]}')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          req.add_header('Content-Type', 'application/json')
+          with request.urlopen(req, timeout=30) as response:
+              if response.status != 201:
+                  raise SystemExit(f'failed to publish implementation evidence: HTTP {response.status}')
+          PY
