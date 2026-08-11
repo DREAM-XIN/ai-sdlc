@@ -185,8 +185,8 @@ def build_production_server_from_environment() -> MCPServer:
 
     Absence of config preserves the accepted fail-closed MCP behavior: read
     tools remain discoverable, while unbacked canonical capabilities report
-    `CAPABILITY_UNAVAILABLE`. When configured, target-repository reads and Store
-    protection inspection use separately named credentials.
+    `CAPABILITY_UNAVAILABLE`. When configured, all backing flows through the
+    authoritative target-scoped production bundle used by the strict launcher.
     """
     config_path = os.environ.get("AI_SDLC_OPERATOR_RUNTIME_CONFIG", "").strip()
     if not config_path:
@@ -199,13 +199,11 @@ def build_production_server_from_environment() -> MCPServer:
             "trusted Operator runtime config requires separate target-read and Store credentials"
         )
 
-    from operator_production_runtime import (
-        TrustedOperatorRuntimeConfig,
-        build_trusted_operator_read_bundle,
-    )
+    from operator_production_bundle import build_trusted_operator_backend_bundle
+    from operator_production_runtime import TrustedOperatorRuntimeConfig
 
     config = TrustedOperatorRuntimeConfig.from_file(config_path)
-    bundle = build_trusted_operator_read_bundle(
+    bundle = build_trusted_operator_backend_bundle(
         config=config,
         adapter_id=ADAPTER_ID,
         target_read_token=target_read_token,
