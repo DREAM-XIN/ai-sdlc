@@ -34,10 +34,7 @@ DECISION_SCHEMA = ROOT / "spec" / "operator" / "store" / "decision.schema.json"
 NOTIFICATION_SCHEMA = ROOT / "spec" / "operator" / "store" / "notification.schema.json"
 DECISION_SCHEMA_VERSION = "ai-sdlc.decision/v1"
 NOTIFICATION_SCHEMA_VERSION = "ai-sdlc.notification/v1"
-NOTIFICATION_TYPES = frozenset(
-    {"decision.requested", "operation.blocked", "operation.completed", "authorization.expiring"}
-)
-TERMINAL_DECISION_STATES = frozenset({"RESOLVED", "EXPIRED", "SUPERSEDED"})
+NOTIFICATION_TYPES = frozenset({"decision.requested", "operation.blocked", "operation.completed", "authorization.expiring"})
 
 
 def _parse_time(value: str) -> datetime:
@@ -56,7 +53,7 @@ def _format_time(value: datetime) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _validate_record(record: dict[str, Any], schema_path: Path, label: str) -> None:
+def _validate(record: dict[str, Any], schema_path: Path, label: str) -> None:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     errors = sorted(
         Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(record),
@@ -83,46 +80,33 @@ def notification_id_for(material: dict[str, Any]) -> str:
     return "ntf-" + digest_json(material)[:48]
 
 
-def _decision_records(snapshot: StoreSnapshot) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    prefix = f"{STORE_ROOT}/decisions/"
+def _record_rows(snapshot: StoreSnapshot, kind: str) -> list[dict[str, Any]]:
+    if kind == "decision":
+        prefix, schema, path_fn, id_key, label = f"{STORE_ROOT}/decisions/", DECISION_SCHEMA, decision_path, "decision_id", "Decision"
+    else:
+        prefix, schema, path_fn, id_key, label = f"{STORE_ROOT}/notifications/", NOTIFICATION_SCHEMA, notification_path, "notification_id", "Notification"
+    rows = []
     for path, value in snapshot.files.items():
         if not path.startswith(prefix) or not path.endswith(".json"):
             continue
         if not isinstance(value, dict):
-            raise StoreInvariantError("Decision record must be an object")
+            raise StoreInvariantError(f"{label} record must be an object")
         record = dict(value)
-        _validate_record(record, DECISION_SCHEMA, "Decision")
-        if decision_path(str(record["decision_id"])) != path:
-            raise StoreInvariantError("Decision path/id binding mismatch")
-        rows.append(record)
-    return rows
-
-
-def _notification_records(snapshot: StoreSnapshot) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    prefix = f"{STORE_ROOT}/notifications/"
-    for path, value in snapshot.files.items():
-        if not path.startswith(prefix) or not path.endswith(".json"):
-            continue
-        if not isinstance(value, dict):
-            raise StoreInvariantError("Notification record must be an object")
-        record = dict(value)
-        _validate_record(record, NOTIFICATION_SCHEMA, "Notification")
-        if notification_path(str(record["notification_id"])) != path:
-            raise StoreInvariantError("Notification path/id binding mismatch")
+        _validate(record, schema, label)
+        if path_fn(str(record[id_key])) != path:
+            raise StoreInvariantError(f"{label} path/id binding mismatch")
         rows.append(record)
     return rows
 
 
 def rebuild_decision(snapshot: StoreSnapshot, decision_id: str) -> dict[str, Any]:
     record = _immutable(snapshot, decision_path(decision_id), "Decision")
-    _validate_record(record, DECISION_SCHEMA, "Decision")
+    _validate(record, DECISION_SCHEMA, "Decision")
     if record.get("decision_id") != decision_id:
         raise StoreInvariantError("Decision id binding mismatch")
     state = "PENDING"
-    response: dict[str, Any] | None = None
-    consumed: dict[str, Any] | None = None
+    response = None
+    consumed = None
     requested_seen = False
     for event in operation_events(snapshot, str(record["operation_id"])):
         payload = event.get("payload") or {}
@@ -162,16 +146,21 @@ def rebuild_decision(snapshot: StoreSnapshot, decision_id: str) -> dict[str, Any
             }
     if not requested_seen:
         raise StoreInvariantError("Decision record lacks durable request fact")
+    projection = rebuild_projection(snapshot, str(record["operation_id"]))
+    if state == "PENDING" and (
+        projection["generation"] != int(record["operation_generation"]) or projection["status"] == "CANCELLED"
+    ):
+        state = "SUPERSEDED"
     return {**record, "status": state, "response": response, "authorization_consumed": consumed}
 
 
 def rebuild_notification(snapshot: StoreSnapshot, notification_id: str) -> dict[str, Any]:
     record = _immutable(snapshot, notification_path(notification_id), "Notification")
-    _validate_record(record, NOTIFICATION_SCHEMA, "Notification")
+    _validate(record, NOTIFICATION_SCHEMA, "Notification")
     if record.get("notification_id") != notification_id:
         raise StoreInvariantError("Notification id binding mismatch")
     created_seen = False
-    ack: dict[str, Any] | None = None
+    ack = None
     for event in operation_events(snapshot, str(record["operation_id"])):
         payload = event.get("payload") or {}
         if payload.get("notification_id") != notification_id:
@@ -194,7 +183,7 @@ def rebuild_notification(snapshot: StoreSnapshot, notification_id: str) -> dict[
     return {**record, "status": "ACKNOWLEDGED" if ack else "UNREAD", "acknowledgement": ack}
 
 
-def _verify_feature_binding(record: dict[str, Any], feature: FeatureSnapshot) -> None:
+def _verify_feature(record: dict[str, Any], feature: FeatureSnapshot) -> None:
     if not isinstance(feature, FeatureSnapshot):
         raise StoreCommandError("STALE_REVISION", "fresh trusted Feature truth is required")
     if normalize_repository(feature.repository) != normalize_repository(str(record["target_repository"])):
@@ -207,9 +196,10 @@ def _verify_feature_binding(record: dict[str, Any], feature: FeatureSnapshot) ->
         raise StoreCommandError("STALE_REVISION", "Decision candidate head changed")
 
 
-def _verify_policy_binding(record: dict[str, Any], policy: VerifiedDecisionPolicy) -> None:
+def _verify_policy(record: dict[str, Any], policy: VerifiedDecisionPolicy) -> None:
     if (
-        record.get("trusted_policy_ref") != policy.policy_ref
+        record.get("decision_type") != policy.decision_type
+        or record.get("trusted_policy_ref") != policy.policy_ref
         or record.get("trusted_policy_epoch") != policy.policy_epoch
         or record.get("trusted_policy_digest") != policy.policy_digest
         or tuple(sorted(record.get("allowed_choices", []))) != tuple(sorted(policy.allowed_choices))
@@ -218,25 +208,24 @@ def _verify_policy_binding(record: dict[str, Any], policy: VerifiedDecisionPolic
         raise StoreCommandError("POLICY_DENIED", "current protected Decision policy no longer matches Decision authority")
 
 
+def _same_notification(existing: dict[str, Any], proposed: dict[str, Any]) -> bool:
+    replay = dict(proposed)
+    replay["created_at"] = existing.get("created_at")
+    return existing == replay
+
+
 def _notification_record(
-    *,
-    projection: dict[str, Any],
-    notification_type: str,
-    semantic_key: str,
-    created_at: str,
-    trusted_context_digest: str,
-    decision_id: str | None = None,
-    summary: str = "",
+    projection: dict[str, Any], *, notification_type: str, semantic_key: str, created_at: str,
+    trusted_context_digest: str, decision_id: str | None = None, summary: str = "",
 ) -> dict[str, Any]:
     if notification_type not in NOTIFICATION_TYPES:
         raise StoreCommandError("INVALID_REQUEST", "unsupported Notification type")
-    material = {
+    notification_id = notification_id_for({
         "notification_type": notification_type,
         "operation_id": projection["operation_id"],
         "operation_generation": projection["generation"],
         "semantic_key": semantic_key,
-    }
-    notification_id = notification_id_for(material)
+    })
     record = {
         "schema_version": NOTIFICATION_SCHEMA_VERSION,
         "notification_id": notification_id,
@@ -251,160 +240,102 @@ def _notification_record(
         "created_at": created_at,
         "trusted_context_digest": trusted_context_digest,
     }
-    _validate_record(record, NOTIFICATION_SCHEMA, "Notification")
+    _validate(record, NOTIFICATION_SCHEMA, "Notification")
     return record
 
 
 def _add_notification(
-    original: StoreSnapshot,
-    working: StoreSnapshot,
-    mutations: list[StoreMutation],
-    *,
-    projection: dict[str, Any],
-    notification_type: str,
-    semantic_key: str,
-    created_at: str,
-    trusted_context_digest: str,
-    decision_id: str | None = None,
-    summary: str = "",
+    original: StoreSnapshot, working: StoreSnapshot, mutations: list[StoreMutation], *, projection: dict[str, Any],
+    notification_type: str, semantic_key: str, created_at: str, trusted_context_digest: str,
+    decision_id: str | None = None, summary: str = "",
 ) -> tuple[StoreSnapshot, dict[str, Any]]:
     record = _notification_record(
-        projection=projection,
-        notification_type=notification_type,
-        semantic_key=semantic_key,
-        created_at=created_at,
-        trusted_context_digest=trusted_context_digest,
-        decision_id=decision_id,
-        summary=summary,
+        projection, notification_type=notification_type, semantic_key=semantic_key, created_at=created_at,
+        trusted_context_digest=trusted_context_digest, decision_id=decision_id, summary=summary,
     )
     path = notification_path(record["notification_id"])
     existing = working.get(path)
     if existing is not None:
-        if not isinstance(existing, dict):
-            raise StoreCommandError("ALREADY_APPLIED", "Notification semantic identity conflicts with existing record")
-        replay_record = dict(record)
-        replay_record["created_at"] = existing.get("created_at")
-        if existing != replay_record:
+        if not isinstance(existing, dict) or not _same_notification(existing, record):
             raise StoreCommandError("ALREADY_APPLIED", "Notification semantic identity conflicts with existing record")
         return working, rebuild_notification(working, record["notification_id"])
     mutation = StoreMutation("create_immutable", path, record)
     mutations.append(mutation)
     working = apply_plan_to_snapshot(working, StoreMutationPlan(original.ref_sha, (mutation,), {}))
     working, event = _append_event(
-        working,
-        operation_id=projection["operation_id"],
-        generation=projection["generation"],
-        event_type="notification.created",
-        occurred_at=created_at,
+        working, operation_id=projection["operation_id"], generation=projection["generation"],
+        event_type="notification.created", occurred_at=created_at,
         payload={"notification_id": record["notification_id"], "notification_type": notification_type, "semantic_key": semantic_key},
-        trusted_context_digest=trusted_context_digest,
-        identity_material={"notification_id": record["notification_id"]},
+        trusted_context_digest=trusted_context_digest, identity_material={"notification_id": record["notification_id"]},
     )
     mutations.append(event)
     return working, {**record, "status": "UNREAD", "acknowledgement": None}
 
 
 def plan_decision_request(
-    snapshot: StoreSnapshot,
-    *,
-    feature: FeatureSnapshot,
-    operation_id: str,
-    generation: int,
-    decision_type: str,
-    request_key: str,
-    policy: VerifiedDecisionPolicy,
-    requested_by: str,
-    occurred_at: str,
-    trusted_context_digest: str,
-    summary: str = "",
+    snapshot: StoreSnapshot, *, feature: FeatureSnapshot, operation_id: str, generation: int, decision_type: str,
+    request_key: str, policy: VerifiedDecisionPolicy, requested_by: str, occurred_at: str,
+    trusted_context_digest: str, summary: str = "",
 ) -> StoreMutationPlan:
     projection = rebuild_projection(snapshot, operation_id)
     if projection["generation"] != generation:
         raise StoreCommandError("SUPERSEDED_GENERATION", "Decision request generation is stale")
     if projection["status"] in {"DONE", "CANCELLED"}:
         raise StoreCommandError("CANCELLED_OPERATION", "terminal Operation cannot request a Decision")
+    if (
+        normalize_repository(str(projection["target_repository"])) != normalize_repository(feature.repository)
+        or projection["feature_id"] != feature.feature_id
+        or projection["expected_feature_revision"] != feature.revision
+    ):
+        raise StoreCommandError("STALE_REVISION", "Decision request Feature/Operation binding mismatch")
+    if policy.decision_type != decision_type:
+        raise StoreCommandError("POLICY_DENIED", "Decision policy type does not match requested Decision")
     seed = {
-        "target_repository": normalize_repository(feature.repository),
-        "feature_id": feature.feature_id,
-        "operation_id": operation_id,
-        "operation_generation": generation,
-        "expected_revision": feature.revision,
-        "target_ref": feature.target_ref,
-        "candidate_head_sha": feature.candidate_head_sha,
-        "decision_type": decision_type,
-        "request_key": request_key,
-        "policy_digest": policy.policy_digest,
+        "target_repository": normalize_repository(feature.repository), "feature_id": feature.feature_id,
+        "operation_id": operation_id, "operation_generation": generation, "expected_revision": feature.revision,
+        "target_ref": feature.target_ref, "candidate_head_sha": feature.candidate_head_sha,
+        "decision_type": decision_type, "request_key": request_key, "policy_digest": policy.policy_digest,
     }
     decision_id = decision_id_for(seed)
     requested_at = _parse_time(occurred_at)
-    expires_at = requested_at + timedelta(seconds=policy.ttl_seconds)
     record = {
-        "schema_version": DECISION_SCHEMA_VERSION,
-        "decision_id": decision_id,
-        "decision_type": decision_type,
-        "target_repository": normalize_repository(feature.repository),
-        "feature_id": feature.feature_id,
-        "operation_id": operation_id,
-        "operation_generation": generation,
-        "expected_revision": feature.revision,
-        "target_ref": feature.target_ref,
-        "candidate_head_sha": feature.candidate_head_sha,
-        "allowed_choices": list(policy.allowed_choices),
-        "choice_actions": dict(policy.choice_actions),
-        "trusted_policy_ref": policy.policy_ref,
-        "trusted_policy_epoch": policy.policy_epoch,
-        "trusted_policy_digest": policy.policy_digest,
-        "requested_by": requested_by,
+        "schema_version": DECISION_SCHEMA_VERSION, "decision_id": decision_id, "decision_type": decision_type,
+        "target_repository": normalize_repository(feature.repository), "feature_id": feature.feature_id,
+        "operation_id": operation_id, "operation_generation": generation, "expected_revision": feature.revision,
+        "target_ref": feature.target_ref, "candidate_head_sha": feature.candidate_head_sha,
+        "allowed_choices": list(policy.allowed_choices), "choice_actions": dict(policy.choice_actions),
+        "trusted_policy_ref": policy.policy_ref, "trusted_policy_epoch": policy.policy_epoch,
+        "trusted_policy_digest": policy.policy_digest, "requested_by": requested_by,
         "requested_at": _format_time(requested_at),
-        "expires_at": _format_time(expires_at),
+        "expires_at": _format_time(requested_at + timedelta(seconds=policy.ttl_seconds)),
         "trusted_context_digest": trusted_context_digest,
     }
-    _validate_record(record, DECISION_SCHEMA, "Decision")
+    _validate(record, DECISION_SCHEMA, "Decision")
     existing = snapshot.get(decision_path(decision_id))
     if existing is not None:
         if existing != record:
             raise StoreCommandError("ALREADY_APPLIED", "Decision semantic identity conflicts with existing record")
         return StoreMutationPlan(snapshot.ref_sha, tuple(), rebuild_decision(snapshot, decision_id))
-    mutations: list[StoreMutation] = [StoreMutation("create_immutable", decision_path(decision_id), record)]
+    mutations = [StoreMutation("create_immutable", decision_path(decision_id), record)]
     working = apply_plan_to_snapshot(snapshot, StoreMutationPlan(snapshot.ref_sha, tuple(mutations), {}))
-    working, requested = _append_event(
-        working,
-        operation_id=operation_id,
-        generation=generation,
-        event_type="decision.requested",
-        occurred_at=occurred_at,
-        payload={"decision_id": decision_id, "decision_type": decision_type},
-        trusted_context_digest=trusted_context_digest,
+    working, event = _append_event(
+        working, operation_id=operation_id, generation=generation, event_type="decision.requested", occurred_at=occurred_at,
+        payload={"decision_id": decision_id, "decision_type": decision_type}, trusted_context_digest=trusted_context_digest,
         identity_material={"decision_id": decision_id},
     )
-    mutations.append(requested)
-    projection_after_request = rebuild_projection(working, operation_id)
+    mutations.append(event)
     working, notification = _add_notification(
-        snapshot,
-        working,
-        mutations,
-        projection=projection_after_request,
-        notification_type="decision.requested",
-        semantic_key=f"decision.requested:{decision_id}",
-        created_at=occurred_at,
-        trusted_context_digest=trusted_context_digest,
-        decision_id=decision_id,
-        summary=summary,
+        snapshot, working, mutations, projection=rebuild_projection(working, operation_id),
+        notification_type="decision.requested", semantic_key=f"decision.requested:{decision_id}", created_at=occurred_at,
+        trusted_context_digest=trusted_context_digest, decision_id=decision_id, summary=summary,
     )
     return _finalize(snapshot, working, mutations, operation_id, {**record, "status": "PENDING", "notification_id": notification["notification_id"]})
 
 
 def plan_decision_response(
-    snapshot: StoreSnapshot,
-    *,
-    decision_id: str,
-    selected_choice: str,
-    responder_identity: str,
-    responder_client: str,
-    occurred_at: str,
-    trusted_feature: FeatureSnapshot,
-    current_policy: VerifiedDecisionPolicy,
-    trusted_context_digest: str,
+    snapshot: StoreSnapshot, *, decision_id: str, selected_choice: str, responder_identity: str,
+    responder_client: str, occurred_at: str, trusted_feature: FeatureSnapshot,
+    current_policy: VerifiedDecisionPolicy, trusted_context_digest: str,
 ) -> StoreMutationPlan:
     view = rebuild_decision(snapshot, decision_id)
     if view["status"] == "RESOLVED":
@@ -414,8 +345,8 @@ def plan_decision_response(
         raise StoreCommandError("ALREADY_APPLIED", "Decision is already resolved with different semantics")
     if view["status"] in {"EXPIRED", "SUPERSEDED"}:
         raise StoreCommandError("POLICY_DENIED", "Decision is no longer current authority")
-    _verify_feature_binding(view, trusted_feature)
-    _verify_policy_binding(view, current_policy)
+    _verify_feature(view, trusted_feature)
+    _verify_policy(view, current_policy)
     projection = rebuild_projection(snapshot, str(view["operation_id"]))
     if projection["generation"] != int(view["operation_generation"]):
         raise StoreCommandError("SUPERSEDED_GENERATION", "Decision Operation generation is stale")
@@ -427,88 +358,50 @@ def plan_decision_response(
         raise StoreCommandError("POLICY_DENIED", "Decision has expired")
     action = current_policy.action_for(selected_choice)
     working, event = _append_event(
-        snapshot,
-        operation_id=str(view["operation_id"]),
-        generation=int(view["operation_generation"]),
-        event_type="decision.responded",
-        occurred_at=occurred_at,
-        payload={
-            "decision_id": decision_id,
-            "responded_by_user": responder_identity,
-            "responded_via_client": responder_client,
-            "responded_at": occurred_at,
-            "selected_choice": selected_choice,
-            "authorized_action": action,
-        },
+        snapshot, operation_id=str(view["operation_id"]), generation=int(view["operation_generation"]),
+        event_type="decision.responded", occurred_at=occurred_at,
+        payload={"decision_id": decision_id, "responded_by_user": responder_identity,
+                 "responded_via_client": responder_client, "responded_at": occurred_at,
+                 "selected_choice": selected_choice, "authorized_action": action},
         trusted_context_digest=trusted_context_digest,
         identity_material={"decision_id": decision_id, "selected_choice": selected_choice},
     )
     return _finalize(snapshot, working, [event], str(view["operation_id"]), {"decision_id": decision_id, "status": "RESOLVED"})
 
 
-def plan_decision_expiry(
-    snapshot: StoreSnapshot,
-    *,
-    decision_id: str,
-    occurred_at: str,
-    trusted_context_digest: str,
-) -> StoreMutationPlan:
+def plan_decision_expiry(snapshot: StoreSnapshot, *, decision_id: str, occurred_at: str, trusted_context_digest: str) -> StoreMutationPlan:
     view = rebuild_decision(snapshot, decision_id)
-    if view["status"] == "EXPIRED":
-        return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": "EXPIRED"})
     if view["status"] != "PENDING":
         return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": view["status"]})
     if _parse_time(occurred_at) < _parse_time(str(view["expires_at"])):
         return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": "PENDING"})
     working, event = _append_event(
-        snapshot,
-        operation_id=str(view["operation_id"]),
-        generation=int(view["operation_generation"]),
-        event_type="decision.expired",
-        occurred_at=occurred_at,
-        payload={"decision_id": decision_id, "expired_at": occurred_at},
-        trusted_context_digest=trusted_context_digest,
+        snapshot, operation_id=str(view["operation_id"]), generation=int(view["operation_generation"]),
+        event_type="decision.expired", occurred_at=occurred_at,
+        payload={"decision_id": decision_id, "expired_at": occurred_at}, trusted_context_digest=trusted_context_digest,
         identity_material={"decision_id": decision_id},
     )
     return _finalize(snapshot, working, [event], str(view["operation_id"]), {"decision_id": decision_id, "status": "EXPIRED"})
 
 
-def plan_decision_supersede(
-    snapshot: StoreSnapshot,
-    *,
-    decision_id: str,
-    reason: str,
-    occurred_at: str,
-    trusted_context_digest: str,
-) -> StoreMutationPlan:
+def plan_decision_supersede(snapshot: StoreSnapshot, *, decision_id: str, reason: str, occurred_at: str, trusted_context_digest: str) -> StoreMutationPlan:
     view = rebuild_decision(snapshot, decision_id)
     if view["status"] == "SUPERSEDED":
         return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": "SUPERSEDED"})
     if view["status"] != "PENDING":
         raise StoreCommandError("ALREADY_APPLIED", "only a pending Decision may be superseded")
     working, event = _append_event(
-        snapshot,
-        operation_id=str(view["operation_id"]),
-        generation=int(view["operation_generation"]),
-        event_type="decision.superseded",
-        occurred_at=occurred_at,
-        payload={"decision_id": decision_id, "reason": reason[:512]},
-        trusted_context_digest=trusted_context_digest,
+        snapshot, operation_id=str(view["operation_id"]), generation=int(view["operation_generation"]),
+        event_type="decision.superseded", occurred_at=occurred_at,
+        payload={"decision_id": decision_id, "reason": reason[:512]}, trusted_context_digest=trusted_context_digest,
         identity_material={"decision_id": decision_id},
     )
     return _finalize(snapshot, working, [event], str(view["operation_id"]), {"decision_id": decision_id, "status": "SUPERSEDED"})
 
 
 def plan_consume_decision_authorization(
-    snapshot: StoreSnapshot,
-    *,
-    decision_id: str,
-    expected_action: str,
-    consumer_identity: str,
-    occurred_at: str,
-    trusted_feature: FeatureSnapshot,
-    current_policy: VerifiedDecisionPolicy,
-    trusted_context_digest: str,
+    snapshot: StoreSnapshot, *, decision_id: str, expected_action: str, consumer_identity: str, occurred_at: str,
+    trusted_feature: FeatureSnapshot, current_policy: VerifiedDecisionPolicy, trusted_context_digest: str,
 ) -> StoreMutationPlan:
     view = rebuild_decision(snapshot, decision_id)
     if view["status"] != "RESOLVED" or not view.get("response"):
@@ -518,39 +411,28 @@ def plan_consume_decision_authorization(
         if consumed.get("action") == expected_action:
             return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": "CONSUMED"})
         raise StoreCommandError("ALREADY_APPLIED", "Decision authorization was consumed for another action")
-    _verify_feature_binding(view, trusted_feature)
-    _verify_policy_binding(view, current_policy)
+    _verify_feature(view, trusted_feature)
+    _verify_policy(view, current_policy)
     if _parse_time(occurred_at) >= _parse_time(str(view["expires_at"])):
         raise StoreCommandError("POLICY_DENIED", "expired Decision cannot authorize later work")
-    selected = str(view["response"]["selected_choice"])
-    action = current_policy.action_for(selected)
+    action = current_policy.action_for(str(view["response"]["selected_choice"]))
     if action != expected_action:
         raise StoreCommandError("POLICY_DENIED", "Decision does not authorize the requested bounded action")
     projection = rebuild_projection(snapshot, str(view["operation_id"]))
     if projection["status"] == "CANCELLED":
         raise StoreCommandError("CANCELLED_OPERATION", "cancelled Operation rejects Decision authorization consumption")
     working, event = _append_event(
-        snapshot,
-        operation_id=str(view["operation_id"]),
-        generation=int(view["operation_generation"]),
-        event_type="decision.authorization-consumed",
-        occurred_at=occurred_at,
+        snapshot, operation_id=str(view["operation_id"]), generation=int(view["operation_generation"]),
+        event_type="decision.authorization-consumed", occurred_at=occurred_at,
         payload={"decision_id": decision_id, "action": action, "consumer": consumer_identity, "consumed_at": occurred_at},
-        trusted_context_digest=trusted_context_digest,
-        identity_material={"decision_id": decision_id, "action": action},
+        trusted_context_digest=trusted_context_digest, identity_material={"decision_id": decision_id, "action": action},
     )
     return _finalize(snapshot, working, [event], str(view["operation_id"]), {"decision_id": decision_id, "status": "CONSUMED"})
 
 
 def plan_notification_for_operation(
-    snapshot: StoreSnapshot,
-    *,
-    operation_id: str,
-    notification_type: str,
-    trigger_identity: str,
-    occurred_at: str,
-    trusted_context_digest: str,
-    summary: str = "",
+    snapshot: StoreSnapshot, *, operation_id: str, notification_type: str, trigger_identity: str,
+    occurred_at: str, trusted_context_digest: str, summary: str = "",
 ) -> StoreMutationPlan:
     projection = rebuild_projection(snapshot, operation_id)
     required_status = {"operation.blocked": "BLOCKED", "operation.completed": "DONE"}.get(notification_type)
@@ -558,34 +440,20 @@ def plan_notification_for_operation(
         raise StoreCommandError("INVALID_REQUEST", "Operation state does not match requested Notification trigger")
     mutations: list[StoreMutation] = []
     working, notification = _add_notification(
-        snapshot,
-        snapshot,
-        mutations,
-        projection=projection,
-        notification_type=notification_type,
-        semantic_key=f"{notification_type}:{trigger_identity}",
-        created_at=occurred_at,
-        trusted_context_digest=trusted_context_digest,
-        summary=summary,
+        snapshot, snapshot, mutations, projection=projection, notification_type=notification_type,
+        semantic_key=f"{notification_type}:{trigger_identity}", created_at=occurred_at,
+        trusted_context_digest=trusted_context_digest, summary=summary,
     )
-    if not mutations:
-        return StoreMutationPlan(snapshot.ref_sha, tuple(), notification)
-    return _finalize(snapshot, working, mutations, operation_id, notification)
+    return StoreMutationPlan(snapshot.ref_sha, tuple(), notification) if not mutations else _finalize(snapshot, working, mutations, operation_id, notification)
 
 
 def plan_authorization_expiring_notification(
-    snapshot: StoreSnapshot,
-    *,
-    decision_id: str,
-    occurred_at: str,
-    warning_seconds: int,
-    trusted_context_digest: str,
+    snapshot: StoreSnapshot, *, decision_id: str, occurred_at: str, warning_seconds: int, trusted_context_digest: str,
 ) -> StoreMutationPlan:
     view = rebuild_decision(snapshot, decision_id)
     if view["status"] != "PENDING":
         return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": view["status"]})
-    now = _parse_time(occurred_at)
-    expires = _parse_time(str(view["expires_at"]))
+    now, expires = _parse_time(occurred_at), _parse_time(str(view["expires_at"]))
     if now >= expires:
         raise StoreCommandError("POLICY_DENIED", "expired Decision must be materialized before warning")
     if now < expires - timedelta(seconds=warning_seconds):
@@ -593,30 +461,17 @@ def plan_authorization_expiring_notification(
     projection = rebuild_projection(snapshot, str(view["operation_id"]))
     mutations: list[StoreMutation] = []
     working, notification = _add_notification(
-        snapshot,
-        snapshot,
-        mutations,
-        projection=projection,
-        notification_type="authorization.expiring",
-        semantic_key=f"authorization.expiring:{decision_id}:{view['expires_at']}",
-        created_at=occurred_at,
-        trusted_context_digest=trusted_context_digest,
-        decision_id=decision_id,
+        snapshot, snapshot, mutations, projection=projection, notification_type="authorization.expiring",
+        semantic_key=f"authorization.expiring:{decision_id}:{view['expires_at']}", created_at=occurred_at,
+        trusted_context_digest=trusted_context_digest, decision_id=decision_id,
         summary="Decision authorization is approaching expiry",
     )
-    if not mutations:
-        return StoreMutationPlan(snapshot.ref_sha, tuple(), notification)
-    return _finalize(snapshot, working, mutations, str(view["operation_id"]), notification)
+    return StoreMutationPlan(snapshot.ref_sha, tuple(), notification) if not mutations else _finalize(snapshot, working, mutations, str(view["operation_id"]), notification)
 
 
 def plan_notification_ack(
-    snapshot: StoreSnapshot,
-    *,
-    notification_id: str,
-    acknowledged_by: str,
-    acknowledged_via_client: str,
-    occurred_at: str,
-    trusted_context_digest: str,
+    snapshot: StoreSnapshot, *, notification_id: str, acknowledged_by: str, acknowledged_via_client: str,
+    occurred_at: str, trusted_context_digest: str,
 ) -> StoreMutationPlan:
     view = rebuild_notification(snapshot, notification_id)
     if view["status"] == "ACKNOWLEDGED":
@@ -625,17 +480,10 @@ def plan_notification_ack(
             return StoreMutationPlan(snapshot.ref_sha, tuple(), {"notification_id": notification_id, "status": "ACKNOWLEDGED"})
         raise StoreCommandError("ALREADY_APPLIED", "Notification was acknowledged by another trusted identity")
     working, event = _append_event(
-        snapshot,
-        operation_id=str(view["operation_id"]),
-        generation=int(view["operation_generation"]),
-        event_type="notification.acknowledged",
-        occurred_at=occurred_at,
-        payload={
-            "notification_id": notification_id,
-            "acknowledged_by": acknowledged_by,
-            "acknowledged_via_client": acknowledged_via_client,
-            "acknowledged_at": occurred_at,
-        },
+        snapshot, operation_id=str(view["operation_id"]), generation=int(view["operation_generation"]),
+        event_type="notification.acknowledged", occurred_at=occurred_at,
+        payload={"notification_id": notification_id, "acknowledged_by": acknowledged_by,
+                 "acknowledged_via_client": acknowledged_via_client, "acknowledged_at": occurred_at},
         trusted_context_digest=trusted_context_digest,
         identity_material={"notification_id": notification_id, "acknowledged_by": acknowledged_by},
     )
@@ -643,15 +491,11 @@ def plan_notification_ack(
 
 
 def list_decisions(
-    snapshot: StoreSnapshot,
-    *,
-    repositories: set[str],
-    feature_ids: set[str] | None = None,
-    pending_only: bool = False,
+    snapshot: StoreSnapshot, *, repositories: set[str], feature_ids: set[str] | None = None, pending_only: bool = False,
 ) -> list[dict[str, Any]]:
     normalized = {normalize_repository(value) for value in repositories}
     rows = []
-    for record in _decision_records(snapshot):
+    for record in _record_rows(snapshot, "decision"):
         if normalize_repository(str(record["target_repository"])) not in normalized:
             continue
         if feature_ids is not None and record["feature_id"] not in feature_ids:
@@ -665,15 +509,11 @@ def list_decisions(
 
 
 def list_notifications(
-    snapshot: StoreSnapshot,
-    *,
-    repositories: set[str],
-    feature_ids: set[str] | None = None,
-    unread_only: bool = False,
+    snapshot: StoreSnapshot, *, repositories: set[str], feature_ids: set[str] | None = None, unread_only: bool = False,
 ) -> list[dict[str, Any]]:
     normalized = {normalize_repository(value) for value in repositories}
     rows = []
-    for record in _notification_records(snapshot):
+    for record in _record_rows(snapshot, "notification"):
         if normalize_repository(str(record["target_repository"])) not in normalized:
             continue
         if feature_ids is not None and record["feature_id"] not in feature_ids:
@@ -686,12 +526,7 @@ def list_notifications(
     return rows
 
 
-def build_operator_inbox(
-    snapshot: StoreSnapshot,
-    *,
-    repositories: set[str],
-    feature_ids: set[str] | None = None,
-) -> dict[str, Any]:
+def build_operator_inbox(snapshot: StoreSnapshot, *, repositories: set[str], feature_ids: set[str] | None = None) -> dict[str, Any]:
     normalized = {normalize_repository(value) for value in repositories}
     operations = []
     for repository in sorted(normalized):
