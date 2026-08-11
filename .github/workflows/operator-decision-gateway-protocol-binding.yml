@@ -7,16 +7,20 @@ on:
     paths:
       - '.github/workflows/operator-decision-gateway-protocol-binding.yml'
       - 'scripts/operator_decision_backends.py'
+      - 'scripts/operator_decision_feature_truth.py'
       - 'scripts/operator_decision_feature_gateway_adapter.py'
       - 'scripts/validate_operator_decision_gateway_protocol.py'
+      - 'scripts/validate_operator_decision_feature_truth.py'
   pull_request:
     branches:
       - main
     paths:
       - '.github/workflows/operator-decision-gateway-protocol-binding.yml'
       - 'scripts/operator_decision_backends.py'
+      - 'scripts/operator_decision_feature_truth.py'
       - 'scripts/operator_decision_feature_gateway_adapter.py'
       - 'scripts/validate_operator_decision_gateway_protocol.py'
+      - 'scripts/validate_operator_decision_feature_truth.py'
 
 permissions:
   contents: read
@@ -32,5 +36,7 @@ jobs:
           python-version: '3.12'
       - name: Install validation dependencies
         run: pip install -r requirements-dev.txt
-      - name: Validate actual DecisionCoordinator gateway call binding
+      - name: Validate accepted Decision response gateway contract
         run: python scripts/validate_operator_decision_gateway_protocol.py
+      - name: Validate durable Decision Feature truth adapter
+        run: python scripts/validate_operator_decision_feature_truth.py
