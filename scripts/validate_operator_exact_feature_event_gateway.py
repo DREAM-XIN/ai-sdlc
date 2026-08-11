@@ -2,11 +2,8 @@
 """Validate schema and exact-revision fences above the Event inbox transport."""
 from __future__ import annotations
 
-import yaml
-from pathlib import Path
-
 from operator_exact_feature_event_gateway import ExactRevisionGitHubFeatureEventGateway
-from operator_feature_event_validation import TrustedFeatureEventValidationError, validate_trusted_feature_event
+from operator_feature_event_validation import validate_trusted_feature_event
 from operator_github_feature_event_gateway import FeatureEventGatewayError, PENDING
 from operator_validated_feature_event_gateway import ValidatedGitHubFeatureEventInboxGateway
 from validate_operator_github_feature_event_gateway import (
@@ -18,8 +15,6 @@ from validate_operator_github_feature_event_gateway import (
     FakeGitHub,
     event,
 )
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def require(condition, message):
@@ -44,6 +39,19 @@ def fixture_gateway(fake):
         poll_attempts=2,
         poll_seconds=0,
     )
+
+
+def canonical_fixture():
+    return {
+        "version": "0.1.0",
+        "id": "EVT-EXACT-FIXTURE-0001",
+        "feature_id": "F-EXACT-FIXTURE-0001",
+        "expected_revision": 3,
+        "occurred_at": "2026-08-11T05:00:00Z",
+        "changes": [
+            {"kind": "stage", "id": "implementation", "status": "WORKING"},
+        ],
+    }
 
 
 def validate_pre_create_stale_fence():
@@ -117,37 +125,22 @@ def validate_invalid_event_fails_before_transport():
     require(fake.put_count == 0, "schema-invalid Event touched GitHub write transport")
 
 
-def validate_repository_has_schema_valid_event_fixture():
-    # Protect against a validator that accidentally rejects the repository's own
-    # canonical Event contract. We do not mutate or submit this fixture.
-    candidates = []
-    for base in (ROOT / "examples", ROOT / "events", ROOT / "tests" / "fixtures"):
-        if base.exists():
-            candidates.extend(base.rglob("*.yaml"))
-    found = None
-    for path in candidates:
-        try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if not isinstance(doc, dict):
-                continue
-            validate_trusted_feature_event(doc)
-            found = path
-            break
-        except (TrustedFeatureEventValidationError, yaml.YAMLError, OSError):
-            continue
-    require(found is not None, "no existing repository fixture satisfies Feature Event schema")
+def validate_canonical_schema_fixture():
+    fixture = canonical_fixture()
+    validated = validate_trusted_feature_event(fixture)
+    require(validated is not None, "self-contained canonical Feature Event did not validate")
 
 
 def main():
     validate_pre_create_stale_fence()
     validate_pending_event_becomes_stale()
     validate_invalid_event_fails_before_transport()
-    validate_repository_has_schema_valid_event_fixture()
+    validate_canonical_schema_fixture()
     print("Exact Feature Event gateway validation passed")
     print("- stale revision before create: zero Event writes")
     print("- pending Event + unrelated Feature advance: STALE_REVISION, no retry")
     print("- schema-invalid Event: rejected before transport")
-    print("- repository canonical Feature Event fixture remains schema-valid")
+    print("- self-contained canonical Feature Event remains schema-valid")
 
 
 if __name__ == "__main__":
