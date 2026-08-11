@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-EFFECT-LINEAGE-0001-DESIGN-REVIEW-START
+feature_id: F-OPERATOR-EFFECT-LINEAGE-0001
+expected_revision: 6
+occurred_at: '2026-08-10T13:44:00Z'
+changes:
+  - kind: stage
+    id: design-review
+    status: WORKING

@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-START-2
+feature_id: F-OPERATOR-EFFECT-LINEAGE-0001
+expected_revision: 17
+occurred_at: '2026-08-10T15:37:00Z'
+changes:
+  - kind: task
+    id: F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-2
+    status: WORKING

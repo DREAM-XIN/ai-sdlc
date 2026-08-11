@@ -112,7 +112,10 @@ def feature_claim_path(target_repository: str, feature_id: str, claim_id: str) -
 
 
 def is_projection_path(path: str) -> bool:
-    return path.startswith(f"{STORE_ROOT}/projections/") and path.endswith(".json")
+    return (
+        path.startswith(f"{STORE_ROOT}/projections/")
+        or path.startswith(f"{STORE_ROOT}/effect-lineages/projections/")
+    ) and path.endswith(".json")
 
 
 def is_immutable_path(path: str) -> bool:
@@ -122,6 +125,11 @@ def is_immutable_path(path: str) -> bool:
             f"{STORE_ROOT}/reservations/external/",
             f"{STORE_ROOT}/claims/dispatch/",
             f"{STORE_ROOT}/claims/feature/",
+            f"{STORE_ROOT}/effect-lineages/anchors/",
+            f"{STORE_ROOT}/effect-lineages/members/",
+            f"{STORE_ROOT}/effect-lineages/proposals/",
+            f"{STORE_ROOT}/effect-lineages/events/",
+            f"{STORE_ROOT}/effect-lineages/resolutions/",
         )
     ) and path.endswith(".json") and not is_projection_path(path)
 
@@ -249,6 +257,7 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
     expected_revision = None
     authorized_dispatches: set[str] = set()
     unresolved_unknown: set[str] = set()
+    lineage_blocks: set[str] = set()
     requested_persists: set[str] = set()
     linearized_persists: set[str] = set()
     confirmed_persists: set[str] = set()
@@ -276,7 +285,7 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
             if event_generation <= generation:
                 raise StoreInvariantError("generation must increase")
             generation = event_generation
-            status = "BLOCKED" if unresolved_unknown else "RUNNING"
+            status = "BLOCKED" if (unresolved_unknown or lineage_blocks) else "RUNNING"
             continue
         if event_generation < generation or event_generation in superseded:
             raise StoreInvariantError("superseded generation attempted new operation fact")
@@ -305,11 +314,11 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
             elif lookup_state == "LAUNCHED":
                 unresolved_unknown.discard(key)
                 if status != "CANCELLED":
-                    status = "WAITING_EXTERNAL"
+                    status = "BLOCKED" if lineage_blocks else "WAITING_EXTERNAL"
             elif lookup_state == "NOT_LAUNCHED":
                 unresolved_unknown.discard(key)
                 if status != "CANCELLED":
-                    status = "RUNNING"
+                    status = "BLOCKED" if lineage_blocks else "RUNNING"
             else:
                 raise StoreInvariantError("invalid launch lookup state")
         elif event_type == "worker.callback.recorded":
@@ -321,8 +330,23 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
             if callback_id in callback_ids and callback_ids[callback_id] != callback_digest:
                 raise StoreInvariantError("conflicting callback history")
             callback_ids[callback_id] = callback_digest
-            if status not in TERMINAL_STATUSES and status != "NEEDS_USER" and not unresolved_unknown:
+            if status not in TERMINAL_STATUSES and status != "NEEDS_USER" and not unresolved_unknown and not lineage_blocks:
                 status = "RUNNING"
+        elif event_type == "effect.lineage.blocked":
+            lineage_id = str(payload.get("effect_lineage_id") or "")
+            if not lineage_id:
+                raise StoreInvariantError("lineage block lacks effect_lineage_id")
+            lineage_blocks.add(lineage_id)
+            status = "BLOCKED"
+        elif event_type == "effect.lineage.resolved":
+            lineage_id = str(payload.get("effect_lineage_id") or "")
+            if not lineage_id or lineage_id not in lineage_blocks:
+                raise StoreInvariantError("lineage resolution lacks current block")
+            lineage_blocks.discard(lineage_id)
+            external_key = payload.get("predecessor_external_dispatch_key")
+            if external_key:
+                unresolved_unknown.discard(str(external_key))
+            status = "BLOCKED" if (lineage_blocks or unresolved_unknown) else "RUNNING"
         elif event_type == "operation.blocked":
             status = "BLOCKED"
         elif event_type == "operation.needs-user":
@@ -379,6 +403,7 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
         "journal_digest": digest_json(events),
         "authorized_dispatches": sorted(authorized_dispatches),
         "unresolved_unknown": sorted(unresolved_unknown),
+        "lineage_blocks": sorted(lineage_blocks),
         "requested_persists": sorted(requested_persists),
         "linearized_persists": sorted(linearized_persists),
         "confirmed_persists": sorted(confirmed_persists),

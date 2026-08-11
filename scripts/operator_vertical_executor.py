@@ -14,11 +14,7 @@ from operator_store import (
     plan_operation_fact,
 )
 from operator_store_model import digest_json, projection_public, rebuild_projection
-from operator_vertical import (
-    FeatureSnapshot,
-    VERTICAL_PROFILE,
-    VerticalInvariantError,
-)
+from operator_vertical import FeatureSnapshot, VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_controller import VerticalAction, select_vertical_action
 from operator_vertical_store import (
     plan_vertical_done,
@@ -28,6 +24,9 @@ from operator_vertical_store import (
     plan_vertical_semantic_reservation,
     vertical_projection,
 )
+from operator_effect_lineage_integration import plan_lineage_gated_reservation
+from operator_effect_lineage_fences import plan_lineage_authorize_launch, plan_lineage_dispatch_claim
+from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
 
 
 class VerticalFeatureGateway(Protocol):
@@ -49,12 +48,26 @@ class TrustedVerticalExecutorConfig:
     target_ref: str
     trusted_context_digest: str
     max_auto_steps: int = 16
+    effect_lineage_required: bool = False
+    old_writers_quiesced: bool = False
+    rollout_policy_digest: str | None = None
+    writer_fence_receipt_digest: str | None = None
+    legacy_compatibility_mode: bool = False
 
     def __post_init__(self):
         if not self.target_ref or not self.trusted_context_digest:
             raise ValueError("trusted vertical executor config is incomplete")
         if self.max_auto_steps < 1 or self.max_auto_steps > 64:
             raise ValueError("invalid vertical auto-step bound")
+        if self.effect_lineage_required:
+            if self.legacy_compatibility_mode:
+                raise ValueError("legacy compatibility cannot coexist with lineage-required production writes")
+            if not self.old_writers_quiesced:
+                raise ValueError("lineage-required executor lacks verified old-writer quiescence")
+            if not self.rollout_policy_digest or not self.writer_fence_receipt_digest:
+                raise ValueError("lineage-required executor lacks verified rollout/fence proof digests")
+        elif not self.legacy_compatibility_mode:
+            raise ValueError("non-lineage vertical execution is allowed only in explicit test-only legacy compatibility mode")
 
 
 class TrustedVerticalExecutor:
@@ -66,12 +79,18 @@ class TrustedVerticalExecutor:
         persist_gateway: FeaturePersistGateway,
         dispatch_gateway: RoleDispatchGateway,
         config: TrustedVerticalExecutorConfig,
+        resolution_policy_verifier: ProtectedEffectResolutionPolicyVerifier | None = None,
     ):
+        if config.effect_lineage_required and not isinstance(
+            resolution_policy_verifier, ProtectedEffectResolutionPolicyVerifier
+        ):
+            raise ValueError("lineage-required vertical executor lacks current protected Effect Resolution policy verifier")
         self.runtime = runtime
         self.feature_gateway = feature_gateway
         self.persist_gateway = persist_gateway
         self.dispatch_gateway = dispatch_gateway
         self.config = config
+        self.resolution_policy_verifier = resolution_policy_verifier
 
     def _projection(self, operation_id: str):
         return vertical_projection(self.runtime.backend.read_snapshot(), operation_id)
@@ -156,12 +175,7 @@ class TrustedVerticalExecutor:
         self._commit(lambda snapshot: plan_vertical_persist_requested(snapshot, **common))
 
         fresh, _ = self.feature_gateway.read_feature(operation_id=operation_id)
-        self._assert_feature_fence(
-            operation_id,
-            fresh,
-            stage=feature.current_stage,
-            candidate=feature.candidate_head_sha,
-        )
+        self._assert_feature_fence(operation_id, fresh, stage=feature.current_stage, candidate=feature.candidate_head_sha)
         if fresh.revision != feature.revision or fresh.manifest_digest != feature.manifest_digest:
             raise VerticalInvariantError("STALE_REVISION", "Feature truth changed before Persist linearization")
         self._commit(lambda snapshot: plan_vertical_persist_linearized(snapshot, **common))
@@ -192,33 +206,76 @@ class TrustedVerticalExecutor:
         )
         generation = projection["generation"]
         occurred_at = self.runtime.clock()
-        reservation = self._commit(
-            lambda snapshot: plan_vertical_semantic_reservation(
-                snapshot,
-                operation_id=operation_id,
-                generation=generation,
-                target_repository=feature.repository,
-                feature_id=feature.feature_id,
-                expected_revision=feature.revision,
-                current_stage=feature.current_stage,
-                task_identity=str(action.task_identity),
-                role=str(action.role),
-                candidate_head_sha=action.candidate_head_sha,
-                occurred_at=occurred_at,
-                trusted_context_digest=self.config.trusted_context_digest,
-            )
-        ).result
+        lineage_id = None
+        if self.config.effect_lineage_required:
+            current_resolution_policy = self.resolution_policy_verifier.verify_current()
+            reservation = self._commit(
+                lambda snapshot: plan_lineage_gated_reservation(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    target_repository=feature.repository,
+                    feature_id=feature.feature_id,
+                    expected_revision=feature.revision,
+                    current_stage=feature.current_stage,
+                    task_identity=str(action.task_identity),
+                    role=str(action.role),
+                    candidate_head_sha=action.candidate_head_sha,
+                    current_target_ref=feature.target_ref,
+                    operation_profile=VERTICAL_PROFILE,
+                    effect_kind="worker-dispatch",
+                    logical_work_slot=action.step,
+                    task_id=action.task_id,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                    trusted_profile_digest=current_resolution_policy.proposal_profile_digest,
+                )
+            ).result
+            if reservation.get("status") == "BLOCKED":
+                return self._public(operation_id)
+            lineage_id = str(reservation["effect_lineage_id"])
+        else:
+            reservation = self._commit(
+                lambda snapshot: plan_vertical_semantic_reservation(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    target_repository=feature.repository,
+                    feature_id=feature.feature_id,
+                    expected_revision=feature.revision,
+                    current_stage=feature.current_stage,
+                    task_identity=str(action.task_identity),
+                    role=str(action.role),
+                    candidate_head_sha=action.candidate_head_sha,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                )
+            ).result
+
         effect_key = reservation["semantic_effect_key"]
-        claim = self._commit(
-            lambda snapshot: plan_dispatch_claim(
-                snapshot,
-                operation_id=operation_id,
-                generation=generation,
-                effect_key=effect_key,
-                occurred_at=occurred_at,
-                trusted_context_digest=self.config.trusted_context_digest,
-            )
-        ).result
+        if self.config.effect_lineage_required:
+            claim = self._commit(
+                lambda snapshot: plan_lineage_dispatch_claim(
+                    snapshot,
+                    effect_lineage_id=str(lineage_id),
+                    operation_id=operation_id,
+                    generation=generation,
+                    effect_key=effect_key,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                )
+            ).result
+        else:
+            claim = self._commit(
+                lambda snapshot: plan_dispatch_claim(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    effect_key=effect_key,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                )
+            ).result
         external_key = claim["external_dispatch_key"]
         dispatch_id = "vertical-" + digest_json(
             {"operation_id": operation_id, "generation": generation, "external_dispatch_key": external_key}
@@ -231,20 +288,37 @@ class TrustedVerticalExecutor:
             stage=feature.current_stage,
             candidate=action.candidate_head_sha,
         )
-        self._commit(
-            lambda snapshot: plan_authorize_launch(
-                snapshot,
-                operation_id=operation_id,
-                generation=generation,
-                claim_id=claim["claim_id"],
-                dispatch_id=dispatch_id,
-                occurred_at=occurred_at,
-                trusted_context_digest=self.config.trusted_context_digest,
-                verified_expected_revision=feature.revision,
-                verified_stage=feature.current_stage,
-                verified_candidate_head_sha=action.candidate_head_sha,
+        if self.config.effect_lineage_required:
+            self._commit(
+                lambda snapshot: plan_lineage_authorize_launch(
+                    snapshot,
+                    effect_lineage_id=str(lineage_id),
+                    operation_id=operation_id,
+                    generation=generation,
+                    claim_id=claim["claim_id"],
+                    dispatch_id=dispatch_id,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                    verified_expected_revision=feature.revision,
+                    verified_stage=feature.current_stage,
+                    verified_candidate_head_sha=action.candidate_head_sha,
+                )
             )
-        )
+        else:
+            self._commit(
+                lambda snapshot: plan_authorize_launch(
+                    snapshot,
+                    operation_id=operation_id,
+                    generation=generation,
+                    claim_id=claim["claim_id"],
+                    dispatch_id=dispatch_id,
+                    occurred_at=occurred_at,
+                    trusted_context_digest=self.config.trusted_context_digest,
+                    verified_expected_revision=feature.revision,
+                    verified_stage=feature.current_stage,
+                    verified_candidate_head_sha=action.candidate_head_sha,
+                )
+            )
         dispatch = {
             "operation_id": operation_id,
             "operation_generation": generation,
@@ -292,7 +366,12 @@ class TrustedVerticalExecutor:
         self._record_fact(
             operation_id,
             "loop.step.selected",
-            {"step": action.step, "kind": action.kind, "feature_revision": feature.revision, "task_identity": action.task_identity},
+            {
+                "step": action.step,
+                "kind": action.kind,
+                "feature_revision": feature.revision,
+                "task_identity": action.task_identity,
+            },
         )
         if action.kind == "persist":
             if not action.feature_event:
@@ -331,13 +410,7 @@ class TrustedVerticalExecutor:
         return self._stable_stop(operation_id, status="BLOCKED", reason="vertical auto-step bound exceeded")
 
     def handle_worker_callback(self, **_kwargs) -> dict[str, Any]:
-        """Non-authoritative compatibility trap.
-
-        Production callback handling is intentionally available only through
-        TrustedVerticalCallbackCoordinator, which validates the durable launch/reservation
-        binding, reconstructs role independence from durable history, and always reloads
-        collector bytes before translation.
-        """
+        """Non-authoritative compatibility trap."""
         raise VerticalInvariantError(
             "CAPABILITY_UNAVAILABLE",
             "direct vertical callback handling is disabled; use TrustedVerticalCallbackCoordinator",

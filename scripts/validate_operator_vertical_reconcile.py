@@ -174,6 +174,12 @@ def _executor(snapshot, dispatch_gateway, *, persist_gateway=None, feature_gatew
             target_ref="feature/test",
             trusted_context_digest="trusted",
             max_auto_steps=8,
+            # This historical fault/replay fixture intentionally starts from reservations
+            # created before Effect Lineage existed. Only this test harness may opt into
+            # legacy compatibility; production composition requires verified rollout proof.
+            effect_lineage_required=False,
+            old_writers_quiesced=False,
+            legacy_compatibility_mode=True,
         ),
     )
     wrapper = TrustedRecoveringVerticalExecutor(

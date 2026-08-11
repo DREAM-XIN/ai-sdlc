@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-DONE-2
+feature_id: F-OPERATOR-EFFECT-LINEAGE-0001
+expected_revision: 18
+occurred_at: '2026-08-10T15:56:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-code-remediation-v2
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/code-review-remediation-v2.md
+  - kind: task
+    id: F-OPERATOR-EFFECT-LINEAGE-0001-CODE-REMEDIATION-2
+    status: DONE

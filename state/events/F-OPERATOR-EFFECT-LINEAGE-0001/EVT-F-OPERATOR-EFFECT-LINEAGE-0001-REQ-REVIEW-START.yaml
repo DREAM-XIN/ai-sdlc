@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-EFFECT-LINEAGE-0001-REQ-REVIEW-START
+feature_id: F-OPERATOR-EFFECT-LINEAGE-0001
+expected_revision: 2
+occurred_at: '2026-08-10T12:33:00Z'
+changes:
+  - kind: stage
+    id: requirement-review
+    status: WORKING

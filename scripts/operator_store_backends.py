@@ -22,18 +22,33 @@ def _utc_now() -> str:
 
 
 class OperatorStoreRuntime:
-    def __init__(self, *, backend, protection_verifier: StateRefProtectionVerifier, clock: Callable[[], str] = _utc_now):
+    def __init__(
+        self,
+        *,
+        backend,
+        protection_verifier: StateRefProtectionVerifier,
+        clock: Callable[[], str] = _utc_now,
+        plan_guard=None,
+    ):
         self.backend = backend
         self.protection_verifier = protection_verifier
         self.clock = clock
+        self.plan_guard = plan_guard
 
     def protected_receipt(self):
         return self.protection_verifier.verify(self.backend.repository, self.backend.state_ref)
 
     def commit_replanned(self, planner):
         receipt = self.protected_receipt()
+
+        def guarded(snapshot):
+            plan = planner(snapshot)
+            if self.plan_guard is not None:
+                self.plan_guard(snapshot, plan)
+            return plan
+
         try:
-            return self.backend.commit_replanned(planner, receipt)
+            return self.backend.commit_replanned(guarded, receipt)
         except ProtectionError as exc:
             raise StoreBackendError("POLICY_DENIED", str(exc)) from exc
         except CasConflict as exc:

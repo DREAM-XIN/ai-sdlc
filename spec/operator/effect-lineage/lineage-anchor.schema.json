@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc.effect-lineage/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","effect_lineage_id","target_repository","feature_id","operation_profile","effect_kind","role","causal_work_id","external_effect_scope","created_at","trusted_context_digest"],
+  "properties": {
+    "schema_version": {"const": "ai-sdlc.effect-lineage/v1"},
+    "effect_lineage_id": {"type": "string", "pattern": "^lin-[0-9a-f]{48}$"},
+    "target_repository": {"type": "string", "minLength": 3},
+    "feature_id": {"type": "string", "minLength": 1},
+    "operation_profile": {"type": "string", "minLength": 1},
+    "effect_kind": {"type": "string", "minLength": 1},
+    "role": {"type": "string", "enum": ["developer","reviewer","qa"]},
+    "causal_work_id": {"type": "string", "minLength": 1},
+    "external_effect_scope": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "trusted_context_digest": {"type": "string", "minLength": 1}
+  }
+}

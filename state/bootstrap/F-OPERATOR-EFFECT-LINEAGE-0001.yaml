@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-OPERATOR-EFFECT-LINEAGE-0001
+  title: Implement durable Effect Lineage and UNKNOWN resolution
+  risk: high
+  issue: '#226'
+profile: standard-feature
+created_at: '2026-08-10T12:08:31Z'

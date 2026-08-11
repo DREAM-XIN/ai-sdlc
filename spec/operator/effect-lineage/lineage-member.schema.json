@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc.effect-lineage-member/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","effect_lineage_id","semantic_effect_key","external_dispatch_key","operation_id_at_activation","operation_generation_at_activation","expected_revision","stage","task_identity","role","candidate_head_sha","predecessor_semantic_effect_key","activated_from_proposal_id","activated_at","trusted_context_digest"],
+  "properties": {
+    "schema_version": {"const": "ai-sdlc.effect-lineage-member/v1"},
+    "effect_lineage_id": {"type": "string", "pattern": "^lin-[0-9a-f]{48}$"},
+    "semantic_effect_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "external_dispatch_key": {"type": "string", "pattern": "^dispatch-[0-9a-f]{40}$"},
+    "operation_id_at_activation": {"type": "string", "minLength": 1},
+    "operation_generation_at_activation": {"type": "integer", "minimum": 0},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "stage": {"type": "string", "minLength": 1},
+    "task_identity": {"type": "string", "minLength": 1},
+    "role": {"type": "string", "enum": ["developer","reviewer","qa"]},
+    "candidate_head_sha": {"type": ["string","null"]},
+    "predecessor_semantic_effect_key": {"type": ["string","null"]},
+    "activated_from_proposal_id": {"type": ["string","null"]},
+    "activated_at": {"type": "string", "minLength": 1},
+    "trusted_context_digest": {"type": "string", "minLength": 1}
+  }
+}
