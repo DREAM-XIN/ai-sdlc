@@ -1,0 +1,13 @@
+version: ai-sdlc.operator-runtime-config/v1
+# Example only. Trusted service installation supplies actual repositories,
+# checkout path, credentials, principal and exact Feature refs.
+target_repository: example-org/product-repo
+store_repository: example-org/control-repo
+installation_ref: main
+store_checkout: /srv/ai-sdlc/control
+principal: operator-service
+feature_refs:
+  F-EXAMPLE-0001: feature/F-EXAMPLE-0001
+state_ref: refs/heads/ai-sdlc-operator-state
+store_remote_name: origin
+operator_app_slug: ai-sdlc-operator
