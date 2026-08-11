@@ -13,6 +13,7 @@ from validate_gh_aw_candidate_history import validate_manual_candidate, validate
 from validate_gh_aw_gate_worker_security import main as validate_gh_aw_gate_worker_security
 from validate_gh_aw_profile_routing import main as validate_gh_aw_profile_routing
 from validate_operator_api import main as validate_operator_api
+from validate_operator_decision_takeover import main as validate_operator_decision_takeover
 from validate_operator_mcp import main as validate_operator_mcp
 from validate_operator_store import main as validate_operator_store
 from validate_operator_store_runtime import main as validate_operator_store_runtime
@@ -219,6 +220,7 @@ def main():
     validate_multi_round_supersession()
     validate_gh_aw_gate_worker_security()
     validate_operator_api()
+    validate_operator_decision_takeover()
     validate_operator_mcp()
     validate_operator_store()
     validate_operator_store_runtime()

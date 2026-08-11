@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-REQ-REVIEW-PASS
+feature_id: F-OPERATOR-DECISIONS-NOTIFICATIONS-0001
+expected_revision: 3
+occurred_at: '2026-08-11T01:22:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-requirement-review-v1
+      type: review
+      status: pass
+      uri: docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/requirement-review.md
+  - kind: artifact
+    id: requirement-v1
+    status: approved
+    evidence:
+      - evidence-requirement-review-v1
+  - kind: gate
+    id: requirement-gate
+    status: PASS
+    evidence:
+      - evidence-requirement-review-v1
+  - kind: stage
+    id: requirement-review
+    status: DONE
+  - kind: stage
+    id: design
+    status: READY

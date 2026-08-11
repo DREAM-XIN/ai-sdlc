@@ -1,0 +1,18 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-PLAN-DONE
+feature_id: F-OPERATOR-DECISIONS-NOTIFICATIONS-0001
+expected_revision: 9
+occurred_at: '2026-08-11T01:49:00Z'
+changes:
+  - kind: artifact-record
+    record:
+      id: plan-v1
+      type: plan
+      uri: docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/plan.md
+      status: draft
+  - kind: stage
+    id: plan
+    status: DONE
+  - kind: stage
+    id: implementation
+    status: READY

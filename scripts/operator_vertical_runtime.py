@@ -15,6 +15,8 @@ from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalE
 from operator_vertical_reconcile import TrustedRecoveringVerticalExecutor
 from operator_effect_rollout import EffectLineageWriteFence
 from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
+from operator_decision_policy import ProtectedDecisionPolicyVerifier
+from operator_decision_backends import decision_notification_backends
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ class TrustedVerticalRuntimeBundle:
     executor: Any
     callback_coordinator: TrustedVerticalCallbackCoordinator
     api_backends: dict[str, Any]
+    decision_coordinator: Any | None = None
 
 
 class VerticalLoopStartBackend:
@@ -74,6 +77,7 @@ def build_trusted_vertical_runtime(
     persist_gateway,
     dispatch_gateway,
     collector_content_loader,
+    decision_policy_verifier: ProtectedDecisionPolicyVerifier | None = None,
     clock=None,
 ) -> TrustedVerticalRuntimeBundle:
     """Build all vertical write surfaces only after trusted rollout/fence/policy verification."""
@@ -89,6 +93,13 @@ def build_trusted_vertical_runtime(
         or resolution_policy_verifier.operation_profile != VERTICAL_PROFILE
     ):
         raise ValueError("Effect Resolution policy verifier is not bound to this production Store/profile")
+    if decision_policy_verifier is not None and (
+        not isinstance(decision_policy_verifier, ProtectedDecisionPolicyVerifier)
+        or decision_policy_verifier.repository != normalize_repository(config.store.repository)
+        or decision_policy_verifier.state_ref != config.store.state_ref
+        or decision_policy_verifier.operation_profile != VERTICAL_PROFILE
+    ):
+        raise ValueError("Decision policy verifier is not bound to this production Store/profile")
 
     rollout = rollout_verifier.verify(
         repository=config.store.repository,
@@ -147,6 +158,15 @@ def build_trusted_vertical_runtime(
         delegate=backends["operation.start"],
         executor=executor,
     )
+    decision_coordinator = None
+    if decision_policy_verifier is not None:
+        decision_backends, decision_coordinator = decision_notification_backends(
+            runtime,
+            policy_verifier=decision_policy_verifier,
+            feature_gateway=feature_gateway,
+            trusted_context_digest=config.trusted_context_digest,
+        )
+        backends.update(decision_backends)
     callbacks = TrustedVerticalCallbackCoordinator(
         executor=executor,
         trusted_role_policy=config.trusted_role_policy,
@@ -158,6 +178,7 @@ def build_trusted_vertical_runtime(
         executor=executor,
         callback_coordinator=callbacks,
         api_backends=backends,
+        decision_coordinator=decision_coordinator,
     )
 
 
@@ -171,6 +192,7 @@ def build_trusted_vertical_operator_api_backends(
     persist_gateway,
     dispatch_gateway,
     collector_content_loader,
+    decision_policy_verifier: ProtectedDecisionPolicyVerifier | None = None,
     clock=None,
 ):
     """Compatibility helper returning the canonical backend mapping from the safe bundle."""
@@ -183,5 +205,6 @@ def build_trusted_vertical_operator_api_backends(
         persist_gateway=persist_gateway,
         dispatch_gateway=dispatch_gateway,
         collector_content_loader=collector_content_loader,
+        decision_policy_verifier=decision_policy_verifier,
         clock=clock,
     ).api_backends

@@ -15,6 +15,8 @@ VALID_STATUSES = frozenset(
     {"RUNNING", "WAITING_EXTERNAL", "BLOCKED", "NEEDS_USER", "DONE", "CANCELLED"}
 )
 _EVENT_RE = re.compile(r"^state/operator/v1/operations/([^/]+)/events/(\d+)-([^/]+)\.json$")
+_DECISION_RE = re.compile(r"^state/operator/v1/decisions/([A-Za-z0-9._:-]{1,128})\.json$")
+_NOTIFICATION_RE = re.compile(r"^state/operator/v1/notifications/([A-Za-z0-9._:-]{1,128})\.json$")
 
 
 class StoreInvariantError(ValueError):
@@ -111,6 +113,20 @@ def feature_claim_path(target_repository: str, feature_id: str, claim_id: str) -
     return f"{STORE_ROOT}/claims/feature/{repo_hash}/{feature_id}/{claim_id}.json"
 
 
+def decision_path(decision_id: str) -> str:
+    path = f"{STORE_ROOT}/decisions/{decision_id}.json"
+    if not _DECISION_RE.fullmatch(path):
+        raise StoreInvariantError("invalid Decision id/path")
+    return path
+
+
+def notification_path(notification_id: str) -> str:
+    path = f"{STORE_ROOT}/notifications/{notification_id}.json"
+    if not _NOTIFICATION_RE.fullmatch(path):
+        raise StoreInvariantError("invalid Notification id/path")
+    return path
+
+
 def is_projection_path(path: str) -> bool:
     return (
         path.startswith(f"{STORE_ROOT}/projections/")
@@ -119,7 +135,7 @@ def is_projection_path(path: str) -> bool:
 
 
 def is_immutable_path(path: str) -> bool:
-    return path.startswith(
+    base_immutable = path.startswith(
         (
             f"{STORE_ROOT}/operations/",
             f"{STORE_ROOT}/reservations/external/",
@@ -132,6 +148,7 @@ def is_immutable_path(path: str) -> bool:
             f"{STORE_ROOT}/effect-lineages/resolutions/",
         )
     ) and path.endswith(".json") and not is_projection_path(path)
+    return base_immutable or bool(_DECISION_RE.fullmatch(path)) or bool(_NOTIFICATION_RE.fullmatch(path))
 
 
 def validate_store_path(path: str) -> None:
@@ -263,6 +280,10 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
     confirmed_persists: set[str] = set()
     superseded: set[int] = set()
     callback_ids: dict[str, str] = {}
+    pending_decisions: set[str] = set()
+    resolved_decisions: set[str] = set()
+    expired_decisions: set[str] = set()
+    unread_notifications: set[str] = set()
 
     for event in events:
         event_generation = int(event["operation_generation"])
@@ -295,6 +316,8 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
             "dispatch.launch.lookup-recorded",
             "worker.callback.recorded",
             "persist.confirmed",
+            "notification.created",
+            "notification.acknowledged",
         }:
             raise StoreInvariantError("new decision fact after cancellation")
 
@@ -347,6 +370,49 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
             if external_key:
                 unresolved_unknown.discard(str(external_key))
             status = "BLOCKED" if (lineage_blocks or unresolved_unknown) else "RUNNING"
+        elif event_type == "decision.requested":
+            decision_id = str(payload.get("decision_id") or "")
+            if not decision_id or decision_id in resolved_decisions or decision_id in expired_decisions:
+                raise StoreInvariantError("invalid Decision request history")
+            pending_decisions.add(decision_id)
+            status = "NEEDS_USER"
+        elif event_type == "decision.responded":
+            decision_id = str(payload.get("decision_id") or "")
+            if decision_id not in pending_decisions:
+                raise StoreInvariantError("Decision response lacks pending Decision")
+            pending_decisions.remove(decision_id)
+            resolved_decisions.add(decision_id)
+            if status != "CANCELLED":
+                status = "NEEDS_USER" if pending_decisions else "BLOCKED" if (lineage_blocks or unresolved_unknown) else "RUNNING"
+        elif event_type == "decision.expired":
+            decision_id = str(payload.get("decision_id") or "")
+            if decision_id not in pending_decisions:
+                raise StoreInvariantError("Decision expiry lacks pending Decision")
+            pending_decisions.remove(decision_id)
+            expired_decisions.add(decision_id)
+            if status != "CANCELLED":
+                status = "NEEDS_USER" if pending_decisions else "BLOCKED"
+        elif event_type == "decision.superseded":
+            decision_id = str(payload.get("decision_id") or "")
+            if decision_id not in pending_decisions:
+                raise StoreInvariantError("Decision supersession lacks pending Decision")
+            pending_decisions.remove(decision_id)
+            if status != "CANCELLED":
+                status = "NEEDS_USER" if pending_decisions else "BLOCKED" if (lineage_blocks or unresolved_unknown) else "RUNNING"
+        elif event_type == "decision.authorization-consumed":
+            decision_id = str(payload.get("decision_id") or "")
+            if decision_id not in resolved_decisions:
+                raise StoreInvariantError("Decision authorization consumption lacks resolved Decision")
+        elif event_type == "notification.created":
+            notification_id = str(payload.get("notification_id") or "")
+            if not notification_id:
+                raise StoreInvariantError("Notification creation lacks id")
+            unread_notifications.add(notification_id)
+        elif event_type == "notification.acknowledged":
+            notification_id = str(payload.get("notification_id") or "")
+            if not notification_id:
+                raise StoreInvariantError("Notification acknowledgement lacks id")
+            unread_notifications.discard(notification_id)
         elif event_type == "operation.blocked":
             status = "BLOCKED"
         elif event_type == "operation.needs-user":
@@ -407,6 +473,10 @@ def rebuild_projection(snapshot: StoreSnapshot, operation_id: str) -> dict[str, 
         "requested_persists": sorted(requested_persists),
         "linearized_persists": sorted(linearized_persists),
         "confirmed_persists": sorted(confirmed_persists),
+        "pending_decisions": sorted(pending_decisions),
+        "resolved_decisions": sorted(resolved_decisions),
+        "expired_decisions": sorted(expired_decisions),
+        "unread_notifications": sorted(unread_notifications),
     }
 
 

@@ -16,6 +16,7 @@ from operator_conformance import (
     assert_materially_independent,
     run_conformance_suite,
 )
+from validate_operator_decisions_notifications import main as validate_operator_decisions_notifications
 SCHEMA_ROOT = ROOT / "spec" / "operator"
 EXPECTED = {
 "system.capabilities": ("read", False, False, True),
@@ -125,6 +126,7 @@ def main():
     else:
         raise AssertionError("alias fixture incorrectly accepted by standalone conformance suite")
 
+    validate_operator_decisions_notifications()
     print("Operator API validation passed")
     print(f"- api_version: {API_VERSION}")
     print(f"- capabilities: {len(CAPABILITIES)}")
