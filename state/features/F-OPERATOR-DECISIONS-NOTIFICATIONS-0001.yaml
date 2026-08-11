@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 17
+revision: 18
 feature:
   id: F-OPERATOR-DECISIONS-NOTIFICATIONS-0001
   title: Implement durable Decisions, Authorization, Notifications and operator.inbox
@@ -28,7 +28,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: READY
+    status: WORKING
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -126,4 +126,5 @@ applied_events:
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-CODE-REMEDIATION-START
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-CODE-REMEDIATION-DONE
 - EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-CODE-REVIEW-PASS-2
-updated_at: '2026-08-11T02:34:00Z'
+- EVT-F-OPERATOR-DECISIONS-NOTIFICATIONS-0001-VERIFICATION-START
+updated_at: '2026-08-11T02:36:00Z'
