@@ -343,15 +343,15 @@ def plan_decision_response(
         if response.get("selected_choice") == selected_choice and response.get("responded_by_user") == responder_identity:
             return StoreMutationPlan(snapshot.ref_sha, tuple(), {"decision_id": decision_id, "status": "RESOLVED"})
         raise StoreCommandError("ALREADY_APPLIED", "Decision is already resolved with different semantics")
+    projection = rebuild_projection(snapshot, str(view["operation_id"]))
+    if projection["status"] == "CANCELLED":
+        raise StoreCommandError("CANCELLED_OPERATION", "cancelled Operation rejects late Decision response")
     if view["status"] in {"EXPIRED", "SUPERSEDED"}:
         raise StoreCommandError("POLICY_DENIED", "Decision is no longer current authority")
     _verify_feature(view, trusted_feature)
     _verify_policy(view, current_policy)
-    projection = rebuild_projection(snapshot, str(view["operation_id"]))
     if projection["generation"] != int(view["operation_generation"]):
         raise StoreCommandError("SUPERSEDED_GENERATION", "Decision Operation generation is stale")
-    if projection["status"] == "CANCELLED":
-        raise StoreCommandError("CANCELLED_OPERATION", "cancelled Operation rejects late Decision response")
     if responder_identity not in current_policy.allowed_responders:
         raise StoreCommandError("UNAUTHORIZED", "trusted responder is not authorized for this Decision")
     if _parse_time(occurred_at) >= _parse_time(str(view["expires_at"])):
