@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dream-xin.github.io/ai-sdlc/spec/operator/runtime-config.schema.json",
+  "title": "AI-SDLC Operator Trusted Runtime Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "target_repository",
+    "store_repository",
+    "installation_ref",
+    "store_checkout",
+    "principal",
+    "feature_refs"
+  ],
+  "properties": {
+    "version": {"const": "ai-sdlc.operator-runtime-config/v1"},
+    "target_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "store_repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "installation_ref": {"type": "string", "minLength": 1, "maxLength": 255},
+    "store_checkout": {"type": "string", "minLength": 1},
+    "principal": {"type": "string", "minLength": 1, "maxLength": 255},
+    "feature_refs": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "not": {"pattern": "^refs/"}
+      }
+    },
+    "state_ref": {
+      "type": "string",
+      "pattern": "^refs/heads/.+$",
+      "default": "refs/heads/ai-sdlc-operator-state"
+    },
+    "store_remote_name": {
+      "type": "string",
+      "pattern": "^[^\\s]+$",
+      "default": "origin"
+    },
+    "operator_app_slug": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$",
+      "default": "ai-sdlc-operator"
+    }
+  }
+}
