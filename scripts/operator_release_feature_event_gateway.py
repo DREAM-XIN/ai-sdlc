@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Release-safe canonical Feature Event receipt recovery for Decision writes."""
+from __future__ import annotations
+
+from typing import Callable
+
+from operator_canonical_feature_event_gateway import CanonicalExactRevisionGitHubFeatureEventGateway
+from operator_configured_feature_event_gateway import TrustedFeatureEventTarget
+from operator_github_feature_event_gateway import (
+    ABSENT,
+    APPLIED,
+    FeatureEventGatewayError,
+    FeatureEventReceipt,
+    _default_request,
+)
+from operator_production_feature_event_gateway import (
+    ProductionConfiguredFeatureEventGateway,
+    TrustedFeatureEventWriteScope,
+)
+
+
+class ReceiptSafeCanonicalFeatureEventGateway(CanonicalExactRevisionGitHubFeatureEventGateway):
+    """Treat authoritative `applied_events` as receipt even if inbox file vanished."""
+
+    def lookup_receipt(
+        self,
+        *,
+        repository: str,
+        feature_id: str,
+        target_ref: str,
+        event_id: str,
+        expected_revision: int,
+        expected_event_digest: str | None = None,
+    ) -> FeatureEventReceipt:
+        receipt = super().lookup_receipt(
+            repository=repository,
+            feature_id=feature_id,
+            target_ref=target_ref,
+            event_id=event_id,
+            expected_revision=expected_revision,
+            expected_event_digest=expected_event_digest,
+        )
+        if receipt.state != ABSENT:
+            return receipt
+
+        manifest = self.read_feature(
+            repository=repository,
+            feature_id=feature_id,
+            target_ref=target_ref,
+        )
+        revision = manifest.get("revision")
+        applied = manifest.get("applied_events") or []
+        manifest_blob_sha = manifest.get("_manifest_blob_sha")
+        if event_id in applied:
+            if not isinstance(revision, int) or revision < expected_revision + 1:
+                raise FeatureEventGatewayError(
+                    "INTERNAL_FAILURE",
+                    "applied Event receipt has invalid Feature revision",
+                )
+            return FeatureEventReceipt(
+                APPLIED,
+                event_id,
+                expected_revision,
+                receipt.event_path,
+                event_blob_sha=None,
+                result_revision=revision,
+                manifest_blob_sha=str(manifest_blob_sha) if manifest_blob_sha else None,
+            )
+        if not isinstance(revision, int):
+            raise FeatureEventGatewayError("INTERNAL_FAILURE", "trusted Feature revision is invalid")
+        if revision != expected_revision:
+            raise FeatureEventGatewayError(
+                "STALE_REVISION",
+                "Feature advanced without applying the exact Event",
+            )
+        return receipt
+
+
+def build_release_decision_event_gateway(
+    *,
+    token: str,
+    repository: str,
+    default_branch: str,
+    feature_refs: dict[str, str],
+    api_base: str = "https://api.github.com",
+    api_version: str = "2022-11-28",
+    http_request: Callable = _default_request,
+    sleeper=None,
+    poll_attempts: int = 8,
+    poll_seconds: float = 1.0,
+) -> ProductionConfiguredFeatureEventGateway:
+    if not isinstance(feature_refs, dict) or not feature_refs:
+        raise ValueError("trusted Decision Event runtime requires Feature/ref bindings")
+    targets = tuple(
+        TrustedFeatureEventTarget(str(feature_id), str(target_ref))
+        for feature_id, target_ref in sorted(feature_refs.items())
+    )
+    scope = TrustedFeatureEventWriteScope(
+        repository=repository,
+        default_branch=default_branch,
+        targets=targets,
+    )
+    kwargs = {
+        "token": token,
+        "api_base": api_base,
+        "api_version": api_version,
+        "http_request": http_request,
+        "poll_attempts": poll_attempts,
+        "poll_seconds": poll_seconds,
+    }
+    if sleeper is not None:
+        kwargs["sleeper"] = sleeper
+    transport = ReceiptSafeCanonicalFeatureEventGateway(**kwargs)
+    return ProductionConfiguredFeatureEventGateway(scope=scope, transport=transport)
