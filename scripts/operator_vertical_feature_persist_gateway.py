@@ -3,9 +3,8 @@
 
 The accepted Vertical executor owns Persist request/linearization/confirmation in
 the protected Operator Store. This adapter performs no independent authorization:
-it will submit or reconcile an Event only when the exact Event has a unique
-durable `feature.event.translated` fact and is already present in
-`linearized_persists` for that Operation.
+it submits or reconciles an Event only when one exact durable translated Event and
+its Persist request/linearization all belong to the same Operation generation.
 """
 from __future__ import annotations
 
@@ -29,12 +28,14 @@ from operator_store_model import (
 @dataclass(frozen=True)
 class DurableTranslatedEvent:
     operation_id: str
+    operation_generation: int
     feature_id: str
     expected_revision: int
     target_ref: str
     event_id: str
     event: dict[str, Any]
     event_digest: str
+    candidate_head_sha: str | None
 
 
 class DurableVerticalFeaturePersistGateway:
@@ -53,33 +54,113 @@ class DurableVerticalFeaturePersistGateway:
         self.runtime = runtime
         self.event_gateway = event_gateway
 
+    @staticmethod
+    def _fact_generation(fact: dict[str, Any]) -> int:
+        generation = fact.get("operation_generation")
+        if not isinstance(generation, int) or generation < 0:
+            raise FeatureEventGatewayError("INTERNAL_FAILURE", "durable Operation fact lacks valid generation")
+        return generation
+
+    @staticmethod
+    def _persist_binding_matches(
+        payload: dict[str, Any],
+        *,
+        expected_revision: int,
+        target_ref: str,
+        candidate_head_sha: str | None,
+    ) -> bool:
+        return (
+            payload.get("expected_revision") == expected_revision
+            and payload.get("target_ref") == target_ref
+            and payload.get("candidate_head_sha") == candidate_head_sha
+        )
+
     def _resolve(self, *, event_id: str, target_ref: str) -> DurableTranslatedEvent:
         if not event_id or not target_ref:
             raise FeatureEventGatewayError("INVALID_REQUEST", "exact Event id and target ref are required")
         snapshot = self.runtime.backend.read_snapshot()
-        matches: list[tuple[str, dict[str, Any]]] = []
+
+        translated: list[tuple[str, int, dict[str, Any]]] = []
+        requested: list[tuple[str, int, dict[str, Any]]] = []
+        linearized: list[tuple[str, int, dict[str, Any]]] = []
         for operation_id in operation_ids(snapshot):
             for fact in operation_events(snapshot, operation_id):
-                if fact.get("event_type") != "feature.event.translated":
-                    continue
                 payload = fact.get("payload") or {}
-                if payload.get("feature_event_id") == event_id:
-                    matches.append((operation_id, dict(payload)))
-        if not matches:
+                if payload.get("feature_event_id") != event_id:
+                    continue
+                event_type = fact.get("event_type")
+                if event_type not in {"feature.event.translated", "persist.requested", "persist.linearized"}:
+                    continue
+                row = (operation_id, self._fact_generation(fact), dict(payload))
+                if event_type == "feature.event.translated":
+                    translated.append(row)
+                elif event_type == "persist.requested":
+                    requested.append(row)
+                else:
+                    linearized.append(row)
+
+        if not translated:
             raise FeatureEventGatewayError("INVALID_REQUEST", "Event lacks durable translated Feature fact")
 
-        operation_set = {operation_id for operation_id, _ in matches}
-        if len(operation_set) != 1:
-            raise FeatureEventGatewayError("INTERNAL_FAILURE", "Feature Event id is bound to multiple Operations")
-        operation_id = matches[0][0]
-        canonical = matches[0][1]
-        for _, payload in matches[1:]:
+        translated_identities = {(operation_id, generation) for operation_id, generation, _ in translated}
+        if len(translated_identities) != 1:
+            raise FeatureEventGatewayError(
+                "INTERNAL_FAILURE",
+                "Feature Event id is translated across multiple Operation generations",
+            )
+        operation_id, operation_generation = next(iter(translated_identities))
+        canonical = translated[0][2]
+        for _, _, payload in translated[1:]:
             if digest_json(payload) != digest_json(canonical):
                 raise FeatureEventGatewayError("INTERNAL_FAILURE", "conflicting durable translated Feature Event facts")
 
+        expected_revision = canonical.get("feature_revision")
+        if not isinstance(expected_revision, int) or expected_revision < 0:
+            raise FeatureEventGatewayError("INTERNAL_FAILURE", "translated Event lacks exact Feature revision")
+        durable_target_ref = str(canonical.get("target_ref") or "")
+        if durable_target_ref != target_ref:
+            raise FeatureEventGatewayError("UNAUTHORIZED", "Persist target ref differs from durable translated Event")
+        candidate_head_sha = canonical.get("candidate_head_sha")
+        if candidate_head_sha is not None and not isinstance(candidate_head_sha, str):
+            raise FeatureEventGatewayError("INTERNAL_FAILURE", "translated Event candidate binding is invalid")
+
+        expected_identity = (operation_id, operation_generation)
+        for label, rows in (("request", requested), ("linearization", linearized)):
+            identities = {(row_operation, row_generation) for row_operation, row_generation, _ in rows}
+            if any(identity != expected_identity for identity in identities):
+                raise FeatureEventGatewayError(
+                    "INTERNAL_FAILURE",
+                    f"Feature Event Persist {label} spans conflicting Operation generations",
+                )
+            matching = [
+                payload
+                for row_operation, row_generation, payload in rows
+                if (row_operation, row_generation) == expected_identity
+            ]
+            if not matching:
+                raise FeatureEventGatewayError(
+                    "POLICY_DENIED",
+                    f"Feature Event lacks same-generation Persist {label}",
+                )
+            for payload in matching:
+                if not self._persist_binding_matches(
+                    payload,
+                    expected_revision=expected_revision,
+                    target_ref=durable_target_ref,
+                    candidate_head_sha=candidate_head_sha,
+                ):
+                    raise FeatureEventGatewayError(
+                        "INTERNAL_FAILURE",
+                        f"Feature Event Persist {label} binding conflicts with durable translation",
+                    )
+
+        # Projection membership remains an invariant cross-check only. Generation
+        # authority comes from the exact durable fact stream above.
         projection = rebuild_projection(snapshot, operation_id)
+        if event_id not in set(projection.get("requested_persists", [])):
+            raise FeatureEventGatewayError("INTERNAL_FAILURE", "Persist request fact is missing from Store projection")
         if event_id not in set(projection.get("linearized_persists", [])):
-            raise FeatureEventGatewayError("POLICY_DENIED", "Feature Event has not crossed Persist linearization")
+            raise FeatureEventGatewayError("INTERNAL_FAILURE", "Persist linearization fact is missing from Store projection")
 
         feature_id = str(projection.get("feature_id") or "")
         repository = normalize_repository(str(projection.get("target_repository") or ""))
@@ -87,16 +168,10 @@ class DurableVerticalFeaturePersistGateway:
         if not feature_id or repository != configured_repository:
             raise FeatureEventGatewayError("UNAUTHORIZED", "translated Event is outside trusted Feature Event scope")
 
-        durable_target_ref = str(canonical.get("target_ref") or "")
-        if durable_target_ref != target_ref:
-            raise FeatureEventGatewayError("UNAUTHORIZED", "Persist target ref differs from durable translated Event")
         configured_target_ref = self.event_gateway.configuration.target_ref(feature_id)
         if configured_target_ref != durable_target_ref:
             raise FeatureEventGatewayError("UNAUTHORIZED", "durable translated Event ref differs from trusted configuration")
 
-        expected_revision = canonical.get("feature_revision")
-        if not isinstance(expected_revision, int) or expected_revision < 0:
-            raise FeatureEventGatewayError("INTERNAL_FAILURE", "translated Event lacks exact Feature revision")
         event = canonical.get("feature_event")
         if not isinstance(event, dict):
             raise FeatureEventGatewayError("INTERNAL_FAILURE", "translated Event lacks exact Feature Event body")
@@ -110,12 +185,14 @@ class DurableVerticalFeaturePersistGateway:
 
         return DurableTranslatedEvent(
             operation_id=operation_id,
+            operation_generation=operation_generation,
             feature_id=feature_id,
             expected_revision=expected_revision,
             target_ref=durable_target_ref,
             event_id=event_id,
             event=dict(event),
             event_digest=event_digest,
+            candidate_head_sha=candidate_head_sha,
         )
 
     @staticmethod
@@ -139,10 +216,7 @@ class DurableVerticalFeaturePersistGateway:
                 "INTERNAL_FAILURE",
                 "Feature Event receipt does not identify the exact next revision",
             )
-        return {
-            "event_id": binding.event_id,
-            "result_revision": exact_result_revision,
-        }
+        return {"event_id": binding.event_id, "result_revision": exact_result_revision}
 
     def lookup_feature_event(self, *, event_id: str, target_ref: str) -> dict[str, Any] | None:
         binding = self._resolve(event_id=event_id, target_ref=target_ref)
