@@ -35,7 +35,13 @@ class VerifiedDecisionPolicy:
 
 
 class ProtectedDecisionPolicyVerifier:
-    """Re-read protected/default-branch/installation Decision policy on every authority use."""
+    """Re-read protected/default-branch/installation Decision policy on every authority use.
+
+    ``repository`` binds the protected control/Store repository that owns policy
+    source and state-ref authority. Target Feature repositories are a distinct,
+    exact allowlist inside that trusted policy; they are never inferred from or
+    broadened by client/Worker payloads.
+    """
 
     def __init__(
         self,
@@ -60,12 +66,12 @@ class ProtectedDecisionPolicyVerifier:
     def _base_material(policy: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in policy.items() if key != "policy_digest"}
 
-    def _load_base(self) -> tuple[dict[str, Any], str]:
+    def _load_base(self) -> tuple[dict[str, Any], str, frozenset[str]]:
         policy = self.policy_loader(self.repository, self.state_ref, self.operation_profile)
         if not isinstance(policy, dict) or policy.get("schema_version") != DECISION_POLICY_SCHEMA:
             raise StoreCommandError("POLICY_DENIED", "invalid current protected Decision policy")
         if normalize_repository(str(policy.get("repository", ""))) != self.repository:
-            raise StoreCommandError("POLICY_DENIED", "Decision policy repository binding mismatch")
+            raise StoreCommandError("POLICY_DENIED", "Decision policy control-repository binding mismatch")
         if policy.get("state_ref") != self.state_ref or policy.get("operation_profile") != self.operation_profile:
             raise StoreCommandError("POLICY_DENIED", "Decision policy Store/profile binding mismatch")
         policy_ref = str(policy.get("policy_ref") or "")
@@ -73,10 +79,19 @@ class ProtectedDecisionPolicyVerifier:
             raise StoreCommandError("POLICY_DENIED", "Decision policy is not from trusted control state")
         if not str(policy.get("policy_epoch") or ""):
             raise StoreCommandError("POLICY_DENIED", "Decision policy epoch is missing")
+        raw_targets = policy.get("allowed_target_repositories")
+        if not isinstance(raw_targets, list) or not raw_targets:
+            raise StoreCommandError("POLICY_DENIED", "Decision policy requires explicit target-repository scope")
+        try:
+            allowed_targets = frozenset(normalize_repository(str(value)) for value in raw_targets)
+        except Exception as exc:
+            raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope is invalid") from exc
+        if len(allowed_targets) != len(raw_targets):
+            raise StoreCommandError("POLICY_DENIED", "Decision policy target-repository scope contains duplicates")
         expected = digest_json(self._base_material(policy))
         if policy.get("policy_digest") != expected:
             raise StoreCommandError("POLICY_DENIED", "Decision policy digest mismatch")
-        return policy, expected
+        return policy, expected, allowed_targets
 
     @staticmethod
     def _decision_rule(policy: dict[str, Any], decision_type: str) -> dict[str, Any]:
@@ -140,13 +155,14 @@ class ProtectedDecisionPolicyVerifier:
         target_ref: str,
         decision_type: str,
     ) -> VerifiedDecisionPolicy:
-        if normalize_repository(target_repository) != self.repository:
-            raise StoreCommandError("POLICY_DENIED", "Decision target repository is outside verifier authority")
-        policy, base_digest = self._load_base()
+        target_repository = normalize_repository(target_repository)
+        policy, base_digest, allowed_targets = self._load_base()
+        if target_repository not in allowed_targets:
+            raise StoreCommandError("POLICY_DENIED", "Decision target repository is outside current protected policy scope")
         rule = self._decision_rule(policy, decision_type)
         restriction = None
         if self.feature_restriction_loader is not None:
-            restriction = self.feature_restriction_loader(self.repository, feature_id, target_ref)
+            restriction = self.feature_restriction_loader(target_repository, feature_id, target_ref)
             if restriction is not None and not isinstance(restriction, dict):
                 raise StoreCommandError("POLICY_DENIED", "trusted Feature restriction loader returned invalid data")
         choices, actions, responders, ttl, warning, restriction = self._apply_restrictions(
@@ -156,6 +172,7 @@ class ProtectedDecisionPolicyVerifier:
         effective_digest = digest_json(
             {
                 "base_policy_digest": base_digest,
+                "target_repository": target_repository,
                 "feature_id": feature_id,
                 "target_ref": target_ref,
                 "decision_type": decision_type,
