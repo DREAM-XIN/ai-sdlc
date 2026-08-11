@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
@@ -60,6 +61,7 @@ def invoke_canonical(
     capability: str,
     api_version: str,
     target: dict[str, Any] | None,
+    context: dict[str, Any] | None,
     payload: dict[str, Any],
     trusted_context: dict[str, Any],
     backends: dict[str, Any],
@@ -76,6 +78,11 @@ def invoke_canonical(
     }
     if target is not None:
         request["target"] = dict(target)
+    if context is not None:
+        # `context` is the bounded canonical request context only
+        # (operation id/generation/expected revision). It is not trusted
+        # identity or authorization context and remains schema-validated.
+        request["context"] = dict(context)
     if extra_envelope_fields:
         request.update(extra_envelope_fields)
     return dispatch(request, trusted_context=trusted_context, backends=backends)
@@ -92,6 +99,7 @@ def _register_read_tool(
     async def read_tool(
         api_version: str = API_VERSION,
         target: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Invoke one fixed read-only canonical Operator capability."""
@@ -101,6 +109,7 @@ def _register_read_tool(
             capability=capability,
             api_version=api_version,
             target=target,
+            context=context,
             payload=dict(payload or {}),
             trusted_context=trusted_context,
             backends=backends,
@@ -132,6 +141,7 @@ def _register_conformance_probe(
                 capability="not.real",
                 api_version=API_VERSION,
                 target=target,
+                context=None,
                 payload={},
                 trusted_context=trusted_context,
                 backends=backends,
@@ -140,6 +150,7 @@ def _register_conformance_probe(
             capability="feature.status",
             api_version=API_VERSION,
             target=target,
+            context=None,
             payload={},
             trusted_context=trusted_context,
             backends=backends,
@@ -182,10 +193,49 @@ def build_server(
     return server
 
 
+def build_production_server_from_environment() -> MCPServer:
+    """Compose production backing only when trusted process config is explicit.
+
+    The environment/config file is controlled by the MCP server launcher, not
+    by MCP tool arguments. Absence preserves the accepted fail-closed behavior:
+    tools remain registered but unconfigured canonical capabilities report
+    `CAPABILITY_UNAVAILABLE`.
+    """
+    config_path = os.environ.get("AI_SDLC_OPERATOR_RUNTIME_CONFIG", "").strip()
+    if not config_path:
+        return build_server(enable_conformance_probe=False)
+
+    token = (
+        os.environ.get("AI_SDLC_OPERATOR_GITHUB_TOKEN", "").strip()
+        or os.environ.get("GITHUB_TOKEN", "").strip()
+    )
+    if not token:
+        raise RuntimeError("trusted Operator runtime config requires a GitHub token")
+
+    from operator_production_runtime import (
+        TrustedOperatorRuntimeConfig,
+        build_trusted_operator_read_bundle,
+    )
+
+    config = TrustedOperatorRuntimeConfig.from_file(config_path)
+    bundle = build_trusted_operator_read_bundle(
+        config=config,
+        adapter_id=ADAPTER_ID,
+        github_token=token,
+        github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+    )
+    return build_server(
+        trusted_context_provider=bundle.trusted_context_provider,
+        backends=bundle.backends,
+        enable_conformance_probe=False,
+    )
+
+
 def main() -> None:
-    # Security invariant: production startup has no flag/env/config path that enables
-    # the reserved conformance probe.
-    server = build_server(enable_conformance_probe=False)
+    # Security invariant: production startup has no flag/env/config path that
+    # enables the reserved conformance probe. Trusted runtime configuration may
+    # add canonical backends, but it cannot add MCP write tools.
+    server = build_production_server_from_environment()
     server.run(transport="stdio")
 
 
