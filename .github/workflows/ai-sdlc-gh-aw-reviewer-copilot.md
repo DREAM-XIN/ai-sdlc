@@ -1,6 +1,6 @@
 ---
 name: AI-SDLC gh-aw Code Reviewer (copilot)
-run-name: "AI-SDLC gh-aw gate reviewer ${{ inputs.feature_id }}:${{ fromJSON(inputs.task_payload).task.id }}:r${{ inputs.expected_revision }}:${{ inputs.candidate_head_sha }}"
+run-name: "AI-SDLC gh-aw ${{ inputs.dispatch_key != '' && inputs.dispatch_key || github.run_id }}"
 on:
   workflow_dispatch:
     inputs:
