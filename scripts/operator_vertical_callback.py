@@ -31,14 +31,17 @@ def process_recorded_callback(
         operation_id=context.operation_id,
         exclude_callback_id=callback_id,
     )
-    feature, _ = executor.feature_gateway.read_feature(operation_id=context.operation_id)
-    if feature.target_ref != context.target_ref:
-        raise VerticalInvariantError("STALE_REVISION", "callback Feature ref binding changed")
-    if feature.revision != context.expected_revision or feature.current_stage != context.feature_stage:
-        raise VerticalInvariantError("STALE_REVISION", "callback Feature revision/stage binding changed")
-    if feature.candidate_head_sha != context.candidate_head_sha:
-        raise VerticalInvariantError("STALE_REVISION", "callback candidate head binding changed")
     try:
+        # The callback envelope is already durable before this function is entered.
+        # Fresh Feature/candidate binding failures are therefore deterministic
+        # callback-result rejections, not transient callback-adoption failures.
+        feature, _ = executor.feature_gateway.read_feature(operation_id=context.operation_id)
+        if feature.target_ref != context.target_ref:
+            raise VerticalInvariantError("STALE_REVISION", "callback Feature ref binding changed")
+        if feature.revision != context.expected_revision or feature.current_stage != context.feature_stage:
+            raise VerticalInvariantError("STALE_REVISION", "callback Feature revision/stage binding changed")
+        if feature.candidate_head_sha != context.candidate_head_sha:
+            raise VerticalInvariantError("STALE_REVISION", "callback candidate head binding changed")
         event = translate_result(
             context=context,
             feature=feature,
