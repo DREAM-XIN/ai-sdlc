@@ -217,12 +217,14 @@ class TrustedRecoveringVerticalExecutor:
         if current["status"] in {"CANCELLED", "DONE", "NEEDS_USER"}:
             return None
         events = self._events(operation_id)
-        rejected = {
-            str((event.get("payload") or {}).get("callback_id"))
-            for event in events
-            if event["event_type"] == "worker.result.rejected"
-            and (event.get("payload") or {}).get("callback_id")
-        }
+        rejected: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event["event_type"] != "worker.result.rejected":
+                continue
+            payload = event.get("payload") or {}
+            callback_id = str(payload.get("callback_id") or "")
+            if callback_id:
+                rejected[callback_id] = dict(payload)
         translated = {
             str((event.get("payload") or {}).get("callback_id"))
             for event in events
@@ -243,7 +245,22 @@ class TrustedRecoveringVerticalExecutor:
                 continue
             payload = event.get("payload") or {}
             callback_id = str(payload.get("callback_id") or "")
-            if not callback_id or callback_id in rejected or callback_id in translated:
+            if not callback_id or callback_id in translated:
+                continue
+            rejection = rejected.get(callback_id)
+            if rejection is not None:
+                code = str(rejection.get("code") or "")
+                reason = str(rejection.get("reason") or "durable callback result rejection")
+                if code == "NEEDS_USER":
+                    if current["status"] != "NEEDS_USER":
+                        self._stable_stop(operation_id, status="NEEDS_USER", reason=reason)
+                        return True
+                    continue
+                if code in {"BLOCKED", "POLICY_DENIED", "STALE_REVISION"}:
+                    if current["status"] != "BLOCKED":
+                        self._stable_stop(operation_id, status="BLOCKED", reason=reason)
+                        return True
+                    continue
                 continue
             if callback_id in validated and current["status"] in {"BLOCKED", "NEEDS_USER"}:
                 continue

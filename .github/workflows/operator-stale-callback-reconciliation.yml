@@ -1,0 +1,46 @@
+name: Validate Operator Stale Callback Reconciliation
+run-name: Validate stale callback reconciliation ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - runtime/stale-callback-reconcile-254
+    paths:
+      - '.github/workflows/operator-stale-callback-reconciliation.yml'
+      - 'scripts/operator_vertical_callback.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/validate_operator_stale_callback_reconciliation.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-stale-callback-reconciliation.yml'
+      - 'scripts/operator_vertical_callback.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/validate_operator_stale_callback_reconciliation.py'
+      - 'scripts/validate_operator_vertical_recovery.py'
+      - 'scripts/validate_operator_vertical_reconcile.py'
+
+permissions:
+  contents: read
+
+jobs:
+  stale-callback-reconciliation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Compile stale callback remediation
+        run: python -m py_compile scripts/operator_vertical_callback.py scripts/operator_vertical_reconcile.py scripts/validate_operator_stale_callback_reconciliation.py
+      - name: Validate stale callback durable convergence
+        run: python scripts/validate_operator_stale_callback_reconciliation.py
+      - name: Re-run accepted Vertical recovery regression suite
+        run: python scripts/validate_operator_vertical_recovery.py
+      - name: Re-run accepted Vertical reconciliation regression suite
+        run: python scripts/validate_operator_vertical_reconcile.py
