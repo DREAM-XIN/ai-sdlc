@@ -1,0 +1,63 @@
+schema_version: ai-sdlc.v0.3-dogfood-evidence/v1
+evidence_kind: deterministic-fixture
+scenario: happy_path
+run_id: fixture-happy-001
+recorded_at: '2026-08-11T00:00:00Z'
+repository: DREAM-XIN/fixture
+feature_id: F-DOGFOOD-HAPPY-0001
+target_ref: feature/F-DOGFOOD-HAPPY-0001
+candidate:
+  pr_number: 41
+  head_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+operation:
+  operation_id: op-fixture-happy-001
+  generation: 0
+adapter:
+  adapter_id: fixture.dogfood
+  supported: false
+  write_capable: true
+runtime:
+  runtime_kind: fixture
+  real_supported_runtime: false
+  receipt_identity: fixture-receipt-happy
+  workflow_run_ids: []
+provenance:
+  verification_status: NOT_APPLICABLE
+  verifier_identity: null
+  attestation_uri: null
+start_state: RUNNING
+end_state: DONE
+milestones:
+  - sequence: 1
+    name: operation-started
+    state_after: RUNNING
+    evidence_categories: [operation, persisted_state]
+    evidence_uris: ['fixture://happy/operation-started']
+  - sequence: 2
+    name: developer-completed
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [candidate, runtime_receipt, persisted_state]
+    evidence_uris: ['fixture://happy/developer']
+  - sequence: 3
+    name: independent-review-passed
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [candidate, independent_review, persisted_state]
+    evidence_uris: ['fixture://happy/review']
+  - sequence: 4
+    name: qa-passed-and-done
+    state_after: DONE
+    evidence_categories: [verification, notification, persisted_state]
+    evidence_uris: ['fixture://happy/qa']
+counts:
+  human_interventions: 0
+  repeated_continue_messages: 0
+assertions:
+  durable_operation_state: true
+  no_repeated_continue_messages: true
+  independent_review_observed: true
+  remediation_round_trip_observed: false
+  new_session_discovery_observed: false
+evidence_uris:
+  - fixture://happy/summary
+verdict: PASS
+release_eligible: false

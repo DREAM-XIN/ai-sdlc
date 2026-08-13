@@ -1,0 +1,22 @@
+version: 0.1.0
+release_version: 0.3.0
+tracking_issue: '#239'
+schema: spec/operator/dogfood-evidence.schema.json
+release_ready: false
+scenarios:
+  happy_path:
+    status: pending
+    requirement: vertical-loop-without-repeated-user-continue
+    evidence: []
+  review_remediation:
+    status: pending
+    requirement: reviewer-change-request-through-remediation-re-review-and-qa
+    evidence: []
+  session_recovery:
+    status: pending
+    requirement: new-session-discovers-durable-operation-and-user-items
+    evidence: []
+excluded_release_evidence:
+  fault_injection:
+    owner_issue: '#221'
+    reason: stronger real-runtime effect-safety contract

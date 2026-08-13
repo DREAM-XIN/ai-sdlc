@@ -1,0 +1,58 @@
+schema_version: ai-sdlc.v0.3-dogfood-evidence/v1
+evidence_kind: deterministic-fixture
+scenario: session_recovery
+run_id: fixture-session-001
+recorded_at: '2026-08-11T00:00:00Z'
+repository: DREAM-XIN/fixture
+feature_id: F-DOGFOOD-SESSION-0001
+target_ref: feature/F-DOGFOOD-SESSION-0001
+candidate:
+  pr_number: null
+  head_sha: null
+operation:
+  operation_id: op-fixture-session-001
+  generation: 2
+adapter:
+  adapter_id: fixture.dogfood
+  supported: false
+  write_capable: false
+runtime:
+  runtime_kind: fixture
+  real_supported_runtime: false
+  receipt_identity: fixture-receipt-session
+  workflow_run_ids: []
+provenance:
+  verification_status: NOT_APPLICABLE
+  verifier_identity: null
+  attestation_uri: null
+start_state: WAITING_EXTERNAL
+end_state: NEEDS_USER
+milestones:
+  - sequence: 1
+    name: durable-state-created
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [operation, persisted_state]
+    evidence_uris: ['fixture://session/durable-state']
+  - sequence: 2
+    name: original-session-ended
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [persisted_state]
+    evidence_uris: ['fixture://session/original-session-ended']
+  - sequence: 3
+    name: new-session-discovered-operation-and-user-items
+    state_after: NEEDS_USER
+    evidence_categories: [operation, decision, notification, persisted_state, session_recovery]
+    evidence_uris: ['fixture://session/new-session-discovery']
+counts:
+  human_interventions: 1
+  repeated_continue_messages: 0
+assertions:
+  durable_operation_state: true
+  no_repeated_continue_messages: true
+  independent_review_observed: false
+  remediation_round_trip_observed: false
+  new_session_discovery_observed: true
+evidence_uris:
+  - fixture://session/summary
+verdict: PASS
+release_eligible: false

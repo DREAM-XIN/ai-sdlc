@@ -1,0 +1,68 @@
+schema_version: ai-sdlc.v0.3-dogfood-evidence/v1
+evidence_kind: deterministic-fixture
+scenario: review_remediation
+run_id: fixture-remediation-001
+recorded_at: '2026-08-11T00:00:00Z'
+repository: DREAM-XIN/fixture
+feature_id: F-DOGFOOD-REMEDIATION-0001
+target_ref: feature/F-DOGFOOD-REMEDIATION-0001
+candidate:
+  pr_number: 42
+  head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+operation:
+  operation_id: op-fixture-remediation-001
+  generation: 1
+adapter:
+  adapter_id: fixture.dogfood
+  supported: false
+  write_capable: true
+runtime:
+  runtime_kind: fixture
+  real_supported_runtime: false
+  receipt_identity: fixture-receipt-remediation
+  workflow_run_ids: []
+provenance:
+  verification_status: NOT_APPLICABLE
+  verifier_identity: null
+  attestation_uri: null
+start_state: RUNNING
+end_state: DONE
+milestones:
+  - sequence: 1
+    name: developer-completed
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [candidate, runtime_receipt, persisted_state]
+    evidence_uris: ['fixture://remediation/developer']
+  - sequence: 2
+    name: reviewer-requested-changes
+    state_after: RUNNING
+    evidence_categories: [independent_review, decision, persisted_state]
+    evidence_uris: ['fixture://remediation/review-rework']
+  - sequence: 3
+    name: remediation-completed
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [remediation, candidate, runtime_receipt, persisted_state]
+    evidence_uris: ['fixture://remediation/fix']
+  - sequence: 4
+    name: independent-re-review-passed
+    state_after: WAITING_EXTERNAL
+    evidence_categories: [candidate, independent_review, persisted_state]
+    evidence_uris: ['fixture://remediation/re-review']
+  - sequence: 5
+    name: qa-passed
+    state_after: DONE
+    evidence_categories: [verification, notification, persisted_state]
+    evidence_uris: ['fixture://remediation/qa']
+counts:
+  human_interventions: 0
+  repeated_continue_messages: 0
+assertions:
+  durable_operation_state: true
+  no_repeated_continue_messages: true
+  independent_review_observed: true
+  remediation_round_trip_observed: true
+  new_session_discovery_observed: false
+evidence_uris:
+  - fixture://remediation/summary
+verdict: PASS
+release_eligible: false

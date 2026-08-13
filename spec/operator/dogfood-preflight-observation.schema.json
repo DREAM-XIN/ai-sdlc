@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dream-xin.github.io/ai-sdlc/spec/operator/dogfood-preflight-observation.schema.json",
+  "title": "AI-SDLC v0.3 Dogfood Preflight Observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository", "observed_at", "state_store", "adapters", "runtime", "operator_backing"],
+  "properties": {
+    "schema_version": {"const": "ai-sdlc.v0.3-dogfood-preflight-observation/v1"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "state_store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state_ref", "exists", "protection_status"],
+      "properties": {
+        "state_ref": {"type": "string", "pattern": "^refs/heads/.+$"},
+        "exists": {"type": "boolean"},
+        "protection_status": {"enum": ["PROTECTED", "UNPROTECTED", "UNKNOWN"]}
+      }
+    },
+    "adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["adapter_id", "supported", "common_conformance", "write_capable"],
+        "properties": {
+          "adapter_id": {"type": "string", "minLength": 1},
+          "supported": {"type": "boolean"},
+          "common_conformance": {"type": "boolean"},
+          "write_capable": {"type": "boolean"}
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported", "stable_external_dispatch_key", "trusted_receipt_lookup"],
+      "properties": {
+        "supported": {"type": "boolean"},
+        "stable_external_dispatch_key": {"type": "boolean"},
+        "trusted_receipt_lookup": {"type": "boolean"}
+      }
+    },
+    "operator_backing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_notification_backing", "new_session_discovery"],
+      "properties": {
+        "decision_notification_backing": {"type": "boolean"},
+        "new_session_discovery": {"type": "boolean"}
+      }
+    }
+  }
+}
