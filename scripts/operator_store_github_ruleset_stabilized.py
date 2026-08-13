@@ -19,6 +19,8 @@ from operator_store_github_ruleset_provision import RulesetProvisioningError
 
 DEFAULT_STABILIZATION_ATTEMPTS = 60
 DEFAULT_STABILIZATION_INTERVAL_SECONDS = 1.0
+_SAFE_RULE_TYPES = frozenset({"creation", "update"})
+_UPDATE_PARAMETER = "update_allows_fetch_and_merge"
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ class HistoryObservation:
     state_name: str | None = None
     mismatch_fields: tuple[str, ...] = ()
     http_status: int | None = None
+    rules_shape: tuple[str, ...] = ()
 
     def render(self) -> str:
         parts = [f"category={self.category}"]
@@ -40,6 +43,8 @@ class HistoryObservation:
             parts.append(f"state_name={safe_name!r}")
         if self.mismatch_fields:
             parts.append("mismatch_fields=" + ",".join(self.mismatch_fields))
+        if self.rules_shape:
+            parts.append("rules_shape=" + "|".join(self.rules_shape))
         return " ".join(parts)
 
 
@@ -68,6 +73,46 @@ def _state_mismatch_fields(
         return ("state",)
     expected = _expected_state(repository=repository, ruleset_id=ruleset_id, payload=payload)
     return tuple(key for key, value in expected.items() if state.get(key) != value)
+
+
+def _safe_rules_shape(rules: object) -> tuple[str, ...]:
+    """Describe only bounded rule semantics; never echo arbitrary rule payload text."""
+    if not isinstance(rules, list):
+        return ("rules=malformed",)
+
+    rows: list[str] = []
+    for index, row in enumerate(rules):
+        if not isinstance(row, dict):
+            rows.append(f"{index}:malformed")
+            continue
+
+        raw_type = row.get("type")
+        rule_type = raw_type if raw_type in _SAFE_RULE_TYPES else "other"
+        if "parameters" not in row:
+            rows.append(f"{index}:{rule_type}:parameters=absent")
+            continue
+
+        parameters = row.get("parameters")
+        if not isinstance(parameters, dict):
+            rows.append(f"{index}:{rule_type}:parameters=malformed")
+            continue
+
+        if _UPDATE_PARAMETER not in parameters:
+            update_value = "absent"
+        else:
+            value = parameters.get(_UPDATE_PARAMETER)
+            if value is True:
+                update_value = "true"
+            elif value is False:
+                update_value = "false"
+            else:
+                update_value = "malformed"
+        other_keys = sum(1 for key in parameters if key != _UPDATE_PARAMETER)
+        rows.append(
+            f"{index}:{rule_type}:parameters=present:"
+            f"{_UPDATE_PARAMETER}={update_value}:other_keys={other_keys}"
+        )
+    return tuple(rows)
 
 
 class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
@@ -153,6 +198,7 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
                 version_id=version_id,
                 state_name=state_name,
                 mismatch_fields=mismatches,
+                rules_shape=_safe_rules_shape(state.get("rules")) if "rules" in mismatches else (),
             )
 
         return (version_id, copy.deepcopy(state)), HistoryObservation(
