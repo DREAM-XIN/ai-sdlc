@@ -1,0 +1,253 @@
+version: 0.1.0
+release_version: 0.3.0
+as_of_main_commit: fe1be17f4ab202b1b1be9850f5d0e2316a15834a
+tracking_issue: '#218'
+release_ready: false
+
+status_taxonomy:
+  unresolved:
+    meaning: required capability is not yet implemented or not proven at the required bounded scope
+  implemented-awaiting-release-evidence:
+    meaning: reviewed implementation or Feature evidence exists, but required release-level integration, real-runtime, or dogfood proof is still missing
+  resolved-by-feature-evidence:
+    meaning: durable independently reviewed Feature evidence fully closes this blocker at the exact scope represented by the blocker
+  resolved-by-release-dogfood:
+    meaning: durable release-level end-to-end or fault-injection evidence closes this blocker
+
+workstreams:
+  operator-canonical-api-and-ai-client-adapters:
+    status: unresolved
+    implemented_components:
+      - component: transport-independent-typed-api
+        evidence:
+          - docs/features/F-OPERATOR-CANONICAL-API-0001/acceptance.md
+      - component: supported-read-only-mcp-adapter
+        evidence:
+          - docs/features/F-OPERATOR-MCP-ADAPTER-0001/acceptance.md
+      - component: durable-inbox-decisions-notifications-backends
+        evidence:
+          - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+    remaining_proof:
+      - "Issue #232 / PR #233 remains at Human/Product Acceptance WORKING; no explicit Human/Product ACCEPT evidence exists and PR #233 is not merged"
+      - "PR #233 mechanically verifies the frozen four-write slice, but no supported write-capable adapter is accepted and merged with release dogfood yet"
+
+  durable-operation-store-reservation-and-fencing:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+      - "issue:#257"
+    remaining_proof:
+      - "Issue #221 / PR #231 verification harness remains unmerged and stale relative to trusted main; fresh current-main exact-head validation/review/merge and trusted-main real-runtime lost-ACK, takeover and UNKNOWN proof are still required"
+
+  operator-vertical-loop:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+    remaining_proof:
+      - "release-level happy-path and remediation dogfood under the merged PR #240 evidence contract remains pending"
+      - "Issue #221 / PR #231 real supported Worker runtime evidence still requires the reviewed workflow on trusted main and real-runtime execution"
+
+  operator-recovery-concurrency-and-linearization:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+      - "pr:#255"
+    remaining_proof:
+      - "PR #255 is merged and historical PR #231 deterministic orchestration evidence is explicitly non-release-eligible; #231 still requires current-main reconstruction/review/merge plus Issue #221 trusted-main real-runtime fault injection"
+
+  operator-decisions-authorization-notifications:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/verification.md
+    remaining_proof:
+      - "Feature closure does not close the adapter, Issue #221, dogfood, or overall release readiness"
+
+  planning-manifest-validation:
+    status: unresolved
+    evidence: []
+    remaining_proof:
+      - "Issue #218 / PR #236 validator and draft synchronization are implemented on this branch but require fresh exact-head independent review and merge"
+
+blockers:
+  arbitrary-worker-event-mutation:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+  missing-role-specific-trusted-translators:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+  reviewer-qa-candidate-head-binding-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+  candidate-head-not-revalidated-before-persist:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+  authorization-not-exactly-bound:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+  feature-branch-policy-escalation:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+  multiple-active-operation-generations:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+  semantic-effect-reservation-generation-coupled:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+  duplicate-external-dispatch-key-for-same-semantic-effect:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 real-runtime duplicate-effect and lost-ACK proof is still required; PR #235 is merged on trusted main, but that prerequisite alone is not release evidence"
+  missing-launch-linearization-point:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+  cancel-before-launch-linearization-can-still-launch:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 real-runtime cancellation ordering"
+  post-launch-linearization-can-create-different-dispatch-or-auto-persist:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 stale-runner and cancellation/Persist ordering"
+  claim-launch-crash-recovery-gap:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 real-runtime crash and lost-ACK recovery"
+  unknown-launch-can-be-bypassed-by-generation-takeover:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 real-runtime UNKNOWN takeover"
+  operation-store-cas-or-rebuild-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+  callback-replay-side-effects:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+      - "pr:#255"
+    remaining_proof:
+      - "Issue #221 / PR #231 duplicate, out-of-order and stale-candidate real callbacks against the protected Store"
+  persist-cancel-linearization-gap:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 Persist cancellation and acknowledgement-loss matrix"
+  operation-cancel-feature-cancel-ambiguity:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+  new-session-discovery-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+  offline-user-stalls-durable-execution:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+    remaining_proof:
+      - "release-level session recovery dogfood remains pending"
+  normal-feature-requires-manual-github-after-install:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+      - "issue:#257"
+    remaining_proof:
+      - "release-level unattended happy-path and remediation dogfood under the merged PR #240 evidence contract remains pending"
+  typed-api-version-or-capability-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-CANONICAL-API-0001/acceptance.md
+  fewer-than-two-supported-ai-client-adapters:
+    status: unresolved
+    evidence:
+      - docs/features/F-OPERATOR-MCP-ADAPTER-0001/acceptance.md
+    remaining_proof:
+      - "Issue #232 / PR #233 must receive explicit Human/Product ACCEPT evidence and merge before the second adapter is accepted"
+  no-write-capable-ai-client-adapter:
+    status: unresolved
+    evidence: []
+    remaining_proof:
+      - "Issue #232 / PR #233 mechanically proves operation.start, operation.cancel, decision.respond and notification.ack, but the adapter remains Acceptance WORKING and unmerged"
+  decision-data-minimization-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+  ai-can-synthesize-human-acceptance-evidence:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+  planning-manifest-validator-gap:
+    status: unresolved
+    evidence: []
+    remaining_proof:
+      - "Issue #218 / PR #236 current-main reconstruction and validator hardening require fresh independent review and merge"
+  missing-cross-revision-effect-lineage:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+  unknown-launch-can-be-bypassed-by-feature-revision-or-candidate-change:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 real-runtime revision/candidate UNKNOWN lineage case"
+  unresolved-predecessor-can-create-independent-successor-dispatch:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+    remaining_proof:
+      - "Issue #221 / PR #231 real-runtime overlapping predecessor/successor case"
+  unbounded-unknown-resolution-authority:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+  stale-effect-resolution-can-apply-to-wrong-lineage-or-candidate:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+  legacy-unresolved-reservation-lineage-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+  mixed-writer-lineage-enforcement-gap:
+    status: resolved-by-feature-evidence
+    evidence:
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+  v0.2-authority-invariant-regression:
+    status: implemented-awaiting-release-evidence
+    evidence:
+      - docs/features/F-OPERATOR-CANONICAL-API-0001/acceptance.md
+      - docs/features/F-OPERATOR-MCP-ADAPTER-0001/acceptance.md
+      - docs/features/F-OPERATOR-OPERATION-STORE-0001/acceptance.md
+      - docs/features/F-OPERATOR-VERTICAL-LOOP-0001/acceptance.md
+      - docs/features/F-OPERATOR-EFFECT-LINEAGE-0001/acceptance.md
+      - docs/features/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001/acceptance.md
+    remaining_proof:
+      - "final release regression, dogfood, security and publication review"
