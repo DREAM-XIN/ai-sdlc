@@ -12,6 +12,7 @@ on:
       - "scripts/validate_operator_store_ruleset_protection.py"
       - "scripts/validate_operator_store_ruleset_pagination.py"
       - "scripts/validate_operator_store_ruleset_remediation.py"
+      - "scripts/validate_operator_store_ruleset_live_compat.py"
       - "scripts/validate_operator_store_runtime.py"
   workflow_dispatch:
 
@@ -29,5 +30,7 @@ jobs:
         run: python scripts/validate_operator_store_ruleset_pagination.py
       - name: Validate prior ruleset remediation regressions
         run: python scripts/validate_operator_store_ruleset_remediation.py
+      - name: Validate live ruleset update normalization compatibility
+        run: python scripts/validate_operator_store_ruleset_live_compat.py
       - name: Validate Store runtime integration
         run: python scripts/validate_operator_store_runtime.py

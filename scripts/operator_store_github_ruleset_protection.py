@@ -38,6 +38,18 @@ def _digest(value) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 def _default_get(url: str, headers: dict[str, str]) -> tuple[int, object]:
     request = Request(url, headers=headers, method="GET")
     try:
@@ -92,13 +104,7 @@ def _no_bypass(bypass_actors: object) -> bool:
 
 
 def _strict_update_parameters(detail: dict) -> bool:
-    """Require one exact bounded update rule in the authoritative ruleset detail.
-
-    The branch-rules endpoint is used only to establish which rulesets apply to
-    the target branch. Parameters are security-significant and therefore must be
-    positively re-read from the repository-ruleset detail. Missing, duplicated,
-    malformed, permissive, or future-expanded parameter shapes are not accepted.
-    """
+    """Require one exact bounded update rule in an authoritative ruleset state."""
     rules = detail.get("rules")
     if not isinstance(rules, list):
         return False
@@ -109,12 +115,31 @@ def _strict_update_parameters(detail: dict) -> bool:
     return isinstance(parameters, dict) and parameters == STRICT_UPDATE_PARAMETERS
 
 
+def _update_parameters_omitted(detail: dict) -> bool:
+    """Return true only for GitHub's observed false-value normalization shape.
+
+    This deliberately does not cover explicit true, malformed parameters, or an
+    expanded parameter object. Those are observable current-state semantics and
+    remain fail-closed without any fallback.
+    """
+    rules = detail.get("rules")
+    if not isinstance(rules, list):
+        return False
+    updates = [row for row in rules if isinstance(row, dict) and row.get("type") == "update"]
+    return len(updates) == 1 and "parameters" not in updates[0]
+
+
 class GitHubRulesetProtectionVerifier:
     """Prove Store protection from active repository rulesets.
 
-    The token must be trusted control/install authority with enough ruleset
-    access for `bypass_actors` and rule parameters to be returned. If GitHub
-    omits either, the proof is UNKNOWN rather than guessing a safe value.
+    The token must be trusted control/install authority. GitHub may normalize an
+    explicit `update_allows_fetch_and_merge: false` rule in the current ruleset
+    detail to `{\"type\": \"update\"}`. In that exact omission-only case, this
+    verifier uses GitHub's admin-gated latest ruleset-version state as a second
+    authoritative surface and accepts it only when the version is provably the
+    current ruleset revision and positively contains the exact bounded update
+    parameters. Any unavailable, stale, mismatched, malformed, permissive, or
+    concurrently superseded version proof is UNKNOWN rather than guessed safe.
     """
 
     test_only = False
@@ -143,12 +168,7 @@ class GitHubRulesetProtectionVerifier:
         self.clock = clock
 
     def _branch_rules(self, repository: str, branch: str) -> list[dict] | None:
-        """Read the complete active branch-rule set or fail closed.
-
-        GitHub paginates the branch-rules endpoint. A protection proof is valid
-        only when every page is retrieved and parsed; a later-page transport or
-        shape failure is therefore UNKNOWN rather than a partial safe result.
-        """
+        """Read the complete active branch-rule set or fail closed."""
         rows: list[dict] = []
         page = 1
         while True:
@@ -165,6 +185,114 @@ class GitHubRulesetProtectionVerifier:
             if len(payload) < BRANCH_RULE_PAGE_SIZE:
                 return rows
             page += 1
+
+    def _latest_version_state(
+        self,
+        repository: str,
+        ruleset_id: int,
+        current_detail: dict,
+    ) -> tuple[dict, dict] | None:
+        """Read a stable current admin-gated ruleset version state or fail closed.
+
+        The fallback is accepted only when the first latest-history summary and
+        fetched version are bound to the current detail and, after that version
+        read, both the current ruleset detail and latest-history authority are
+        re-read and remain unchanged. The final two reads close the known
+        post-attestation drift window: a superseding ruleset version cannot leave
+        an already-selected safe historical version authorized as PROTECTED.
+        """
+        current_updated = _parse_timestamp(current_detail.get("updated_at"))
+        if current_updated is None:
+            return None
+
+        history_url = (
+            f"{self.api_base}/repos/{repository}/rulesets/{ruleset_id}/history"
+            "?per_page=1&page=1"
+        )
+        headers = _headers(self.token, self.api_version)
+        history_status, history = self.http_get(history_url, headers)
+        if history_status != 200 or not isinstance(history, list) or len(history) != 1:
+            return None
+        summary = history[0]
+        if not isinstance(summary, dict):
+            return None
+        version_id = summary.get("version_id")
+        summary_updated = _parse_timestamp(summary.get("updated_at"))
+        if not isinstance(version_id, int) or version_id <= 0 or summary_updated != current_updated:
+            return None
+
+        version_url = f"{self.api_base}/repos/{repository}/rulesets/{ruleset_id}/history/{version_id}"
+        version_status, version = self.http_get(version_url, headers)
+        if version_status != 200 or not isinstance(version, dict):
+            return None
+        if version.get("version_id") != version_id:
+            return None
+        version_updated = _parse_timestamp(version.get("updated_at"))
+        if version_updated != current_updated:
+            return None
+        state = version.get("state")
+        if not isinstance(state, dict):
+            return None
+
+        identity_fields = (
+            "id",
+            "name",
+            "target",
+            "source_type",
+            "source",
+            "enforcement",
+            "conditions",
+            "bypass_actors",
+        )
+        if any(state.get(field) != current_detail.get(field) for field in identity_fields):
+            return None
+
+        # Final authoritative drift check. Re-read current detail after the
+        # candidate historical version, then re-read latest history. If a V4 (or
+        # any other current-state mutation) appeared after H1/V3, either the
+        # detail or latest-version summary must differ and the proof fails closed.
+        detail_url = f"{self.api_base}/repos/{repository}/rulesets/{ruleset_id}?includes_parents=true"
+        final_detail_status, final_detail = self.http_get(detail_url, headers)
+        if final_detail_status != 200 or not isinstance(final_detail, dict):
+            return None
+        stable_detail_fields = (
+            "id",
+            "name",
+            "target",
+            "source_type",
+            "source",
+            "enforcement",
+            "conditions",
+            "bypass_actors",
+            "rules",
+        )
+        if any(final_detail.get(field) != current_detail.get(field) for field in stable_detail_fields):
+            return None
+        final_detail_updated = _parse_timestamp(final_detail.get("updated_at"))
+        if final_detail_updated != current_updated or not _update_parameters_omitted(final_detail):
+            return None
+
+        final_history_status, final_history = self.http_get(history_url, headers)
+        if final_history_status != 200 or not isinstance(final_history, list) or len(final_history) != 1:
+            return None
+        final_summary = final_history[0]
+        if not isinstance(final_summary, dict):
+            return None
+        final_version_id = final_summary.get("version_id")
+        final_summary_updated = _parse_timestamp(final_summary.get("updated_at"))
+        if final_version_id != version_id or final_summary_updated != current_updated:
+            return None
+
+        attestation = {
+            "version_id": version_id,
+            "updated_at": version.get("updated_at"),
+            "state_digest": _digest(state),
+            "revalidated_current_digest": _digest(
+                {field: final_detail.get(field) for field in (*stable_detail_fields, "updated_at")}
+            ),
+            "revalidated_latest_version_id": final_version_id,
+        }
+        return state, attestation
 
     def verify(self, repository: str, state_ref: str) -> ProtectionReceipt:
         verified_at = self.clock()
@@ -206,15 +334,25 @@ class GitHubRulesetProtectionVerifier:
             for ruleset_id, types in grouped.items()
             if types & REQUIRED_WRITER_RULES
         }
+        version_attestations: dict[int, dict] = {}
 
         # Every active creation/update restriction must be bypassable by exactly
         # the Operator Integration and by nobody else. Update semantics are part
-        # of the protection proof: permissive or unobservable parameters are not
-        # silently reduced to a mere `update` type assertion.
+        # of the proof. Only GitHub's omission-only normalization may use the
+        # current ruleset-version state fallback; visible unsafe/malformed values
+        # are never overridden by historical/version data.
         for ruleset_id in writer_rule_ids:
             detail = details[ruleset_id]
             if "update" in grouped[ruleset_id] and not _strict_update_parameters(detail):
-                return ProtectionReceipt(repository, state_ref, UNKNOWN, "github-ruleset", verified_at, None)
+                if not _update_parameters_omitted(detail):
+                    return ProtectionReceipt(repository, state_ref, UNKNOWN, "github-ruleset", verified_at, None)
+                resolved = self._latest_version_state(repository, ruleset_id, detail)
+                if resolved is None:
+                    return ProtectionReceipt(repository, state_ref, UNKNOWN, "github-ruleset", verified_at, None)
+                version_state, attestation = resolved
+                if not _strict_update_parameters(version_state):
+                    return ProtectionReceipt(repository, state_ref, UNKNOWN, "github-ruleset", verified_at, None)
+                version_attestations[ruleset_id] = attestation
             if not _operator_only_bypass(detail.get("bypass_actors"), self.operator_app_id):
                 return ProtectionReceipt(
                     repository, state_ref, UNPROTECTED, "github-ruleset", verified_at,
@@ -240,6 +378,10 @@ class GitHubRulesetProtectionVerifier:
             "rulesets": {str(key): details[key] for key in sorted(details)},
             "operator_app_id": self.operator_app_id,
             "strict_update_parameters": STRICT_UPDATE_PARAMETERS,
+            "version_attestations": {
+                str(key): version_attestations[key]
+                for key in sorted(version_attestations)
+            },
         }
         return ProtectionReceipt(
             repository=repository,
