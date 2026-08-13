@@ -1,0 +1,97 @@
+name: Provision AI-SDLC Operator Store State
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  provision:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate trusted installation configuration
+        env:
+          ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          APP_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${ADMIN_TOKEN:-}"
+          test -n "${APP_CLIENT_ID:-}"
+          test -n "${APP_PRIVATE_KEY:-}"
+          test -n "${APP_INTEGRATION_ID:-}"
+          case "$APP_INTEGRATION_ID" in
+            *[!0-9]*|'') echo "AI_SDLC_OPERATOR_APP_INTEGRATION_ID must be a positive integer" >&2; exit 1 ;;
+          esac
+          test "$APP_INTEGRATION_ID" -gt 0
+
+      - name: Create bounded Operator writer token
+        id: writer-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Checkout trusted default branch with Operator writer credential
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          token: ${{ steps.writer-token.outputs.token }}
+
+      - name: Provision and verify protected Operator Store state ref
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          STATE_REF: refs/heads/ai-sdlc-operator-state
+          GIT_AUTHOR_NAME: AI-SDLC Operator Store
+          GIT_AUTHOR_EMAIL: operator-store@ai-sdlc.invalid
+          GIT_COMMITTER_NAME: AI-SDLC Operator Store
+          GIT_COMMITTER_EMAIL: operator-store@ai-sdlc.invalid
+        run: |
+          set -euo pipefail
+          PYTHONPATH=scripts python - <<'PY'
+          import json
+          import os
+          from operator_store_github_ruleset_provision import (
+              GitHubOperatorStoreRulesetProvisioner,
+              provision_operator_store_state_ref,
+          )
+
+          app_id = int(os.environ['AI_SDLC_OPERATOR_APP_INTEGRATION_ID'])
+          provisioner = GitHubOperatorStoreRulesetProvisioner(
+              admin_token=os.environ['AI_SDLC_OPERATOR_ADMIN_TOKEN'],
+              operator_app_id=app_id,
+              api_base=os.environ['GITHUB_API_URL'],
+          )
+          result = provision_operator_store_state_ref(
+              provisioner=provisioner,
+              repository=os.environ['TARGET_REPOSITORY'],
+              state_ref=os.environ['STATE_REF'],
+              writer_checkout='.',
+              remote_name='origin',
+          )
+          receipt = result.protection_receipt
+          output = {
+              'writer_ruleset_id': result.writer_ruleset_id,
+              'integrity_ruleset_id': result.integrity_ruleset_id,
+              'state_ref_sha': result.state_ref_sha,
+              'created_state_ref': result.created_state_ref,
+              'protection_status': receipt.status,
+              'verifier_identity': receipt.verifier_identity,
+              'policy_digest': receipt.policy_digest,
+          }
+          print(json.dumps(output, indent=2, sort_keys=True))
+          if receipt.status != 'PROTECTED':
+              raise SystemExit('Operator Store state ref is not PROTECTED')
+          PY

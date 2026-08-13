@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from operator_store_backends import OperatorStoreRuntime, store_backends
-from operator_store_github_protection import GitHubBranchProtectionVerifier
+from operator_store_github_protection_composite import GitHubRepositoryProtectionVerifier
 from operator_store_protection import StateRefProtectionVerifier
 from operator_store_remote_git import RemoteGitStateRefBackend
 
@@ -71,15 +71,25 @@ def build_github_operator_store_runtime(
     *,
     github_token: str,
     operator_app_slug: str,
+    operator_app_id: int | None = None,
     github_api_base: str = "https://api.github.com",
+    github_api_version: str = "2022-11-28",
     clock=None,
     plan_guard=None,
 ):
-    """Concrete production path: remote Git CAS + GitHub protection proof."""
-    verifier = GitHubBranchProtectionVerifier(
+    """Concrete production path: remote Git CAS + trusted GitHub protection proof.
+
+    Organization repositories may continue to prove protection through classic
+    branch push restrictions. When trusted installation configuration supplies
+    the numeric Operator Integration id, personal repositories may additionally
+    prove the same safety boundary through layered repository rulesets.
+    """
+    verifier = GitHubRepositoryProtectionVerifier(
         token=github_token,
         operator_app_slug=operator_app_slug,
+        operator_app_id=operator_app_id,
         api_base=github_api_base,
+        api_version=github_api_version,
     )
     return build_trusted_operator_store_runtime(
         config,

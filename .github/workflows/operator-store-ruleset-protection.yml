@@ -1,0 +1,33 @@
+name: Validate Operator Store Ruleset Protection
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/operator-store-ruleset-protection.yml"
+      - ".github/workflows/provision-operator-store-state.yml"
+      - "scripts/operator_store_github_protection_composite.py"
+      - "scripts/operator_store_github_ruleset_protection.py"
+      - "scripts/operator_store_github_ruleset_provision.py"
+      - "scripts/operator_store_runtime.py"
+      - "scripts/validate_operator_store_ruleset_protection.py"
+      - "scripts/validate_operator_store_ruleset_pagination.py"
+      - "scripts/validate_operator_store_ruleset_remediation.py"
+      - "scripts/validate_operator_store_runtime.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate strict ruleset protection and bootstrap provenance
+        run: python scripts/validate_operator_store_ruleset_protection.py
+      - name: Validate branch-rule pagination fail-closed semantics
+        run: python scripts/validate_operator_store_ruleset_pagination.py
+      - name: Validate prior ruleset remediation regressions
+        run: python scripts/validate_operator_store_ruleset_remediation.py
+      - name: Validate Store runtime integration
+        run: python scripts/validate_operator_store_runtime.py
