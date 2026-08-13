@@ -1,0 +1,19 @@
+schema_version: ai-sdlc.v0.3-dogfood-preflight-observation/v1
+repository: DREAM-XIN/ai-sdlc
+observed_at: '2026-08-11T03:55:00Z'
+state_store:
+  state_ref: refs/heads/ai-sdlc-operator-state
+  exists: false
+  protection_status: UNKNOWN
+adapters:
+  - adapter_id: ai-sdlc.mcp.stdio
+    supported: true
+    common_conformance: true
+    write_capable: false
+runtime:
+  supported: true
+  stable_external_dispatch_key: true
+  trusted_receipt_lookup: false
+operator_backing:
+  decision_notification_backing: true
+  new_session_discovery: true
