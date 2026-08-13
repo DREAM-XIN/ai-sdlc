@@ -146,17 +146,52 @@ def validate_persistent_stale_history_diagnostic():
     require("rules_shape=" not in text, "rules shape should not be emitted for name-only mismatch")
 
 
-def validate_state_shape_mismatch_diagnostic():
+def validate_live_omission_shape_is_scoped_to_trusted_strict_write():
     marker = writer_ruleset_payload(STATE_REF, APP_ID)
     marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
     normalized = _state(marker)
     normalized["rules"] = [{"type": "creation"}, {"type": "update"}]
     api = HistoryApi(history_versions=[6], states={6: normalized})
+    version_id, state = _provisioner(api, attempts=2)._wait_for_exact_history_state(
+        REPOSITORY,
+        RULESET_ID,
+        marker,
+    )
+    require(version_id == 6, "live omission-only history did not bind the observed version")
+    require(state == _state(marker), "live omission-only history did not canonicalize to strict write")
+
+    permissive = _state(marker)
+    permissive["rules"] = [
+        {"type": "creation"},
+        {"type": "update", "parameters": {"update_allows_fetch_and_merge": True}},
+    ]
+    text = _expect_failure(
+        _provisioner(HistoryApi(history_versions=[7], states={7: permissive}), attempts=1),
+        marker,
+        "state-shape-mismatch",
+    )
+    require("mismatch_fields=rules" in text, "permissive history mismatch did not identify rules")
+    require(
+        "1:update:parameters=present:update_allows_fetch_and_merge=true:other_keys=0" in text,
+        "permissive history diagnostic did not expose the bounded true classification",
+    )
+
+
+def validate_state_shape_mismatch_diagnostic():
+    marker = writer_ruleset_payload(STATE_REF, APP_ID)
+    marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
+    malformed = _state(marker)
+    malformed["rules"] = [
+        {"type": "creation"},
+        {"type": "update"},
+        {"type": "deletion"},
+    ]
+    api = HistoryApi(history_versions=[6], states={6: malformed})
     text = _expect_failure(_provisioner(api, attempts=2), marker, "state-shape-mismatch")
     require("mismatch_fields=rules" in text, "shape diagnostic did not identify rules mismatch")
     require(
-        "rules_shape=0:creation:parameters=absent|1:update:parameters=absent" in text,
-        "shape diagnostic did not expose bounded omission-only rules shape",
+        "rules_shape=0:creation:parameters=absent|1:update:parameters=absent|2:other:parameters=absent" in text,
+        "shape diagnostic did not expose bounded extra-rule shape",
     )
 
 
@@ -269,6 +304,7 @@ def validate_bounded_default():
 def main():
     validate_delayed_history_visibility()
     validate_persistent_stale_history_diagnostic()
+    validate_live_omission_shape_is_scoped_to_trusted_strict_write()
     validate_state_shape_mismatch_diagnostic()
     validate_rules_shape_reports_only_bounded_semantics()
     validate_canonical_requires_strictly_newer_version()

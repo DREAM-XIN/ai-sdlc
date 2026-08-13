@@ -2,9 +2,10 @@
 """Bounded stabilization and redacted diagnostics for ruleset write attestation.
 
 This module deliberately does not weaken the causal marker -> canonical proof in
-``operator_store_github_ruleset_attested``. It only gives the Administration
-history surface more time to converge and records a non-sensitive classification
-of the last observation when convergence still fails.
+``operator_store_github_ruleset_attested``. It gives the Administration history
+surface more time to converge and, only inside that trusted write-attestation
+boundary, recognizes GitHub's observed omission-only serialization of the exact
+strict writer payload. Generic read-only verification remains fail-closed.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from operator_store_github_ruleset_attested import (
     HISTORY_PAGE,
     AttestedGitHubOperatorStoreRulesetProvisioner,
+    AttestedGitHubRulesetProtectionVerifier,
 )
 from operator_store_github_ruleset_provision import RulesetProvisioningError
 
@@ -21,6 +23,14 @@ DEFAULT_STABILIZATION_ATTEMPTS = 60
 DEFAULT_STABILIZATION_INTERVAL_SECONDS = 1.0
 _SAFE_RULE_TYPES = frozenset({"creation", "update"})
 _UPDATE_PARAMETER = "update_allows_fetch_and_merge"
+_STRICT_WRITER_RULES = [
+    {"type": "creation"},
+    {"type": "update", "parameters": {_UPDATE_PARAMETER: False}},
+]
+_OMISSION_ONLY_WRITER_RULES = [
+    {"type": "creation"},
+    {"type": "update"},
+]
 
 
 @dataclass(frozen=True)
@@ -115,15 +125,107 @@ def _safe_rules_shape(rules: object) -> tuple[str, ...]:
     return tuple(rows)
 
 
+def _normalize_trusted_write_state(
+    state: object,
+    *,
+    repository: str,
+    ruleset_id: int,
+    payload: dict,
+) -> dict | None:
+    """Normalize only the exact live omission shape of this trusted strict write.
+
+    This is intentionally not a generic rule semantic. The caller must already
+    be inside the causal marker/canonical write-attestation path and provide the
+    exact payload it just submitted. Any payload other than the canonical strict
+    creation+update(false) pair, or any observed extra/malformed rule structure,
+    remains non-matching.
+    """
+    if not isinstance(state, dict):
+        return None
+    if payload.get("rules") != _STRICT_WRITER_RULES:
+        return None
+    if state.get("rules") != _OMISSION_ONLY_WRITER_RULES:
+        return None
+
+    expected = _expected_state(repository=repository, ruleset_id=ruleset_id, payload=payload)
+    for field, value in expected.items():
+        if field == "rules":
+            continue
+        if state.get(field) != value:
+            return None
+
+    normalized = copy.deepcopy(state)
+    normalized["rules"] = copy.deepcopy(_STRICT_WRITER_RULES)
+    return normalized
+
+
+def _payload_from_omission_current(current_detail: dict) -> dict | None:
+    if current_detail.get("rules") != _OMISSION_ONLY_WRITER_RULES:
+        return None
+    return {
+        "name": current_detail.get("name"),
+        "target": current_detail.get("target"),
+        "enforcement": current_detail.get("enforcement"),
+        "conditions": copy.deepcopy(current_detail.get("conditions")),
+        "bypass_actors": copy.deepcopy(current_detail.get("bypass_actors")),
+        "rules": copy.deepcopy(_STRICT_WRITER_RULES),
+    }
+
+
+class NormalizedAttestedGitHubRulesetProtectionVerifier(AttestedGitHubRulesetProtectionVerifier):
+    """Attested verifier that canonicalizes only the causally-bound omission state."""
+
+    def __init__(self, *, http_get, **kwargs):
+        self._raw_http_get = http_get
+        self._normalization_context: tuple[str, int, dict] | None = None
+        super().__init__(http_get=self._get_with_trusted_normalization, **kwargs)
+
+    def _get_with_trusted_normalization(self, url: str, headers: dict[str, str]):
+        status, body = self._raw_http_get(url, headers)
+        context = self._normalization_context
+        if status != 200 or context is None or not isinstance(body, dict):
+            return status, body
+        if "state" not in body:
+            return status, body
+
+        repository, ruleset_id, current_detail = context
+        payload = _payload_from_omission_current(current_detail)
+        if payload is None:
+            return status, body
+        normalized_state = _normalize_trusted_write_state(
+            body.get("state"),
+            repository=repository,
+            ruleset_id=ruleset_id,
+            payload=payload,
+        )
+        if normalized_state is None:
+            return status, body
+        normalized_body = copy.deepcopy(body)
+        normalized_body["state"] = normalized_state
+        return status, normalized_body
+
+    def _latest_version_state(
+        self,
+        repository: str,
+        ruleset_id: int,
+        current_detail: dict,
+    ) -> tuple[dict, dict] | None:
+        self._normalization_context = (repository, ruleset_id, copy.deepcopy(current_detail))
+        try:
+            return super()._latest_version_state(repository, ruleset_id, current_detail)
+        finally:
+            self._normalization_context = None
+
+
 class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
     AttestedGitHubOperatorStoreRulesetProvisioner
 ):
     """Attested provisioner with bounded eventual-consistency stabilization.
 
-    Security semantics are unchanged: only an exact historical state match may
-    satisfy the marker/canonical attestation. A longer bounded window helps with
-    delayed history visibility; if the surface still does not converge, the
-    exception reports only structural metadata and mismatch field names.
+    The one compatibility allowance is scoped to a trusted write that explicitly
+    submitted the canonical strict writer payload and whose history state has the
+    exact omission-only serialization observed in live GitHub. It never grants a
+    generic read-only verifier authority to infer omitted parameters.
     """
 
     def __init__(
@@ -185,8 +287,14 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
                 state_name=state_name,
             )
 
-        mismatches = _state_mismatch_fields(
+        comparison_state = _normalize_trusted_write_state(
             state,
+            repository=repository,
+            ruleset_id=ruleset_id,
+            payload=payload,
+        ) or state
+        mismatches = _state_mismatch_fields(
+            comparison_state,
             repository=repository,
             ruleset_id=ruleset_id,
             payload=payload,
@@ -201,8 +309,9 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
                 rules_shape=_safe_rules_shape(state.get("rules")) if "rules" in mismatches else (),
             )
 
-        return (version_id, copy.deepcopy(state)), HistoryObservation(
-            "exact-match",
+        category = "normalized-exact-match" if comparison_state is not state else "exact-match"
+        return (version_id, copy.deepcopy(comparison_state)), HistoryObservation(
+            category,
             version_id=version_id,
             state_name=state_name,
         )
@@ -233,4 +342,17 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
         raise RulesetProvisioningError(
             "ruleset history stabilization exhausted for "
             f"{safe_target!r} after {self.attestation_attempts} attempts: {last.render()}"
+        )
+
+    def protection_verifier(self) -> NormalizedAttestedGitHubRulesetProtectionVerifier:
+        def get(url: str, headers: dict[str, str]):
+            return self.http_request("GET", url, headers, None)
+
+        return NormalizedAttestedGitHubRulesetProtectionVerifier(
+            token=self.admin_token,
+            operator_app_id=self.operator_app_id,
+            api_base=self.api_base,
+            api_version=self.api_version,
+            http_get=get,
+            write_attestations=self.write_attestations,
         )
