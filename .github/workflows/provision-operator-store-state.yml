@@ -63,13 +63,13 @@ jobs:
           PYTHONPATH=scripts python - <<'PY'
           import json
           import os
-          from operator_store_github_ruleset_provision import (
-              GitHubOperatorStoreRulesetProvisioner,
-              provision_operator_store_state_ref,
+          from operator_store_github_ruleset_attested import (
+              AttestedGitHubOperatorStoreRulesetProvisioner,
           )
+          from operator_store_github_ruleset_provision import provision_operator_store_state_ref
 
           app_id = int(os.environ['AI_SDLC_OPERATOR_APP_INTEGRATION_ID'])
-          provisioner = GitHubOperatorStoreRulesetProvisioner(
+          provisioner = AttestedGitHubOperatorStoreRulesetProvisioner(
               admin_token=os.environ['AI_SDLC_OPERATOR_ADMIN_TOKEN'],
               operator_app_id=app_id,
               api_base=os.environ['GITHUB_API_URL'],
