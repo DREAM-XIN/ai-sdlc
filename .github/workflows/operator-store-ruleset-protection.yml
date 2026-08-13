@@ -9,12 +9,14 @@ on:
       - "scripts/operator_store_github_ruleset_protection.py"
       - "scripts/operator_store_github_ruleset_provision.py"
       - "scripts/operator_store_github_ruleset_attested.py"
+      - "scripts/operator_store_github_ruleset_stabilized.py"
       - "scripts/operator_store_runtime.py"
       - "scripts/validate_operator_store_ruleset_protection.py"
       - "scripts/validate_operator_store_ruleset_pagination.py"
       - "scripts/validate_operator_store_ruleset_remediation.py"
       - "scripts/validate_operator_store_ruleset_live_compat.py"
       - "scripts/validate_operator_store_ruleset_write_attestation.py"
+      - "scripts/validate_operator_store_ruleset_history_stabilization.py"
       - "scripts/validate_operator_store_runtime.py"
   workflow_dispatch:
 
@@ -36,5 +38,7 @@ jobs:
         run: python scripts/validate_operator_store_ruleset_live_compat.py
       - name: Validate causal ruleset write attestation
         run: python scripts/validate_operator_store_ruleset_write_attestation.py
+      - name: Validate ruleset history stabilization diagnostics
+        run: python scripts/validate_operator_store_ruleset_history_stabilization.py
       - name: Validate Store runtime integration
         run: python scripts/validate_operator_store_runtime.py
