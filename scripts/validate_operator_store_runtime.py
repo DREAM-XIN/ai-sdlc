@@ -17,6 +17,8 @@ from operator_store_runtime import (
     build_trusted_operator_api_backends,
     build_trusted_operator_store_runtime,
 )
+from validate_operator_store_ruleset_protection import main as validate_operator_store_ruleset_protection
+from validate_operator_store_ruleset_remediation import main as validate_operator_store_ruleset_remediation
 
 REPO = "DREAM-XIN/ai-sdlc"
 NOW = "2026-08-10T04:30:00Z"
@@ -200,6 +202,8 @@ def validate_production_composition_guards():
 
 
 def main():
+    validate_operator_store_ruleset_protection()
+    validate_operator_store_ruleset_remediation()
     validate_remote_durability_and_cas()
     validate_concrete_protection_verifier()
     validate_production_composition_guards()
