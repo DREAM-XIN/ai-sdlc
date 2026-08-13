@@ -16,6 +16,7 @@ STATE_REF = "refs/heads/ai-sdlc-operator-state"
 RULESET_ID = 20775740
 APP_ID = 4576406
 SECRET = "diagnostic-test-admin-token"
+MALICIOUS_TEXT = "must-not-appear-in-diagnostic"
 
 
 def require(condition, message):
@@ -109,6 +110,7 @@ def _expect_failure(provisioner, payload, expected: str, *, minimum_version_id=N
         text = str(exc)
         require(expected in text, f"missing diagnostic category {expected!r}: {text}")
         require(SECRET not in text, "diagnostic leaked trusted admin token")
+        require(MALICIOUS_TEXT not in text, "diagnostic leaked arbitrary history payload text")
         return text
     raise AssertionError(f"expected fail-closed diagnostic {expected!r}")
 
@@ -141,16 +143,86 @@ def validate_persistent_stale_history_diagnostic():
     text = _expect_failure(_provisioner(api, attempts=3), marker, "state-name-mismatch")
     require("version_id=5" in text, "stale history diagnostic omitted version id")
     require("mismatch_fields=name" in text, "stale history diagnostic omitted name mismatch")
+    require("rules_shape=" not in text, "rules shape should not be emitted for name-only mismatch")
 
 
 def validate_state_shape_mismatch_diagnostic():
     marker = writer_ruleset_payload(STATE_REF, APP_ID)
     marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
-    malformed = _state(marker)
-    malformed["rules"] = [{"type": "creation"}, {"type": "update"}]
-    api = HistoryApi(history_versions=[6], states={6: malformed})
+    normalized = _state(marker)
+    normalized["rules"] = [{"type": "creation"}, {"type": "update"}]
+    api = HistoryApi(history_versions=[6], states={6: normalized})
     text = _expect_failure(_provisioner(api, attempts=2), marker, "state-shape-mismatch")
     require("mismatch_fields=rules" in text, "shape diagnostic did not identify rules mismatch")
+    require(
+        "rules_shape=0:creation:parameters=absent|1:update:parameters=absent" in text,
+        "shape diagnostic did not expose bounded omission-only rules shape",
+    )
+
+
+def validate_rules_shape_reports_only_bounded_semantics():
+    marker = writer_ruleset_payload(STATE_REF, APP_ID)
+    marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
+
+    explicit_false = _state(marker)
+    explicit_false["rules"] = [
+        {"type": "creation", "parameters": {}},
+        {
+            "type": "update",
+            "parameters": {
+                "update_allows_fetch_and_merge": False,
+                MALICIOUS_TEXT: MALICIOUS_TEXT,
+            },
+        },
+        {"type": MALICIOUS_TEXT, "parameters": {MALICIOUS_TEXT: MALICIOUS_TEXT}},
+    ]
+    text = _expect_failure(
+        _provisioner(HistoryApi(history_versions=[6], states={6: explicit_false}), attempts=1),
+        marker,
+        "state-shape-mismatch",
+    )
+    require(
+        "0:creation:parameters=present:update_allows_fetch_and_merge=absent:other_keys=0" in text,
+        "diagnostic did not classify empty creation parameters",
+    )
+    require(
+        "1:update:parameters=present:update_allows_fetch_and_merge=false:other_keys=1" in text,
+        "diagnostic did not classify explicit false update semantics",
+    )
+    require(
+        "2:other:parameters=present:update_allows_fetch_and_merge=absent:other_keys=1" in text,
+        "diagnostic did not redact unknown rule type/parameter keys",
+    )
+
+    explicit_true = _state(marker)
+    explicit_true["rules"] = [
+        {"type": "creation"},
+        {"type": "update", "parameters": {"update_allows_fetch_and_merge": True}},
+    ]
+    text = _expect_failure(
+        _provisioner(HistoryApi(history_versions=[7], states={7: explicit_true}), attempts=1),
+        marker,
+        "state-shape-mismatch",
+    )
+    require(
+        "1:update:parameters=present:update_allows_fetch_and_merge=true:other_keys=0" in text,
+        "diagnostic did not make permissive true visible",
+    )
+
+    malformed = _state(marker)
+    malformed["rules"] = [
+        {"type": "creation"},
+        {"type": "update", "parameters": {"update_allows_fetch_and_merge": MALICIOUS_TEXT}},
+    ]
+    text = _expect_failure(
+        _provisioner(HistoryApi(history_versions=[8], states={8: malformed}), attempts=1),
+        marker,
+        "state-shape-mismatch",
+    )
+    require(
+        "1:update:parameters=present:update_allows_fetch_and_merge=malformed:other_keys=0" in text,
+        "diagnostic did not classify malformed update parameter without echoing it",
+    )
 
 
 def validate_canonical_requires_strictly_newer_version():
@@ -198,6 +270,7 @@ def main():
     validate_delayed_history_visibility()
     validate_persistent_stale_history_diagnostic()
     validate_state_shape_mismatch_diagnostic()
+    validate_rules_shape_reports_only_bounded_semantics()
     validate_canonical_requires_strictly_newer_version()
     validate_transport_diagnostics_fail_closed()
     validate_bounded_default()
