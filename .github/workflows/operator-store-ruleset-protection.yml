@@ -17,6 +17,7 @@ on:
       - "scripts/validate_operator_store_ruleset_live_compat.py"
       - "scripts/validate_operator_store_ruleset_write_attestation.py"
       - "scripts/validate_operator_store_ruleset_history_stabilization.py"
+      - "scripts/validate_operator_store_ruleset_history_semantic_normalization.py"
       - "scripts/validate_operator_store_runtime.py"
   workflow_dispatch:
 
@@ -40,5 +41,7 @@ jobs:
         run: python scripts/validate_operator_store_ruleset_write_attestation.py
       - name: Validate ruleset history stabilization diagnostics
         run: python scripts/validate_operator_store_ruleset_history_stabilization.py
+      - name: Validate trusted ruleset history semantic normalization
+        run: python scripts/validate_operator_store_ruleset_history_semantic_normalization.py
       - name: Validate Store runtime integration
         run: python scripts/validate_operator_store_runtime.py
