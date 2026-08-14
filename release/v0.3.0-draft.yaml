@@ -6,6 +6,8 @@ final_manifest: release/v0.3.0.yaml
 release_theme: ai-operated-sdlc
 canonical_api_version: ai-sdlc.operator/v1
 operation_event_version: ai-sdlc.operation-event/v1
+evidence_ledger: release/v0.3.0-evidence.yaml
+release_ready: false
 
 release_spec_amendments:
   - issue: '#219'
@@ -312,7 +314,7 @@ acceptance_policy:
 
 required_workstreams:
   - id: operator-canonical-api-and-ai-client-adapters
-    status: proposed
+    status: unresolved
     includes:
       - transport-independent-typed-api
       - exact-api-versioning
@@ -324,7 +326,8 @@ required_workstreams:
       - one-write-capable-release-slice-adapter
       - canonical-conformance-tests
   - id: durable-operation-store-reservation-and-fencing
-    status: proposed
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#workstreams/durable-operation-store-reservation-and-fencing
     includes:
       - append-only-operation-events
       - deterministic-operation-projection
@@ -344,7 +347,8 @@ required_workstreams:
       - bounded-effect-resolution-authority-and-audit
       - fail-closed-legacy-lineage-migration
   - id: operator-vertical-loop
-    status: proposed
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#workstreams/operator-vertical-loop
     includes:
       - developer-dispatch
       - trusted-developer-result-translation
@@ -355,7 +359,8 @@ required_workstreams:
       - qa-dispatch
       - trusted-verification-verdict-translation
   - id: operator-recovery-concurrency-and-linearization
-    status: proposed
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#workstreams/operator-recovery-concurrency-and-linearization
     includes:
       - stale-revision-reread-and-replan
       - duplicate-request-and-callback-suppression
@@ -370,7 +375,8 @@ required_workstreams:
       - persist-ack-loss-recovery
       - concurrent-resume-safety
   - id: operator-decisions-authorization-notifications
-    status: proposed
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#workstreams/operator-decisions-authorization-notifications
     includes:
       - bounded-decision-object
       - exact-revision-ref-sha-generation-binding
@@ -379,7 +385,7 @@ required_workstreams:
       - notification-outbox
       - new-session-discovery
   - id: planning-manifest-validation
-    status: proposed
+    status: unresolved
     includes:
       - deterministic-draft-schema-or-validator
       - release-blocker-id-validation
@@ -487,75 +493,107 @@ required_dogfood:
 
 known_release_blockers:
   - id: arbitrary-worker-event-mutation
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/arbitrary-worker-event-mutation
   - id: missing-role-specific-trusted-translators
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/missing-role-specific-trusted-translators
   - id: reviewer-qa-candidate-head-binding-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/reviewer-qa-candidate-head-binding-gap
   - id: candidate-head-not-revalidated-before-persist
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/candidate-head-not-revalidated-before-persist
   - id: authorization-not-exactly-bound
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/authorization-not-exactly-bound
   - id: feature-branch-policy-escalation
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/feature-branch-policy-escalation
   - id: multiple-active-operation-generations
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/multiple-active-operation-generations
   - id: semantic-effect-reservation-generation-coupled
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/semantic-effect-reservation-generation-coupled
   - id: duplicate-external-dispatch-key-for-same-semantic-effect
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/duplicate-external-dispatch-key-for-same-semantic-effect
   - id: missing-launch-linearization-point
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/missing-launch-linearization-point
   - id: cancel-before-launch-linearization-can-still-launch
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/cancel-before-launch-linearization-can-still-launch
   - id: post-launch-linearization-can-create-different-dispatch-or-auto-persist
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/post-launch-linearization-can-create-different-dispatch-or-auto-persist
   - id: claim-launch-crash-recovery-gap
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/claim-launch-crash-recovery-gap
   - id: unknown-launch-can-be-bypassed-by-generation-takeover
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/unknown-launch-can-be-bypassed-by-generation-takeover
   - id: operation-store-cas-or-rebuild-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/operation-store-cas-or-rebuild-gap
   - id: callback-replay-side-effects
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/callback-replay-side-effects
   - id: persist-cancel-linearization-gap
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/persist-cancel-linearization-gap
   - id: operation-cancel-feature-cancel-ambiguity
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/operation-cancel-feature-cancel-ambiguity
   - id: new-session-discovery-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/new-session-discovery-gap
   - id: offline-user-stalls-durable-execution
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/offline-user-stalls-durable-execution
   - id: normal-feature-requires-manual-github-after-install
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/normal-feature-requires-manual-github-after-install
   - id: typed-api-version-or-capability-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/typed-api-version-or-capability-gap
   - id: fewer-than-two-supported-ai-client-adapters
     status: unresolved
   - id: no-write-capable-ai-client-adapter
     status: unresolved
   - id: decision-data-minimization-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/decision-data-minimization-gap
   - id: ai-can-synthesize-human-acceptance-evidence
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/ai-can-synthesize-human-acceptance-evidence
   - id: planning-manifest-validator-gap
     status: unresolved
   - id: missing-cross-revision-effect-lineage
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/missing-cross-revision-effect-lineage
   - id: unknown-launch-can-be-bypassed-by-feature-revision-or-candidate-change
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/unknown-launch-can-be-bypassed-by-feature-revision-or-candidate-change
   - id: unresolved-predecessor-can-create-independent-successor-dispatch
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/unresolved-predecessor-can-create-independent-successor-dispatch
   - id: unbounded-unknown-resolution-authority
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/unbounded-unknown-resolution-authority
   - id: stale-effect-resolution-can-apply-to-wrong-lineage-or-candidate
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/stale-effect-resolution-can-apply-to-wrong-lineage-or-candidate
   - id: legacy-unresolved-reservation-lineage-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/legacy-unresolved-reservation-lineage-gap
   - id: mixed-writer-lineage-enforcement-gap
-    status: unresolved
+    status: resolved-by-feature-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/mixed-writer-lineage-enforcement-gap
   - id: v0.2-authority-invariant-regression
-    status: unresolved
+    status: implemented-awaiting-release-evidence
+    evidence_record: release/v0.3.0-evidence.yaml#blockers/v0.2-authority-invariant-regression
 
 deferred_v0_3_x:
   - full-product-requirement-architecture-design-orchestration

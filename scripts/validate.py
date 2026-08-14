@@ -28,6 +28,7 @@ from validate_remediation_review_completion import main as validate_remediation_
 from validate_transition import validate_schema as validate_execution_schema
 from validate_transition import validate_transition
 from validate_v03_dogfood_evidence import main as validate_v03_dogfood_evidence
+from validate_v03_release_evidence import main as validate_v03_release_evidence
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec"
@@ -233,6 +234,7 @@ def main():
     validate_operator_vertical_remediation()
     validate_operator_vertical_gh_aw()
     validate_v03_dogfood_evidence()
+    validate_v03_release_evidence()
     errors = (
         validate_schemas()
         + validate_profiles()
