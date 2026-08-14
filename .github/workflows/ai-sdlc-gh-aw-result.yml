@@ -23,6 +23,7 @@ on:
         type: boolean
 
 permissions:
+  actions: read
   contents: write
   pull-requests: read
 
@@ -77,7 +78,47 @@ jobs:
           test -n "$default_branch"
           echo "value=$default_branch" >> "$GITHUB_OUTPUT"
 
+      - name: Fence Operation-bound Vertical legacy Feature persistence
+        id: legacy_fence
+        if: ${{ inputs.persist }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_REPOSITORY: ${{ github.repository }}
+          WORKER_RESULT_JSON: ${{ inputs.worker_result_json }}
+        run: |
+          set -euo pipefail
+          source_run_url=$(python - <<'PY'
+          import json, os
+          payload=json.loads(os.environ['WORKER_RESULT_JSON'])
+          rows=[
+              str(item.get('uri') or '')
+              for item in payload.get('evidence', [])
+              if isinstance(item, dict) and item.get('type') == 'runtime-run'
+          ]
+          if len(rows) == 1:
+              print(rows[0])
+          PY
+          )
+          prefix="https://github.com/$CONTROL_REPOSITORY/actions/runs/"
+          case "$source_run_url" in
+            "$prefix"*) source_run_id="${source_run_url#${prefix}}" ;;
+            *) echo "allowed=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if [[ ! "$source_run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          title=$(gh api "repos/$CONTROL_REPOSITORY/actions/runs/$source_run_id" --jq '.display_title')
+          if [[ "$title" =~ ^AI-SDLC\ gh-aw\ dispatch-[A-Za-z0-9._:-]+$ ]]; then
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "Operation-bound Vertical run detected; legacy Feature persistence is fenced"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout trusted control plane
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -85,6 +126,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout target workspace
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ steps.target.outputs.repository }}
@@ -94,11 +136,14 @@ jobs:
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         with:
           python-version: '3.12'
-      - run: pip install -r runtime/requirements-dev.txt
+      - if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
+        run: pip install -r runtime/requirements-dev.txt
 
       - name: Validate target branch
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           TARGET_REF: ${{ inputs.target_ref }}
@@ -111,6 +156,7 @@ jobs:
           fi
 
       - name: Materialize and validate worker result
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           WORKER_RESULT_JSON: ${{ inputs.worker_result_json }}
@@ -130,6 +176,7 @@ jobs:
 
       - name: Resolve canonical state paths
         id: paths
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -143,6 +190,7 @@ jobs:
 
       - name: Resolve trusted implementation candidate
         id: candidate
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
@@ -184,7 +232,7 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
       - name: Bind trusted candidate to proposed Event
-        if: ${{ steps.candidate.outputs.present == 'true' }}
+        if: ${{ (!inputs.persist || steps.legacy_fence.outputs.allowed == 'true') && steps.candidate.outputs.present == 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
@@ -202,6 +250,7 @@ jobs:
           mv proposed-event.with-candidate.yaml proposed-event.yaml
 
       - name: Build persistence plan
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
@@ -220,6 +269,7 @@ jobs:
             --output persistence-plan.json
 
       - name: Materialize proposed Feature state
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
@@ -237,6 +287,7 @@ jobs:
           python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         with:
           name: ai-sdlc-gh-aw-result
           path: |
@@ -245,7 +296,7 @@ jobs:
             persistence-plan.json
 
       - name: Persist validated result
-        if: ${{ inputs.persist }}
+        if: ${{ inputs.persist && steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           TARGET_REF: ${{ inputs.target_ref }}

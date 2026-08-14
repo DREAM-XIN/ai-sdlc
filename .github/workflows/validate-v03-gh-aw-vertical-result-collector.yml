@@ -1,0 +1,42 @@
+name: Validate Trusted v0.3 gh-aw Vertical Result Collector
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/operator_vertical_gh_aw_collector.py'
+      - 'scripts/operator_vertical_gh_aw_github_source.py'
+      - 'scripts/validate_operator_vertical_gh_aw_collector.py'
+      - 'scripts/validate_operator_vertical_gh_aw_github_source.py'
+      - '.github/workflows/ai-sdlc-gh-aw-result.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-gate-result.yml'
+      - '.github/workflows/validate-v03-gh-aw-vertical-result-collector.yml'
+      - 'scripts/operator_vertical.py'
+      - 'scripts/operator_vertical_gh_aw.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_vertical_store.py'
+      - 'scripts/operator_store.py'
+      - 'scripts/operator_store_model.py'
+      - 'spec/operator/vertical/**'
+      - 'runtimes/gh-aw/*-result.schema.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Validate Operation-bound gh-aw callback authority
+        env:
+          PYTHONPATH: scripts
+        run: python scripts/validate_operator_vertical_gh_aw_collector.py
+      - name: Validate production GitHub Actions result-source and legacy writer fence
+        env:
+          PYTHONPATH: scripts
+        run: python scripts/validate_operator_vertical_gh_aw_github_source.py
