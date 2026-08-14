@@ -1,0 +1,155 @@
+name: v0.3 Effect Safety Deterministic Support
+run-name: v0.3 deterministic effect-safety support ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - verification/v0.3-real-runtime-effect-safety-221
+    paths:
+      - '.github/workflows/v03-effect-safety-deterministic-support.yml'
+      - '.github/workflows/v03-real-runtime-full-preflight.yml'
+      - 'scripts/v03_effect_safety_matrix.py'
+      - 'scripts/v03_effect_safety_matrix_extended.py'
+      - 'scripts/v03_effect_safety_matrix_full_support.py'
+      - 'scripts/v03_effect_safety_matrix_release_support.py'
+      - 'scripts/v03_effect_safety_release_scenarios.py'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/validate_v03_effect_safety_release_evidence.py'
+      - 'scripts/v03_real_runtime_prerequisites.py'
+      - 'scripts/v03_real_runtime_full_preflight.py'
+      - 'scripts/run_v03_real_runtime_full_preflight.py'
+      - 'scripts/run_v03_callback_orchestration_support.py'
+      - 'scripts/validate_v03_real_runtime_full_preflight.py'
+      - 'scripts/v03_real_runtime_fault_injection.py'
+      - 'scripts/validate_v03_real_runtime_fault_injection.py'
+      - 'scripts/v03_real_runtime_lost_ack_orchestration.py'
+      - 'scripts/validate_v03_real_runtime_lost_ack_orchestration.py'
+      - 'scripts/validate_v03_launch_cancel_orchestration.py'
+      - 'scripts/validate_v03_persist_cancel_orchestration.py'
+      - 'scripts/validate_v03_unknown_takeover_orchestration.py'
+      - 'scripts/validate_v03_persist_ack_loss_orchestration.py'
+      - 'scripts/validate_v03_concurrent_resume_orchestration.py'
+      - 'scripts/validate_v03_callback_orchestration.py'
+      - 'scripts/validate_operator_github_actions_transport.py'
+      - 'scripts/operator_vertical.py'
+      - 'scripts/operator_vertical_callback.py'
+      - 'scripts/operator_vertical_executor.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/operator_store.py'
+      - 'scripts/operator_store_model.py'
+      - 'scripts/operator_store_git.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_vertical_store.py'
+      - 'scripts/operator_effect_lineage_integration.py'
+      - 'scripts/operator_effect_lineage_fences.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-effect-safety-deterministic-support.yml'
+      - '.github/workflows/v03-real-runtime-full-preflight.yml'
+      - 'scripts/v03_effect_safety_matrix.py'
+      - 'scripts/v03_effect_safety_matrix_extended.py'
+      - 'scripts/v03_effect_safety_matrix_full_support.py'
+      - 'scripts/v03_effect_safety_matrix_release_support.py'
+      - 'scripts/v03_effect_safety_release_scenarios.py'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/validate_v03_effect_safety_release_evidence.py'
+      - 'scripts/v03_real_runtime_prerequisites.py'
+      - 'scripts/v03_real_runtime_full_preflight.py'
+      - 'scripts/run_v03_real_runtime_full_preflight.py'
+      - 'scripts/run_v03_callback_orchestration_support.py'
+      - 'scripts/validate_v03_real_runtime_full_preflight.py'
+      - 'scripts/v03_real_runtime_fault_injection.py'
+      - 'scripts/validate_v03_real_runtime_fault_injection.py'
+      - 'scripts/v03_real_runtime_lost_ack_orchestration.py'
+      - 'scripts/validate_v03_real_runtime_lost_ack_orchestration.py'
+      - 'scripts/validate_v03_launch_cancel_orchestration.py'
+      - 'scripts/validate_v03_persist_cancel_orchestration.py'
+      - 'scripts/validate_v03_unknown_takeover_orchestration.py'
+      - 'scripts/validate_v03_persist_ack_loss_orchestration.py'
+      - 'scripts/validate_v03_concurrent_resume_orchestration.py'
+      - 'scripts/validate_v03_callback_orchestration.py'
+      - 'scripts/validate_operator_github_actions_transport.py'
+      - 'scripts/operator_vertical.py'
+      - 'scripts/operator_vertical_callback.py'
+      - 'scripts/operator_vertical_executor.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_effect_lineage_integration.py'
+      - 'scripts/operator_effect_lineage_fences.py'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-support:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate transport and support matrix
+        run: python scripts/validate_operator_github_actions_transport.py
+      - name: Validate real-runtime release evidence contract
+        run: python scripts/validate_v03_effect_safety_release_evidence.py
+      - name: Validate zero-effect full-runtime preflight contract
+        run: python scripts/validate_v03_real_runtime_full_preflight.py
+      - name: Validate precise lost-ACK crash and restart lookup window
+        run: python scripts/validate_v03_real_runtime_fault_injection.py
+      - name: Validate G0 crash to G1 same-key adoption orchestration
+        run: |
+          mkdir -p evidence
+          set +e
+          python scripts/validate_v03_real_runtime_lost_ack_orchestration.py > evidence/v03-lost-ack-orchestration-validation.log 2>&1
+          status=$?
+          cat evidence/v03-lost-ack-orchestration-validation.log
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v03-lost-ack-orchestration-validation-log
+          path: evidence/v03-lost-ack-orchestration-validation.log
+          if-no-files-found: warn
+      - name: Render release-scoped deterministic support artifact
+        run: |
+          mkdir -p evidence
+          python scripts/v03_effect_safety_matrix_release_support.py > evidence/v03-effect-safety-deterministic-support.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('evidence/v03-effect-safety-deterministic-support.json')
+          doc = json.loads(path.read_text(encoding='utf-8'))
+          pending = 'duplicate-worker-completion'
+          assert doc['evidence_kind'] == 'deterministic-support'
+          assert doc['release_eligible'] is False
+          assert len(doc['release_required_scenarios']) == 12
+          assert pending in doc['release_required_scenarios']
+          assert doc['deterministic_support_complete'] is False
+          assert doc['release_scenarios_without_deterministic_support_yet'] == [pending]
+          assert len(doc['scenarios']) == 11
+          assert doc['runtime_has_stale_callback_convergence'] is True
+          assert len(doc['orchestration_supported_scenarios']) == 11
+          assert doc['orchestration_pending_runtime_remediation'] == [pending]
+          assert doc['release_scenario_prerequisites'][pending]['issue'] == 264
+          assert doc['release_scenario_prerequisites'][pending]['pr'] == 270
+          assert 'stale-candidate-result' in doc['orchestration_supported_scenarios']
+          assert all(doc['scenarios'][name]['evidence_level'] == 'deterministic-orchestration' for name in doc['orchestration_supported_scenarios'])
+          assert doc['scenarios']['stale-candidate-result']['release_eligible'] is False
+          assert all(row['release_eligible'] is False for row in doc['scenarios'].values())
+          print(json.dumps({
+              'aggregate': doc['aggregate'],
+              'orchestration_supported': doc['orchestration_supported_scenarios'],
+              'runtime_has_stale_callback_convergence': doc['runtime_has_stale_callback_convergence'],
+              'runtime_remediation_pending': doc['orchestration_pending_runtime_remediation'],
+          }, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-effect-safety-deterministic-support
+          path: evidence/v03-effect-safety-deterministic-support.json
+          if-no-files-found: error

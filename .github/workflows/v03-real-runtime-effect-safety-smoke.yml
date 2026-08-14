@@ -1,0 +1,273 @@
+name: v0.3 Real Runtime Effect Safety Smoke
+run-name: v0.3 real-runtime effect-safety smoke ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - verification/v0.3-real-runtime-effect-safety-221
+    paths:
+      - '.github/workflows/v03-real-runtime-effect-safety-smoke.yml'
+      - 'scripts/v03_real_runtime_effect_safety_smoke.py'
+      - 'scripts/v03_real_runtime_smoke_fixture.py'
+      - 'scripts/v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_smoke_fixture.py'
+      - 'scripts/validate_v03_real_runtime_smoke_authority_gate.py'
+      - 'scripts/v03_real_runtime_full_preflight.py'
+      - 'scripts/v03_real_runtime_prerequisites.py'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/operator_github_actions_transport.py'
+      - 'scripts/operator_vertical.py'
+      - 'scripts/operator_vertical_controller.py'
+      - 'scripts/operator_store_model.py'
+      - 'scripts/validate_operator_github_actions_transport.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-real-runtime-effect-safety-smoke.yml'
+      - 'scripts/v03_real_runtime_effect_safety_smoke.py'
+      - 'scripts/v03_real_runtime_smoke_fixture.py'
+      - 'scripts/v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_smoke_fixture.py'
+      - 'scripts/validate_v03_real_runtime_smoke_authority_gate.py'
+      - 'scripts/v03_real_runtime_full_preflight.py'
+      - 'scripts/v03_real_runtime_prerequisites.py'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/operator_github_actions_transport.py'
+      - 'scripts/operator_vertical.py'
+      - 'scripts/operator_vertical_controller.py'
+      - 'scripts/operator_store_model.py'
+      - 'scripts/validate_operator_github_actions_transport.py'
+  workflow_dispatch:
+    inputs:
+      fi_pr_number:
+        description: 'Exact open candidate PR number for the real fault-injection fixture'
+        required: true
+        type: string
+      fi_feature_id:
+        description: 'Exact ACTIVE Feature id for the real fault-injection fixture'
+        required: true
+        type: string
+      fi_target_ref:
+        description: 'Exact trusted Feature ref matching the candidate PR head ref'
+        required: true
+        type: string
+
+# Automatic push/PR validation never receives Actions write authority. Only the
+# reviewed workflow on trusted main may run the explicit manual execution job.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  automatic-preflight:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install runtime validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate transport semantics
+        run: python scripts/validate_operator_github_actions_transport.py
+      - name: Validate manual trusted-main execution authority contract
+        run: python scripts/validate_v03_real_runtime_execution_authority.py
+      - name: Validate selector-derived smoke fixture contract
+        run: python scripts/validate_v03_real_runtime_smoke_fixture.py
+      - name: Validate smoke authority gate ordering
+        run: python scripts/validate_v03_real_runtime_smoke_authority_gate.py
+      - name: Probe release prerequisites and fail closed before external authority
+        id: automatic-probe
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FI_EXTERNAL_EXECUTION_AUTHORIZED: '0'
+          # Historical completed fixture is intentionally retained as a fail-closed
+          # canary. This automatic job also has no actions:write permission.
+          FI_PR_NUMBER: '230'
+          FI_FEATURE_ID: 'F-OPERATOR-DECISIONS-NOTIFICATIONS-0001'
+          FI_TARGET_REF: 'feature/F-OPERATOR-DECISIONS-NOTIFICATIONS-0001'
+        run: python scripts/v03_real_runtime_effect_safety_smoke.py
+      - name: Validate automatic preflight BLOCKED evidence
+        env:
+          PROBE_OUTCOME: ${{ steps.automatic-probe.outcome }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('evidence/v03-real-runtime-effect-safety-smoke.json')
+          if os.environ.get('PROBE_OUTCOME') != 'failure':
+              raise SystemExit('automatic smoke must fail closed before external execution authority')
+          if not path.is_file():
+              raise SystemExit('automatic smoke produced no evidence artifact')
+          evidence = json.loads(path.read_text(encoding='utf-8'))
+          if evidence.get('status') != 'BLOCKED':
+              raise SystemExit(f"automatic smoke status must be BLOCKED: {evidence.get('status')!r}")
+          if evidence.get('release_eligible') is not False:
+              raise SystemExit('automatic smoke must never be release eligible')
+          observations = evidence.get('observations') or {}
+          if observations.get('external_dispatch_attempted') is not False:
+              raise SystemExit('automatic smoke attempted an external dispatch')
+          if observations.get('duplicate_external_effect_count') != 0:
+              raise SystemExit('automatic smoke observed a duplicate external effect')
+          if observations.get('speculative_retry_under_unknown_count') != 0:
+              raise SystemExit('automatic smoke observed a speculative UNKNOWN retry')
+          remaining = evidence.get('remaining_release_proof')
+          if not isinstance(remaining, list) or not remaining:
+              raise SystemExit('BLOCKED automatic evidence must retain remaining release proof')
+          print('Automatic real-runtime preflight correctly blocked with zero external effect')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v03-real-runtime-effect-safety-smoke
+          path: evidence/v03-real-runtime-effect-safety-smoke.json
+          if-no-files-found: warn
+      - name: Publish durable automatic preflight receipt to Issue 221
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib import request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          token = os.environ['GITHUB_TOKEN']
+          run_id = os.environ['RUN_ID']
+          evidence_path = Path('evidence/v03-real-runtime-effect-safety-smoke.json')
+          evidence = json.loads(evidence_path.read_text(encoding='utf-8')) if evidence_path.exists() else {}
+          lines = [
+              '<!-- ai-sdlc-v03-real-runtime-smoke -->',
+              f"v0.3 automatic real-runtime preflight job: **{os.environ['JOB_STATUS']}**",
+              f"Evidence status: **{evidence.get('status', 'UNRECORDED')}**",
+              f"Release eligible: **{str(bool(evidence.get('release_eligible', False))).lower()}**",
+              f'Run: `{run_id}`',
+              f"Head: `{os.environ['HEAD_SHA']}`",
+              'External launch authority: **disabled for automatic push/PR validation**',
+          ]
+          remaining = [str(item) for item in evidence.get('remaining_release_proof', [])]
+          if remaining:
+              lines.append('Remaining release proof:')
+              lines.extend(f'- {item}' for item in remaining)
+          payload = json.dumps({'body': '\n'.join(lines)}).encode()
+          req = request.Request(f'{api}/repos/{repo}/issues/221/comments', data=payload, method='POST')
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('Authorization', f'Bearer {token}')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          req.add_header('Content-Type', 'application/json')
+          with request.urlopen(req, timeout=30) as response:
+              if response.status != 201:
+                  raise SystemExit(f'failed to publish automatic preflight receipt: HTTP {response.status}')
+          PY
+
+  reject-non-main-manual-dispatch:
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Reject external execution from non-main workflow ref
+        run: |
+          echo 'Real external dispatch is authorized only from a reviewed workflow on refs/heads/main.' >&2
+          exit 1
+
+  trusted-main-manual-smoke:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install runtime validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate transport semantics
+        run: python scripts/validate_operator_github_actions_transport.py
+      - name: Validate manual trusted-main execution authority contract
+        run: python scripts/validate_v03_real_runtime_execution_authority.py
+      - name: Validate selector-derived smoke fixture contract
+        run: python scripts/validate_v03_real_runtime_smoke_fixture.py
+      - name: Validate smoke authority gate ordering
+        run: python scripts/validate_v03_real_runtime_smoke_authority_gate.py
+      - name: Launch and recover the exact selector-derived gh-aw dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          FI_EXTERNAL_EXECUTION_AUTHORIZED: '1'
+          FI_PR_NUMBER: ${{ inputs.fi_pr_number }}
+          FI_FEATURE_ID: ${{ inputs.fi_feature_id }}
+          FI_TARGET_REF: ${{ inputs.fi_target_ref }}
+        run: python scripts/v03_real_runtime_effect_safety_smoke.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v03-real-runtime-effect-safety-smoke
+          path: evidence/v03-real-runtime-effect-safety-smoke.json
+          if-no-files-found: warn
+      - name: Publish durable manual smoke receipt to Issue 221
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib import request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          token = os.environ['GITHUB_TOKEN']
+          run_id = os.environ['RUN_ID']
+          evidence_path = Path('evidence/v03-real-runtime-effect-safety-smoke.json')
+          evidence = json.loads(evidence_path.read_text(encoding='utf-8')) if evidence_path.exists() else {}
+          lines = [
+              '<!-- ai-sdlc-v03-real-runtime-smoke -->',
+              f"v0.3 trusted-main manual real-runtime smoke job: **{os.environ['JOB_STATUS']}**",
+              f"Evidence status: **{evidence.get('status', 'UNRECORDED')}**",
+              f"Release eligible: **{str(bool(evidence.get('release_eligible', False))).lower()}**",
+              f'Run: `{run_id}`',
+              f"Head: `{os.environ['HEAD_SHA']}`",
+              'External launch authority: **explicit workflow_dispatch on trusted main**',
+          ]
+          remaining = [str(item) for item in evidence.get('remaining_release_proof', [])]
+          if remaining:
+              lines.append('Remaining release proof:')
+              lines.extend(f'- {item}' for item in remaining)
+          payload = json.dumps({'body': '\n'.join(lines)}).encode()
+          req = request.Request(f'{api}/repos/{repo}/issues/221/comments', data=payload, method='POST')
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('Authorization', f'Bearer {token}')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          req.add_header('Content-Type', 'application/json')
+          with request.urlopen(req, timeout=30) as response:
+              if response.status != 201:
+                  raise SystemExit(f'failed to publish manual smoke receipt: HTTP {response.status}')
+          PY
