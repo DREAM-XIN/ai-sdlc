@@ -1,0 +1,35 @@
+name: Validate Trusted v0.3 Protected Policy Materializer
+
+on:
+  pull_request:
+    paths:
+      - "scripts/operator_protected_policy_materializer.py"
+      - "scripts/validate_operator_protected_policy_materializer.py"
+      - "scripts/validate_v03_vertical_writer_fence_authority.py"
+      - "scripts/materialize_v03_vertical_policy_state.py"
+      - "scripts/recover_v03_vertical_policy_state.py"
+      - "scripts/postverify_v03_vertical_policy_state.py"
+      - "scripts/validate_v03_vertical_policy_materialization_workflow.py"
+      - "scripts/validate_v03_vertical_policy_recovery.py"
+      - "scripts/validate_v03_vertical_policy_postverify.py"
+      - ".github/workflows/materialize-v03-vertical-policy-state.yml"
+      - ".github/workflows/validate-v03-protected-policy-materializer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python scripts/validate_operator_protected_policy_materializer.py
+      - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_writer_fence_authority.py
+      - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_materialization_workflow.py
+      - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_recovery.py
+      - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_postverify.py
