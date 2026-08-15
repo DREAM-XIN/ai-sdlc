@@ -1,0 +1,28 @@
+name: Validate Trusted v0.3 Vertical Policy State
+
+on:
+  push:
+    branches:
+      - runtime/trusted-vertical-policy-state-263
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validator dependencies
+        run: pip install --quiet 'PyYAML>=6,<7' 'jsonschema>=4.23,<5'
+      - name: Validate exact protected Vertical policy authority
+        env:
+          PYTHONPATH: scripts
+        run: python scripts/validate_operator_vertical_policy_state.py
