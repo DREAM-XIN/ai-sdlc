@@ -15,6 +15,7 @@ from operator_store_model import (
     rebuild_projection,
 )
 from operator_effect_lineage_integration import assert_lineage_member
+from operator_external_create_attempt import is_external_create_attempt_path
 
 ROLLOUT_SCHEMA = "ai-sdlc.effect-lineage-rollout/v1"
 WRITER_FENCE_SCHEMA = "ai-sdlc.writer-fence-receipt/v1"
@@ -25,6 +26,7 @@ REQUIRED_FENCED_CAPABILITIES = frozenset(
         "raw-semantic-reservation",
         "raw-dispatch-claim",
         "raw-launch-authorization",
+        "raw-external-create-attempt",
     }
 )
 
@@ -163,7 +165,11 @@ class EffectLineageWriteFence:
             operation_id = None
             semantic_key = None
             kind = None
-            if mutation.kind == "create_immutable" and mutation.path.startswith(reservation_prefix):
+            if mutation.kind == "create_immutable" and is_external_create_attempt_path(mutation.path):
+                operation_id = value.get("created_operation_id")
+                semantic_key = value.get("semantic_effect_key")
+                kind = "external-create-attempt"
+            elif mutation.kind == "create_immutable" and mutation.path.startswith(reservation_prefix):
                 operation_id = value.get("created_operation_id")
                 semantic_key = value.get("semantic_effect_key")
                 kind = "reservation"
@@ -210,5 +216,5 @@ class EffectLineageWriteFence:
             except Exception as exc:
                 raise StoreCommandError(
                     "MIXED_WRITER_FENCED",
-                    "vertical reservation/claim/launch authorization is not bound to the current Effect Lineage leaf",
+                    "vertical reservation/claim/launch authorization/external-create attempt is not bound to the current Effect Lineage leaf",
                 ) from exc

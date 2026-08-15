@@ -5,6 +5,7 @@ from __future__ import annotations
 from operator_store import StoreCommandError, plan_authorize_launch, plan_dispatch_claim
 from operator_store_model import StoreMutationPlan, StoreSnapshot, dispatch_claim_path
 from operator_effect_lineage_integration import assert_lineage_member
+from operator_external_create_attempt import plan_external_create_attempt
 
 LINEAGE_WRITER_CAPABILITY = "lineage-aware-v1"
 TRUSTED_WRITER_RESULT_FIELD = "_trusted_writer_capability"
@@ -73,5 +74,36 @@ def plan_lineage_authorize_launch(
             verified_expected_revision=verified_expected_revision,
             verified_stage=verified_stage,
             verified_candidate_head_sha=verified_candidate_head_sha,
+        )
+    )
+
+
+def plan_lineage_external_create_attempt(
+    snapshot: StoreSnapshot,
+    *,
+    operation_id: str,
+    generation: int,
+    claim_id: str,
+    dispatch_id: str,
+    semantic_effect_key: str,
+    external_dispatch_key_value: str,
+    execution_binding: dict,
+    occurred_at: str,
+    trusted_context_digest: str,
+):
+    """Acquire/reuse the one-shot create attempt only for the current lineage leaf."""
+    assert_lineage_member(snapshot, semantic_effect_key)
+    return _mark(
+        plan_external_create_attempt(
+            snapshot,
+            operation_id=operation_id,
+            generation=generation,
+            claim_id=claim_id,
+            dispatch_id=dispatch_id,
+            semantic_effect_key=semantic_effect_key,
+            external_dispatch_key_value=external_dispatch_key_value,
+            execution_binding=execution_binding,
+            occurred_at=occurred_at,
+            trusted_context_digest=trusted_context_digest,
         )
     )
