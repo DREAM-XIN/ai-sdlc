@@ -151,7 +151,22 @@ jobs:
             --expected-revision "$EXPECTED_REVISION" \
             --candidate-head-sha "$CANDIDATE_HEAD_SHA"
 
+      - name: Fence Operation-bound Vertical legacy Gate persistence
+        id: legacy_fence
+        if: ${{ inputs.persist }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title=$(jq -r '.display_title // ""' source-run.json)
+          if [[ "$title" =~ ^AI-SDLC\ gh-aw\ dispatch-[A-Za-z0-9._:-]+$ ]]; then
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "Operation-bound Vertical run detected; legacy Gate persistence is fenced"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout target Feature branch
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.target_repository }}
@@ -162,6 +177,7 @@ jobs:
 
       - name: Validate transport identity and current candidate
         id: candidate
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
@@ -194,6 +210,7 @@ jobs:
           echo "head_sha=$current_head" >> "$GITHUB_OUTPUT"
 
       - name: Fetch and validate Safe Output comment
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
@@ -211,6 +228,7 @@ jobs:
           test "$(jq -r '.user.type' gate-comment.json)" = "Bot"
 
       - name: Extract closed Gate-role result envelope
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           FEATURE_ID: ${{ inputs.feature_id }}
@@ -257,6 +275,7 @@ jobs:
 
       - name: Translate recommendation into bounded Feature Event
         id: paths
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
@@ -276,6 +295,7 @@ jobs:
           echo "event_path=state/events/$FEATURE_ID/$event_id.yaml" >> "$GITHUB_OUTPUT"
 
       - name: Build trusted persistence plan
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
@@ -292,6 +312,7 @@ jobs:
             --output persistence-plan.json
 
       - name: Materialize and validate proposed Feature state
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           MANIFEST_PATH: ${{ steps.paths.outputs.manifest_path }}
@@ -309,6 +330,7 @@ jobs:
           python runtime/scripts/validate_feature_manifest.py "workspace/$MANIFEST_PATH"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !inputs.persist || steps.legacy_fence.outputs.allowed == 'true' }}
         with:
           name: ai-sdlc-gh-aw-gate-result
           path: |
@@ -320,7 +342,7 @@ jobs:
             persistence-plan.json
 
       - name: Revalidate candidate head before Gate persistence
-        if: ${{ inputs.persist }}
+        if: ${{ inputs.persist && steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ steps.target.outputs.cross_repo == 'true' && steps.target_token.outputs.token || github.token }}
@@ -333,7 +355,7 @@ jobs:
           test "$current_head" = "$CANDIDATE_HEAD_SHA"
 
       - name: Persist validated Gate result
-        if: ${{ inputs.persist }}
+        if: ${{ inputs.persist && steps.legacy_fence.outputs.allowed == 'true' }}
         shell: bash
         env:
           TARGET_REF: ${{ inputs.target_ref }}
