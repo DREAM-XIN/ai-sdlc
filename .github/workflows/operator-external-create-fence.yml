@@ -1,0 +1,24 @@
+name: Validate Operator External Create Fence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/operator-external-create-fence.yml"
+      - "scripts/operator_external_create_attempt.py"
+      - "scripts/operator_external_create_gateway.py"
+      - "scripts/operator_effect_lineage_fences.py"
+      - "scripts/operator_effect_rollout.py"
+      - "scripts/operator_vertical_runtime.py"
+      - "scripts/validate_operator_external_create_fence.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate durable one-shot external-create execution fence
+        run: python scripts/validate_operator_external_create_fence.py
