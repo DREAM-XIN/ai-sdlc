@@ -38,17 +38,52 @@ class OperatorStoreRuntime:
     def protected_receipt(self):
         return self.protection_verifier.verify(self.backend.repository, self.backend.state_ref)
 
-    def commit_replanned(self, planner):
-        receipt = self.protected_receipt()
+    def _fresh_protected_receipt(self):
+        try:
+            receipt = self.protected_receipt()
+            receipt.validate_for(self.backend.repository, self.backend.state_ref)
+            return receipt
+        except ProtectionError:
+            raise
+        except Exception as exc:
+            raise ProtectionError("trusted protection verification failed") from exc
 
-        def guarded(snapshot):
-            plan = planner(snapshot)
-            if self.plan_guard is not None:
-                self.plan_guard(snapshot, plan)
-            return plan
+    @staticmethod
+    def _protection_authority(receipt):
+        return receipt.verifier_identity, receipt.policy_digest
+
+    def commit_replanned(self, planner, *, max_attempts: int = 4):
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+
+        baseline_authority = None
+        last_conflict = None
 
         try:
-            return self.backend.commit_replanned(guarded, receipt)
+            for _ in range(max_attempts):
+                # Protection authority is refreshed for every CAS attempt. A conflict
+                # never reuses the receipt that authorized the previous attempt.
+                receipt = self._fresh_protected_receipt()
+                authority = self._protection_authority(receipt)
+                if baseline_authority is None:
+                    baseline_authority = authority
+                elif authority != baseline_authority:
+                    raise ProtectionError("operator Store protection authority changed during CAS retry")
+
+                snapshot = self.backend.read_snapshot()
+                plan = planner(snapshot)
+                if self.plan_guard is not None:
+                    self.plan_guard(snapshot, plan)
+
+                try:
+                    # Exactly one write attempt uses this freshly verified receipt.
+                    # The runtime, rather than the backend retry helper, owns retry so
+                    # the next attempt must re-enter trusted protection verification.
+                    return self.backend.commit(plan, receipt)
+                except CasConflict as exc:
+                    last_conflict = exc
+
+            raise CasConflict("operator state ref CAS retries exhausted") from last_conflict
         except ProtectionError as exc:
             raise StoreBackendError("POLICY_DENIED", str(exc)) from exc
         except CasConflict as exc:

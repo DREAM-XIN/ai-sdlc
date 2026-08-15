@@ -5,12 +5,14 @@ on:
     paths:
       - ".github/workflows/operator-store-ruleset-protection.yml"
       - ".github/workflows/provision-operator-store-state.yml"
+      - "scripts/operator_store_backends.py"
       - "scripts/operator_store_github_protection_composite.py"
       - "scripts/operator_store_github_ruleset_protection.py"
       - "scripts/operator_store_github_ruleset_provision.py"
       - "scripts/operator_store_github_ruleset_attested.py"
       - "scripts/operator_store_github_ruleset_stabilized.py"
       - "scripts/operator_store_runtime.py"
+      - "scripts/validate_operator_store_cas_protection_refresh.py"
       - "scripts/validate_operator_store_ruleset_protection.py"
       - "scripts/validate_operator_store_ruleset_pagination.py"
       - "scripts/validate_operator_store_ruleset_remediation.py"
@@ -45,3 +47,5 @@ jobs:
         run: python scripts/validate_operator_store_ruleset_history_semantic_normalization.py
       - name: Validate Store runtime integration
         run: python scripts/validate_operator_store_runtime.py
+      - name: Validate fresh protection authority across CAS retries
+        run: python scripts/validate_operator_store_cas_protection_refresh.py
