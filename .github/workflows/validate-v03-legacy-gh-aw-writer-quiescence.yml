@@ -1,0 +1,25 @@
+name: Validate v0.3 Legacy gh-aw Writer Quiescence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ai-sdlc-gh-aw-command.yml"
+      - ".github/workflows/ai-sdlc-gh-aw-dispatch.yml"
+      - ".github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml"
+      - ".github/workflows/ai-sdlc-gh-aw-cross-repo-dispatch.yml"
+      - ".github/workflows/validate-v03-legacy-gh-aw-writer-quiescence.yml"
+      - "templates/github/ai-sdlc-command.yml"
+      - "scripts/verify_git_write_precondition.py"
+      - "scripts/validate_v03_legacy_gh_aw_writer_quiescence.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate legacy effectful writer quiescence
+        run: python scripts/validate_v03_legacy_gh_aw_writer_quiescence.py
