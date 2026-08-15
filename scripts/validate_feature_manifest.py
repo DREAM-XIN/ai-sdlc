@@ -27,6 +27,32 @@ def duplicates(items):
     return sorted(dupes)
 
 
+def _artifact_backed_code_review_remediation(doc, task, stage_by_id):
+    """Allow Code-Review-first profiles to remediate their draft implementation artifact.
+
+    The normal contract targets a completed implementation lifecycle stage. A
+    deliberately Code-Review-first profile has no such stage; its one draft
+    implementation artifact is the reviewed object. In that exact shape the
+    existing `stage: implementation` remediation identity is artifact-backed,
+    while lifecycle remains at code-review / WORKING.
+    """
+    if (
+        task.get("stage") != "implementation"
+        or task.get("source_stage") != "code-review"
+        or "implementation" in stage_by_id
+        or doc["workflow"].get("current_stage") != "code-review"
+        or (stage_by_id.get("code-review") or {}).get("status") != "WORKING"
+    ):
+        return False
+    drafts = [
+        artifact
+        for artifact in doc.get("artifacts", [])
+        if artifact.get("type") == "implementation"
+        and artifact.get("status", "draft") == "draft"
+    ]
+    return len(drafts) == 1
+
+
 def validate_manifest(doc):
     errors = []
 
@@ -79,8 +105,10 @@ def validate_manifest(doc):
             continue
         target_stage = task["stage"]
         source_stage = task["source_stage"]
+        artifact_backed = _artifact_backed_code_review_remediation(doc, task, stage_by_id)
         if target_stage not in stage_by_id:
-            errors.append(f"semantic: remediation task {task_id} references unknown stage {target_stage}")
+            if not artifact_backed:
+                errors.append(f"semantic: remediation task {task_id} references unknown stage {target_stage}")
         elif stage_by_id[target_stage]["status"] != "DONE":
             errors.append(
                 f"semantic: remediation task {task_id} targets stage {target_stage} which is not DONE"

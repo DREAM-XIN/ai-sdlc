@@ -1,0 +1,297 @@
+name: Provision v0.3 Real Runtime Fixture
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  reject-non-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: |
+          echo "v0.3 real-runtime fixture provisioning is authorized only from refs/heads/main" >&2
+          exit 1
+
+  provision:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      FIXTURE_FEATURE_ID: F-OPERATOR-V03-REAL-RUNTIME-FI-0001
+      FIXTURE_REF: verification/v0.3-real-runtime-fixture-221
+      FIXTURE_MANIFEST: state/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0001.yaml
+      FIXTURE_EVENT: state/events/F-OPERATOR-V03-REAL-RUNTIME-FI-0001/EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0001-CODE-REVIEW-START.yaml
+      FIXTURE_IMPLEMENTATION: docs/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0001/implementation.md
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+
+      - name: Resolve trusted fixture provisioning state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git config user.name "AI-SDLC Fixture Provisioner"
+          git config user.email "fixture-provisioner@ai-sdlc.invalid"
+
+          exact_paths() {
+            local before="$1"
+            local after="$2"
+            shift 2
+            local actual expected
+            actual="$(git diff --name-only "$before" "$after" | LC_ALL=C sort)"
+            expected="$(printf '%s\n' "$@" | LC_ALL=C sort)"
+            test "$actual" = "$expected" || {
+              echo "fixture branch path set differs from trusted provisioner shape" >&2
+              printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
+              exit 1
+            }
+          }
+
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$FIXTURE_REF" | awk '{print $1}')"
+          if [ -z "$remote_sha" ]; then
+            git checkout -b "$FIXTURE_REF" "$GITHUB_SHA"
+            state="fresh"
+            base_sha="$GITHUB_SHA"
+          else
+            git fetch origin "refs/heads/$FIXTURE_REF:refs/remotes/origin/$FIXTURE_REF"
+            git checkout -b "$FIXTURE_REF" "refs/remotes/origin/$FIXTURE_REF"
+            test "$(git rev-parse HEAD)" = "$remote_sha"
+
+            if [ -f "$FIXTURE_EVENT" ]; then
+              python scripts/provision_v03_real_runtime_fixture.py \
+                --repo-dir . \
+                --repository "$GITHUB_REPOSITORY" \
+                --phase verify-active \
+                --plan-output fixture-resume-plan.json
+              test "$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" = "2"
+              bootstrap_sha="$(git rev-parse HEAD~1)"
+              base_sha="$(git rev-parse HEAD~2)"
+              test "$(git rev-list --parents -n 1 "$bootstrap_sha" | wc -w | tr -d ' ')" = "2"
+              git merge-base --is-ancestor "$base_sha" "$GITHUB_SHA"
+              exact_paths "$base_sha" "$bootstrap_sha" "$FIXTURE_MANIFEST" "$FIXTURE_IMPLEMENTATION"
+              exact_paths "$bootstrap_sha" HEAD "$FIXTURE_MANIFEST" "$FIXTURE_EVENT"
+              exact_paths "$base_sha" HEAD "$FIXTURE_MANIFEST" "$FIXTURE_EVENT" "$FIXTURE_IMPLEMENTATION"
+              state="active"
+            else
+              python scripts/provision_v03_real_runtime_fixture.py \
+                --repo-dir . \
+                --phase verify-bootstrap \
+                --plan-output fixture-resume-plan.json
+              test "$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" = "2"
+              base_sha="$(git rev-parse HEAD~1)"
+              git merge-base --is-ancestor "$base_sha" "$GITHUB_SHA"
+              exact_paths "$base_sha" HEAD "$FIXTURE_MANIFEST" "$FIXTURE_IMPLEMENTATION"
+              state="bootstrap"
+            fi
+          fi
+
+          echo "FIXTURE_INITIAL_STATE=$state" >> "$GITHUB_ENV"
+          echo "FIXTURE_STATE=$state" >> "$GITHUB_ENV"
+          echo "FIXTURE_BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+
+      - name: Phase 1 - create exact bootstrap when absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$FIXTURE_STATE" != "fresh" ]; then
+            echo "fixture bootstrap already exists and was independently verified"
+            exit 0
+          fi
+          python scripts/provision_v03_real_runtime_fixture.py \
+            --repo-dir . \
+            --phase bootstrap \
+            --plan-output fixture-bootstrap-plan.json
+          python scripts/validate_feature_manifest.py "$FIXTURE_MANIFEST"
+          git add -- "$FIXTURE_MANIFEST" "$FIXTURE_IMPLEMENTATION"
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "2"
+          git commit -m "test(v0.3): bootstrap real-runtime fixture for #221"
+          git push origin "HEAD:refs/heads/$FIXTURE_REF"
+          echo "FIXTURE_STATE=bootstrap" >> "$GITHUB_ENV"
+
+      - name: Phase 2 - resume or create canonical activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$FIXTURE_STATE" = "active" ]; then
+            echo "fixture activation already exists and was independently verified"
+            exit 0
+          fi
+          python scripts/verify_git_write_precondition.py \
+            --repo-dir . \
+            --target-ref "$FIXTURE_REF" \
+            --default-branch main
+          python scripts/provision_v03_real_runtime_fixture.py \
+            --repo-dir . \
+            --repository "$GITHUB_REPOSITORY" \
+            --phase activate \
+            --plan-output fixture-plan.json
+          python scripts/validate_feature_manifest.py "$FIXTURE_MANIFEST"
+          git add -- "$FIXTURE_MANIFEST" "$FIXTURE_EVENT"
+          test "$(git diff --cached --name-only | wc -l | tr -d ' ')" = "2"
+          git commit -m "test(v0.3): activate real-runtime fixture code review for #221"
+          git push origin "HEAD:refs/heads/$FIXTURE_REF"
+          echo "FIXTURE_STATE=active" >> "$GITHUB_ENV"
+
+      - name: Verify stable active fixture head
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/provision_v03_real_runtime_fixture.py \
+            --repo-dir . \
+            --repository "$GITHUB_REPOSITORY" \
+            --phase verify-active \
+            --plan-output fixture-active-plan.json
+          python scripts/validate_feature_manifest.py "$FIXTURE_MANIFEST"
+          local_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$FIXTURE_REF" | awk '{print $1}')"
+          test -n "$remote_sha"
+          test "$local_sha" = "$remote_sha"
+          echo "FIXTURE_HEAD=$local_sha" >> "$GITHUB_ENV"
+
+      - name: Create or recover one exact open fixture PR and durable receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          from urllib import parse, request
+          import yaml
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          owner = repo.split("/", 1)[0]
+          api = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+          token = os.environ["GITHUB_TOKEN"]
+          feature_id = os.environ["FIXTURE_FEATURE_ID"]
+          target_ref = os.environ["FIXTURE_REF"]
+          head = os.environ["FIXTURE_HEAD"].lower()
+          fixture_base = os.environ["FIXTURE_BASE_SHA"].lower()
+          run_main = os.environ["GITHUB_SHA"].lower()
+          initial_state = os.environ["FIXTURE_INITIAL_STATE"]
+
+          def call(method, suffix, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = request.Request(f"{api}/repos/{repo}{suffix}", data=data, method=method)
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("X-GitHub-Api-Version", "2022-11-28")
+              if data is not None:
+                  req.add_header("Content-Type", "application/json")
+              with request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw.decode()) if raw else {}
+
+          query = parse.urlencode({
+              "state": "all",
+              "head": f"{owner}:{target_ref}",
+              "base": "main",
+              "per_page": 100,
+          })
+          rows = call("GET", f"/pulls?{query}")
+          if not isinstance(rows, list):
+              raise SystemExit("fixture PR recovery returned non-list response")
+          exact = [
+              row for row in rows
+              if isinstance(row, dict)
+              and (row.get("head") or {}).get("ref") == target_ref
+              and (row.get("base") or {}).get("ref") == "main"
+          ]
+          if len(exact) > 1:
+              raise SystemExit("multiple historical PRs exist for fixed fixture branch")
+          if exact:
+              pr = exact[0]
+              if pr.get("state") != "open" or pr.get("draft") is not False:
+                  raise SystemExit("fixed fixture branch is bound to a closed/draft historical PR; refusing replacement")
+          else:
+              pr = call("POST", "/pulls", {
+                  "title": "[v0.3 fixture] real-runtime fault-injection target for #221",
+                  "head": target_ref,
+                  "base": "main",
+                  "body": (
+                      "Dedicated release-only Feature/PR fixture provisioned from trusted main for Issue #221.\n\n"
+                      "Do not merge as a product change. The authoritative Feature is intentionally ACTIVE at "
+                      "`code-review / WORKING` so the protected Vertical runtime can dispatch one exact-head Reviewer. "
+                      "Worker output is evidence only; lifecycle mutation remains Store + Feature Persist authority."
+                  ),
+                  "draft": False,
+              })
+
+          if (
+              pr.get("state") != "open"
+              or pr.get("draft") is not False
+              or (pr.get("head") or {}).get("ref") != target_ref
+              or str((pr.get("head") or {}).get("sha") or "").lower() != head
+              or (pr.get("base") or {}).get("ref") != "main"
+          ):
+              raise SystemExit("fixture PR does not bind the exact fixed branch/head")
+
+          manifest = yaml.safe_load(Path(os.environ["FIXTURE_MANIFEST"]).read_text(encoding="utf-8"))
+          stages = {row["id"]: row["status"] for row in manifest["workflow"]["stages"]}
+          if set(stages) != {"code-review", "verification", "acceptance"}:
+              raise SystemExit("fixture receipt refuses lifecycle shape outside frozen Issue #276")
+          receipt = {
+              "schema_version": "ai-sdlc.v03-real-runtime-fixture-receipt/v1",
+              "repository": repo.lower(),
+              "feature_id": feature_id,
+              "target_ref": target_ref,
+              "candidate_pr_number": int(pr["number"]),
+              "candidate_head_sha": head,
+              "provisioning_main_sha": fixture_base,
+              "provisioning_run_main_sha": run_main,
+              "resumed_from": initial_state,
+              "manifest_revision": int(manifest["revision"]),
+              "workflow_status": manifest["workflow"]["status"],
+              "current_stage": manifest["workflow"]["current_stage"],
+              "stage_status": stages["code-review"],
+              "release_eligible": False,
+          }
+          Path("fixture-receipt.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          body = "\n".join([
+              "<!-- ai-sdlc-v03-real-runtime-fixture -->",
+              "Trusted-main v0.3 real-runtime fixture provisioned/verified.",
+              f"Feature: `{feature_id}`",
+              f"Target ref: `{target_ref}`",
+              f"PR: `#{pr['number']}`",
+              f"Candidate head: `{head}`",
+              f"Provisioning base main: `{fixture_base}`",
+              f"Current provisioning run main: `{run_main}`",
+              f"Recovered from: `{initial_state}`",
+              f"Manifest: revision `{receipt['manifest_revision']}` / `{receipt['current_stage']}` / `{receipt['stage_status']}`",
+              "Release eligible: **false**",
+              "No Worker or fault injection was executed by provisioning.",
+          ])
+          call("POST", "/issues/221/comments", {"body": body})
+          call("POST", "/issues/276/comments", {"body": body})
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v03-real-runtime-fixture-receipt
+          path: |
+            fixture-bootstrap-plan.json
+            fixture-plan.json
+            fixture-resume-plan.json
+            fixture-active-plan.json
+            fixture-receipt.json
+          if-no-files-found: warn
