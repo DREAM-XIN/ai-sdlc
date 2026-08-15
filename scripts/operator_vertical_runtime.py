@@ -17,6 +17,7 @@ from operator_effect_rollout import EffectLineageWriteFence
 from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
 from operator_decision_policy import ProtectedDecisionPolicyVerifier
 from operator_decision_backends import decision_notification_backends
+from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
 
 
 @dataclass(frozen=True)
@@ -122,11 +123,17 @@ def build_trusted_vertical_runtime(
         clock=clock,
         plan_guard=EffectLineageWriteFence(rollout),
     )
+    one_shot_dispatch_gateway = StoreBackedOneShotExternalCreateGateway(
+        runtime=runtime,
+        delegate=dispatch_gateway,
+        trusted_context_digest=config.trusted_context_digest,
+        effect_lineage_required=rollout.effect_lineage_required,
+    )
     base_executor = TrustedVerticalExecutor(
         runtime=runtime,
         feature_gateway=feature_gateway,
         persist_gateway=persist_gateway,
-        dispatch_gateway=dispatch_gateway,
+        dispatch_gateway=one_shot_dispatch_gateway,
         config=TrustedVerticalExecutorConfig(
             target_ref=config.target_ref,
             trusted_context_digest=config.trusted_context_digest,
