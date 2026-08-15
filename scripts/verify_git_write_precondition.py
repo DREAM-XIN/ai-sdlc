@@ -3,8 +3,17 @@
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
+
+LEGACY_GH_AW_EFFECTFUL_WORKFLOWS = frozenset({
+    "AI-SDLC gh-aw Dispatch",
+    "AI-SDLC gh-aw Cross-Repo Dispatch",
+})
+LEGACY_GH_AW_QUIESCENCE_ERROR = (
+    "legacy gh-aw effectful writer is quiesced for v0.3; use the protected Vertical runtime"
+)
 
 
 def git(repo: Path, *args: str, check: bool = True):
@@ -20,12 +29,27 @@ def git(repo: Path, *args: str, check: bool = True):
     return result
 
 
+def legacy_gh_aw_effectful_writer_denial(environment=None):
+    env = os.environ if environment is None else environment
+    if str(env.get("GITHUB_ACTIONS", "")).lower() != "true":
+        return None
+    workflow = str(env.get("GITHUB_WORKFLOW", ""))
+    if workflow in LEGACY_GH_AW_EFFECTFUL_WORKFLOWS:
+        return LEGACY_GH_AW_QUIESCENCE_ERROR
+    return None
+
+
 def verify_write_precondition(
     repo: Path,
     target_ref: str,
     default_branch: str,
     allow_default_branch: bool = False,
+    environment=None,
 ):
+    denial = legacy_gh_aw_effectful_writer_denial(environment)
+    if denial:
+        return {"outcome": "INVALID", "errors": [denial]}
+
     repo = repo.resolve()
     if not default_branch:
         return {"outcome": "INVALID", "errors": ["default_branch is required for write operations"]}
