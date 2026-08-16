@@ -1,0 +1,26 @@
+name: Validate v0.3 Reviewer Worker Readiness
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/operator_v03_reviewer_worker_readiness.py'
+      - 'scripts/validate_operator_v03_reviewer_worker_readiness.py'
+      - 'runtimes/gh-aw/role-workers.yaml'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-claude.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-copilot.lock.yml'
+      - '.github/workflows/validate-v03-reviewer-worker-readiness.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - run: PYTHONPATH=scripts python scripts/validate_operator_v03_reviewer_worker_readiness.py
