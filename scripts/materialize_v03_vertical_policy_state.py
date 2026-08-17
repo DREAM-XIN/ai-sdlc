@@ -25,7 +25,7 @@ from operator_protected_policy_materializer import (
     ProtectedPolicyDocument,
     ProtectedPolicyMaterializerConfig,
 )
-from operator_store_github_protection_composite import GitHubRepositoryProtectionVerifier
+from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
 from operator_store_model import canonical_json, digest_json, normalize_repository
 from operator_vertical import VERTICAL_PROFILE
 

@@ -36,7 +36,7 @@ from operator_protected_policy_materializer import (
     REQUIRED_POLICY_PATHS,
     TRACKING_REF,
 )
-from operator_store_github_protection_composite import GitHubRepositoryProtectionVerifier
+from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
 from operator_store_model import digest_json, normalize_repository
 from operator_store_protection import require_protected
 from operator_vertical import VERTICAL_PROFILE

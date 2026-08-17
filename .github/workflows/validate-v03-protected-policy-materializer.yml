@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - "scripts/operator_protected_policy_materializer.py"
+      - "scripts/operator_store_github_protection_v03_trusted.py"
       - "scripts/validate_operator_protected_policy_materializer.py"
       - "scripts/validate_v03_vertical_writer_fence_authority.py"
       - "scripts/materialize_v03_vertical_policy_state.py"
       - "scripts/recover_v03_vertical_policy_state.py"
       - "scripts/postverify_v03_vertical_policy_state.py"
+      - "scripts/validate_v03_vertical_policy_attested_protection.py"
       - "scripts/validate_v03_vertical_policy_materialization_workflow.py"
       - "scripts/validate_v03_vertical_policy_recovery.py"
       - "scripts/validate_v03_vertical_policy_postverify.py"
@@ -30,6 +32,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python scripts/validate_operator_protected_policy_materializer.py
       - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_writer_fence_authority.py
+      - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_attested_protection.py
       - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_materialization_workflow.py
       - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_recovery.py
       - run: PYTHONPATH=scripts python scripts/validate_v03_vertical_policy_postverify.py
