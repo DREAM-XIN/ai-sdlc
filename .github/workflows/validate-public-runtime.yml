@@ -8,6 +8,7 @@ on:
       - '.github/workflows/validate-public-runtime.yml'
       - 'dispatch/default.yaml'
       - 'requirements-dev.txt'
+      - 'requirements-operator.txt'
       - 'scripts/**'
       - 'spec/**'
       - 'VERSION'
@@ -19,6 +20,7 @@ on:
       - '.github/workflows/validate-public-runtime.yml'
       - 'dispatch/default.yaml'
       - 'requirements-dev.txt'
+      - 'requirements-operator.txt'
       - 'scripts/**'
       - 'spec/**'
       - 'VERSION'
@@ -34,11 +36,27 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - run: pip install -r requirements-dev.txt
-      - run: python scripts/validate_public_runtime_distribution.py
-      - run: python scripts/build_public_runtime.py --output public-runtime
-      - name: Verify deterministic rebuild
+
+      - name: Validate minimal lifecycle runtime
         run: |
-          cp public-runtime/runtime-manifest.json first-manifest.json
+          pip install -r requirements-dev.txt
+          python scripts/validate_public_runtime_distribution.py
           python scripts/build_public_runtime.py --output public-runtime
-          diff -u first-manifest.json public-runtime/runtime-manifest.json
+
+      - name: Verify deterministic lifecycle rebuild
+        run: |
+          cp public-runtime/runtime-manifest.json first-lifecycle-manifest.json
+          python scripts/build_public_runtime.py --output public-runtime
+          diff -u first-lifecycle-manifest.json public-runtime/runtime-manifest.json
+
+      - name: Validate public Operator runtime
+        run: |
+          pip install -r requirements-operator.txt
+          python scripts/validate_public_operator_runtime_distribution.py
+          python scripts/build_public_operator_runtime.py --output public-operator-runtime
+
+      - name: Verify deterministic Operator rebuild
+        run: |
+          cp public-operator-runtime/runtime-manifest.json first-operator-manifest.json
+          python scripts/build_public_operator_runtime.py --output public-operator-runtime
+          diff -u first-operator-manifest.json public-operator-runtime/runtime-manifest.json

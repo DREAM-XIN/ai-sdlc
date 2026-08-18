@@ -1,0 +1,256 @@
+name: Validate OpenAI Responses Adapter
+
+on:
+  push:
+    branches:
+      - feature/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+    paths:
+      - '.github/workflows/operator-openai-responses.yml'
+      - 'docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/implementation.md'
+      - 'docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/runtime.md'
+      - 'requirements-operator.txt'
+      - 'requirements-dev.txt'
+      - 'scripts/validate.py'
+      - 'scripts/operator_openai_responses*.py'
+      - 'scripts/render_operator_openai_responses_readiness.py'
+      - 'scripts/validate_operator_openai_responses*.py'
+      - 'scripts/operator_api.py'
+      - 'scripts/operator_conformance.py'
+      - 'scripts/operator_store*.py'
+      - 'scripts/build_public_operator_runtime.py'
+      - 'scripts/validate_public_operator_runtime_distribution.py'
+      - 'spec/operator/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-openai-responses.yml'
+      - 'docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/implementation.md'
+      - 'docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/runtime.md'
+      - 'requirements-operator.txt'
+      - 'requirements-dev.txt'
+      - 'scripts/validate.py'
+      - 'scripts/operator_openai_responses*.py'
+      - 'scripts/render_operator_openai_responses_readiness.py'
+      - 'scripts/validate_operator_openai_responses*.py'
+      - 'scripts/operator_api.py'
+      - 'scripts/operator_conformance.py'
+      - 'scripts/operator_store*.py'
+      - 'scripts/build_public_operator_runtime.py'
+      - 'scripts/validate_public_operator_runtime_distribution.py'
+      - 'spec/operator/**'
+
+permissions:
+  contents: read
+
+jobs:
+  responses-foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Resolve exact current-main synchronization of the PR head
+        id: baseline
+        env:
+          RESPONSES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+          HEAD_SHA="$RESPONSES_PR_HEAD_SHA"
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            if [ -n "$PR_NUMBER" ]; then
+              git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+            else
+              git fetch --no-tags origin "$HEAD_SHA"
+            fi
+          fi
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          synchronized=false
+          if git merge-base --is-ancestor "$MAIN_SHA" "$HEAD_SHA"; then
+            synchronized=true
+          fi
+          {
+            echo "trusted_main_sha=$MAIN_SHA"
+            echo "pr_head_sha=$HEAD_SHA"
+            echo "synchronized=$synchronized"
+          } >> "$GITHUB_OUTPUT"
+          printf '{"evidence_kind":"responses-current-main-baseline","trusted_main_sha":"%s","pr_head_sha":"%s","pr_head_contains_current_trusted_main":%s}\n' \
+            "$MAIN_SHA" "$HEAD_SHA" "$synchronized"
+      - name: Validate strict Responses registry, collector and durable replay
+        run: python scripts/validate_operator_openai_responses.py
+      - name: Validate durable result receipt replay authority
+        id: result-receipt
+        run: python scripts/validate_operator_openai_responses_result_receipt.py
+      - name: Validate materially independent Lane-A conformance driver
+        run: python scripts/validate_operator_openai_responses_conformance.py
+      - name: Validate strict Responses-boundary Lane-A fault matrix
+        run: python scripts/validate_operator_openai_responses_lane_a_fault_matrix.py
+      - name: Resolve WU6 Persist classification readiness
+        id: persist-classification
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import json
+          import os
+          from validate_operator_openai_responses_persist_classification import probe
+
+          state = probe()
+          ready = state.get('status') == 'READY'
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f"ready={str(ready).lower()}\n")
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+      - name: Prove WU6 strict path fails closed while blocked
+        if: steps.persist-classification.outputs.ready != 'true'
+        run: |
+          set +e
+          python scripts/validate_operator_openai_responses_persist_classification.py
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "WU6 Persist classification blocked path returned unexpected exit code: $rc" >&2
+            exit 1
+          fi
+      - name: Execute strict WU6 Persist classification
+        id: persist-classification-execution
+        if: steps.persist-classification.outputs.ready == 'true'
+        run: python scripts/validate_operator_openai_responses_persist_classification.py
+      - name: Compile mandatory Lane-B production harness
+        run: python -m py_compile scripts/validate_operator_openai_responses_lane_b.py
+      - name: Validate exact Feature Event transport seam for Lane B
+        run: python scripts/validate_operator_openai_responses_lane_b_event_seam.py
+      - name: Validate exact Feature Event seam scope fencing
+        run: python scripts/validate_operator_openai_responses_lane_b_event_scope.py
+      - name: Compile WU8 stale-callback prerequisite harness
+        run: python -m py_compile scripts/validate_operator_openai_responses_stale_callback.py
+      - name: Resolve strict production-lane readiness
+        id: production-readiness
+        env:
+          HEAD_CONTAINS_CURRENT_MAIN: ${{ steps.baseline.outputs.synchronized }}
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import json
+          import os
+          from operator_openai_responses_production import production_dependency_status
+
+          status = production_dependency_status()
+          assert set(status) == {
+              'full_vertical_production_factory',
+              'stale_recorded_callback_convergence',
+          }
+          assert all(type(value) is bool for value in status.values())
+          synchronized = os.environ.get('HEAD_CONTAINS_CURRENT_MAIN') == 'true'
+          hard_dependencies_ready = all(status.values())
+          stale_callback_ready = status['stale_recorded_callback_convergence']
+          lane_b_ready = hard_dependencies_ready and synchronized
+          wu8_ready = stale_callback_ready and synchronized
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f"hard_dependencies_ready={str(hard_dependencies_ready).lower()}\n")
+              handle.write(f"stale_callback_ready={str(stale_callback_ready).lower()}\n")
+              handle.write(f"lane_b_ready={str(lane_b_ready).lower()}\n")
+              handle.write(f"wu8_ready={str(wu8_ready).lower()}\n")
+          print(json.dumps({
+              'evidence_kind': 'strict-production-lane-readiness',
+              'hard_dependencies': status,
+              'pr_head_contains_current_trusted_main': synchronized,
+              'lane_b_ready': lane_b_ready,
+              'wu8_ready': wu8_ready,
+              'lane_a_is_supported_evidence': False,
+          }, indent=2, sort_keys=True))
+          PY
+      - name: Probe WU8 dependency shape without promoting Supported status
+        run: python scripts/validate_operator_openai_responses_stale_callback.py --probe
+      - name: Prove WU8 runtime path fails closed while dependency is absent
+        if: steps.production-readiness.outputs.stale_callback_ready != 'true'
+        run: |
+          set +e
+          python scripts/validate_operator_openai_responses_stale_callback.py
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "WU8 blocked path returned unexpected exit code: $rc" >&2
+            exit 1
+          fi
+      - name: Keep WU8 execution blocked while PR head is behind current main
+        if: steps.production-readiness.outputs.stale_callback_ready == 'true' && steps.baseline.outputs.synchronized != 'true'
+        run: |
+          echo 'Stale-callback dependency exists in the merge checkout, but the PR head does not contain current trusted main.'
+          echo 'WU8 authoritative execution remains blocked until the Feature branch is synchronized.'
+      - name: Execute mandatory WU8 stale-callback validation
+        id: wu8-execution
+        if: steps.production-readiness.outputs.wu8_ready == 'true'
+        run: python scripts/validate_operator_openai_responses_stale_callback.py
+      - name: Fail closed if Lane B is ready without successful WU8 proof
+        if: steps.production-readiness.outputs.lane_b_ready == 'true' && steps.wu8-execution.outcome != 'success'
+        run: |
+          echo 'Lane B hard dependencies appeared ready but WU8 did not execute successfully.' >&2
+          exit 1
+      - name: Probe Lane-B dependency shape without promoting Supported status
+        run: python scripts/validate_operator_openai_responses_lane_b.py --probe
+      - name: Prove Lane-B runtime path fails closed while hard dependencies are absent
+        if: steps.production-readiness.outputs.hard_dependencies_ready != 'true'
+        run: |
+          set +e
+          python scripts/validate_operator_openai_responses_lane_b.py
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "Lane-B blocked path returned unexpected exit code: $rc" >&2
+            exit 1
+          fi
+      - name: Keep Lane B execution blocked while PR head is behind current main
+        if: steps.production-readiness.outputs.hard_dependencies_ready == 'true' && steps.baseline.outputs.synchronized != 'true'
+        run: |
+          echo 'Lane-B dependencies exist in the merge checkout, but the PR head does not contain current trusted main.'
+          echo 'Lane B authoritative execution remains blocked until the Feature branch is synchronized.'
+      - name: Execute mandatory Lane-B production composition
+        id: lane-b-execution
+        if: steps.production-readiness.outputs.lane_b_ready == 'true' && steps.wu8-execution.outcome == 'success'
+        run: python scripts/validate_operator_openai_responses_lane_b.py
+      - name: Validate official Responses host boundary
+        run: python scripts/validate_operator_openai_responses_host.py
+      - name: Validate provider terminal completion fence
+        run: python scripts/validate_operator_openai_responses_terminal_fence.py
+      - name: Validate exact write slice, durable replay and crash recovery
+        run: python scripts/validate_operator_openai_responses_writes.py
+      - name: Validate fail-closed final-production binding contract
+        run: python scripts/validate_operator_openai_responses_production.py
+      - name: Validate public Operator runtime packaging
+        run: python scripts/validate_public_operator_runtime_distribution.py
+      - name: Execute authoritative repository-wide validation
+        id: repository-validation
+        run: python scripts/validate.py
+      - name: Validate implementation-readiness evidence contract
+        run: python scripts/validate_operator_openai_responses_readiness.py
+      - name: Render exact implementation readiness
+        env:
+          RESPONSES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TRUSTED_MAIN_SHA: ${{ steps.baseline.outputs.trusted_main_sha }}
+          TRUSTED_MAIN_SYNCHRONIZED: ${{ steps.baseline.outputs.synchronized }}
+          WU1_PROTOCOL_REGISTRY_EXECUTED_AND_PASSED: 'true'
+          WU2_COLLECTOR_EXECUTED_AND_PASSED: 'true'
+          WU3_DURABLE_JOURNAL_RECOVERY_EXECUTED_AND_PASSED: ${{ steps.result-receipt.outcome == 'success' }}
+          WU4_PRODUCTION_BINDING_EXECUTED_AND_PASSED: 'true'
+          WU5_HOST_EXECUTED_AND_PASSED: 'true'
+          WU6_LANE_A_CONFORMANCE_EXECUTED_AND_PASSED: 'true'
+          LANE_A_FAULT_MATRIX_EXECUTED_AND_PASSED: 'true'
+          PERSIST_CLASSIFICATION_EXECUTED_AND_PASSED: ${{ steps.persist-classification-execution.outcome == 'success' }}
+          LANE_B_EVENT_SEAM_EXECUTED_AND_PASSED: 'true'
+          WU8_EXECUTED_AND_PASSED: ${{ steps.wu8-execution.outcome == 'success' }}
+          LANE_B_EXECUTED_AND_PASSED: ${{ steps.lane-b-execution.outcome == 'success' }}
+          PUBLIC_RUNTIME_VALIDATION_EXECUTED_AND_PASSED: 'true'
+          AUTHORITATIVE_REPOSITORY_VALIDATION_EXECUTED_AND_PASSED: ${{ steps.repository-validation.outcome == 'success' }}
+        run: |
+          python scripts/render_operator_openai_responses_readiness.py \
+            --output evidence/openai-responses-implementation-readiness.json
+      - name: Upload exact implementation readiness
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: openai-responses-implementation-readiness
+          path: evidence/openai-responses-implementation-readiness.json
+          if-no-files-found: error

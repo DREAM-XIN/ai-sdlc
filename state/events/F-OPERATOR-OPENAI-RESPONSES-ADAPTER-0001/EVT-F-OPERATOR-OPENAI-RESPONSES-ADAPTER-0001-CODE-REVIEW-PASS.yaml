@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-CODE-REVIEW-PASS
+feature_id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+expected_revision: 15
+occurred_at: '2026-08-12T10:17:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-code-review-v1
+    type: review
+    status: pass
+    uri: docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/code-review.md
+- kind: artifact
+  id: implementation-v1
+  status: approved
+  evidence:
+  - evidence-code-review-v1
+- kind: gate
+  id: code-gate
+  status: PASS
+  evidence:
+  - evidence-code-review-v1
+- kind: stage
+  id: code-review
+  status: DONE
+- kind: stage
+  id: verification
+  status: READY

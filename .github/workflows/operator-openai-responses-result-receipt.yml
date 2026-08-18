@@ -1,0 +1,40 @@
+name: Validate OpenAI Responses Result Receipt
+
+on:
+  push:
+    branches:
+      - feature/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+    paths:
+      - '.github/workflows/operator-openai-responses-result-receipt.yml'
+      - 'scripts/operator_openai_responses_journal.py'
+      - 'scripts/validate_operator_openai_responses_result_receipt.py'
+      - 'scripts/validate_operator_openai_responses_crash_recovery.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-openai-responses-result-receipt.yml'
+      - 'scripts/operator_openai_responses_journal.py'
+      - 'scripts/validate_operator_openai_responses_result_receipt.py'
+      - 'scripts/validate_operator_openai_responses_crash_recovery.py'
+
+permissions:
+  contents: read
+
+jobs:
+  result-receipt-fence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate exact durable result receipt binding
+        run: python scripts/validate_operator_openai_responses_result_receipt.py
+      - name: Re-run crash-before-result recovery
+        run: python scripts/validate_operator_openai_responses_crash_recovery.py
+      - name: Compile durable journal boundary
+        run: python -m py_compile scripts/operator_openai_responses_journal.py scripts/validate_operator_openai_responses_result_receipt.py

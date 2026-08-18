@@ -1,0 +1,52 @@
+name: Validate OpenAI Responses Dependency Provenance
+
+on:
+  push:
+    branches:
+      - feature/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+    paths:
+      - '.github/workflows/operator-openai-responses-dependency-provenance.yml'
+      - 'scripts/operator_openai_responses*.py'
+      - 'scripts/validate_operator_openai_responses*.py'
+      - 'scripts/operator_vertical_feature_persist_gateway.py'
+      - 'scripts/operator_vertical_reconcile_classified.py'
+      - 'scripts/operator_v03_write_runtime.py'
+      - 'scripts/operator_v03_vertical_production_runtime.py'
+      - 'scripts/operator_vertical_callback.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-openai-responses-dependency-provenance.yml'
+      - 'scripts/operator_openai_responses*.py'
+      - 'scripts/validate_operator_openai_responses*.py'
+      - 'scripts/operator_vertical_feature_persist_gateway.py'
+      - 'scripts/operator_vertical_reconcile_classified.py'
+      - 'scripts/operator_v03_write_runtime.py'
+      - 'scripts/operator_v03_vertical_production_runtime.py'
+      - 'scripts/operator_vertical_callback.py'
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Resolve trusted current-main SHA
+        id: base
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          base_sha="$(git rev-parse origin/main)"
+          echo "sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "trusted current-main sha: $base_sha"
+      - name: Prove production authority comes from current main
+        run: |
+          python scripts/validate_operator_openai_responses_dependency_provenance.py \
+            --base-sha '${{ steps.base.outputs.sha }}' \
+            --head-sha HEAD

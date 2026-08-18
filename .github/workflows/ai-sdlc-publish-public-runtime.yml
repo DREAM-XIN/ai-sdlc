@@ -39,12 +39,17 @@ jobs:
             exit 2
           fi
 
-      - name: Build and validate minimal runtime bundle
+      - name: Build and validate public runtime distributions
         working-directory: source
         run: |
+          set -euo pipefail
           pip install -r requirements-dev.txt
           python scripts/validate_public_runtime_distribution.py
           python scripts/build_public_runtime.py --output ../bundle
+
+          pip install -r requirements-operator.txt
+          python scripts/validate_public_operator_runtime_distribution.py
+          python scripts/build_public_operator_runtime.py --output ../bundle/operator-runtime
 
       - name: Checkout public runtime destination
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -55,7 +60,7 @@ jobs:
           persist-credentials: false
           path: destination
 
-      - name: Replace destination with reviewed runtime bundle
+      - name: Replace destination with reviewed runtime distributions
         env:
           SOURCE_SHA: ${{ github.sha }}
           DESTINATION_REF: ${{ inputs.destination_ref }}
@@ -69,7 +74,7 @@ jobs:
           git config user.email 'ai-sdlc-release[bot]@users.noreply.github.com'
           git add -A
           if git diff --cached --quiet; then
-            echo 'Public runtime already matches this source build.'
+            echo 'Public runtime distributions already match this source build.'
             exit 0
           fi
           git commit -m "release(runtime): publish from ai-sdlc $SOURCE_SHA"

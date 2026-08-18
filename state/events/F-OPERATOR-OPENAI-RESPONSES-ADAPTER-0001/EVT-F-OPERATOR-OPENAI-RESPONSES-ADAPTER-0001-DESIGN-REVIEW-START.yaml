@@ -1,0 +1,9 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-DESIGN-REVIEW-START
+feature_id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+expected_revision: 6
+occurred_at: '2026-08-11T10:12:00Z'
+changes:
+  - kind: stage
+    id: design-review
+    status: WORKING

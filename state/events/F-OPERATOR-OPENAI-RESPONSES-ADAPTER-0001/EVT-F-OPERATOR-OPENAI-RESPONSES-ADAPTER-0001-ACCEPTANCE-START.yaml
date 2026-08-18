@@ -1,0 +1,10 @@
+# Trusted Persist materialized this Event at revision 18->19 after Manifest schema repair; semantic Event unchanged.
+version: 0.1.0
+id: EVT-F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-ACCEPTANCE-START
+feature_id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+expected_revision: 18
+occurred_at: '2026-08-12T11:00:00Z'
+changes:
+- kind: stage
+  id: acceptance
+  status: WORKING

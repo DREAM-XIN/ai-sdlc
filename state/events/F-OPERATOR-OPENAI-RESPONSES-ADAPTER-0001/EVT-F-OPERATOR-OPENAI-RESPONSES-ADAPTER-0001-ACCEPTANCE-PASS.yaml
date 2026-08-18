@@ -1,0 +1,20 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-ACCEPTANCE-PASS
+feature_id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+expected_revision: 19
+occurred_at: '2026-08-18T00:57:00Z'
+changes:
+- kind: evidence
+  record:
+    id: evidence-acceptance-v1
+    type: acceptance
+    status: pass
+    uri: docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/acceptance.md
+- kind: gate
+  id: release-gate
+  status: PASS
+  evidence:
+  - evidence-acceptance-v1
+- kind: stage
+  id: acceptance
+  status: DONE
