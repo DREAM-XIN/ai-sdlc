@@ -1,0 +1,21 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-DESIGN-REMEDIATION-DONE
+feature_id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+expected_revision: 9
+occurred_at: '2026-08-11T10:38:30Z'
+changes:
+  - kind: artifact-record
+    record:
+      id: design-v2
+      type: design
+      uri: docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/design-v2.md
+      status: draft
+  - kind: evidence
+    record:
+      id: evidence-design-remediation-v1
+      type: implementation
+      status: pass
+      uri: docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/design-remediation.md
+  - kind: task
+    id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-DESIGN-REMEDIATION-1
+    status: DONE

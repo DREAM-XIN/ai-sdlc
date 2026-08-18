@@ -1,0 +1,62 @@
+name: Validate OpenAI Responses Persist Classification
+
+on:
+  push:
+    branches:
+      - feature/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+    paths:
+      - '.github/workflows/operator-openai-responses-persist-classification.yml'
+      - 'scripts/operator_vertical_reconcile*.py'
+      - 'scripts/validate_operator_*persist*.py'
+      - 'scripts/validate_operator_openai_responses_persist_classification.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-openai-responses-persist-classification.yml'
+      - 'scripts/operator_vertical_reconcile*.py'
+      - 'scripts/validate_operator_*persist*.py'
+      - 'scripts/validate_operator_openai_responses_persist_classification.py'
+
+permissions:
+  contents: read
+
+jobs:
+  persist-classification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Probe rebuilt Persist classification readiness
+        id: readiness
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import json
+          import os
+          from validate_operator_openai_responses_persist_classification import probe
+
+          state = probe()
+          ready = state['status'] == 'READY'
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f"ready={str(ready).lower()}\n")
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+      - name: Prove strict classification fails closed while absent
+        if: steps.readiness.outputs.ready != 'true'
+        run: |
+          set +e
+          python scripts/validate_operator_openai_responses_persist_classification.py
+          rc=$?
+          set -e
+          if [ "$rc" -ne 2 ]; then
+            echo "Persist classification blocked path returned unexpected exit code: $rc" >&2
+            exit 1
+          fi
+      - name: Execute rebuilt deterministic classification proof
+        if: steps.readiness.outputs.ready == 'true'
+        run: python scripts/validate_operator_openai_responses_persist_classification.py

@@ -15,6 +15,14 @@ from validate_gh_aw_profile_routing import main as validate_gh_aw_profile_routin
 from validate_operator_api import main as validate_operator_api
 from validate_operator_decision_takeover import main as validate_operator_decision_takeover
 from validate_operator_mcp import main as validate_operator_mcp
+from validate_operator_openai_responses import main as validate_operator_openai_responses
+from validate_operator_openai_responses_conformance import main as validate_operator_openai_responses_conformance
+from validate_operator_openai_responses_lane_a_fault_matrix import main as validate_operator_openai_responses_faults
+from validate_operator_openai_responses_host import main as validate_operator_openai_responses_host
+from validate_operator_openai_responses_terminal_fence import main as validate_operator_openai_responses_terminal_fence
+from validate_operator_openai_responses_production import main as validate_operator_openai_responses_production
+from validate_operator_openai_responses_readiness import main as validate_operator_openai_responses_readiness
+from validate_operator_openai_responses_writes import main as validate_operator_openai_responses_writes
 from validate_operator_store import main as validate_operator_store
 from validate_operator_store_runtime import main as validate_operator_store_runtime
 from validate_operator_effect_lineage import main as validate_operator_effect_lineage
@@ -223,6 +231,14 @@ def main():
     validate_operator_api()
     validate_operator_decision_takeover()
     validate_operator_mcp()
+    validate_operator_openai_responses()
+    validate_operator_openai_responses_conformance()
+    validate_operator_openai_responses_faults()
+    validate_operator_openai_responses_host()
+    validate_operator_openai_responses_terminal_fence()
+    validate_operator_openai_responses_production()
+    validate_operator_openai_responses_readiness()
+    validate_operator_openai_responses_writes()
     validate_operator_store()
     validate_operator_store_runtime()
     validate_operator_effect_lineage()

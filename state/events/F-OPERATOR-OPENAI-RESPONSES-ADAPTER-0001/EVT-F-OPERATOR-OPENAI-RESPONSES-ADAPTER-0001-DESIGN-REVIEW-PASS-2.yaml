@@ -1,0 +1,28 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001-DESIGN-REVIEW-PASS-2
+feature_id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+expected_revision: 10
+occurred_at: '2026-08-11T10:41:00Z'
+changes:
+  - kind: evidence
+    record:
+      id: evidence-design-review-v2
+      type: review
+      status: pass
+      uri: docs/features/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001/design-review-v2.md
+  - kind: artifact
+    id: design-v2
+    status: approved
+    evidence:
+      - evidence-design-review-v2
+  - kind: gate
+    id: design-gate
+    status: PASS
+    evidence:
+      - evidence-design-review-v2
+  - kind: stage
+    id: design-review
+    status: DONE
+  - kind: stage
+    id: plan
+    status: READY

@@ -1,0 +1,38 @@
+name: Validate OpenAI Responses Explicit Status
+
+on:
+  push:
+    branches:
+      - feature/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+    paths:
+      - '.github/workflows/operator-openai-responses-explicit-status.yml'
+      - 'scripts/operator_openai_responses_host.py'
+      - 'scripts/validate_operator_openai_responses_host.py'
+      - 'scripts/validate_operator_openai_responses_explicit_status.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-openai-responses-explicit-status.yml'
+      - 'scripts/operator_openai_responses_host.py'
+      - 'scripts/validate_operator_openai_responses_host.py'
+      - 'scripts/validate_operator_openai_responses_explicit_status.py'
+
+permissions:
+  contents: read
+
+jobs:
+  explicit-status-fence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Prove missing provider status is zero-authority
+        run: python scripts/validate_operator_openai_responses_explicit_status.py
+      - name: Compile trusted host boundary
+        run: python -m py_compile scripts/operator_openai_responses_host.py

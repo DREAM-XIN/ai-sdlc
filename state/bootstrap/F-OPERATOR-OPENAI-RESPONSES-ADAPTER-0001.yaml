@@ -1,0 +1,8 @@
+version: 0.1.0
+feature:
+  id: F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+  title: Add second supported write-capable OpenAI Responses AI client adapter
+  risk: high
+  issue: '#232'
+profile: standard-feature
+created_at: '2026-08-11T03:10:00Z'

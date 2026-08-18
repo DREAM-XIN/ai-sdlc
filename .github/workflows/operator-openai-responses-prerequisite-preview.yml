@@ -1,0 +1,206 @@
+name: Preview OpenAI Responses Prerequisite Integration
+
+on:
+  push:
+    branches:
+      - feature/F-OPERATOR-OPENAI-RESPONSES-ADAPTER-0001
+    paths:
+      - '.github/workflows/operator-openai-responses-prerequisite-preview.yml'
+      - 'scripts/operator_openai_responses*.py'
+      - 'scripts/render_operator_openai_responses_readiness.py'
+      - 'scripts/validate_operator_openai_responses*.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/operator-openai-responses-prerequisite-preview.yml'
+      - 'scripts/operator_openai_responses*.py'
+      - 'scripts/render_operator_openai_responses_readiness.py'
+      - 'scripts/validate_operator_openai_responses*.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  stale-callback-prerequisite-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact Responses candidate without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Resolve exact current-main and PR 255 prerequisite candidate
+        id: prerequisite
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RESPONSES_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+          export MAIN_SHA
+          python - <<'PY'
+          import json
+          import os
+          from urllib import request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          token = os.environ['GITHUB_TOKEN']
+          req = request.Request(f'{api}/repos/{repo}/pulls/255', method='GET')
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('Authorization', f'Bearer {token}')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          with request.urlopen(req, timeout=30) as response:
+              pr = json.loads(response.read().decode())
+
+          main_sha = os.environ['MAIN_SHA']
+          head_sha = str(pr['head']['sha'])
+          state = str(pr['state'])
+          merged = bool(pr.get('merged', False))
+          base_ref = str(pr['base']['ref'])
+          base_sha = str(pr['base']['sha'])
+          eligible = state == 'open' and not merged and base_ref == 'main' and base_sha == main_sha
+
+          out = os.environ['GITHUB_OUTPUT']
+          with open(out, 'a', encoding='utf-8') as handle:
+              handle.write(f'main_sha={main_sha}\n')
+              handle.write(f'prerequisite_head_sha={head_sha}\n')
+              handle.write(f'eligible={str(eligible).lower()}\n')
+              handle.write(f'merged={str(merged).lower()}\n')
+
+          print(json.dumps({
+              'evidence_kind': 'non-authoritative-prerequisite-preview-input',
+              'authoritative': False,
+              'responses_head_sha': os.environ['RESPONSES_HEAD_SHA'],
+              'trusted_main_sha': main_sha,
+              'prerequisite_pr': 255,
+              'prerequisite_head_sha': head_sha,
+              'prerequisite_base_sha': base_sha,
+              'prerequisite_state': state,
+              'prerequisite_merged': merged,
+              'eligible_for_preview': eligible,
+          }, indent=2, sort_keys=True))
+          PY
+      - name: Prove Responses candidate contains current trusted main
+        if: steps.prerequisite.outputs.eligible == 'true'
+        run: |
+          git merge-base --is-ancestor "${{ steps.prerequisite.outputs.main_sha }}" HEAD
+      - name: Fetch exact PR 255 head
+        if: steps.prerequisite.outputs.eligible == 'true'
+        run: |
+          git fetch --no-tags origin \
+            "refs/pull/255/head:refs/remotes/origin/responses-prerequisite-255"
+          test "$(git rev-parse refs/remotes/origin/responses-prerequisite-255)" = \
+            "${{ steps.prerequisite.outputs.prerequisite_head_sha }}"
+      - name: Fence prerequisite preview to the reviewed remediation surface
+        id: scope
+        if: steps.prerequisite.outputs.eligible == 'true'
+        run: |
+          actual="$(mktemp)"
+          expected="$(mktemp)"
+          git diff --name-only \
+            "${{ steps.prerequisite.outputs.main_sha }}...refs/remotes/origin/responses-prerequisite-255" \
+            | LC_ALL=C sort > "$actual"
+          printf '%s\n' \
+            '.github/workflows/operator-stale-callback-reconciliation.yml' \
+            'scripts/operator_vertical_callback.py' \
+            'scripts/operator_vertical_reconcile.py' \
+            'scripts/validate_operator_stale_callback_reconciliation.py' \
+            | LC_ALL=C sort > "$expected"
+          if ! diff -u "$expected" "$actual"; then
+            echo 'PR 255 preview scope drifted; refusing to execute unreviewed prerequisite code.' >&2
+            exit 1
+          fi
+          echo 'scope_ok=true' >> "$GITHUB_OUTPUT"
+      - name: Build temporary non-authoritative integration tree
+        if: steps.prerequisite.outputs.eligible == 'true' && steps.scope.outputs.scope_ok == 'true'
+        run: |
+          git -c user.name='ai-sdlc prerequisite preview' \
+              -c user.email='ai-sdlc-prerequisite-preview@invalid.local' \
+              merge --no-commit --no-ff refs/remotes/origin/responses-prerequisite-255
+      - name: Execute WU8 against temporary prerequisite integration
+        id: preview-wu8
+        if: steps.prerequisite.outputs.eligible == 'true' && steps.scope.outputs.scope_ok == 'true'
+        run: python scripts/validate_operator_openai_responses_stale_callback.py
+      - name: Execute Lane B only after preview WU8 succeeds
+        id: preview-lane-b
+        if: steps.prerequisite.outputs.eligible == 'true' && steps.scope.outputs.scope_ok == 'true' && steps.preview-wu8.outcome == 'success'
+        run: python scripts/validate_operator_openai_responses_lane_b.py
+      - name: Render non-authoritative preview receipt
+        if: always()
+        env:
+          RESPONSES_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          MAIN_SHA: ${{ steps.prerequisite.outputs.main_sha }}
+          PREREQUISITE_HEAD_SHA: ${{ steps.prerequisite.outputs.prerequisite_head_sha }}
+          ELIGIBLE: ${{ steps.prerequisite.outputs.eligible }}
+          PREREQUISITE_MERGED: ${{ steps.prerequisite.outputs.merged }}
+          SCOPE_OK: ${{ steps.scope.outputs.scope_ok }}
+          WU8_OUTCOME: ${{ steps.preview-wu8.outcome }}
+          LANE_B_OUTCOME: ${{ steps.preview-lane-b.outcome }}
+        run: |
+          mkdir -p evidence
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          eligible = os.environ.get('ELIGIBLE') == 'true'
+          scope_ok = os.environ.get('SCOPE_OK') == 'true'
+          wu8 = os.environ.get('WU8_OUTCOME', '')
+          lane_b = os.environ.get('LANE_B_OUTCOME', '')
+          if eligible and scope_ok and wu8 == 'success' and lane_b == 'success':
+              status = 'PASS_PREVIEW'
+          elif eligible and not scope_ok:
+              status = 'BLOCKED_PREREQUISITE_SCOPE_DRIFT'
+          elif eligible:
+              status = 'FAILED_PREVIEW'
+          elif os.environ.get('PREREQUISITE_MERGED') == 'true':
+              status = 'SKIPPED_PREREQUISITE_ALREADY_MERGED'
+          else:
+              status = 'BLOCKED_PREREQUISITE_NOT_ON_CURRENT_MAIN_BASE'
+
+          record = {
+              'schema_version': 'ai-sdlc.openai-responses-prerequisite-preview/v1',
+              'evidence_kind': 'non-authoritative-prerequisite-integration-preview',
+              'authoritative': False,
+              'release_eligible': False,
+              'implementation_completion_eligible': False,
+              'supported_status_claimed': False,
+              'status': status,
+              'responses_head_sha': os.environ.get('RESPONSES_HEAD_SHA', ''),
+              'trusted_main_sha': os.environ.get('MAIN_SHA', ''),
+              'prerequisite_pr': 255,
+              'prerequisite_head_sha': os.environ.get('PREREQUISITE_HEAD_SHA', ''),
+              'prerequisite_scope_ok': scope_ok,
+              'checkout_credentials_persisted': False,
+              'wu8_preview_outcome': wu8,
+              'lane_b_preview_outcome': lane_b,
+              'notes': [
+                  'This receipt uses an unmerged prerequisite PR in a temporary CI worktree.',
+                  'The preview refuses scope drift and executes after checkout credentials have been removed.',
+                  'It cannot satisfy WU8, Lane B, IMPL-DONE, Code Review, Feature Gate, or release evidence.',
+                  'Authoritative execution must be repeated after the prerequisite is independently reviewed, merged to trusted main, and #233 is synchronized to that exact main.',
+              ],
+          }
+          Path('evidence/openai-responses-prerequisite-preview.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+      - name: Upload non-authoritative prerequisite preview
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: openai-responses-prerequisite-preview
+          path: evidence/openai-responses-prerequisite-preview.json
+          if-no-files-found: error

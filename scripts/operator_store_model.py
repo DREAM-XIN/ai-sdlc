@@ -146,6 +146,8 @@ def is_immutable_path(path: str) -> bool:
             f"{STORE_ROOT}/effect-lineages/proposals/",
             f"{STORE_ROOT}/effect-lineages/events/",
             f"{STORE_ROOT}/effect-lineages/resolutions/",
+            f"{STORE_ROOT}/adapter-calls/",
+            f"{STORE_ROOT}/adapter-call-results/",
         )
     ) and path.endswith(".json") and not is_projection_path(path)
     return base_immutable or bool(_DECISION_RE.fullmatch(path)) or bool(_NOTIFICATION_RE.fullmatch(path))
