@@ -41,6 +41,7 @@ class HistoryObservation:
     mismatch_fields: tuple[str, ...] = ()
     http_status: int | None = None
     rules_shape: tuple[str, ...] = ()
+    source_shape: str | None = None
 
     def render(self) -> str:
         parts = [f"category={self.category}"]
@@ -55,6 +56,8 @@ class HistoryObservation:
             parts.append("mismatch_fields=" + ",".join(self.mismatch_fields))
         if self.rules_shape:
             parts.append("rules_shape=" + "|".join(self.rules_shape))
+        if self.source_shape is not None and "source" in self.mismatch_fields:
+            parts.append(f"source_shape={self.source_shape}")
         return " ".join(parts)
 
 
@@ -83,6 +86,23 @@ def _state_mismatch_fields(
         return ("state",)
     expected = _expected_state(repository=repository, ruleset_id=ruleset_id, payload=payload)
     return tuple(key for key, value in expected.items() if state.get(key) != value)
+
+
+def _safe_source_shape(value: object, repository: str) -> str:
+    """Classify a ruleset source without exposing the observed source value."""
+    if value is None:
+        return "absent"
+    if not isinstance(value, str):
+        return "non-string"
+    if value == repository:
+        return "equals-repository"
+
+    owner, separator, repo = repository.partition("/")
+    if separator and owner and value == owner:
+        return "owner-only"
+    if separator and repo and value == repo:
+        return "repo-only"
+    return "other-string"
 
 
 def _safe_rules_shape(rules: object) -> tuple[str, ...]:
@@ -307,6 +327,11 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
                 state_name=state_name,
                 mismatch_fields=mismatches,
                 rules_shape=_safe_rules_shape(state.get("rules")) if "rules" in mismatches else (),
+                source_shape=(
+                    _safe_source_shape(state.get("source"), repository)
+                    if "source" in mismatches
+                    else None
+                ),
             )
 
         category = "normalized-exact-match" if comparison_state is not state else "exact-match"

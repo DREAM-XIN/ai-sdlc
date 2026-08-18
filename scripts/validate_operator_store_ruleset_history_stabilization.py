@@ -9,6 +9,7 @@ from operator_store_github_ruleset_provision import RulesetProvisioningError, wr
 from operator_store_github_ruleset_stabilized import (
     DEFAULT_STABILIZATION_ATTEMPTS,
     StabilizedAttestedGitHubOperatorStoreRulesetProvisioner,
+    _safe_source_shape,
 )
 
 REPOSITORY = "DREAM-XIN/ai-sdlc"
@@ -17,6 +18,8 @@ RULESET_ID = 20775740
 APP_ID = 4576406
 SECRET = "diagnostic-test-admin-token"
 MALICIOUS_TEXT = "must-not-appear-in-diagnostic"
+SOURCE_MALICIOUS_TEXT = f"{MALICIOUS_TEXT}:{SECRET}:arbitrary-source-payload"
+_MISSING = object()
 
 
 def require(condition, message):
@@ -131,6 +134,7 @@ def validate_delayed_history_visibility():
     )
     require(version_id == 6, "delayed marker did not converge to exact newer version")
     require(state["name"] == marker["name"], "delayed marker returned wrong state")
+    require(state["source"] == REPOSITORY, "exact repository source binding drifted")
     require(api.history_calls == 13, "stabilization stopped at the wrong observation")
     require(api.sleeps == 12, "stabilization sleep count drifted")
 
@@ -144,6 +148,7 @@ def validate_persistent_stale_history_diagnostic():
     require("version_id=5" in text, "stale history diagnostic omitted version id")
     require("mismatch_fields=name" in text, "stale history diagnostic omitted name mismatch")
     require("rules_shape=" not in text, "rules shape should not be emitted for name-only mismatch")
+    require("source_shape=" not in text, "source shape should not be emitted for name-only mismatch")
 
 
 def validate_live_omission_shape_is_scoped_to_trusted_strict_write():
@@ -177,6 +182,77 @@ def validate_live_omission_shape_is_scoped_to_trusted_strict_write():
     )
 
 
+def validate_source_shape_classifier_is_bounded():
+    owner, repo = REPOSITORY.split("/", 1)
+    require(
+        _safe_source_shape(REPOSITORY, REPOSITORY) == "equals-repository",
+        "exact repository source classification drifted",
+    )
+    require(_safe_source_shape(None, REPOSITORY) == "absent", "absent source classification drifted")
+    require(_safe_source_shape(owner, REPOSITORY) == "owner-only", "owner-only source classification drifted")
+    require(_safe_source_shape(repo, REPOSITORY) == "repo-only", "repo-only source classification drifted")
+    require(
+        _safe_source_shape(SOURCE_MALICIOUS_TEXT, REPOSITORY) == "other-string",
+        "other-string source classification drifted",
+    )
+    require(
+        _safe_source_shape({"payload": SOURCE_MALICIOUS_TEXT}, REPOSITORY) == "non-string",
+        "non-string source classification drifted",
+    )
+
+
+def validate_source_mismatch_shapes_remain_fail_closed():
+    marker = writer_ruleset_payload(STATE_REF, APP_ID)
+    marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
+    owner, repo = REPOSITORY.split("/", 1)
+    cases = (
+        ("absent", _MISSING),
+        ("owner-only", owner),
+        ("repo-only", repo),
+        ("other-string", SOURCE_MALICIOUS_TEXT),
+        ("non-string", {"payload": SOURCE_MALICIOUS_TEXT}),
+    )
+    for index, (expected_shape, observed_source) in enumerate(cases, start=20):
+        observed = _state(marker)
+        if observed_source is _MISSING:
+            observed.pop("source", None)
+        else:
+            observed["source"] = copy.deepcopy(observed_source)
+        text = _expect_failure(
+            _provisioner(HistoryApi(history_versions=[index], states={index: observed}), attempts=1),
+            marker,
+            "state-shape-mismatch",
+        )
+        require("mismatch_fields=source" in text, f"{expected_shape} did not identify source mismatch")
+        require(
+            f"source_shape={expected_shape}" in text,
+            f"{expected_shape} did not emit its bounded source classification",
+        )
+        require("rules_shape=" not in text, f"{expected_shape} emitted unrelated rules diagnostics")
+
+
+def validate_live_source_plus_omission_shape_remains_fail_closed():
+    marker = writer_ruleset_payload(STATE_REF, APP_ID)
+    marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
+    observed = _state(marker)
+    observed["source"] = REPOSITORY.split("/", 1)[0]
+    observed["rules"] = [{"type": "creation"}, {"type": "update"}]
+    text = _expect_failure(
+        _provisioner(HistoryApi(history_versions=[40], states={40: observed}), attempts=1),
+        marker,
+        "state-shape-mismatch",
+    )
+    require(
+        "mismatch_fields=source,rules" in text,
+        "combined live-shaped mismatch did not preserve exact source/rules failure",
+    )
+    require("source_shape=owner-only" in text, "combined mismatch lost bounded source shape")
+    require(
+        "rules_shape=0:creation:parameters=absent|1:update:parameters=absent" in text,
+        "combined mismatch lost bounded omission-only rules shape",
+    )
+
+
 def validate_state_shape_mismatch_diagnostic():
     marker = writer_ruleset_payload(STATE_REF, APP_ID)
     marker["name"] = "AI-SDLC Operator Store writer [attest:aabbccdd]"
@@ -193,6 +269,7 @@ def validate_state_shape_mismatch_diagnostic():
         "rules_shape=0:creation:parameters=absent|1:update:parameters=absent|2:other:parameters=absent" in text,
         "shape diagnostic did not expose bounded extra-rule shape",
     )
+    require("source_shape=" not in text, "rules-only mismatch emitted source diagnostics")
 
 
 def validate_rules_shape_reports_only_bounded_semantics():
@@ -305,6 +382,9 @@ def main():
     validate_delayed_history_visibility()
     validate_persistent_stale_history_diagnostic()
     validate_live_omission_shape_is_scoped_to_trusted_strict_write()
+    validate_source_shape_classifier_is_bounded()
+    validate_source_mismatch_shapes_remain_fail_closed()
+    validate_live_source_plus_omission_shape_remains_fail_closed()
     validate_state_shape_mismatch_diagnostic()
     validate_rules_shape_reports_only_bounded_semantics()
     validate_canonical_requires_strictly_newer_version()
