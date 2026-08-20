@@ -1,0 +1,41 @@
+name: Validate v0.3 Scenario Fixture Pool
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-scenario-fixture-pool-validation.yml'
+      - '.github/workflows/provision-v03-scenario-fixture-pool.yml'
+      - 'scripts/v03_scenario_fixture_pool.py'
+      - 'scripts/provision_v03_scenario_fixture_pool.py'
+      - 'scripts/validate_v03_scenario_fixture_pool.py'
+      - 'scripts/provision_v03_real_runtime_fixture.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Compile closed pool provisioner
+        run: python -m py_compile scripts/v03_scenario_fixture_pool.py scripts/provision_v03_scenario_fixture_pool.py scripts/validate_v03_scenario_fixture_pool.py
+      - name: Validate closed inventory and selector surface
+        run: PYTHONPATH=scripts python -c 'import validate_v03_scenario_fixture_pool as v; v.validate_closed_inventory_and_no_selector_surface()'
+      - name: Validate canonical slot files and isolation
+        run: PYTHONPATH=scripts python -c 'import validate_v03_scenario_fixture_pool as v; v.validate_slot_canonical_files_and_isolation()'
+      - name: Validate inventory mutations fail closed
+        run: PYTHONPATH=scripts python -c 'import validate_v03_scenario_fixture_pool as v; v.validate_inventory_mutations_fail_closed()'
+      - name: Validate fresh nine-slot provision and inert full rerun
+        run: PYTHONPATH=scripts python -c 'import validate_v03_scenario_fixture_pool as v; v.validate_full_fresh_then_inert_rerun()'
+      - name: Validate partial bootstrap resume and incompatible history rejection
+        run: PYTHONPATH=scripts python -c 'import validate_v03_scenario_fixture_pool as v; v.validate_partial_bootstrap_resume_and_bad_history_rejection()'
+      - name: Validate trusted-main and repository scope
+        run: PYTHONPATH=scripts python -c 'import validate_v03_scenario_fixture_pool as v; v.validate_non_main_and_repository_scope_fail_closed()'
