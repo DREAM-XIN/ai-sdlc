@@ -1,0 +1,53 @@
+name: Validate v0.3 Real Runtime Smoke Authority
+run-name: Validate v0.3 real-smoke authority ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - verification/v0.3-real-runtime-effect-safety-221
+    paths:
+      - '.github/workflows/v03-real-runtime-effect-safety-smoke.yml'
+      - '.github/workflows/v03-real-runtime-smoke-authority.yml'
+      - 'scripts/v03_real_runtime_effect_safety_smoke.py'
+      - 'scripts/v03_real_runtime_smoke_fixture.py'
+      - 'scripts/v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_smoke_fixture.py'
+      - 'scripts/validate_v03_real_runtime_smoke_authority_gate.py'
+      - 'scripts/validate_v03_real_runtime_smoke_workflow_authority.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-real-runtime-effect-safety-smoke.yml'
+      - '.github/workflows/v03-real-runtime-smoke-authority.yml'
+      - 'scripts/v03_real_runtime_effect_safety_smoke.py'
+      - 'scripts/v03_real_runtime_smoke_fixture.py'
+      - 'scripts/v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_execution_authority.py'
+      - 'scripts/validate_v03_real_runtime_smoke_fixture.py'
+      - 'scripts/validate_v03_real_runtime_smoke_authority_gate.py'
+      - 'scripts/validate_v03_real_runtime_smoke_workflow_authority.py'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-authority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install --quiet 'PyYAML>=6,<7' 'jsonschema>=4.23,<5'
+      - name: Validate trusted-main manual execution gate
+        run: python scripts/validate_v03_real_runtime_execution_authority.py
+      - name: Validate selector-derived fixture binding
+        run: python scripts/validate_v03_real_runtime_smoke_fixture.py
+      - name: Validate script authority gate ordering
+        run: python scripts/validate_v03_real_runtime_smoke_authority_gate.py
+      - name: Validate workflow permission partition
+        run: python scripts/validate_v03_real_runtime_smoke_workflow_authority.py

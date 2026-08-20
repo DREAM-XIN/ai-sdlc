@@ -1,0 +1,88 @@
+name: Validate v0.3 Callback Orchestration
+run-name: v0.3 callback orchestration ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - verification/v0.3-real-runtime-effect-safety-221
+    paths:
+      - '.github/workflows/v03-callback-orchestration.yml'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/v03_real_runtime_prerequisites.py'
+      - 'scripts/validate_v03_callback_orchestration.py'
+      - 'scripts/run_v03_callback_orchestration_support.py'
+      - 'scripts/render_v03_callback_deterministic_evidence.py'
+      - 'scripts/operator_store.py'
+      - 'scripts/operator_store_backends.py'
+      - 'scripts/operator_store_model.py'
+      - 'scripts/operator_vertical.py'
+      - 'scripts/operator_vertical_callback.py'
+      - 'scripts/operator_vertical_executor.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_vertical_store.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-callback-orchestration.yml'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/v03_real_runtime_prerequisites.py'
+      - 'scripts/validate_v03_callback_orchestration.py'
+      - 'scripts/run_v03_callback_orchestration_support.py'
+      - 'scripts/render_v03_callback_deterministic_evidence.py'
+      - 'scripts/operator_vertical_callback.py'
+
+permissions:
+  contents: read
+
+jobs:
+  callback-orchestration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validator dependencies
+        run: pip install --quiet 'PyYAML>=6,<7' 'jsonschema>=4.23,<5'
+      - name: Classify callback orchestration support at current runtime level
+        run: |
+          mkdir -p evidence
+          python scripts/run_v03_callback_orchestration_support.py > evidence/v03-callback-orchestration-support.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          doc = json.loads(Path('evidence/v03-callback-orchestration-support.json').read_text(encoding='utf-8'))
+          assert doc['release_eligible'] is False
+          assert doc['scenarios']['duplicate-callback']['support_status'] == 'PASS'
+          assert doc['scenarios']['out-of-order-callback']['support_status'] == 'PASS'
+          stale = doc['scenarios']['stale-candidate-result']
+          assert stale['support_status'] in {'PASS', 'PENDING_RUNTIME_REMEDIATION'}
+          if stale['support_status'] == 'PENDING_RUNTIME_REMEDIATION':
+              assert doc['runtime_has_stale_callback_convergence'] is False
+              assert stale['runtime_remediation_issue'] == 254
+              assert stale['runtime_remediation_pr'] == 255
+              assert stale['translation_count'] == 0
+              assert stale['persist_authority_count'] == 0
+          else:
+              assert doc['runtime_has_stale_callback_convergence'] is True
+              assert stale['stale_result_rejected_count'] == 1
+              assert stale['fresh_candidate_external_reservation_count'] == 0
+          print(json.dumps({
+              'runtime_has_stale_callback_convergence': doc['runtime_has_stale_callback_convergence'],
+              'statuses': {name: row['support_status'] for name, row in doc['scenarios'].items()},
+          }, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-callback-orchestration-support
+          path: evidence/v03-callback-orchestration-support.json
+          if-no-files-found: error
+      - name: Render PENDING release-schema callback evidence
+        run: python scripts/render_v03_callback_deterministic_evidence.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-callback-deterministic-evidence
+          path: evidence/v03-callback-deterministic.json
+          if-no-files-found: error
