@@ -231,6 +231,42 @@ def _repo_default_branch(*, api: str, repository: str, token: str) -> str:
     return branch
 
 
+def _exact_slot_pr_binding(
+    row: Any,
+    slot: SlotSpec,
+    *,
+    repository: str,
+    head_sha: str,
+    default_branch: str,
+) -> tuple[int, str]:
+    if not isinstance(row, dict):
+        raise FixturePoolProvisionError(f"slot PR truth is malformed: {slot.scenario}")
+    head = row.get("head")
+    base = row.get("base")
+    if not isinstance(head, dict) or not isinstance(base, dict):
+        raise FixturePoolProvisionError(f"slot PR head/base authority is malformed: {slot.scenario}")
+    head_repo_value = head.get("repo")
+    base_repo_value = base.get("repo")
+    if not isinstance(head_repo_value, dict) or not isinstance(base_repo_value, dict):
+        raise FixturePoolProvisionError(f"slot PR repository authority is missing: {slot.scenario}")
+    head_repo = str(head_repo_value.get("full_name") or "").lower()
+    base_repo = str(base_repo_value.get("full_name") or "").lower()
+    expected_repository = repository.lower()
+    if head_repo != expected_repository or base_repo != expected_repository:
+        raise FixturePoolProvisionError(f"slot PR repository authority drifted: {slot.scenario}")
+    if head.get("ref") != slot.target_ref or base.get("ref") != default_branch:
+        raise FixturePoolProvisionError(f"slot PR ref/base authority drifted: {slot.scenario}")
+    candidate_head = _exact_sha(str(head.get("sha") or ""), f"slot PR head {slot.scenario}")
+    if candidate_head != head_sha:
+        raise FixturePoolProvisionError(f"slot PR head drifted: {slot.scenario}")
+    number = row.get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise FixturePoolProvisionError(f"slot PR number authority is malformed: {slot.scenario}")
+    if row.get("state") != "open" or row.get("draft") is not False:
+        raise FixturePoolProvisionError(f"slot PR is not exact open non-draft authority: {slot.scenario}")
+    return number, str(row.get("html_url") or "")
+
+
 def _recover_or_create_pr(
     slot: SlotSpec,
     *,
@@ -245,21 +281,18 @@ def _recover_or_create_pr(
     status, payload = _api_request("GET", f"{api}/repos/{repository}/pulls?{query}", token)
     if status != 200 or not isinstance(payload, list):
         raise FixturePoolProvisionError(f"cannot inspect slot PR history: {slot.scenario}")
-    matches = [
-        row for row in payload
-        if isinstance(row, dict)
-        and (row.get("head") or {}).get("ref") == slot.target_ref
-        and (row.get("base") or {}).get("ref") == default_branch
-    ]
-    if len(matches) > 1:
+    if any(not isinstance(row, dict) for row in payload):
+        raise FixturePoolProvisionError(f"slot PR history is malformed: {slot.scenario}")
+    if len(payload) > 1:
         raise FixturePoolProvisionError(f"ambiguous historical PRs for slot: {slot.scenario}")
-    if matches:
-        row = matches[0]
-        if row.get("state") != "open" or row.get("draft") is True:
-            raise FixturePoolProvisionError(f"existing slot PR is closed/draft and cannot be repaired: {slot.scenario}")
-        if str((row.get("head") or {}).get("sha") or "") != head_sha:
-            raise FixturePoolProvisionError(f"existing slot PR head drifted: {slot.scenario}")
-        return int(row["number"]), str(row.get("html_url") or "")
+    if payload:
+        return _exact_slot_pr_binding(
+            payload[0],
+            slot,
+            repository=repository,
+            head_sha=head_sha,
+            default_branch=default_branch,
+        )
     status, row = _api_request(
         "POST",
         f"{api}/repos/{repository}/pulls",
@@ -275,11 +308,15 @@ def _recover_or_create_pr(
             "draft": False,
         },
     )
-    if status != 201 or not isinstance(row, dict):
+    if status != 201:
         raise FixturePoolProvisionError(f"cannot create slot PR: {slot.scenario}")
-    if str((row.get("head") or {}).get("sha") or "") != head_sha or (row.get("base") or {}).get("ref") != default_branch:
-        raise FixturePoolProvisionError(f"created slot PR binding drifted: {slot.scenario}")
-    return int(row["number"]), str(row.get("html_url") or "")
+    return _exact_slot_pr_binding(
+        row,
+        slot,
+        repository=repository,
+        head_sha=head_sha,
+        default_branch=default_branch,
+    )
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
