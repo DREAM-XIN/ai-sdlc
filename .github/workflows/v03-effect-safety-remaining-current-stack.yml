@@ -1,0 +1,62 @@
+name: Validate v0.3 Remaining Effect-Safety Current Stack
+
+on:
+  pull_request:
+    branches:
+      - main
+      - verification/v03-lost-ack-current-stack-221
+    paths:
+      - '.github/workflows/v03-effect-safety-remaining-current-stack.yml'
+      - 'scripts/validate_v03_preauthorization_crash_recovery.py'
+      - 'scripts/validate_v03_callback_orchestration.py'
+      - 'scripts/validate_v03_concurrent_resume_orchestration.py'
+      - 'scripts/validate_v03_launch_cancel_orchestration.py'
+      - 'scripts/validate_v03_persist_cancel_orchestration.py'
+      - 'scripts/validate_v03_persist_ack_loss_orchestration.py'
+      - 'scripts/validate_v03_unknown_takeover_orchestration.py'
+      - 'scripts/v03_real_runtime_fault_injection.py'
+      - 'scripts/v03_real_runtime_lost_ack_orchestration.py'
+      - 'scripts/validate_v03_real_runtime_lost_ack_orchestration.py'
+      - 'scripts/operator_vertical_executor.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_vertical_callback.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Compile remaining frozen effect-safety validators
+        run: |
+          python -m py_compile \
+            scripts/validate_v03_preauthorization_crash_recovery.py \
+            scripts/validate_v03_callback_orchestration.py \
+            scripts/validate_v03_concurrent_resume_orchestration.py \
+            scripts/validate_v03_launch_cancel_orchestration.py \
+            scripts/validate_v03_persist_cancel_orchestration.py \
+            scripts/validate_v03_persist_ack_loss_orchestration.py \
+            scripts/validate_v03_unknown_takeover_orchestration.py
+      - name: Reservation-committed pre-authorization crash recovery
+        run: PYTHONPATH=scripts python scripts/validate_v03_preauthorization_crash_recovery.py
+      - name: Callback duplicate/out-of-order/stale-candidate orchestration
+        run: PYTHONPATH=scripts python scripts/validate_v03_callback_orchestration.py
+      - name: Concurrent resume convergence
+        run: PYTHONPATH=scripts python scripts/validate_v03_concurrent_resume_orchestration.py
+      - name: Launch/cancel ordering
+        run: PYTHONPATH=scripts python scripts/validate_v03_launch_cancel_orchestration.py
+      - name: Persist/cancel ordering
+        run: PYTHONPATH=scripts python scripts/validate_v03_persist_cancel_orchestration.py
+      - name: Persist ACK-loss fresh-process recovery
+        run: PYTHONPATH=scripts python scripts/validate_v03_persist_ack_loss_orchestration.py
+      - name: UNKNOWN takeover zero-speculation
+        run: PYTHONPATH=scripts python scripts/validate_v03_unknown_takeover_orchestration.py
