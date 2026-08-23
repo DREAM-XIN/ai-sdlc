@@ -1,0 +1,320 @@
+name: v0.3 Live Dispatch Recovery Trio
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Exact remaining Issue #221 dispatch/recovery scenario
+        required: true
+        type: choice
+        options:
+          - unknown-takeover
+          - concurrent-resume
+          - reservation-committed-pre-authorization-crash-recovery
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  reject-non-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main live dispatch/recovery execution
+        run: exit 1
+
+  live-dispatch-recovery:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Validate trusted installation and Reviewer provider configuration
+        env:
+          ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          APP_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${ADMIN_TOKEN:-}"
+          test -n "${APP_CLIENT_ID:-}"
+          test -n "${APP_PRIVATE_KEY:-}"
+          case "${APP_INTEGRATION_ID:-}" in *[!0-9]*|'') exit 1 ;; esac
+          test "$APP_INTEGRATION_ID" -gt 0
+          test -n "${ANTHROPIC_API_KEY:-}${COPILOT_GITHUB_TOKEN:-}"
+
+      - name: Create bounded Runtime App Feature Event token
+        id: event-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          token: ${{ steps.event-token.outputs.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+
+      - name: Prepare shared evidence directory
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p evidence/v03-dispatch-recovery
+
+      - name: UNKNOWN phase A — one real launch then durable uncertainty
+        if: inputs.scenario == 'unknown-takeover'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase unknown-inject
+          test -s evidence/v03-dispatch-recovery/unknown-takeover-inject.json
+
+      - name: UNKNOWN phase B — fresh takeover with zero speculative retry
+        if: inputs.scenario == 'unknown-takeover'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase unknown-finalize
+          test -s evidence/v03-dispatch-recovery/unknown-takeover-evidence.json
+          test -s evidence/v03-dispatch-recovery/unknown-takeover-provenance.json
+          test -s evidence/v03-dispatch-recovery/unknown-takeover-ledger-partial.json
+
+      - name: Pre-authorization phase A — crash after durable reservation
+        if: inputs.scenario == 'reservation-committed-pre-authorization-crash-recovery'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase preauth-crash
+          test -s evidence/v03-dispatch-recovery/reservation-committed-pre-authorization-crash-recovery-crash.json
+
+      - name: Pre-authorization phase B — fresh process reuses reservation and launches once
+        if: inputs.scenario == 'reservation-committed-pre-authorization-crash-recovery'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase preauth-recover
+          test -s evidence/v03-dispatch-recovery/reservation-committed-pre-authorization-crash-recovery-recover.json
+
+      - name: Pre-authorization phase C — second fresh process proves stable zero-effect recovery
+        if: inputs.scenario == 'reservation-committed-pre-authorization-crash-recovery'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase preauth-finalize
+          test -s evidence/v03-dispatch-recovery/reservation-committed-pre-authorization-crash-recovery-evidence.json
+          test -s evidence/v03-dispatch-recovery/reservation-committed-pre-authorization-crash-recovery-provenance.json
+          test -s evidence/v03-dispatch-recovery/reservation-committed-pre-authorization-crash-recovery-ledger-partial.json
+
+      - name: Concurrent phase A — create one durable pre-effect Operation only
+        if: inputs.scenario == 'concurrent-resume'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-setup
+          test -s evidence/v03-dispatch-recovery/concurrent-resume-setup.json
+
+      - name: Concurrent phase B — two independent processes preselect one action and converge
+        if: inputs.scenario == 'concurrent-resume'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          shared="$AI_SDLC_SHARED_EVIDENCE_DIR"
+          race_a="$RUNNER_TEMP/v03-concurrent-racer-a"
+          race_b="$RUNNER_TEMP/v03-concurrent-racer-b"
+          rm -rf "$race_a" "$race_b"
+          mkdir -p "$race_a" "$race_b"
+          cp -a "$GITHUB_WORKSPACE/." "$race_a/"
+          cp -a "$GITHUB_WORKSPACE/." "$race_b/"
+          test "$(git -C "$race_a" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$race_b" rev-parse HEAD)" = "$GITHUB_SHA"
+          (
+            cd "$race_a"
+            AI_SDLC_STORE_CHECKOUT="$race_a" PYTHONPATH=scripts \
+              python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer a
+          ) >"$shared/concurrent-resume-racer-a.log" 2>&1 &
+          pid_a=$!
+          (
+            cd "$race_b"
+            AI_SDLC_STORE_CHECKOUT="$race_b" PYTHONPATH=scripts \
+              python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer b
+          ) >"$shared/concurrent-resume-racer-b.log" 2>&1 &
+          pid_b=$!
+
+          for _ in $(seq 1 900); do
+            test -s "$shared/concurrent-resume-ready-a.json" && test -s "$shared/concurrent-resume-ready-b.json" && break
+            sleep 0.2
+          done
+          test -s "$shared/concurrent-resume-ready-a.json"
+          test -s "$shared/concurrent-resume-ready-b.json"
+
+          printf '{}\n' > "$shared/concurrent-resume-go-a.json"
+          for _ in $(seq 1 900); do
+            test -s "$shared/concurrent-resume-result-a.json" && break
+            sleep 0.2
+          done
+          test -s "$shared/concurrent-resume-result-a.json"
+
+          printf '{}\n' > "$shared/concurrent-resume-go-b.json"
+          wait "$pid_a"
+          wait "$pid_b"
+          test -s "$shared/concurrent-resume-result-b.json"
+          cat "$shared/concurrent-resume-racer-a.log"
+          cat "$shared/concurrent-resume-racer-b.log"
+
+      - name: Concurrent phase C — fresh process proves one exact runtime execution
+        if: inputs.scenario == 'concurrent-resume'
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=scripts python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-finalize
+          test -s evidence/v03-dispatch-recovery/concurrent-resume-evidence.json
+          test -s evidence/v03-dispatch-recovery/concurrent-resume-provenance.json
+          test -s evidence/v03-dispatch-recovery/concurrent-resume-ledger-partial.json
+
+      - name: Upload exact dispatch/recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-live-dispatch-recovery-${{ inputs.scenario }}
+          path: evidence/v03-dispatch-recovery/
+          if-no-files-found: warn
+
+      - name: Publish scenario result to Issue 221
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from urllib import request
+          scenario = os.environ['SCENARIO']
+          root = Path('evidence/v03-dispatch-recovery')
+          ledger_path = root / f'{scenario}-ledger-partial.json'
+          provenance_path = root / f'{scenario}-provenance.json'
+          ledger = json.loads(ledger_path.read_text()) if ledger_path.is_file() else {}
+          provenance = json.loads(provenance_path.read_text()) if provenance_path.is_file() else {}
+          lines = [
+              '<!-- ai-sdlc-v03-live-dispatch-recovery -->',
+              f"v0.3 live dispatch/recovery scenario `{scenario}`: **{os.environ['JOB_STATUS']}**",
+              f"Run: `{os.environ['RUN_ID']}`",
+              f"Trusted-main head: `{os.environ['HEAD_SHA']}`",
+              'The workflow consumes only the fixed Issue #310 scenario slot and does not expose arbitrary Feature/ref authority.',
+          ]
+          if ledger and provenance:
+              lines += [
+                  f"Authority-set ledger status: **{ledger.get('status', '')}**",
+                  f"Satisfied row in this record: `{', '.join(ledger.get('satisfied_scenarios') or [])}`",
+                  f"Evidence record: `{provenance.get('record_id', '')}`",
+                  f"Artifact SHA-256: `{provenance.get('artifact_sha256', '')}`",
+                  'This record satisfies only the named scenario. Overall Issue #221 remains unresolved until all 13 provenance-bound rows are accepted under one exact authority set.',
+              ]
+          else:
+              lines.append('No final provenance-bound scenario record was retained; this row is not accepted as release evidence.')
+          body = json.dumps({'body': '\n'.join(lines)}).encode()
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          req = request.Request(
+              f"{api}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/221/comments",
+              data=body,
+              method='POST',
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with request.urlopen(req, timeout=20) as response:
+              if response.status not in {200, 201}:
+                  raise SystemExit(1)
+          PY

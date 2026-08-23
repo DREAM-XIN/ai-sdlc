@@ -1,0 +1,29 @@
+name: Validate v0.3 Live Evidence Provenance
+
+on:
+  pull_request:
+    branches:
+      - main
+      - verification/v03-live-evidence-ledger-221
+    paths:
+      - '.github/workflows/v03-live-evidence-provenance.yml'
+      - 'scripts/v03_live_evidence_provenance.py'
+      - 'scripts/validate_v03_live_evidence_provenance.py'
+      - 'scripts/v03_effect_safety_live_ledger.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Compile live evidence provenance writer
+        run: python -m py_compile scripts/v03_live_evidence_provenance.py scripts/validate_v03_live_evidence_provenance.py
+      - name: Prove exact-byte/run/main/policy/protection provenance binding
+        run: PYTHONPATH=scripts python scripts/validate_v03_live_evidence_provenance.py
