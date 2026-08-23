@@ -1,0 +1,33 @@
+protocol_version: 0.1.0
+revision: 0
+feature:
+  id: F-OPERATOR-V03-REAL-RUNTIME-FI-0001
+  title: v0.3 trusted real-runtime fault-injection fixture
+  risk: low
+  issue: '#276'
+workflow:
+  profile: v03-real-runtime-fixture
+  status: ACTIVE
+  current_stage: code-review
+  stages:
+  - id: code-review
+    status: READY
+    gate: code-gate
+  - id: verification
+    status: TODO
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts: []
+gates:
+- id: code-gate
+  status: PENDING
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence: []
+applied_events: []
+updated_at: '2026-08-14T09:40:00Z'
