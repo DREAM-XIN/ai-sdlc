@@ -1,0 +1,33 @@
+protocol_version: 0.1.0
+revision: 0
+feature:
+  id: F-OPERATOR-V03-FI-CONCURRENT-RESUME-0001
+  title: 'v0.3 real-runtime fixture: concurrent-resume'
+  risk: low
+  issue: '#310'
+workflow:
+  profile: v03-real-runtime-fixture
+  status: ACTIVE
+  current_stage: code-review
+  stages:
+  - id: code-review
+    status: READY
+    gate: code-gate
+  - id: verification
+    status: TODO
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts: []
+gates:
+- id: code-gate
+  status: PENDING
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence: []
+applied_events: []
+updated_at: '2026-08-18T05:10:07Z'
