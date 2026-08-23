@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-V03-FI-UNKNOWN-TAKEOVER-0001-CODE-REVIEW-START
+feature_id: F-OPERATOR-V03-FI-UNKNOWN-TAKEOVER-0001
+expected_revision: 0
+occurred_at: '2026-08-18T05:11:03Z'
+changes:
+- kind: artifact-record
+  record:
+    id: implementation-v1
+    type: implementation
+    uri: docs/features/F-OPERATOR-V03-FI-UNKNOWN-TAKEOVER-0001/implementation.md
+    status: draft
+- kind: stage
+  id: code-review
+  status: WORKING
