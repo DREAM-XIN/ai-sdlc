@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 0
+revision: 1
 feature:
   id: F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0001
   title: 'v0.3 real-runtime fixture: persist-linearized-before-cancel'
@@ -11,7 +11,7 @@ workflow:
   current_stage: code-review
   stages:
   - id: code-review
-    status: READY
+    status: WORKING
     gate: code-gate
   - id: verification
     status: TODO
@@ -20,7 +20,11 @@ workflow:
     status: TODO
     gate: release-gate
 tasks: []
-artifacts: []
+artifacts:
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0001/implementation.md
+  status: draft
 gates:
 - id: code-gate
   status: PENDING
@@ -29,5 +33,6 @@ gates:
 - id: release-gate
   status: PENDING
 evidence: []
-applied_events: []
-updated_at: '2026-08-18T05:10:02Z'
+applied_events:
+- EVT-F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0001-CODE-REVIEW-START
+updated_at: '2026-08-18T05:11:02Z'
