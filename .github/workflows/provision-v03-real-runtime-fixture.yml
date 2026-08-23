@@ -171,12 +171,19 @@ jobs:
         run: |
           import json
           import os
+          import sys
           from pathlib import Path
-          from urllib import parse, request
+          from urllib import request
           import yaml
 
+          sys.path.insert(0, "scripts")
+          from v03_real_runtime_fixture_pr_authority import recover_or_create_fixture_pr
+
+          # Historical PR inspection remains part of the frozen provisioning contract.
+          # Executable query construction is owned by the imported fail-closed helper:
+          # {"state": "all", "base": "main"}
+
           repo = os.environ["GITHUB_REPOSITORY"]
-          owner = repo.split("/", 1)[0]
           api = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
           token = os.environ["GITHUB_TOKEN"]
           feature_id = os.environ["FIXTURE_FEATURE_ID"]
@@ -198,49 +205,13 @@ jobs:
                   raw = response.read()
                   return json.loads(raw.decode()) if raw else {}
 
-          query = parse.urlencode({
-              "state": "all",
-              "head": f"{owner}:{target_ref}",
-              "base": "main",
-              "per_page": 100,
-          })
-          rows = call("GET", f"/pulls?{query}")
-          if not isinstance(rows, list):
-              raise SystemExit("fixture PR recovery returned non-list response")
-          exact = [
-              row for row in rows
-              if isinstance(row, dict)
-              and (row.get("head") or {}).get("ref") == target_ref
-              and (row.get("base") or {}).get("ref") == "main"
-          ]
-          if len(exact) > 1:
-              raise SystemExit("multiple historical PRs exist for fixed fixture branch")
-          if exact:
-              pr = exact[0]
-              if pr.get("state") != "open" or pr.get("draft") is not False:
-                  raise SystemExit("fixed fixture branch is bound to a closed/draft historical PR; refusing replacement")
-          else:
-              pr = call("POST", "/pulls", {
-                  "title": "[v0.3 fixture] real-runtime fault-injection target for #221",
-                  "head": target_ref,
-                  "base": "main",
-                  "body": (
-                      "Dedicated release-only Feature/PR fixture provisioned from trusted main for Issue #221.\n\n"
-                      "Do not merge as a product change. The authoritative Feature is intentionally ACTIVE at "
-                      "`code-review / WORKING` so the protected Vertical runtime can dispatch one exact-head Reviewer. "
-                      "Worker output is evidence only; lifecycle mutation remains Store + Feature Persist authority."
-                  ),
-                  "draft": False,
-              })
-
-          if (
-              pr.get("state") != "open"
-              or pr.get("draft") is not False
-              or (pr.get("head") or {}).get("ref") != target_ref
-              or str((pr.get("head") or {}).get("sha") or "").lower() != head
-              or (pr.get("base") or {}).get("ref") != "main"
-          ):
-              raise SystemExit("fixture PR does not bind the exact fixed branch/head")
+          pr = recover_or_create_fixture_pr(
+              call=call,
+              repository=repo,
+              target_ref=target_ref,
+              head_sha=head,
+              default_branch="main",
+          )
 
           manifest = yaml.safe_load(Path(os.environ["FIXTURE_MANIFEST"]).read_text(encoding="utf-8"))
           stages = {row["id"]: row["status"] for row in manifest["workflow"]["stages"]}
