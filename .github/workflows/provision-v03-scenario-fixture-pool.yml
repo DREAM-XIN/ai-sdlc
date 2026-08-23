@@ -44,6 +44,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REF" = 'refs/heads/main'
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p evidence
           PYTHONPATH=scripts python scripts/v03_scenario_fixture_pool.py > evidence/v03-scenario-fixture-pool-inventory.json
 
       - name: Provision or exactly resume all nine fixed fixture slots
