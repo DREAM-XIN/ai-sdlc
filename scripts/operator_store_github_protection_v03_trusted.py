@@ -4,8 +4,11 @@
 The generic repository/ruleset protection verifiers remain read-only and
 fail-closed. This wrapper is intentionally for the explicit trusted-main v0.3
 Vertical policy workflow only: before relying on the ruleset path it performs
-#262's bounded marker -> canonical strict write attestation, then injects the
-resulting in-memory normalized attested verifier into the existing composite.
+#262's marker -> canonical strict write attestation. #336 additionally binds the
+repository source identity to the same ruleset's exact current-detail surface and
+the just-completed write response when GitHub history retains its observed opaque
+source serialization. The resulting in-memory verifier is injected into the
+existing composite; no generic read-only authority is widened.
 
 Attestation is process-local and is never serialized. A process cache reuses the
 same attested verifier for repeated checks of the same repository/ref (notably
@@ -20,8 +23,8 @@ from typing import Callable
 from operator_store_github_protection_composite import (
     GitHubRepositoryProtectionVerifier as GenericGitHubRepositoryProtectionVerifier,
 )
-from operator_store_github_ruleset_stabilized import (
-    StabilizedAttestedGitHubOperatorStoreRulesetProvisioner,
+from operator_store_github_ruleset_current_detail_bound import (
+    CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner,
 )
 
 
@@ -66,7 +69,8 @@ class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifi
         self._api_base = api_base
         self._api_version = api_version
         self._provisioner_factory = (
-            provisioner_factory or StabilizedAttestedGitHubOperatorStoreRulesetProvisioner
+            provisioner_factory
+            or CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner
         )
 
     def _attested_ruleset_verifier(self, repository: str, state_ref: str):
