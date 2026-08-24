@@ -21,6 +21,12 @@ from operator_store_github_ruleset_provision import RulesetProvisioningError
 
 DEFAULT_STABILIZATION_ATTEMPTS = 60
 DEFAULT_STABILIZATION_INTERVAL_SECONDS = 1.0
+# Live final-main evidence showed that GitHub ruleset-history serialization can
+# retain a transient source identity beyond the normal 60-second convergence
+# budget, then later settle to the exact repository identity. This larger cap is
+# never an authorization rule: it is entered only for the exact bounded transient
+# observation classified by ``_eligible_for_transient_source_settling`` below.
+DEFAULT_TRANSIENT_SOURCE_SETTLING_ATTEMPTS = 720
 _SAFE_RULE_TYPES = frozenset({"creation", "update"})
 _UPDATE_PARAMETER = "update_allows_fetch_and_merge"
 _STRICT_WRITER_RULES = [
@@ -31,6 +37,10 @@ _OMISSION_ONLY_WRITER_RULES = [
     {"type": "creation"},
     {"type": "update"},
 ]
+_TRANSIENT_SOURCE_RULES_SHAPE = (
+    "0:creation:parameters=absent",
+    "1:update:parameters=absent",
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,7 @@ class HistoryObservation:
     mismatch_fields: tuple[str, ...] = ()
     http_status: int | None = None
     rules_shape: tuple[str, ...] = ()
+    rules_exact_omission_only: bool = False
     source_shape: str | None = None
 
     def render(self) -> str:
@@ -179,6 +190,33 @@ def _normalize_trusted_write_state(
     return normalized
 
 
+def _eligible_for_transient_source_settling(
+    observation: HistoryObservation,
+    *,
+    payload: dict,
+) -> bool:
+    """Allow more *waiting* only for the exact observed transient live shape.
+
+    This predicate does not normalize source and cannot make an observation
+    successful. The trusted caller must have submitted the exact strict writer
+    payload, and the raw observed rules must be exactly the omission-only pair.
+    The history state must later converge to the exact repository identity,
+    after which the existing trusted-write rule normalization may produce the
+    success result. Any different shape exits the extended window fail-closed.
+    """
+    expected_name = payload.get("name")
+    return (
+        isinstance(expected_name, str)
+        and payload.get("rules") == _STRICT_WRITER_RULES
+        and observation.category == "state-shape-mismatch"
+        and observation.state_name == expected_name
+        and observation.mismatch_fields == ("source", "rules")
+        and observation.source_shape == "other-string"
+        and observation.rules_shape == _TRANSIENT_SOURCE_RULES_SHAPE
+        and observation.rules_exact_omission_only is True
+    )
+
+
 def _payload_from_omission_current(current_detail: dict) -> dict | None:
     if current_detail.get("rules") != _OMISSION_ONLY_WRITER_RULES:
         return None
@@ -253,8 +291,17 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
         *,
         attestation_attempts: int = DEFAULT_STABILIZATION_ATTEMPTS,
         attestation_interval_seconds: float = DEFAULT_STABILIZATION_INTERVAL_SECONDS,
+        transient_source_settling_attempts: int = DEFAULT_TRANSIENT_SOURCE_SETTLING_ATTEMPTS,
         **kwargs,
     ):
+        if (
+            not isinstance(transient_source_settling_attempts, int)
+            or transient_source_settling_attempts < attestation_attempts
+        ):
+            raise ValueError(
+                "transient source settling attempts must be an integer >= normal attestation attempts"
+            )
+        self.transient_source_settling_attempts = transient_source_settling_attempts
         super().__init__(
             attestation_attempts=attestation_attempts,
             attestation_interval_seconds=attestation_interval_seconds,
@@ -321,12 +368,18 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
         )
         if mismatches:
             category = "state-name-mismatch" if "name" in mismatches else "state-shape-mismatch"
+            observed_rules = state.get("rules")
             return None, HistoryObservation(
                 category,
                 version_id=version_id,
                 state_name=state_name,
                 mismatch_fields=mismatches,
-                rules_shape=_safe_rules_shape(state.get("rules")) if "rules" in mismatches else (),
+                rules_shape=_safe_rules_shape(observed_rules) if "rules" in mismatches else (),
+                rules_exact_omission_only=(
+                    observed_rules == _OMISSION_ONLY_WRITER_RULES
+                    if "rules" in mismatches
+                    else False
+                ),
                 source_shape=(
                     _safe_source_shape(state.get("source"), repository)
                     if "source" in mismatches
@@ -350,6 +403,8 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
         minimum_version_id: int | None = None,
     ) -> tuple[int, dict]:
         last = HistoryObservation("not-observed")
+        attempts_used = 0
+
         for attempt in range(self.attestation_attempts):
             matched, last = self._observe_latest_history_state(
                 repository,
@@ -357,16 +412,45 @@ class StabilizedAttestedGitHubOperatorStoreRulesetProvisioner(
                 payload,
                 minimum_version_id=minimum_version_id,
             )
+            attempts_used += 1
             if matched is not None:
                 return matched
             if attempt + 1 < self.attestation_attempts:
                 self.sleeper(self.attestation_interval_seconds)
 
+        # The normal bounded window remains the only path for every ordinary
+        # mismatch. A second window exists solely for the live-observed transient
+        # where the exact causal write name has landed but GitHub history still
+        # serializes source as an opaque string and the already-reviewed false
+        # update rule in omission-only form. We still do not accept that state.
+        # Each additional observation must retain the exact transient category;
+        # otherwise the extended authority terminates immediately fail-closed.
+        if (
+            self.transient_source_settling_attempts > self.attestation_attempts
+            and _eligible_for_transient_source_settling(last, payload=payload)
+        ):
+            for _ in range(
+                self.attestation_attempts,
+                self.transient_source_settling_attempts,
+            ):
+                self.sleeper(self.attestation_interval_seconds)
+                matched, last = self._observe_latest_history_state(
+                    repository,
+                    ruleset_id,
+                    payload,
+                    minimum_version_id=minimum_version_id,
+                )
+                attempts_used += 1
+                if matched is not None:
+                    return matched
+                if not _eligible_for_transient_source_settling(last, payload=payload):
+                    break
+
         target_name = payload.get("name")
         safe_target = target_name if isinstance(target_name, str) else "<unnamed-ruleset>"
         raise RulesetProvisioningError(
             "ruleset history stabilization exhausted for "
-            f"{safe_target!r} after {self.attestation_attempts} attempts: {last.render()}"
+            f"{safe_target!r} after {attempts_used} attempts: {last.render()}"
         )
 
     def protection_verifier(self) -> NormalizedAttestedGitHubRulesetProtectionVerifier:
