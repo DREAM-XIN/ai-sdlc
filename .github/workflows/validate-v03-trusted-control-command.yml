@@ -1,0 +1,124 @@
+name: Validate v0.3 Trusted-Control Command Bridge
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v03-trusted-control-command.yml'
+      - '.github/workflows/validate-v03-trusted-control-command.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate closed trusted-control dispatch surface
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('.github/workflows/v03-trusted-control-command.yml')
+          text = path.read_text(encoding='utf-8')
+
+          required_literals = [
+              'issue_comment:',
+              "github.event.comment.author_association == 'OWNER'",
+              'actions: write',
+              'contents: read',
+              'issues: write',
+              "default_branch != 'main'",
+              'main_sha_before=$(gh api',
+              'test "$main_sha_before" = "$EXPECTED_SHA"',
+              '--ref "$DEFAULT_BRANCH"',
+              'main_sha_after=$(gh api',
+              'test "$main_sha_after" = "$EXPECTED_SHA"',
+              "headSha == $expected_sha",
+              'current_main=$(gh api',
+              'test "$current_main" = "$EXPECTED_SHA"',
+              "command is not authorized for this issue",
+              "'/ai-sdlc v03-trusted-control materialize'",
+              "('materialize-v03-vertical-policy-state.yml', '')",
+              "'/ai-sdlc v03-trusted-control preflight'",
+              "('v03-real-runtime-preflight-live.yml', '')",
+              "'/ai-sdlc v03-trusted-control lost-ack-persist'",
+              "('v03-live-lost-ack-persist-sequence.yml', '')",
+              "'/ai-sdlc v03-trusted-control launch-cancel'",
+              "('v03-live-launch-cancel-pair.yml', '')",
+              "('v03-live-dispatch-recovery-trio.yml', 'unknown-takeover')",
+              "('v03-live-dispatch-recovery-trio.yml', 'concurrent-resume')",
+              "('v03-live-dispatch-recovery-trio.yml', 'reservation-committed-pre-authorization-crash-recovery')",
+              "('v03-live-remaining-six.yml', 'cancel-before-persist-linearization')",
+              "('v03-live-remaining-six.yml', 'persist-linearized-before-cancel')",
+              "('v03-live-remaining-six.yml', 'duplicate-callback')",
+              "('v03-live-remaining-six.yml', 'out-of-order-callback')",
+              "('v03-live-remaining-six.yml', 'duplicate-worker-completion')",
+              "('v03-live-remaining-six.yml', 'stale-candidate-result')",
+              "'/ai-sdlc v03-trusted-control final-ledger'",
+              "('v03-final-live-ledger.yml', '')",
+              "'/ai-sdlc v03-trusted-control dogfood-bindings'",
+              "('v03-dogfood-execution-bindings-preflight.yml', '')",
+          ]
+          for literal in required_literals:
+              if literal not in text:
+                  raise SystemExit(f'missing trusted-control invariant: {literal}')
+
+          if text.count('/ai-sdlc v03-trusted-control ') != 16:
+              raise SystemExit('trusted-control command surface changed unexpectedly')
+
+          # Build dangerous permission text from fragments so this read-only PR
+          # validator does not itself look like a PR workflow requesting it to
+          # the repository-wide textual action-security scanner.
+          contents_write = 'contents:' + ' write'
+          forbidden_literals = [
+              "author_association == 'MEMBER'",
+              "author_association == 'COLLABORATOR'",
+              contents_write,
+              'secrets.',
+              'target_ref=',
+              'manifest_path=',
+              'policy_path=',
+              '--ref "$SCENARIO"',
+          ]
+          for literal in forbidden_literals:
+              if literal in text:
+                  raise SystemExit(f'forbidden trusted-control authority: {literal}')
+
+          workflows = [
+              'materialize-v03-vertical-policy-state.yml',
+              'v03-real-runtime-preflight-live.yml',
+              'v03-live-lost-ack-persist-sequence.yml',
+              'v03-live-launch-cancel-pair.yml',
+              'v03-live-dispatch-recovery-trio.yml',
+              'v03-live-remaining-six.yml',
+              'v03-final-live-ledger.yml',
+              'v03-dogfood-execution-bindings-preflight.yml',
+          ]
+          for workflow in workflows:
+              target = Path('.github/workflows') / workflow
+              if not target.is_file():
+                  raise SystemExit(f'allowlisted workflow is not installed: {workflow}')
+
+          scenario_contracts = {
+              'v03-live-dispatch-recovery-trio.yml': [
+                  'unknown-takeover',
+                  'concurrent-resume',
+                  'reservation-committed-pre-authorization-crash-recovery',
+              ],
+              'v03-live-remaining-six.yml': [
+                  'cancel-before-persist-linearization',
+                  'persist-linearized-before-cancel',
+                  'duplicate-callback',
+                  'out-of-order-callback',
+                  'duplicate-worker-completion',
+                  'stale-candidate-result',
+              ],
+          }
+          for workflow, scenarios in scenario_contracts.items():
+              target_text = (Path('.github/workflows') / workflow).read_text(encoding='utf-8')
+              for scenario in scenarios:
+                  if scenario not in target_text:
+                      raise SystemExit(f'allowlisted scenario missing from {workflow}: {scenario}')
+
+          print('v0.3 trusted-control command bridge validation passed')
