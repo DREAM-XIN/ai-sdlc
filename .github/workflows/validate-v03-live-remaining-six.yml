@@ -1,0 +1,45 @@
+name: Validate v0.3 Live Remaining Six Producer
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-live-remaining-six.yml'
+      - '.github/workflows/validate-v03-live-remaining-six.yml'
+      - 'scripts/run_v03_remaining_six_live.py'
+      - 'scripts/v03_remaining_six_live_runner.py'
+      - 'scripts/validate_v03_remaining_six_live_runner.py'
+      - 'scripts/v03_dispatch_recovery_live_runner.py'
+      - 'scripts/v03_scenario_runtime_driver.py'
+      - 'scripts/v03_scenario_runtime_preflight.py'
+      - 'scripts/v03_scenario_runtime_composition.py'
+      - 'scripts/v03_duplicate_worker_completion_collector.py'
+      - 'scripts/v03_effect_safety_live_ledger.py'
+      - 'scripts/v03_effect_safety_live_ledger_authority_set.py'
+      - 'scripts/v03_live_evidence_provenance.py'
+      - 'scripts/operator_vertical_callback.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_vertical_executor.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Validate remaining-six live producer contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/run_v03_remaining_six_live.py \
+            scripts/v03_remaining_six_live_runner.py \
+            scripts/validate_v03_remaining_six_live_runner.py
+          python scripts/validate_v03_remaining_six_live_runner.py

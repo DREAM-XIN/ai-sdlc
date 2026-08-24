@@ -1,0 +1,49 @@
+name: v0.3 Real Runtime Full Preflight
+run-name: v0.3 full-runtime preflight ${{ inputs.feature_id }} @ ${{ inputs.target_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      feature_id:
+        description: Existing runnable Feature id; this workflow never creates or edits a Feature Manifest
+        required: true
+        type: string
+      target_ref:
+        description: Exact existing Feature branch bound to the candidate PR
+        required: true
+        type: string
+      candidate_pr_number:
+        description: Exact open candidate PR number for the same target ref
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  full-runtime-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate zero-effect preflight implementation
+        run: python scripts/validate_v03_real_runtime_full_preflight.py
+      - name: Observe trusted-main prerequisites and exact runnable fixture
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FI_FULL_FEATURE_ID: ${{ inputs.feature_id }}
+          FI_FULL_TARGET_REF: ${{ inputs.target_ref }}
+          FI_FULL_PR_NUMBER: ${{ inputs.candidate_pr_number }}
+        run: python scripts/run_v03_real_runtime_full_preflight.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: v03-real-runtime-full-preflight
+          path: evidence/v03-real-runtime-full-preflight.json
+          if-no-files-found: error

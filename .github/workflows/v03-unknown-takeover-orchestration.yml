@@ -1,0 +1,52 @@
+name: Validate v0.3 UNKNOWN Takeover Orchestration
+run-name: v0.3 unknown-takeover orchestration ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - verification/v0.3-real-runtime-effect-safety-221
+    paths:
+      - '.github/workflows/v03-unknown-takeover-orchestration.yml'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/validate_v03_unknown_takeover_orchestration.py'
+      - 'scripts/render_v03_unknown_takeover_deterministic_evidence.py'
+      - 'scripts/operator_store.py'
+      - 'scripts/operator_store_backends.py'
+      - 'scripts/operator_store_model.py'
+      - 'scripts/operator_vertical_executor.py'
+      - 'scripts/operator_vertical_reconcile.py'
+      - 'scripts/operator_vertical_recovery.py'
+      - 'scripts/operator_effect_lineage_integration.py'
+      - 'scripts/operator_effect_resolution.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-unknown-takeover-orchestration.yml'
+      - 'scripts/v03_effect_safety_release_evidence.py'
+      - 'scripts/validate_v03_unknown_takeover_orchestration.py'
+      - 'scripts/render_v03_unknown_takeover_deterministic_evidence.py'
+
+permissions:
+  contents: read
+
+jobs:
+  unknown-takeover-orchestration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install validator dependencies
+        run: pip install --quiet 'PyYAML>=6,<7' 'jsonschema>=4.23,<5'
+      - name: Validate UNKNOWN takeover fail-closed orchestration
+        run: python scripts/validate_v03_unknown_takeover_orchestration.py
+      - name: Render PENDING deterministic UNKNOWN evidence
+        run: python scripts/render_v03_unknown_takeover_deterministic_evidence.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-unknown-takeover-deterministic-evidence
+          path: evidence/v03-unknown-takeover-deterministic.json
+          if-no-files-found: error

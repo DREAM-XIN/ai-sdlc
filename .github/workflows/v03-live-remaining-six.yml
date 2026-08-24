@@ -1,0 +1,145 @@
+name: v0.3 Live Remaining Six Effect-Safety Scenarios
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Exact remaining Issue #221 scenario-pool row
+        required: true
+        type: choice
+        options:
+          - cancel-before-persist-linearization
+          - persist-linearized-before-cancel
+          - duplicate-callback
+          - out-of-order-callback
+          - duplicate-worker-completion
+          - stale-candidate-result
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  reject-non-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main remaining-six execution
+        run: exit 1
+
+  live:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Validate trusted installation and Reviewer provider configuration
+        env:
+          ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          APP_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${ADMIN_TOKEN:-}"
+          test -n "${APP_CLIENT_ID:-}"
+          test -n "${APP_PRIVATE_KEY:-}"
+          case "${APP_INTEGRATION_ID:-}" in *[!0-9]*|'') exit 1 ;; esac
+          test "$APP_INTEGRATION_ID" -gt 0
+          test -n "${ANTHROPIC_API_KEY:-}${COPILOT_GITHUB_TOKEN:-}"
+
+      - name: Create bounded Runtime App Feature Event token
+        id: event-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          token: ${{ steps.event-token.outputs.token }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+
+      - name: Execute exact remaining-six live scenario
+        env:
+          AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-remaining-six
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p "$AI_SDLC_SHARED_EVIDENCE_DIR"
+          PYTHONPATH=scripts python scripts/run_v03_remaining_six_live.py --scenario '${{ inputs.scenario }}'
+          test -s "$AI_SDLC_SHARED_EVIDENCE_DIR/${{ inputs.scenario }}-evidence.json"
+          test -s "$AI_SDLC_SHARED_EVIDENCE_DIR/${{ inputs.scenario }}-provenance.json"
+          test -s "$AI_SDLC_SHARED_EVIDENCE_DIR/${{ inputs.scenario }}-authority.json"
+          test -s "$AI_SDLC_SHARED_EVIDENCE_DIR/${{ inputs.scenario }}-authority-set.json"
+          test -s "$AI_SDLC_SHARED_EVIDENCE_DIR/${{ inputs.scenario }}-ledger-partial.json"
+
+      - name: Upload exact remaining-six live evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-live-remaining-six-${{ inputs.scenario }}
+          path: evidence/v03-remaining-six/
+          if-no-files-found: warn
+
+      - name: Publish scenario result to Issue 221
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from urllib import request
+          scenario = os.environ['SCENARIO']
+          root = Path('evidence/v03-remaining-six')
+          ledger_path = root / f'{scenario}-ledger-partial.json'
+          provenance_path = root / f'{scenario}-provenance.json'
+          ledger = json.loads(ledger_path.read_text()) if ledger_path.is_file() else {}
+          provenance = json.loads(provenance_path.read_text()) if provenance_path.is_file() else {}
+          lines = [
+              '<!-- ai-sdlc-v03-live-remaining-six -->',
+              f"v0.3 live remaining-six scenario `{scenario}`: **{os.environ['JOB_STATUS']}**",
+              f"Run: `{os.environ['RUN_ID']}`",
+              f"Trusted-main head: `{os.environ['HEAD_SHA']}`",
+              f"Ledger status: `{ledger.get('status', 'MISSING')}`",
+              f"Satisfied scenarios: `{json.dumps(ledger.get('satisfied_scenarios', []), separators=(',', ':'))}`",
+              f"Evidence class: `{provenance.get('evidence_class', 'MISSING')}`",
+              '',
+              'This receipt claims exactly one scenario row only when the provenance-bound partial ledger accepted it.',
+              'It does not claim overall Issue #221 PASS.',
+          ]
+          body = json.dumps({'body': '\n'.join(lines)}).encode()
+          url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/221/comments"
+          req = request.Request(url, data=body, method='POST')
+          req.add_header('Authorization', f"Bearer {os.environ['GITHUB_TOKEN']}")
+          req.add_header('Accept', 'application/vnd.github+json')
+          req.add_header('X-GitHub-Api-Version', '2022-11-28')
+          req.add_header('Content-Type', 'application/json')
+          with request.urlopen(req, timeout=30) as response:
+              if response.status != 201:
+                  raise SystemExit(f'Issue comment failed: HTTP {response.status}')
+          PY
