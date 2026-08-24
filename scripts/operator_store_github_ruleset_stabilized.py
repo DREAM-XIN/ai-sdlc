@@ -26,7 +26,7 @@ DEFAULT_STABILIZATION_INTERVAL_SECONDS = 1.0
 # budget, then later settle to the exact repository identity. This larger cap is
 # never an authorization rule: it is entered only for the exact bounded transient
 # observation classified by ``_eligible_for_transient_source_settling`` below.
-DEFAULT_TRANSIENT_SOURCE_SETTLING_ATTEMPTS = 720
+DEFAULT_TRANSIENT_SOURCE_SETTLING_ATTEMPTS = 900
 _SAFE_RULE_TYPES = frozenset({"creation", "update"})
 _UPDATE_PARAMETER = "update_allows_fetch_and_merge"
 _STRICT_WRITER_RULES = [
