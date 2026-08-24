@@ -1,0 +1,45 @@
+name: Validate v0.3 Dogfood Execution Bindings
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate-v03-dogfood-execution-bindings.yml'
+      - '.github/workflows/v03-dogfood-execution-bindings-preflight.yml'
+      - 'scripts/v03_dogfood_execution_bindings.py'
+      - 'scripts/validate_v03_dogfood_execution_bindings.py'
+      - 'scripts/gh_aw_profile_readiness.py'
+      - 'scripts/gh_aw_profile_routing.py'
+      - 'scripts/gh_aw_provider_registry.py'
+      - 'scripts/gh_aw_role_workers.py'
+      - 'runtimes/gh-aw/engine-profiles.yaml'
+      - 'runtimes/gh-aw/profile-routing.yaml'
+      - 'runtimes/gh-aw/role-workers.yaml'
+      - '.github/workflows/ai-sdlc-gh-aw-worker.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-worker-codex.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-claude.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-copilot.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-gemini.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-copilot.lock.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Compile zero-effect binding preflight
+        run: >-
+          python -m py_compile
+          scripts/v03_dogfood_execution_bindings.py
+          scripts/validate_v03_dogfood_execution_bindings.py
+      - name: Prove exact production routing / Worker / credential bindings
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_execution_bindings.py
