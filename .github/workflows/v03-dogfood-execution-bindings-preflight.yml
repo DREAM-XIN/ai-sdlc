@@ -1,0 +1,124 @@
+name: v0.3 Dogfood Execution Binding Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reject-non-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main dogfood binding preflight
+        run: exit 1
+
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+
+      - name: Resolve exact production Worker / provider / credential bindings
+        env:
+          HAS_COPILOT_GITHUB_TOKEN: ${{ github.token != '' }}
+          HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+          HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+          HAS_ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY != '' }}
+          HAS_MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p evidence
+          PYTHONPATH=scripts python scripts/v03_dogfood_execution_bindings.py > evidence/v03-dogfood-execution-bindings.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          doc = json.loads(Path('evidence/v03-dogfood-execution-bindings.json').read_text(encoding='utf-8'))
+          assert doc['status'] == 'READY'
+          assert doc['binding_count'] == 3
+          assert doc['model_called'] is False
+          assert doc['worker_dispatched'] is False
+          assert doc['operator_store_mutated'] is False
+          assert doc['feature_event_written'] is False
+          assert doc['dogfood_evidence_created'] is False
+          assert doc['release_evidence_created'] is False
+          assert doc['release_status_changed'] is False
+          PY
+
+      - name: Upload non-authoritative binding receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v03-dogfood-execution-bindings
+          path: evidence/v03-dogfood-execution-bindings.json
+          if-no-files-found: warn
+
+      - name: Publish preflight receipt to Issue 239
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from urllib import request
+
+          path = Path('evidence/v03-dogfood-execution-bindings.json')
+          doc = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+          lines = [
+              '<!-- ai-sdlc-v03-dogfood-execution-bindings -->',
+              f"v0.3 dogfood execution-binding preflight: **{os.environ['JOB_STATUS']}**",
+              f"Run: `{os.environ['RUN_ID']}`",
+              f"Trusted-main head: `{os.environ['HEAD_SHA']}`",
+          ]
+          if doc.get('status') == 'READY':
+              for row in doc.get('bindings', []):
+                  creds = ','.join(row.get('present_credential_identities') or [])
+                  lines.append(
+                      f"- `{row.get('role')}/{row.get('stage')}` -> profile `{row.get('selected_profile')}` / "
+                      f"workflow `{row.get('worker_workflow')}` / present credential identity `{creds}` / "
+                      f"fallback `{str(bool(row.get('fallback'))).lower()}`"
+                  )
+              lines += [
+                  '',
+                  'Presence-only prerequisite receipt: no model was called and no Worker was dispatched.',
+                  'This is not dogfood evidence and not release evidence; provider entitlement remains unverified until real execution.',
+              ]
+          else:
+              lines.append('Exact execution bindings were not retained as READY; real dogfood remains blocked.')
+          payload = json.dumps({'body': '\n'.join(lines)}).encode()
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          repo = os.environ['GITHUB_REPOSITORY']
+          req = request.Request(
+              f'{api}/repos/{repo}/issues/239/comments',
+              data=payload,
+              method='POST',
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with request.urlopen(req, timeout=20) as response:
+              if response.status not in {200, 201}:
+                  raise SystemExit(1)
+          PY
