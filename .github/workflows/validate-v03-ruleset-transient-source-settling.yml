@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - 'scripts/operator_store_github_ruleset_stabilized.py'
+      - 'scripts/operator_store_github_ruleset_current_detail_bound.py'
+      - 'scripts/operator_store_github_protection_v03_trusted.py'
       - 'scripts/validate_operator_store_ruleset_transient_source_settling.py'
+      - 'scripts/validate_operator_store_ruleset_current_detail_binding.py'
       - '.github/workflows/materialize-v03-vertical-policy-state.yml'
       - '.github/workflows/validate-v03-ruleset-transient-source-settling.yml'
 
@@ -18,3 +21,5 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Validate exact transient source settling boundary
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_transient_source_settling.py
+      - name: Validate exact current-detail write binding
+        run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_current_detail_binding.py
