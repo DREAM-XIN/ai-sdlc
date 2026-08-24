@@ -233,7 +233,7 @@ def validate_invalid_extended_budget_is_rejected():
 def validate_defaults_remain_bounded():
     require(DEFAULT_STABILIZATION_ATTEMPTS == 60, "normal stabilization budget drifted")
     require(
-        DEFAULT_TRANSIENT_SOURCE_SETTLING_ATTEMPTS == 720,
+        DEFAULT_TRANSIENT_SOURCE_SETTLING_ATTEMPTS == 900,
         "transient source settling cap must remain explicitly bounded",
     )
 

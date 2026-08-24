@@ -20,7 +20,7 @@ jobs:
   materialize:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     permissions:
       contents: read
       issues: write
