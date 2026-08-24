@@ -1,0 +1,40 @@
+name: Validate v0.3 Final Issue 221 Live Ledger
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v03-final-live-ledger.yml'
+      - '.github/workflows/validate-v03-final-live-ledger.yml'
+      - 'scripts/v03_effect_safety_final_live_ledger.py'
+      - 'scripts/validate_v03_effect_safety_final_live_ledger.py'
+      - 'scripts/v03_effect_safety_live_ledger.py'
+      - 'scripts/v03_effect_safety_live_ledger_authority_set.py'
+      - 'scripts/v03_scenario_fixture_pool.py'
+      - 'scripts/v03_real_runtime_live_authority.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Compile final read-only live-ledger aggregation
+        run: >-
+          python -m py_compile
+          scripts/v03_effect_safety_final_live_ledger.py
+          scripts/validate_v03_effect_safety_final_live_ledger.py
+
+      - name: Prove closed 11-record / 13-row aggregation contract
+        run: PYTHONPATH=scripts python scripts/validate_v03_effect_safety_final_live_ledger.py
