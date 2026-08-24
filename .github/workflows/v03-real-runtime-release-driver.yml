@@ -1,0 +1,37 @@
+name: Validate v0.3 Real Runtime Release Driver
+
+on:
+  pull_request:
+    branches:
+      - main
+      - verification/v03-full-preflight-221
+    paths:
+      - '.github/workflows/v03-real-runtime-release-driver.yml'
+      - 'scripts/v03_real_runtime_driver.py'
+      - 'scripts/validate_v03_real_runtime_driver.py'
+      - 'scripts/v03_real_runtime_full_preflight.py'
+      - 'scripts/v03_real_runtime_live_authority.py'
+      - 'scripts/v03_real_runtime_full_composition.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Compile release-driver shell
+        run: python -m py_compile scripts/v03_real_runtime_driver.py scripts/validate_v03_real_runtime_driver.py
+      - name: Prove PR path is permanently zero-effect
+        env:
+          GITHUB_EVENT_NAME: pull_request
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          PYTHONPATH=scripts python scripts/v03_real_runtime_driver.py --mode validate-only
+          PYTHONPATH=scripts python scripts/validate_v03_real_runtime_driver.py
