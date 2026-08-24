@@ -5,17 +5,18 @@ GitHub's ruleset history surface can serialize the repository ``source`` as an
 opaque string for a long time after an otherwise exact ruleset update. Waiting
 for that history-only field to converge is not a useful trust primitive.
 
-This module keeps the existing marker -> canonical history proof, but only for
-the trusted v0.3 write-attestation path permits the exact observed opaque-source
-history shape to be canonicalized when the *same ruleset's current detail* is
-also bound to the just-completed write response and proves the exact repository
-identity. Generic/read-only verification remains unchanged.
+This module keeps the existing marker -> canonical history proof. Canonical
+writer authority remains bound to the just-completed write response ``updated_at``.
+For the fresh cryptographic marker only, the same-process pending write plus the
+exact random marker name may instead bind the opaque history source to an exact
+same-ruleset current detail. Generic/read-only verification remains unchanged.
 """
 from __future__ import annotations
 
 import copy
 
 from operator_store_github_ruleset_attested import (
+    MARKER_PREFIX,
     RulesetWriteAttestation,
     _current_matches_canonical_writer,
     _state_digest,
@@ -36,6 +37,30 @@ from operator_store_github_ruleset_stabilized import (
 )
 
 
+def _writer_detail_matches_payload(
+    current_detail: object,
+    *,
+    repository: str,
+    ruleset_id: int,
+    payload: dict,
+) -> bool:
+    if payload.get("rules") != _STRICT_WRITER_RULES:
+        return False
+    if not isinstance(current_detail, dict):
+        return False
+    if current_detail.get("rules") not in (
+        _STRICT_WRITER_RULES,
+        _OMISSION_ONLY_WRITER_RULES,
+    ):
+        return False
+    return _current_matches_canonical_writer(
+        current_detail,
+        repository=repository,
+        ruleset_id=ruleset_id,
+        payload=payload,
+    )
+
+
 def _current_detail_binds_exact_write(
     current_detail: object,
     *,
@@ -45,20 +70,45 @@ def _current_detail_binds_exact_write(
     expected_updated_at: str,
 ) -> bool:
     """Prove current detail is the exact repository-scoped write we just made."""
-    if not isinstance(current_detail, dict):
-        return False
     if not isinstance(expected_updated_at, str) or not expected_updated_at:
+        return False
+    if not isinstance(current_detail, dict):
         return False
     if current_detail.get("updated_at") != expected_updated_at:
         return False
-    if payload.get("rules") != _STRICT_WRITER_RULES:
+    return _writer_detail_matches_payload(
+        current_detail,
+        repository=repository,
+        ruleset_id=ruleset_id,
+        payload=payload,
+    )
+
+
+def _is_fresh_marker_name(value: object) -> bool:
+    """Match only the lowercase hex marker form emitted by _attest_writer_ruleset."""
+    if not isinstance(value, str) or not value.startswith(MARKER_PREFIX) or not value.endswith("]"):
         return False
-    if current_detail.get("rules") not in (
-        _STRICT_WRITER_RULES,
-        _OMISSION_ONLY_WRITER_RULES,
-    ):
+    nonce = value[len(MARKER_PREFIX) : -1]
+    return bool(nonce) and nonce == nonce.lower() and all(ch in "0123456789abcdef" for ch in nonce)
+
+
+def _current_detail_binds_fresh_marker(
+    current_detail: object,
+    *,
+    repository: str,
+    ruleset_id: int,
+    payload: dict,
+) -> bool:
+    """Bind only this process's exact fresh marker without timestamp authority.
+
+    The caller additionally requires the marker name to equal the same-process
+    pending write binding and the newest history version to carry that exact name.
+    The unpredictable marker nonce is therefore the causal cross-surface token;
+    this helper never applies to the long-lived canonical writer name.
+    """
+    if not _is_fresh_marker_name(payload.get("name")):
         return False
-    return _current_matches_canonical_writer(
+    return _writer_detail_matches_payload(
         current_detail,
         repository=repository,
         ruleset_id=ruleset_id,
@@ -77,10 +127,9 @@ def _normalize_history_state_from_bound_current(
 ) -> dict | None:
     """Canonicalize only the exact opaque-source history serialization.
 
-    History still has to carry the exact causal write identity. The only accepted
-    differences are the already-reviewed omission-only rules serialization and an
-    opaque string in ``source``. Repository identity comes from an exact current
-    detail whose ``updated_at`` is bound to this write response.
+    This helper is used by the durable post-attestation verifier, so it retains
+    the exact write-response ``updated_at`` binding. Fresh-marker fallback is a
+    provisioner-only causal mechanism and is never available here.
     """
     if not isinstance(state, dict):
         return None
@@ -162,7 +211,7 @@ class CurrentDetailBoundAttestedGitHubRulesetProtectionVerifier(
 class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
     StabilizedAttestedGitHubOperatorStoreRulesetProvisioner
 ):
-    """Trusted provisioner whose history source identity is write-response bound."""
+    """Trusted provisioner whose history source identity is current-detail bound."""
 
     def __init__(self, **kwargs):
         self._pending_write_binding: tuple[int, str | None, str] | None = None
@@ -248,13 +297,23 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
         )
         if detail_status != 200:
             return None, observation
-        if not _current_detail_binds_exact_write(
+
+        exact_write_bound = _current_detail_binds_exact_write(
             current_detail,
             repository=repository,
             ruleset_id=ruleset_id,
             payload=payload,
             expected_updated_at=binding[2],
-        ):
+        )
+        fresh_marker_bound = False
+        if not exact_write_bound:
+            fresh_marker_bound = _current_detail_binds_fresh_marker(
+                current_detail,
+                repository=repository,
+                ruleset_id=ruleset_id,
+                payload=payload,
+            )
+        if not exact_write_bound and not fresh_marker_bound:
             return None, observation
 
         # ``observation`` was produced from the exact newest history version and
@@ -266,11 +325,16 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
             ruleset_id=ruleset_id,
             payload=payload,
         )
+        category = (
+            "fresh-marker-current-detail-bound-transient"
+            if fresh_marker_bound
+            else "current-detail-bound-transient"
+        )
         return (
             observation.version_id,
             copy.deepcopy(canonical_state),
         ), HistoryObservation(
-            "current-detail-bound-transient",
+            category,
             version_id=observation.version_id,
             state_name=observation.state_name,
         )
