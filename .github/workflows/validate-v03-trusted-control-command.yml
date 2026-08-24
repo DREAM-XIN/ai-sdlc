@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/v03-trusted-control-command.yml'
+      - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
       - '.github/workflows/validate-v03-trusted-control-command.yml'
 
 permissions:
@@ -21,6 +22,7 @@ jobs:
 
           path = Path('.github/workflows/v03-trusted-control-command.yml')
           text = path.read_text(encoding='utf-8')
+          diagnostic = Path('.github/workflows/v03-ruleset-source-identity-diagnostic.yml').read_text(encoding='utf-8')
 
           required_literals = [
               'issue_comment:',
@@ -40,6 +42,8 @@ jobs:
               "command is not authorized for this issue",
               "'/ai-sdlc v03-trusted-control materialize'",
               "('materialize-v03-vertical-policy-state.yml', '')",
+              "'/ai-sdlc v03-trusted-control diagnose-ruleset-source'",
+              "('v03-ruleset-source-identity-diagnostic.yml', '')",
               "'/ai-sdlc v03-trusted-control preflight'",
               "('v03-real-runtime-preflight-live.yml', '')",
               "'/ai-sdlc v03-trusted-control lost-ack-persist'",
@@ -64,12 +68,9 @@ jobs:
               if literal not in text:
                   raise SystemExit(f'missing trusted-control invariant: {literal}')
 
-          if text.count('/ai-sdlc v03-trusted-control ') != 16:
+          if text.count('/ai-sdlc v03-trusted-control ') != 17:
               raise SystemExit('trusted-control command surface changed unexpectedly')
 
-          # Build dangerous permission text from fragments so this read-only PR
-          # validator does not itself look like a PR workflow requesting it to
-          # the repository-wide textual action-security scanner.
           contents_write = 'contents:' + ' write'
           forbidden_literals = [
               "author_association == 'MEMBER'",
@@ -87,6 +88,7 @@ jobs:
 
           workflows = [
               'materialize-v03-vertical-policy-state.yml',
+              'v03-ruleset-source-identity-diagnostic.yml',
               'v03-real-runtime-preflight-live.yml',
               'v03-live-lost-ack-persist-sequence.yml',
               'v03-live-launch-cancel-pair.yml',
@@ -120,5 +122,46 @@ jobs:
               for scenario in scenarios:
                   if scenario not in target_text:
                       raise SystemExit(f'allowlisted scenario missing from {workflow}: {scenario}')
+
+          diagnostic_required = [
+              'workflow_dispatch:',
+              "github.ref != 'refs/heads/main'",
+              'AI_SDLC_OPERATOR_ADMIN_TOKEN',
+              "'X-GitHub-Api-Version': '2022-11-28'",
+              "request = Request(f'{api}{path}', headers=headers, method='GET')",
+              "'detail_source_shape': classify",
+              "'version_source_shape': classify",
+              "'equals-repository-casefold'",
+              "'equals-current-detail-source'",
+              "'equals-repository-id-string'",
+              "'equals-repository-node-id'",
+              "'raw_source_values_retained': False",
+              "'mutation_performed': False",
+              "'release_evidence': False",
+              "/issues/263/comments",
+          ]
+          for literal in diagnostic_required:
+              if literal not in diagnostic:
+                  raise SystemExit(f'missing source-diagnostic invariant: {literal}')
+
+          diagnostic_contents_write = 'contents:' + ' write'
+          diagnostic_actions_write = 'actions:' + ' write'
+          diagnostic_forbidden = [
+              diagnostic_contents_write,
+              diagnostic_actions_write,
+              "method='PUT'",
+              "method='PATCH'",
+              "method='DELETE'",
+              'gh api --method POST',
+              'gh api --method PUT',
+              'gh api --method PATCH',
+              'gh api --method DELETE',
+              "print(value)",
+              "print(detail_source)",
+              "print(version_source)",
+          ]
+          for literal in diagnostic_forbidden:
+              if literal in diagnostic:
+                  raise SystemExit(f'forbidden source-diagnostic authority: {literal}')
 
           print('v0.3 trusted-control command bridge validation passed')

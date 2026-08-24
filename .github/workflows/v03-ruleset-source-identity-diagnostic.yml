@@ -1,0 +1,259 @@
+name: v0.3 Ruleset Source Identity Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reject-non-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+
+  diagnose:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Classify live ruleset source identity without exposing source values
+        env:
+          ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_SHA: ${{ github.sha }}
+          WRITER_RULESET_ID: '20775740'
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          token = os.environ['ADMIN_TOKEN']
+          repository = os.environ['EXPECTED_REPOSITORY']
+          expected_sha = os.environ['EXPECTED_SHA']
+          ruleset_id = int(os.environ['WRITER_RULESET_ID'])
+          if not token:
+              raise SystemExit('AI_SDLC_OPERATOR_ADMIN_TOKEN is required')
+          if '/' not in repository:
+              raise SystemExit('repository identity is malformed')
+
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'ai-sdlc-v03-source-identity-diagnostic',
+          }
+
+          def get(path):
+              request = Request(f'{api}{path}', headers=headers, method='GET')
+              try:
+                  with urlopen(request, timeout=20) as response:
+                      return response.status, json.loads(response.read().decode('utf-8'))
+              except HTTPError as exc:
+                  return exc.code, None
+              except (URLError, TimeoutError, OSError, ValueError):
+                  return 0, None
+
+          def classify(value, *, detail_value=None, metadata=None):
+              if value is None:
+                  return 'absent'
+              if not isinstance(value, str):
+                  return 'non-string'
+              if value == repository:
+                  return 'equals-repository'
+              if value.casefold() == repository.casefold():
+                  return 'equals-repository-casefold'
+
+              owner, repo = repository.split('/', 1)
+              if value == owner:
+                  return 'owner-only'
+              if value.casefold() == owner.casefold():
+                  return 'owner-only-casefold'
+              if value == repo:
+                  return 'repo-only'
+              if value.casefold() == repo.casefold():
+                  return 'repo-only-casefold'
+
+              if isinstance(detail_value, str):
+                  if value == detail_value:
+                      return 'equals-current-detail-source'
+                  if value.casefold() == detail_value.casefold():
+                      return 'equals-current-detail-source-casefold'
+
+              if isinstance(metadata, dict):
+                  full_name = metadata.get('full_name')
+                  if isinstance(full_name, str):
+                      if value == full_name:
+                          return 'equals-repository-metadata-full-name'
+                      if value.casefold() == full_name.casefold():
+                          return 'equals-repository-metadata-full-name-casefold'
+                  repo_id = metadata.get('id')
+                  if isinstance(repo_id, int) and value == str(repo_id):
+                      return 'equals-repository-id-string'
+                  node_id = metadata.get('node_id')
+                  if isinstance(node_id, str) and value == node_id:
+                      return 'equals-repository-node-id'
+                  html_url = metadata.get('html_url')
+                  if isinstance(html_url, str):
+                      if value == html_url:
+                          return 'equals-repository-html-url'
+                      if value.casefold() == html_url.casefold():
+                          return 'equals-repository-html-url-casefold'
+                  url = metadata.get('url')
+                  if isinstance(url, str):
+                      if value == url:
+                          return 'equals-repository-api-url'
+                      if value.casefold() == url.casefold():
+                          return 'equals-repository-api-url-casefold'
+              return 'other-string'
+
+          def rules_shape(rules):
+              if not isinstance(rules, list):
+                  return ['malformed']
+              rows = []
+              for index, row in enumerate(rules):
+                  if not isinstance(row, dict):
+                      rows.append(f'{index}:malformed')
+                      continue
+                  kind = row.get('type')
+                  safe_kind = kind if kind in {'creation', 'update'} else 'other'
+                  if 'parameters' not in row:
+                      rows.append(f'{index}:{safe_kind}:parameters=absent')
+                      continue
+                  params = row.get('parameters')
+                  if not isinstance(params, dict):
+                      rows.append(f'{index}:{safe_kind}:parameters=malformed')
+                      continue
+                  key = 'update_allows_fetch_and_merge'
+                  raw = params.get(key) if key in params else None
+                  if key not in params:
+                      value = 'absent'
+                  elif raw is True:
+                      value = 'true'
+                  elif raw is False:
+                      value = 'false'
+                  else:
+                      value = 'malformed'
+                  rows.append(f'{index}:{safe_kind}:{key}={value}:other_keys={sum(1 for k in params if k != key)}')
+              return rows
+
+          repo_status, metadata = get(f'/repos/{repository}')
+          detail_status, detail = get(f'/repos/{repository}/rulesets/{ruleset_id}?includes_parents=true')
+          history_status, history = get(f'/repos/{repository}/rulesets/{ruleset_id}/history?per_page=1&page=1')
+
+          version_id = None
+          version_status = None
+          version = None
+          if history_status == 200 and isinstance(history, list) and len(history) == 1 and isinstance(history[0], dict):
+              candidate = history[0].get('version_id')
+              if isinstance(candidate, int) and candidate > 0:
+                  version_id = candidate
+                  version_status, version = get(f'/repos/{repository}/rulesets/{ruleset_id}/history/{version_id}')
+
+          detail_source = detail.get('source') if isinstance(detail, dict) else None
+          state = version.get('state') if isinstance(version, dict) else None
+          version_source = state.get('source') if isinstance(state, dict) else None
+
+          evidence = {
+              'schema': 'ai-sdlc.v03-ruleset-source-identity-diagnostic/v1',
+              'trusted_main_sha': expected_sha,
+              'writer_ruleset_id': ruleset_id,
+              'repository_metadata_status': repo_status,
+              'detail_status': detail_status,
+              'history_status': history_status,
+              'version_status': version_status,
+              'version_id_present': isinstance(version_id, int),
+              'detail_source_type_is_repository': bool(isinstance(detail, dict) and detail.get('source_type') == 'Repository'),
+              'version_source_type_is_repository': bool(isinstance(state, dict) and state.get('source_type') == 'Repository'),
+              'detail_source_shape': classify(detail_source, metadata=metadata),
+              'version_source_shape': classify(version_source, detail_value=detail_source, metadata=metadata),
+              'detail_and_version_source_exactly_equal': bool(
+                  isinstance(detail_source, str) and isinstance(version_source, str) and detail_source == version_source
+              ),
+              'detail_and_version_source_casefold_equal': bool(
+                  isinstance(detail_source, str) and isinstance(version_source, str)
+                  and detail_source.casefold() == version_source.casefold()
+              ),
+              'detail_rules_shape': rules_shape(detail.get('rules') if isinstance(detail, dict) else None),
+              'version_rules_shape': rules_shape(state.get('rules') if isinstance(state, dict) else None),
+              'raw_source_values_retained': False,
+              'mutation_performed': False,
+              'release_evidence': False,
+          }
+          Path('evidence').mkdir(exist_ok=True)
+          Path('evidence/v03-ruleset-source-identity-diagnostic.json').write_text(
+              json.dumps(evidence, sort_keys=True, indent=2) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(evidence, sort_keys=True))
+
+          if detail_status != 200 or history_status != 200 or version_status != 200:
+              raise SystemExit('ruleset source diagnostic could not obtain exact live detail/history/version')
+          if not evidence['detail_source_type_is_repository'] or not evidence['version_source_type_is_repository']:
+              raise SystemExit('ruleset source type is not Repository')
+
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-ruleset-source-identity-diagnostic
+          path: evidence/v03-ruleset-source-identity-diagnostic.json
+          if-no-files-found: warn
+
+      - name: Publish bounded diagnostic to Issue 263
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          from urllib import request
+
+          path = Path('evidence/v03-ruleset-source-identity-diagnostic.json')
+          evidence = json.loads(path.read_text()) if path.is_file() else {}
+          lines = [
+              '<!-- ai-sdlc-v03-ruleset-source-identity-diagnostic -->',
+              f"v0.3 ruleset source identity diagnostic: **{os.environ['JOB_STATUS']}**",
+              f"Run: `{os.environ['RUN_ID']}`",
+              f"Trusted-main head: `{os.environ['HEAD_SHA']}`",
+          ]
+          if evidence:
+              lines += [
+                  f"Detail source shape: `{evidence.get('detail_source_shape', '')}`",
+                  f"Version source shape: `{evidence.get('version_source_shape', '')}`",
+                  f"Detail/version exact source equality: `{str(bool(evidence.get('detail_and_version_source_exactly_equal'))).lower()}`",
+                  f"Detail/version casefold source equality: `{str(bool(evidence.get('detail_and_version_source_casefold_equal'))).lower()}`",
+                  f"Detail rules shape: `{','.join(evidence.get('detail_rules_shape') or [])}`",
+                  f"Version rules shape: `{','.join(evidence.get('version_rules_shape') or [])}`",
+                  'Raw source values retained: `false`',
+                  'Mutation performed: `false`',
+                  'Release evidence: `false`',
+              ]
+          else:
+              lines.append('No bounded diagnostic evidence was retained.')
+          body = json.dumps({'body': '\n'.join(lines)}).encode()
+          api = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          req = request.Request(
+              f"{api}/repos/{os.environ['GITHUB_REPOSITORY']}/issues/263/comments",
+              data=body,
+              method='POST',
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              },
+          )
+          with request.urlopen(req, timeout=20) as response:
+              if response.status not in {200, 201}:
+                  raise SystemExit(1)

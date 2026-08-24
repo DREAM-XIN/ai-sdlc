@@ -37,6 +37,8 @@ jobs:
               263: {
                   '/ai-sdlc v03-trusted-control materialize':
                       ('materialize-v03-vertical-policy-state.yml', ''),
+                  '/ai-sdlc v03-trusted-control diagnose-ruleset-source':
+                      ('v03-ruleset-source-identity-diagnostic.yml', ''),
               },
               221: {
                   '/ai-sdlc v03-trusted-control preflight':
