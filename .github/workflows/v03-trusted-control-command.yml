@@ -1,0 +1,185 @@
+name: v0.3 Trusted-Control Command
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.comment.author_association == 'OWNER' &&
+      startsWith(github.event.comment.body, '/ai-sdlc v03-trusted-control ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Parse exact trusted-control command
+        id: command
+        shell: python
+        env:
+          COMMAND: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          import os
+
+          command = os.environ['COMMAND'].strip()
+          issue_number = int(os.environ['ISSUE_NUMBER'])
+          default_branch = os.environ['DEFAULT_BRANCH']
+          if default_branch != 'main':
+              raise SystemExit('v0.3 trusted-control commands require default branch main')
+
+          allowed = {
+              263: {
+                  '/ai-sdlc v03-trusted-control materialize':
+                      ('materialize-v03-vertical-policy-state.yml', ''),
+              },
+              221: {
+                  '/ai-sdlc v03-trusted-control preflight':
+                      ('v03-real-runtime-preflight-live.yml', ''),
+                  '/ai-sdlc v03-trusted-control lost-ack-persist':
+                      ('v03-live-lost-ack-persist-sequence.yml', ''),
+                  '/ai-sdlc v03-trusted-control launch-cancel':
+                      ('v03-live-launch-cancel-pair.yml', ''),
+                  '/ai-sdlc v03-trusted-control dispatch-recovery unknown-takeover':
+                      ('v03-live-dispatch-recovery-trio.yml', 'unknown-takeover'),
+                  '/ai-sdlc v03-trusted-control dispatch-recovery concurrent-resume':
+                      ('v03-live-dispatch-recovery-trio.yml', 'concurrent-resume'),
+                  '/ai-sdlc v03-trusted-control dispatch-recovery reservation-committed-pre-authorization-crash-recovery':
+                      ('v03-live-dispatch-recovery-trio.yml', 'reservation-committed-pre-authorization-crash-recovery'),
+                  '/ai-sdlc v03-trusted-control remaining-six cancel-before-persist-linearization':
+                      ('v03-live-remaining-six.yml', 'cancel-before-persist-linearization'),
+                  '/ai-sdlc v03-trusted-control remaining-six persist-linearized-before-cancel':
+                      ('v03-live-remaining-six.yml', 'persist-linearized-before-cancel'),
+                  '/ai-sdlc v03-trusted-control remaining-six duplicate-callback':
+                      ('v03-live-remaining-six.yml', 'duplicate-callback'),
+                  '/ai-sdlc v03-trusted-control remaining-six out-of-order-callback':
+                      ('v03-live-remaining-six.yml', 'out-of-order-callback'),
+                  '/ai-sdlc v03-trusted-control remaining-six duplicate-worker-completion':
+                      ('v03-live-remaining-six.yml', 'duplicate-worker-completion'),
+                  '/ai-sdlc v03-trusted-control remaining-six stale-candidate-result':
+                      ('v03-live-remaining-six.yml', 'stale-candidate-result'),
+                  '/ai-sdlc v03-trusted-control final-ledger':
+                      ('v03-final-live-ledger.yml', ''),
+              },
+              239: {
+                  '/ai-sdlc v03-trusted-control dogfood-bindings':
+                      ('v03-dogfood-execution-bindings-preflight.yml', ''),
+              },
+          }
+
+          commands = allowed.get(issue_number, {})
+          selected = commands.get(command)
+          if selected is None:
+              raise SystemExit('command is not authorized for this issue')
+          workflow, scenario = selected
+
+          output = os.environ['GITHUB_OUTPUT']
+          with open(output, 'a', encoding='utf-8') as handle:
+              handle.write(f'workflow={workflow}\n')
+              handle.write(f'scenario={scenario}\n')
+              handle.write(f'issue_number={issue_number}\n')
+
+      - name: Dispatch allowlisted exact-main workflow
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ steps.command.outputs.workflow }}
+          SCENARIO: ${{ steps.command.outputs.scenario }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$DEFAULT_BRANCH" = main
+
+          main_sha_before=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          test "$main_sha_before" = "$EXPECTED_SHA"
+
+          dispatched_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          args=(workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH")
+          if [[ -n "$SCENARIO" ]]; then
+            args+=(--field "scenario=$SCENARIO")
+          fi
+          gh "${args[@]}"
+
+          main_sha_after=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          test "$main_sha_after" = "$EXPECTED_SHA"
+
+          echo "dispatched_at=$dispatched_at" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve exact downstream run
+        id: downstream
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ steps.command.outputs.workflow }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
+          EXPECTED_SHA: ${{ steps.dispatch.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          run_json=''
+          for attempt in $(seq 1 20); do
+            run_json=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "$WORKFLOW" \
+              --event workflow_dispatch \
+              --branch "$DEFAULT_BRANCH" \
+              --limit 30 \
+              --json databaseId,createdAt,url,status,conclusion,headSha | \
+              jq -c --arg dispatched_at "$DISPATCHED_AT" --arg expected_sha "$EXPECTED_SHA" '
+                map(select(.createdAt >= $dispatched_at and .headSha == $expected_sha)) |
+                sort_by(.createdAt) | reverse | .[0] // empty
+              ')
+            if [[ -n "$run_json" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_json"
+          run_id=$(jq -r '.databaseId' <<<"$run_json")
+          run_url=$(jq -r '.url' <<<"$run_json")
+          run_status=$(jq -r '.status' <<<"$run_json")
+          run_head=$(jq -r '.headSha' <<<"$run_json")
+          test "$run_head" = "$EXPECTED_SHA"
+
+          current_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$DEFAULT_BRANCH" --jq '.object.sha')
+          test "$current_main" = "$EXPECTED_SHA"
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+          echo "run_status=$run_status" >> "$GITHUB_OUTPUT"
+          echo "run_head=$run_head" >> "$GITHUB_OUTPUT"
+
+      - name: Publish accepted dispatch receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.command.outputs.issue_number }}
+          WORKFLOW: ${{ steps.command.outputs.workflow }}
+          SCENARIO: ${{ steps.command.outputs.scenario }}
+          RUN_ID: ${{ steps.downstream.outputs.run_id }}
+          RUN_URL: ${{ steps.downstream.outputs.run_url }}
+          RUN_STATUS: ${{ steps.downstream.outputs.run_status }}
+          RUN_HEAD: ${{ steps.downstream.outputs.run_head }}
+          COMMAND_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          parent_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [[ "$COMMAND_OUTCOME" = success && -n "${RUN_ID:-}" && -n "${RUN_URL:-}" ]]; then
+            scenario_line=''
+            if [[ -n "${SCENARIO:-}" ]]; then
+              scenario_line="\nScenario: \`$SCENARIO\`"
+            fi
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Trusted-Control dispatch accepted: workflow \`$WORKFLOW\`, run \`$RUN_ID\` ($RUN_STATUS) — $RUN_URL\n\nExact trusted-main head: \`$RUN_HEAD\`$scenario_line\nCommand run: $parent_url\n\nThis receipt records dispatch only; downstream release evidence is accepted only by the workflow's own closed verifier."
+          else
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Trusted-Control command failed before an exact downstream run was resolved — $parent_url\n\nWorkflow: \`$WORKFLOW\`\nNo release evidence is accepted from this command run."
+            exit 1
+          fi
