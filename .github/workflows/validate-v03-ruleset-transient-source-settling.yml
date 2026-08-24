@@ -1,0 +1,20 @@
+name: Validate v0.3 Ruleset Transient Source Settling
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/operator_store_github_ruleset_stabilized.py'
+      - 'scripts/validate_operator_store_ruleset_transient_source_settling.py'
+      - '.github/workflows/materialize-v03-vertical-policy-state.yml'
+      - '.github/workflows/validate-v03-ruleset-transient-source-settling.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate exact transient source settling boundary
+        run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_transient_source_settling.py

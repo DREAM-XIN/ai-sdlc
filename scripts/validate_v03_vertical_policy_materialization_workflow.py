@@ -151,7 +151,7 @@ def validate_workflow_boundary():
         materialize.get("permissions") == {"contents": "read", "issues": "write"},
         "materialization GITHUB_TOKEN permissions expanded",
     )
-    require(materialize.get("timeout-minutes") == 20, "materialization job is not bounded")
+    require(materialize.get("timeout-minutes") == 40, "materialization job is not bounded")
 
     uses = [
         step.get("uses")
