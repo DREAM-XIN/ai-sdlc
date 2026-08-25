@@ -161,9 +161,6 @@ class LiveReplicaApi:
         if method == "GET" and path == detail:
             self.detail_calls += 1
             if self.phase == "marker":
-                # This is the exact live shape #341 could not authorize: the
-                # marker/name is current, but source and updated_at come from a
-                # replica that does not align with the PUT response.
                 value = state(
                     self.marker_payload,
                     source=OPAQUE_SOURCE,
@@ -235,8 +232,26 @@ def main() -> None:
     stale = LiveReplicaApi(marker_version=BASELINE_VERSION)
     expect_failure(stale, "history version not newer than pre-write baseline")
 
-    cross_wire = LiveReplicaApi(marker_response_repository=OTHER_REPOSITORY)
-    expect_failure(cross_wire, "cross-repository PUT response")
+    # The raw PUT response source is no longer repository identity authority.
+    # A different/opaque source string is acceptable only because the write was
+    # issued to REPOSITORY and that exact repository/ruleset subsequently
+    # exposes a strictly-new history generation carrying the fresh nonce.
+    replica_variant_source = LiveReplicaApi(marker_response_repository=OTHER_REPOSITORY)
+    replica_writer_id = provisioner(replica_variant_source)._attest_writer_ruleset(
+        REPOSITORY,
+        RULESET_ID,
+        STATE_REF,
+    )
+    require(replica_writer_id == RULESET_ID, "replica-variant PUT source changed ruleset id")
+
+    cross_wire_stale = LiveReplicaApi(
+        marker_version=BASELINE_VERSION,
+        marker_response_repository=OTHER_REPOSITORY,
+    )
+    expect_failure(
+        cross_wire_stale,
+        "replica-variant PUT source without target-repository generation advance",
+    )
 
     no_baseline = LiveReplicaApi(baseline_available=False)
     expect_failure(no_baseline, "existing ruleset without readable pre-write baseline")
