@@ -9,7 +9,10 @@ This module keeps the existing marker -> canonical history proof. Canonical
 writer authority remains bound to the just-completed write response ``updated_at``.
 For the fresh cryptographic marker only, the same-process pending write plus the
 exact random marker name may instead bind the opaque history source to an exact
-same-ruleset current detail. Generic/read-only verification remains unchanged.
+same-ruleset current detail. If that current detail is itself replica-opaque,
+the fresh marker may additionally use an exact repository-scoped write response
+plus the same exact ``updated_at`` and omission-only current/history shapes.
+Generic/read-only verification remains unchanged.
 """
 from __future__ import annotations
 
@@ -116,6 +119,64 @@ def _current_detail_binds_fresh_marker(
     )
 
 
+def _write_response_binds_fresh_marker(
+    write_response: object,
+    *,
+    repository: str,
+    ruleset_id: int,
+    payload: dict,
+    expected_updated_at: str,
+) -> bool:
+    """Bind a fresh marker to the exact repository-scoped write response.
+
+    This is deliberately stronger than trusting the request URL alone. The
+    response must itself expose the exact repository identity and exact safe
+    writer identity, and its ``updated_at`` must be the same value captured by
+    the same-process pending-write binding.
+    """
+    if not _is_fresh_marker_name(payload.get("name")):
+        return False
+    if not isinstance(expected_updated_at, str) or not expected_updated_at:
+        return False
+    if not isinstance(write_response, dict):
+        return False
+    if write_response.get("updated_at") != expected_updated_at:
+        return False
+    return _writer_detail_matches_payload(
+        write_response,
+        repository=repository,
+        ruleset_id=ruleset_id,
+        payload=payload,
+    )
+
+
+def _opaque_current_detail_binds_fresh_marker_write(
+    current_detail: object,
+    *,
+    repository: str,
+    ruleset_id: int,
+    payload: dict,
+    expected_updated_at: str,
+) -> bool:
+    """Accept only the exact observed replica-opaque fresh-marker current shape."""
+    if not _is_fresh_marker_name(payload.get("name")):
+        return False
+    if not isinstance(current_detail, dict):
+        return False
+    if current_detail.get("updated_at") != expected_updated_at:
+        return False
+    if current_detail.get("rules") != _OMISSION_ONLY_WRITER_RULES:
+        return False
+    if _safe_source_shape(current_detail.get("source"), repository) != "other-string":
+        return False
+    return _state_mismatch_fields(
+        current_detail,
+        repository=repository,
+        ruleset_id=ruleset_id,
+        payload=payload,
+    ) == ("source", "rules")
+
+
 def _normalize_history_state_from_bound_current(
     state: object,
     current_detail: object,
@@ -214,8 +275,8 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
     """Trusted provisioner whose history source identity is current-detail bound."""
 
     def __init__(self, **kwargs):
-        self._pending_write_binding: tuple[int, str | None, str] | None = None
-        self._active_write_binding: tuple[int, str | None, str] | None = None
+        self._pending_write_binding: tuple[str, int, str | None, str, dict] | None = None
+        self._active_write_binding: tuple[str, int, str | None, str, dict] | None = None
         super().__init__(**kwargs)
 
     def _write_ruleset(
@@ -231,9 +292,11 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
                 "causally-attested ruleset response lacks updated_at write binding"
             )
         self._pending_write_binding = (
+            repository,
             written_id,
             payload.get("name") if isinstance(payload.get("name"), str) else None,
             updated_at,
+            copy.deepcopy(response),
         )
         return written_id, response
 
@@ -247,7 +310,12 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
     ) -> tuple[int, dict]:
         pending = self._pending_write_binding
         expected_name = payload.get("name") if isinstance(payload.get("name"), str) else None
-        if pending is not None and pending[0] == ruleset_id and pending[1] == expected_name:
+        if (
+            pending is not None
+            and pending[0] == repository
+            and pending[1] == ruleset_id
+            and pending[2] == expected_name
+        ):
             self._active_write_binding = pending
         else:
             self._active_write_binding = None
@@ -283,8 +351,9 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
         binding = self._active_write_binding
         if (
             binding is None
-            or binding[0] != ruleset_id
-            or binding[1] != payload.get("name")
+            or binding[0] != repository
+            or binding[1] != ruleset_id
+            or binding[2] != payload.get("name")
             or not _eligible_for_transient_source_settling(observation, payload=payload)
             or not isinstance(observation.version_id, int)
             or observation.version_id <= 0
@@ -303,7 +372,7 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
             repository=repository,
             ruleset_id=ruleset_id,
             payload=payload,
-            expected_updated_at=binding[2],
+            expected_updated_at=binding[3],
         )
         fresh_marker_bound = False
         if not exact_write_bound:
@@ -313,7 +382,27 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
                 ruleset_id=ruleset_id,
                 payload=payload,
             )
+
+        fresh_marker_write_response_bound = False
         if not exact_write_bound and not fresh_marker_bound:
+            fresh_marker_write_response_bound = (
+                _write_response_binds_fresh_marker(
+                    binding[4],
+                    repository=repository,
+                    ruleset_id=ruleset_id,
+                    payload=payload,
+                    expected_updated_at=binding[3],
+                )
+                and _opaque_current_detail_binds_fresh_marker_write(
+                    current_detail,
+                    repository=repository,
+                    ruleset_id=ruleset_id,
+                    payload=payload,
+                    expected_updated_at=binding[3],
+                )
+            )
+
+        if not exact_write_bound and not fresh_marker_bound and not fresh_marker_write_response_bound:
             return None, observation
 
         # ``observation`` was produced from the exact newest history version and
@@ -325,11 +414,12 @@ class CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner(
             ruleset_id=ruleset_id,
             payload=payload,
         )
-        category = (
-            "fresh-marker-current-detail-bound-transient"
-            if fresh_marker_bound
-            else "current-detail-bound-transient"
-        )
+        if fresh_marker_write_response_bound:
+            category = "fresh-marker-write-response-bound-transient"
+        elif fresh_marker_bound:
+            category = "fresh-marker-current-detail-bound-transient"
+        else:
+            category = "current-detail-bound-transient"
         return (
             observation.version_id,
             copy.deepcopy(canonical_state),
