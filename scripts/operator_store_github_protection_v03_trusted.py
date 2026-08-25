@@ -4,11 +4,14 @@
 The generic repository/ruleset protection verifiers remain read-only and
 fail-closed. This wrapper is intentionally for the explicit trusted-main v0.3
 Vertical policy workflow only: before relying on the ruleset path it performs
-#262's marker -> canonical strict write attestation. #336 additionally binds the
-repository source identity to the same ruleset's exact current-detail surface and
-the just-completed write response when GitHub history retains its observed opaque
-source serialization. The resulting in-memory verifier is injected into the
-existing composite; no generic read-only authority is widened.
+#262's marker -> canonical strict write attestation. #336/#340 bind repository
+source identity to same-process write authority when GitHub history/current
+surfaces retain replica-specific serialization. #343 additionally requires the
+fresh random marker to appear in a history generation strictly newer than the
+pre-write baseline before repository-scoped PUT-response authority can normalize
+that marker's observed ``source,rules`` omission shape. The resulting in-memory
+verifier is injected into the existing composite; no generic read-only authority
+is widened.
 
 Attestation is process-local and is never serialized. A process cache reuses the
 same attested verifier for repeated checks of the same repository/ref (notably
@@ -23,8 +26,8 @@ from typing import Callable
 from operator_store_github_protection_composite import (
     GitHubRepositoryProtectionVerifier as GenericGitHubRepositoryProtectionVerifier,
 )
-from operator_store_github_ruleset_current_detail_bound import (
-    CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner,
+from operator_store_github_ruleset_generation_bound import (
+    GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner,
 )
 
 
@@ -70,7 +73,7 @@ class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifi
         self._api_version = api_version
         self._provisioner_factory = (
             provisioner_factory
-            or CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner
+            or GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner
         )
 
     def _attested_ruleset_verifier(self, repository: str, state_ref: str):

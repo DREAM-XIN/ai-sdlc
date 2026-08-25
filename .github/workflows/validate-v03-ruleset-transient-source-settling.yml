@@ -5,10 +5,12 @@ on:
     paths:
       - 'scripts/operator_store_github_ruleset_stabilized.py'
       - 'scripts/operator_store_github_ruleset_current_detail_bound.py'
+      - 'scripts/operator_store_github_ruleset_generation_bound.py'
       - 'scripts/operator_store_github_protection_v03_trusted.py'
       - 'scripts/validate_operator_store_ruleset_transient_source_settling.py'
       - 'scripts/validate_operator_store_ruleset_current_detail_binding.py'
       - 'scripts/validate_operator_store_ruleset_write_response_binding.py'
+      - 'scripts/validate_operator_store_ruleset_generation_binding.py'
       - '.github/workflows/materialize-v03-vertical-policy-state.yml'
       - '.github/workflows/validate-v03-ruleset-transient-source-settling.yml'
 
@@ -26,3 +28,5 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_current_detail_binding.py
       - name: Validate exact fresh-marker write-response binding
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_write_response_binding.py
+      - name: Validate strictly-new fresh-marker history generation binding
+        run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_generation_binding.py
