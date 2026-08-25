@@ -11,6 +11,7 @@ on:
       - 'scripts/validate_operator_store_ruleset_current_detail_binding.py'
       - 'scripts/validate_operator_store_ruleset_write_response_binding.py'
       - 'scripts/validate_operator_store_ruleset_generation_binding.py'
+      - 'scripts/validate_operator_store_ruleset_marker_generation_put_source.py'
       - '.github/workflows/materialize-v03-vertical-policy-state.yml'
       - '.github/workflows/validate-v03-ruleset-transient-source-settling.yml'
 
@@ -30,3 +31,5 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_write_response_binding.py
       - name: Validate strictly-new fresh-marker history generation binding
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_generation_binding.py
+      - name: Validate replica-variant marker PUT source binding
+        run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_marker_generation_put_source.py
