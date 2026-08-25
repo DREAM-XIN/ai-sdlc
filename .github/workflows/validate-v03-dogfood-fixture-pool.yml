@@ -1,0 +1,27 @@
+name: Validate v0.3 Dogfood Fixture Pool
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/v03_dogfood_fixture_pool.py'
+      - 'scripts/provision_v03_dogfood_fixture_pool.py'
+      - 'scripts/validate_v03_dogfood_fixture_pool.py'
+      - '.github/workflows/provision-v03-dogfood-fixture-pool.yml'
+      - '.github/workflows/validate-v03-dogfood-fixture-pool.yml'
+      - '.github/workflows/v03-trusted-control-command.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install deterministic validation dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Validate isolated trusted dogfood fixture pool
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_fixture_pool.py

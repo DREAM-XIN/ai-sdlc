@@ -71,6 +71,8 @@ jobs:
               239: {
                   '/ai-sdlc v03-trusted-control dogfood-bindings':
                       ('v03-dogfood-execution-bindings-preflight.yml', ''),
+                  '/ai-sdlc v03-trusted-control dogfood-fixtures':
+                      ('provision-v03-dogfood-fixture-pool.yml', ''),
               },
           }
 
