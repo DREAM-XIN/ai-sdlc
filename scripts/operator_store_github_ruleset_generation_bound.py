@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Trusted fresh-marker attestation bound to a strictly-new history generation.
 
-GitHub's repository ruleset current-detail and history surfaces can remain pinned
-on different replicas after a successful repository-scoped PUT.  The long-lived
-canonical writer still requires the existing exact current-detail/write-response
-``updated_at`` binding.  For the random fresh marker only, this layer replaces
-that unstable cross-replica timestamp dependency with a stronger causal proof:
+GitHub's repository-ruleset source serialization is replica-variant across the
+write response, current-detail and history surfaces.  The long-lived canonical
+writer still requires the existing exact current-detail/write-response
+``updated_at`` binding.  For the random fresh marker only, this layer binds the
+write to the repository-scoped request path plus a pre-write history baseline
+and a strictly newer same-nonce history generation on that exact ruleset.
 
-* capture the latest history version before the marker write (zero for create);
-* require the exact repository-scoped marker PUT response;
-* require the same fresh nonce to appear in a strictly newer history version;
-* permit only the already-observed ``source,rules`` omission normalization.
-
-The resulting authority is process-local.  Generic/read-only verification and
-the durable post-attestation verifier are unchanged.
+The marker PUT response must still prove the exact ruleset id, marker name,
+Repository source type, target, enforcement, conditions, bypass actors, safe
+writer rules and captured ``updated_at``.  Its raw ``source`` string is bounded
+but is deliberately not used as repository identity authority.  Generic/read-
+only verification and the durable post-attestation verifier remain unchanged.
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ from operator_store_github_ruleset_attested import (
 )
 from operator_store_github_ruleset_current_detail_bound import (
     CurrentDetailBoundAttestedGitHubOperatorStoreRulesetProvisioner,
-    _write_response_binds_fresh_marker,
+    _is_fresh_marker_name,
 )
 from operator_store_github_ruleset_provision import (
     RULESET_WRITER_NAME,
@@ -35,9 +34,62 @@ from operator_store_github_ruleset_provision import (
 )
 from operator_store_github_ruleset_stabilized import (
     HistoryObservation,
+    _OMISSION_ONLY_WRITER_RULES,
+    _STRICT_WRITER_RULES,
     _eligible_for_transient_source_settling,
     _expected_state,
 )
+
+
+def _marker_write_response_binds_submitted_generation(
+    write_response: object,
+    *,
+    ruleset_id: int,
+    payload: dict,
+    expected_updated_at: str,
+) -> bool:
+    """Validate the marker PUT response without trusting replica-variant source.
+
+    Repository identity is already bound by the same-process pending binding
+    created by ``_write_ruleset(repository, ...)`` and by the strictly-new
+    history generation fetched back from that exact repository/ruleset path.
+    Requiring the response's raw ``source`` value to duplicate that identity is
+    both redundant and, on live GitHub, unstable across replicas.
+    """
+
+    if not _is_fresh_marker_name(payload.get("name")):
+        return False
+    if payload.get("rules") != _STRICT_WRITER_RULES:
+        return False
+    if not isinstance(expected_updated_at, str) or not expected_updated_at:
+        return False
+    if not isinstance(write_response, dict):
+        return False
+    if write_response.get("updated_at") != expected_updated_at:
+        return False
+    if write_response.get("id") != ruleset_id:
+        return False
+    if write_response.get("source_type") != "Repository":
+        return False
+
+    source = write_response.get("source")
+    if not isinstance(source, str) or not source or len(source) > 1024:
+        return False
+
+    for field in (
+        "name",
+        "target",
+        "enforcement",
+        "conditions",
+        "bypass_actors",
+    ):
+        if write_response.get(field) != payload.get(field):
+            return False
+
+    return write_response.get("rules") in (
+        _STRICT_WRITER_RULES,
+        _OMISSION_ONLY_WRITER_RULES,
+    )
 
 
 class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
@@ -94,9 +146,8 @@ class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
             or not isinstance(observation.version_id, int)
             or observation.version_id <= minimum_version_id
             or not _eligible_for_transient_source_settling(observation, payload=payload)
-            or not _write_response_binds_fresh_marker(
+            or not _marker_write_response_binds_submitted_generation(
                 binding[4],
-                repository=repository,
                 ruleset_id=ruleset_id,
                 payload=payload,
                 expected_updated_at=binding[3],
@@ -104,10 +155,6 @@ class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
         ):
             return None, observation
 
-        # The exact repository-scoped PUT response proves writer identity and
-        # the random marker.  The strictly-new history version proves that this
-        # process's write reached durable history.  Never retain the opaque
-        # history ``source`` value; normalize from the submitted safe payload.
         canonical_state = _expected_state(
             repository=repository,
             ruleset_id=ruleset_id,
@@ -117,7 +164,7 @@ class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
             observation.version_id,
             copy.deepcopy(canonical_state),
         ), HistoryObservation(
-            "fresh-marker-strictly-new-write-response-bound",
+            "fresh-marker-strictly-new-request-bound",
             version_id=observation.version_id,
             state_name=observation.state_name,
         )
