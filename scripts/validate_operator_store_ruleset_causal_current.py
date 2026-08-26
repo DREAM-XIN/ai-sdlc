@@ -90,6 +90,64 @@ def main() -> None:
         "causally attested opaque history incorrectly depended on an opaque current binding",
     )
 
+    # Exact-main run 32965115049 completed the marker/canonical writes but still
+    # failed before materialization.  The remaining replica race is a canonical
+    # final attestation read followed by an opaque current-detail replica during
+    # protection verification.  That late opaque observation may be normalized
+    # only after two stable reads and only when its normalized state digest and
+    # updated_at match the already-attested canonical generation exactly.
+    late_flip_api = CanonicalReplicaApi()
+    late_flip = provisioner(late_flip_api)
+    late_flip._attest_writer_ruleset(REPOSITORY, RULESET_ID, STATE_REF)
+    require(
+        RULESET_ID not in late_flip._opaque_current_bindings,
+        "late-flip fixture did not begin from canonical current authority",
+    )
+    late_flip_api.canonical_current_source = OPAQUE_SOURCE
+    late_flip_verifier = late_flip.protection_verifier()
+    calls_before = late_flip_api.current_calls
+    status, late_current = late_flip_verifier.http_get(detail_url, {})
+    require(status == 200, "late replica-flip current detail was unreadable")
+    require(
+        late_current.get("source") == REPOSITORY,
+        "stable late opaque replica was not normalized to causally-attested repository",
+    )
+    require(
+        late_flip_api.current_calls == calls_before + 2,
+        "late opaque replica did not require an independent stable reread",
+    )
+    require(
+        late_flip_verifier._latest_version_state(REPOSITORY, RULESET_ID, late_current) is not None,
+        "late replica-flip current/history proof did not close",
+    )
+
+    # A late opaque observation with a different updated_at is not the attested
+    # generation and must remain raw/fail closed.
+    stale_flip_api = CanonicalReplicaApi()
+    stale_flip = provisioner(stale_flip_api)
+    stale_flip._attest_writer_ruleset(REPOSITORY, RULESET_ID, STATE_REF)
+    stale_flip_api.canonical_current_source = OPAQUE_SOURCE
+    original_request = stale_flip_api.request
+
+    def stale_request(method, url, headers, body=None):
+        status, value = original_request(method, url, headers, body)
+        if method == "GET" and isinstance(value, dict) and value.get("source") == OPAQUE_SOURCE:
+            value = dict(value)
+            value["updated_at"] = "2026-08-25T12:10:04.999Z"
+        return status, value
+
+    stale_flip.http_request = stale_request
+    stale_verifier = stale_flip.protection_verifier()
+    _, stale_current = stale_verifier.http_get(detail_url, {})
+    require(
+        stale_current.get("source") == OPAQUE_SOURCE,
+        "stale late opaque replica incorrectly gained repository normalization",
+    )
+    require(
+        stale_verifier._latest_version_state(REPOSITORY, RULESET_ID, stale_current) is None,
+        "stale late opaque replica retained protection authority",
+    )
+
     # The opaque token is only a replay fence.  A later different token must not
     # be silently normalized under the old process-local attestation.
     opaque.canonical_current_source = "replica:different-source-token"
