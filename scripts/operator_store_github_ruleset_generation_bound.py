@@ -50,6 +50,12 @@ from operator_store_github_ruleset_stabilized import (
     _state_mismatch_fields,
 )
 
+# Exact-main run 32846146699 exhausted the existing 900-second transient-source
+# budget while current detail remained in the same bounded omission-only shape.
+# Keep current-detail authority strict, but give this post-canonical replica
+# convergence its own bounded budget instead of reusing the history budget.
+DEFAULT_FINAL_CURRENT_SETTLING_ATTEMPTS = 1800
+
 
 def _bounded_source(value: object) -> bool:
     return isinstance(value, str) and bool(value) and len(value) <= 1024
@@ -131,12 +137,25 @@ class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
 ):
     """Bind marker then canonical writer to two strictly ordered generations."""
 
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        *,
+        final_current_settling_attempts: int = DEFAULT_FINAL_CURRENT_SETTLING_ATTEMPTS,
+        **kwargs,
+    ):
         # Process-local sequencing fence.  It is populated only after the fresh
         # marker has already been positively attested and is cleared immediately
         # after the one canonical wait.  Nothing is serialized as authority.
         self._canonical_generation_floor: tuple[str, int, int] | None = None
         super().__init__(**kwargs)
+        if (
+            not isinstance(final_current_settling_attempts, int)
+            or final_current_settling_attempts < self.transient_source_settling_attempts
+        ):
+            raise ValueError(
+                "final current-detail settling attempts must be an integer >= transient source settling attempts"
+            )
+        self.final_current_settling_attempts = final_current_settling_attempts
 
     def _pre_marker_history_version(self, repository: str, ruleset_id: int | None) -> int:
         if ruleset_id is None:
@@ -241,7 +260,7 @@ class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
         identity field and the omission-only safe rule pair are already exact.
         It is never normalized or accepted as current authority.
         """
-        for attempt in range(self.transient_source_settling_attempts):
+        for attempt in range(self.final_current_settling_attempts):
             status, current = self._request(
                 "GET",
                 f"{self.api_base}/repos/{repository}/rulesets/{ruleset_id}?includes_parents=true",
@@ -276,7 +295,7 @@ class GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner(
                 raise RulesetProvisioningError(
                     "final writer ruleset current detail drifted outside bounded settling shape"
                 )
-            if attempt + 1 < self.transient_source_settling_attempts:
+            if attempt + 1 < self.final_current_settling_attempts:
                 self.sleeper(self.attestation_interval_seconds)
 
         raise RulesetProvisioningError(
