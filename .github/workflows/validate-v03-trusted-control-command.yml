@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/v03-trusted-control-command.yml'
       - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
+      - '.github/workflows/v03-real-dogfood-scenario.yml'
       - '.github/workflows/validate-v03-trusted-control-command.yml'
 
 permissions:
@@ -23,6 +24,7 @@ jobs:
           path = Path('.github/workflows/v03-trusted-control-command.yml')
           text = path.read_text(encoding='utf-8')
           diagnostic = Path('.github/workflows/v03-ruleset-source-identity-diagnostic.yml').read_text(encoding='utf-8')
+          dogfood = Path('.github/workflows/v03-real-dogfood-scenario.yml').read_text(encoding='utf-8')
 
           required_literals = [
               'issue_comment:',
@@ -63,12 +65,18 @@ jobs:
               "('v03-final-live-ledger.yml', '')",
               "'/ai-sdlc v03-trusted-control dogfood-bindings'",
               "('v03-dogfood-execution-bindings-preflight.yml', '')",
+              "'/ai-sdlc v03-trusted-control dogfood happy_path'",
+              "('v03-real-dogfood-scenario.yml', 'happy_path')",
+              "'/ai-sdlc v03-trusted-control dogfood review_remediation'",
+              "('v03-real-dogfood-scenario.yml', 'review_remediation')",
+              "'/ai-sdlc v03-trusted-control dogfood session_recovery'",
+              "('v03-real-dogfood-scenario.yml', 'session_recovery')",
           ]
           for literal in required_literals:
               if literal not in text:
                   raise SystemExit(f'missing trusted-control invariant: {literal}')
 
-          if text.count('/ai-sdlc v03-trusted-control ') != 17:
+          if text.count('/ai-sdlc v03-trusted-control ') != 20:
               raise SystemExit('trusted-control command surface changed unexpectedly')
 
           contents_write = 'contents:' + ' write'
@@ -96,6 +104,7 @@ jobs:
               'v03-live-remaining-six.yml',
               'v03-final-live-ledger.yml',
               'v03-dogfood-execution-bindings-preflight.yml',
+              'v03-real-dogfood-scenario.yml',
           ]
           for workflow in workflows:
               target = Path('.github/workflows') / workflow
@@ -116,12 +125,29 @@ jobs:
                   'duplicate-worker-completion',
                   'stale-candidate-result',
               ],
+              'v03-real-dogfood-scenario.yml': [
+                  'happy_path',
+                  'review_remediation',
+                  'session_recovery',
+              ],
           }
           for workflow, scenarios in scenario_contracts.items():
               target_text = (Path('.github/workflows') / workflow).read_text(encoding='utf-8')
               for scenario in scenarios:
                   if scenario not in target_text:
                       raise SystemExit(f'allowlisted scenario missing from {workflow}: {scenario}')
+
+          dogfood_required = [
+              'workflow_dispatch:',
+              "github.ref != 'refs/heads/main'",
+              'scripts/v03_dogfood_runtime_driver.py --mode run',
+              '.release_eligible == false and .provenance_verified == false',
+              'Issue 239',
+              'not release evidence and not release-eligible',
+          ]
+          for literal in dogfood_required:
+              if literal not in dogfood:
+                  raise SystemExit(f'missing real dogfood workflow invariant: {literal}')
 
           diagnostic_required = [
               'workflow_dispatch:',
