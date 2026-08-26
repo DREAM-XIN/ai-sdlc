@@ -9,9 +9,12 @@ source identity to same-process write authority when GitHub history/current
 surfaces retain replica-specific serialization. #343 additionally requires the
 fresh random marker to appear in a history generation strictly newer than the
 pre-write baseline before repository-scoped PUT-response authority can normalize
-that marker's observed ``source,rules`` omission shape. The resulting in-memory
-verifier is injected into the existing composite; no generic read-only authority
-is widened.
+that marker's observed ``source,rules`` omission shape. If the admin-token
+current-detail view remains replica-opaque, the trusted-only causal-current layer
+requires two stable opaque reads and binds normalization to the same exact
+repository-scoped generation plus canonical state digest. The resulting
+in-memory verifier is injected into the existing composite; no generic read-only
+authority is widened.
 
 Attestation is process-local and is never serialized. A process cache reuses the
 same attested verifier for repeated checks of the same repository/ref (notably
@@ -26,8 +29,8 @@ from typing import Callable
 from operator_store_github_protection_composite import (
     GitHubRepositoryProtectionVerifier as GenericGitHubRepositoryProtectionVerifier,
 )
-from operator_store_github_ruleset_generation_bound import (
-    GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner,
+from operator_store_github_ruleset_causal_current import (
+    CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner,
 )
 
 
@@ -73,7 +76,7 @@ class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifi
         self._api_version = api_version
         self._provisioner_factory = (
             provisioner_factory
-            or GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner
+            or CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner
         )
 
     def _attested_ruleset_verifier(self, repository: str, state_ref: str):
