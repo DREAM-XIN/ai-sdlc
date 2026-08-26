@@ -140,6 +140,30 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
                 return None
         return None
 
+    @staticmethod
+    def _normalized_current_state_digest(value: dict, repository: str) -> str | None:
+        """Digest only canonical ruleset-state fields after bounded replica normalization."""
+        source = value.get("source")
+        if _safe_source_shape(source, repository) != "other-string":
+            return None
+        if value.get("source_type") != "Repository" or value.get("rules") != _OMISSION_ONLY_WRITER_RULES:
+            return None
+        state_fields = (
+            "id",
+            "name",
+            "target",
+            "source_type",
+            "source",
+            "enforcement",
+            "conditions",
+            "bypass_actors",
+            "rules",
+        )
+        state = {field: copy.deepcopy(value.get(field)) for field in state_fields}
+        state["source"] = repository
+        state["rules"] = copy.deepcopy(_STRICT_WRITER_RULES)
+        return _state_digest(state)
+
     def protection_verifier(self) -> AttestedGitHubRulesetProtectionVerifier:
         attestations = dict(self.write_attestations)
         opaque_bindings = dict(self._opaque_current_bindings)
@@ -157,20 +181,63 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
 
             if version_id is None:
                 binding = opaque_bindings.get(ruleset_id)
-                if binding is None:
-                    return status, value
-                opaque_source, current_updated_at = binding
+                if binding is not None:
+                    opaque_source, current_updated_at = binding
+                    if (
+                        value.get("id") != ruleset_id
+                        or value.get("source_type") != "Repository"
+                        or value.get("source") != opaque_source
+                        or value.get("updated_at") != current_updated_at
+                        or current_updated_at != attestation.current_updated_at
+                    ):
+                        return status, value
+                    normalized = copy.deepcopy(value)
+                    normalized["source"] = repository
+                    return status, normalized
+
+                # A canonical final attestation read can be followed by an opaque
+                # admin-token replica during the later protection proof.  Do not
+                # trust that late opaque token.  Re-read it once in the same
+                # process and accept only a stable omission-only observation whose
+                # normalized canonical state digest and updated_at are exactly the
+                # already-attested causal generation.
+                digest = self._normalized_current_state_digest(value, repository)
+                source = value.get("source")
+                updated_at = value.get("updated_at")
                 if (
-                    value.get("id") != ruleset_id
-                    or value.get("source_type") != "Repository"
-                    or value.get("source") != opaque_source
-                    or value.get("updated_at") != current_updated_at
-                    or current_updated_at != attestation.current_updated_at
+                    value.get("id") == ruleset_id
+                    and isinstance(source, str)
+                    and source
+                    and len(source) <= 1024
+                    and isinstance(updated_at, str)
+                    and updated_at == attestation.current_updated_at
+                    and digest == attestation.state_digest
                 ):
-                    return status, value
-                normalized = copy.deepcopy(value)
-                normalized["source"] = repository
-                return status, normalized
+                    second_status, second = self.http_request("GET", url, headers, None)
+                    if second_status != 200 or not isinstance(second, dict):
+                        return status, value
+                    second_digest = self._normalized_current_state_digest(second, repository)
+                    stable_fields = (
+                        "id",
+                        "name",
+                        "target",
+                        "source_type",
+                        "source",
+                        "enforcement",
+                        "conditions",
+                        "bypass_actors",
+                        "rules",
+                        "updated_at",
+                    )
+                    if (
+                        second_digest == attestation.state_digest
+                        and all(second.get(field) == value.get(field) for field in stable_fields)
+                    ):
+                        opaque_bindings[ruleset_id] = (source, updated_at)
+                        normalized = copy.deepcopy(value)
+                        normalized["source"] = repository
+                        return status, normalized
+                return status, value
 
             # History authority is already bound by the exact attested generation
             # and canonical state digest.  It must not depend on whether the
