@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression for #263 persistent replica-opaque current ruleset source."""
+"""Regression for #263 replica-opaque current/history ruleset source."""
 from __future__ import annotations
 
 from operator_store_github_ruleset_causal_current import (
@@ -70,6 +70,26 @@ def main() -> None:
     proof = verifier._latest_version_state(REPOSITORY, RULESET_ID, current)
     require(proof is not None, "causal verifier could not revalidate exact history/current proof")
 
+    # Exact-main run 32949638735 reached the protection verifier after the
+    # marker/canonical sequence, but the final receipt was not PROTECTED.  A
+    # canonical current-detail replica must not disable normalization of the
+    # independently replica-opaque history state: the exact history generation
+    # and canonical state digest are already causally attested in this process.
+    canonical_current = CanonicalReplicaApi()
+    canonical = provisioner(canonical_current)
+    canonical._attest_writer_ruleset(REPOSITORY, RULESET_ID, STATE_REF)
+    require(
+        RULESET_ID not in canonical._opaque_current_bindings,
+        "canonical current fixture unexpectedly created an opaque replay binding",
+    )
+    canonical_verifier = canonical.protection_verifier()
+    status, current = canonical_verifier.http_get(detail_url, {})
+    require(status == 200 and current.get("source") == REPOSITORY, "canonical current detail drifted")
+    require(
+        canonical_verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is not None,
+        "causally attested opaque history incorrectly depended on an opaque current binding",
+    )
+
     # The opaque token is only a replay fence.  A later different token must not
     # be silently normalized under the old process-local attestation.
     opaque.canonical_current_source = "replica:different-source-token"
@@ -96,7 +116,7 @@ def main() -> None:
         "malformed current source",
     )
 
-    print("v0.3 causal opaque current-source binding: PASS")
+    print("v0.3 causal opaque current/history binding: PASS")
 
 
 if __name__ == "__main__":
