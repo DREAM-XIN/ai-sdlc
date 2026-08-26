@@ -152,12 +152,14 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
 
             repository, ruleset_id, version_id = identity
             attestation = attestations.get(ruleset_id)
-            binding = opaque_bindings.get(ruleset_id)
-            if attestation is None or binding is None:
+            if attestation is None:
                 return status, value
 
-            opaque_source, current_updated_at = binding
             if version_id is None:
+                binding = opaque_bindings.get(ruleset_id)
+                if binding is None:
+                    return status, value
+                opaque_source, current_updated_at = binding
                 if (
                     value.get("id") != ruleset_id
                     or value.get("source_type") != "Repository"
@@ -170,6 +172,11 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
                 normalized["source"] = repository
                 return status, normalized
 
+            # History authority is already bound by the exact attested generation
+            # and canonical state digest.  It must not depend on whether the
+            # separate current-detail replica happened to require an opaque-source
+            # replay binding.  This keeps the normalization process-local and
+            # fail-closed while allowing canonical current + replica-opaque history.
             if version_id != attestation.version_id or value.get("version_id") != version_id:
                 return status, value
             state = value.get("state")
