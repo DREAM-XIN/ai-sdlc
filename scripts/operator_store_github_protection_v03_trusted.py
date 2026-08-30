@@ -16,8 +16,8 @@ from typing import Callable
 from operator_store_github_protection_composite import (
     GitHubRepositoryProtectionVerifier as GenericGitHubRepositoryProtectionVerifier,
 )
-from operator_store_github_ruleset_causal_summary import (
-    CausalSummarySettledAttestedGitHubOperatorStoreRulesetProvisioner,
+from operator_store_github_ruleset_version_diagnostic import (
+    VersionProofDiagnosedAttestedGitHubOperatorStoreRulesetProvisioner,
 )
 from operator_store_protection import PROTECTED
 
@@ -32,6 +32,26 @@ _DIAGNOSTIC_CATEGORY_ALLOWLIST = frozenset({
     "history-summary-replay-timeout",
     "history-summary-initial-settle-timeout",
     "underlying-version-proof-rejected",
+    "version-proof-attestation-missing",
+    "version-proof-current-updated-at-rejected",
+    "version-proof-current-rules-rejected",
+    "version-proof-initial-history-unavailable",
+    "version-proof-initial-history-shape-rejected",
+    "version-proof-initial-history-version-rejected",
+    "version-proof-exact-version-unavailable",
+    "version-proof-exact-version-id-rejected",
+    "version-proof-state-shape-rejected",
+    "version-proof-state-digest-rejected",
+    "version-proof-state-rules-rejected",
+    "version-proof-state-current-identity-rejected",
+    "version-proof-final-current-unavailable",
+    "version-proof-final-current-drift-rejected",
+    "version-proof-final-current-updated-at-rejected",
+    "version-proof-final-current-rules-rejected",
+    "version-proof-final-history-unavailable",
+    "version-proof-final-history-shape-rejected",
+    "version-proof-final-history-version-rejected",
+    "version-proof-final-history-updated-at-rejected",
     "ruleset-proof-rejected-unclassified",
 })
 
@@ -75,7 +95,7 @@ class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifi
         self._api_version = api_version
         self._provisioner_factory = (
             provisioner_factory
-            or CausalSummarySettledAttestedGitHubOperatorStoreRulesetProvisioner
+            or VersionProofDiagnosedAttestedGitHubOperatorStoreRulesetProvisioner
         )
 
     def _attested_ruleset_verifier(self, repository: str, state_ref: str):
