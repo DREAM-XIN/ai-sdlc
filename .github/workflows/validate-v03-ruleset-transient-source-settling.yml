@@ -7,6 +7,7 @@ on:
       - 'scripts/operator_store_github_ruleset_current_detail_bound.py'
       - 'scripts/operator_store_github_ruleset_generation_bound.py'
       - 'scripts/operator_store_github_ruleset_causal_current.py'
+      - 'scripts/operator_store_github_ruleset_causal_history.py'
       - 'scripts/operator_store_github_protection_v03_trusted.py'
       - 'scripts/validate_operator_store_ruleset_transient_source_settling.py'
       - 'scripts/validate_operator_store_ruleset_current_detail_binding.py'
@@ -15,6 +16,7 @@ on:
       - 'scripts/validate_operator_store_ruleset_marker_generation_put_source.py'
       - 'scripts/validate_operator_store_ruleset_canonical_generation_binding.py'
       - 'scripts/validate_operator_store_ruleset_causal_current.py'
+      - 'scripts/validate_operator_store_ruleset_causal_history.py'
       - '.github/workflows/materialize-v03-vertical-policy-state.yml'
       - '.github/workflows/validate-v03-ruleset-transient-source-settling.yml'
 
@@ -40,3 +42,5 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_canonical_generation_binding.py
       - name: Validate causal opaque current-source binding
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_causal_current.py
+      - name: Validate bounded causal history replica settling
+        run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_causal_history.py
