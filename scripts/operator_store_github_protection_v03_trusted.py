@@ -15,13 +15,18 @@ requires two stable opaque reads and binds normalization to the same exact
 repository-scoped generation plus canonical state digest. #355 additionally
 permits only a strictly older latest-history replica to settle boundedly to that
 same exact process-local attested generation; newer history or timeout remains
-fail-closed. The resulting in-memory verifier is injected into the existing
-composite; no generic read-only authority is widened.
+fail-closed. #357 preserves the inherited initial/final history-summary equality
+fence while allowing the exact already-attested version's replica metadata to
+settle: the initial real summary must be observed identically twice, and later
+reads must return that exact bound ``(version_id, updated_at)`` again. The
+resulting in-memory verifier is injected into the existing composite; no generic
+read-only authority is widened.
 
-Attestation is process-local and is never serialized. A process cache reuses the
-same attested verifier for repeated checks of the same repository/ref (notably
-the before/after postverify checks) so verification itself does not create a new
-ruleset generation between those checks.
+Attestation and exact-summary bindings are process-local and are never
+serialized. A process cache reuses the same attested verifier for repeated checks
+of the same repository/ref (notably the before/after postverify checks) so
+verification itself does not create a new ruleset generation between those
+checks.
 """
 from __future__ import annotations
 
@@ -31,8 +36,8 @@ from typing import Callable
 from operator_store_github_protection_composite import (
     GitHubRepositoryProtectionVerifier as GenericGitHubRepositoryProtectionVerifier,
 )
-from operator_store_github_ruleset_causal_history import (
-    CausalHistorySettledAttestedGitHubOperatorStoreRulesetProvisioner,
+from operator_store_github_ruleset_causal_summary import (
+    CausalSummarySettledAttestedGitHubOperatorStoreRulesetProvisioner,
 )
 
 
@@ -78,7 +83,7 @@ class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifi
         self._api_version = api_version
         self._provisioner_factory = (
             provisioner_factory
-            or CausalHistorySettledAttestedGitHubOperatorStoreRulesetProvisioner
+            or CausalSummarySettledAttestedGitHubOperatorStoreRulesetProvisioner
         )
 
     def _attested_ruleset_verifier(self, repository: str, state_ref: str):
