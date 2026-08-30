@@ -1,36 +1,16 @@
 #!/usr/bin/env python3
 """Trusted-only v0.3 protection verifier with causal ruleset attestation.
 
-The generic repository/ruleset protection verifiers remain read-only and
-fail-closed. This wrapper is intentionally for the explicit trusted-main v0.3
-Vertical policy workflow only: before relying on the ruleset path it performs
-#262's marker -> canonical strict write attestation. #336/#340 bind repository
-source identity to same-process write authority when GitHub history/current
-surfaces retain replica-specific serialization. #343 additionally requires the
-fresh random marker to appear in a history generation strictly newer than the
-pre-write baseline before repository-scoped PUT-response authority can normalize
-that marker's observed ``source,rules`` omission shape. If the admin-token
-current-detail view remains replica-opaque, the trusted-only causal-current layer
-requires two stable opaque reads and binds normalization to the same exact
-repository-scoped generation plus canonical state digest. #355 additionally
-permits only a strictly older latest-history replica to settle boundedly to that
-same exact process-local attested generation; newer history or timeout remains
-fail-closed. #357 preserves the inherited initial/final history-summary equality
-fence while allowing the exact already-attested version's replica metadata to
-settle: the initial real summary must be observed identically twice, and later
-reads must return that exact bound ``(version_id, updated_at)`` again. The
-resulting in-memory verifier is injected into the existing composite; no generic
-read-only authority is widened.
-
-Attestation and exact-summary bindings are process-local and are never
-serialized. A process cache reuses the same attested verifier for repeated checks
-of the same repository/ref (notably the before/after postverify checks) so
-verification itself does not create a new ruleset generation between those
-checks.
+Generic/read-only protection semantics remain unchanged. This wrapper exists only
+for the trusted-main v0.3 Vertical-policy workflow and may emit bounded rejection
+category diagnostics when the already-existing proof fails closed. Diagnostics
+contain category names only and never raw GitHub values, tokens, or response
+bodies.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Callable
 
 from operator_store_github_protection_composite import (
@@ -39,9 +19,21 @@ from operator_store_github_protection_composite import (
 from operator_store_github_ruleset_causal_summary import (
     CausalSummarySettledAttestedGitHubOperatorStoreRulesetProvisioner,
 )
+from operator_store_protection import PROTECTED
 
 
 _PROCESS_ATTESTED_RULESET_VERIFIERS: dict[tuple, object] = {}
+_DIAGNOSTIC_CATEGORY_ALLOWLIST = frozenset({
+    "history-summary-unavailable",
+    "history-summary-malformed",
+    "history-summary-older-version",
+    "history-summary-newer-version",
+    "history-summary-invalid-metadata",
+    "history-summary-replay-timeout",
+    "history-summary-initial-settle-timeout",
+    "underlying-version-proof-rejected",
+    "ruleset-proof-rejected-unclassified",
+})
 
 
 def _token_binding(token: str) -> bytes:
@@ -113,6 +105,25 @@ class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifi
         _PROCESS_ATTESTED_RULESET_VERIFIERS[key] = verifier
         return verifier
 
+    def diagnostic_categories(self) -> tuple[str, ...]:
+        getter = getattr(self.ruleset, "protection_diagnostic_categories", None)
+        raw = getter() if callable(getter) else ()
+        categories = tuple(
+            value
+            for value in raw
+            if isinstance(value, str) and value in _DIAGNOSTIC_CATEGORY_ALLOWLIST
+        )
+        return categories or ("ruleset-proof-rejected-unclassified",)
+
     def verify(self, repository: str, state_ref: str):
         self.ruleset = self._attested_ruleset_verifier(repository, state_ref)
-        return super().verify(repository, state_ref)
+        receipt = super().verify(repository, state_ref)
+        if receipt.status != PROTECTED:
+            print(json.dumps({
+                "protection_rejection_diagnostic": {
+                    "categories": self.diagnostic_categories(),
+                    "raw_values_retained": False,
+                    "receipt_status": receipt.status,
+                }
+            }, sort_keys=True))
+        return receipt

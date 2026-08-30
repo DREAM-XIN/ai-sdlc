@@ -19,6 +19,7 @@ on:
       - 'scripts/validate_operator_store_ruleset_causal_current.py'
       - 'scripts/validate_operator_store_ruleset_causal_history.py'
       - 'scripts/validate_operator_store_ruleset_exact_history_summary.py'
+      - 'scripts/validate_v03_protection_rejection_diagnostic.py'
       - '.github/workflows/materialize-v03-vertical-policy-state.yml'
       - '.github/workflows/validate-v03-ruleset-transient-source-settling.yml'
 
@@ -48,3 +49,5 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_causal_history.py
       - name: Validate exact-version history-summary settling
         run: PYTHONPATH=scripts python scripts/validate_operator_store_ruleset_exact_history_summary.py
+      - name: Validate trusted protection rejection diagnostics
+        run: PYTHONPATH=scripts python scripts/validate_v03_protection_rejection_diagnostic.py
