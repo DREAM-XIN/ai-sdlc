@@ -53,10 +53,32 @@ _AUTHORITY_STATE_FIELDS = (
     "rules",
 )
 
+# The live #263 history observation demonstrated only these timestamp keys as
+# response metadata outside the protection-authority state.  Keep this schema
+# deliberately closed: any new/unknown state key must fail closed rather than
+# being silently projected away.
+_ALLOWED_HISTORY_STATE_METADATA_FIELDS = (
+    "created_at",
+    "updated_at",
+)
+
 
 def _authority_state(value: dict) -> dict:
     """Project one ruleset state onto the fields that carry protection authority."""
     return {field: copy.deepcopy(value.get(field)) for field in _AUTHORITY_STATE_FIELDS}
+
+
+def _closed_history_authority_state(value: dict) -> dict | None:
+    """Return authority fields only for the explicitly observed closed state schema."""
+    allowed = set(_AUTHORITY_STATE_FIELDS) | set(_ALLOWED_HISTORY_STATE_METADATA_FIELDS)
+    if any(key not in allowed for key in value):
+        return None
+    for field in _ALLOWED_HISTORY_STATE_METADATA_FIELDS:
+        if field in value:
+            metadata = value.get(field)
+            if not isinstance(metadata, str) or not metadata or len(metadata) > 128:
+                return None
+    return _authority_state(value)
 
 
 def _canonical_writer_authority_state(
@@ -171,9 +193,9 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
 
         The inherited marker -> canonical generation proof still establishes the
         exact version and current ``updated_at``.  GitHub history responses can
-        later add or vary non-authoritative metadata keys inside ``state``.  Such
-        metadata must not silently become protection authority merely because the
-        inherited attestation hashed the whole response object.
+        later add or vary the narrowly observed timestamp metadata inside
+        ``state``.  That metadata is admitted only by a closed schema and never
+        becomes protection authority.
         """
         writer_id = super()._attest_writer_ruleset(repository, ruleset_id, state_ref)
         attestation = self.write_attestations.get(writer_id)
@@ -301,17 +323,16 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
                 return status, value
 
             # History authority is bound to the exact attested generation and the
-            # exact submitted protection fields.  GitHub may vary metadata outside
-            # those fields without changing protection semantics.  Project the
-            # already-bounded real observation instead of hashing arbitrary
-            # response metadata as authority.
+            # exact submitted protection fields.  Admit only the explicitly
+            # observed timestamp metadata outside those fields; every unknown key
+            # remains a fail-closed version-state drift signal.
             if version_id != attestation.version_id or value.get("version_id") != version_id:
                 return status, value
             state = value.get("state")
             if not isinstance(state, dict):
                 return status, value
-            normalized_state = _authority_state(state)
-            if normalized_state.get("source_type") != "Repository":
+            normalized_state = _closed_history_authority_state(state)
+            if normalized_state is None or normalized_state.get("source_type") != "Repository":
                 return status, value
             source_shape = _safe_source_shape(normalized_state.get("source"), repository)
             if source_shape == "other-string":
