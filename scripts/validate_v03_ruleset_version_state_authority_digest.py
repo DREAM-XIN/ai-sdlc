@@ -44,9 +44,8 @@ def omission_state(*, extra_metadata: bool = True) -> dict:
     state = canonical_state()
     state["rules"] = [{"type": "creation"}, {"type": "update"}]
     if extra_metadata:
-        state["created_at"] = "replica-a"
-        state["updated_at"] = "replica-b"
-        state["_links"] = {"self": "non-authoritative"}
+        state["created_at"] = "2026-09-02T04:52:25Z"
+        state["updated_at"] = "2026-09-02T04:52:25Z"
     return state
 
 
@@ -97,19 +96,37 @@ def verifier_for(state: dict):
     return provisioner.protection_verifier(), current, api
 
 
-def validate_non_authoritative_metadata_does_not_change_policy_digest():
+def validate_observed_timestamp_metadata_does_not_change_policy_digest():
     state = omission_state(extra_metadata=True)
     require(
         _state_digest(_authority_state(canonical_state()))
-        == _state_digest(_authority_state({**canonical_state(), "metadata": "other"})),
-        "non-authoritative metadata changed authority projection digest",
+        == _state_digest(_authority_state({**canonical_state(), "updated_at": HISTORY_UPDATED_AT})),
+        "observed timestamp metadata changed authority projection digest",
     )
     verifier, current, _ = verifier_for(state)
     resolved = verifier._latest_version_state(REPOSITORY, RULESET_ID, current)
-    require(resolved is not None, "bounded metadata-only history drift was rejected")
+    require(resolved is not None, "bounded timestamp-only history drift was rejected")
     resolved_state, proof = resolved
     require(resolved_state == canonical_state(), "resolved state was not exact authority projection")
     require(proof["version_id"] == VERSION_ID, "exact history generation binding was lost")
+
+
+def validate_unknown_or_malformed_metadata_fails_closed():
+    unknown = omission_state(extra_metadata=True)
+    unknown["future_protection_semantics"] = {"enabled": True}
+    verifier, current, _ = verifier_for(unknown)
+    require(
+        verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
+        "unknown exact-version state key was silently projected away",
+    )
+
+    malformed = omission_state(extra_metadata=True)
+    malformed["updated_at"] = {"unexpected": "shape"}
+    verifier, current, _ = verifier_for(malformed)
+    require(
+        verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
+        "malformed admitted timestamp metadata was accepted",
+    )
 
 
 def validate_authoritative_drift_remains_rejected():
@@ -170,7 +187,8 @@ def validate_canonical_projection_matches_submitted_writer():
 
 
 def main():
-    validate_non_authoritative_metadata_does_not_change_policy_digest()
+    validate_observed_timestamp_metadata_does_not_change_policy_digest()
+    validate_unknown_or_malformed_metadata_fails_closed()
     validate_authoritative_drift_remains_rejected()
     validate_generic_attested_verifier_remains_strict()
     validate_canonical_projection_matches_submitted_writer()
