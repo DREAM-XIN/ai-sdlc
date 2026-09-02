@@ -9,6 +9,7 @@ on:
       - 'scripts/operator_store_github_ruleset_causal_current.py'
       - 'scripts/operator_store_github_ruleset_causal_history.py'
       - 'scripts/operator_store_github_ruleset_causal_summary.py'
+      - 'scripts/operator_store_github_ruleset_version_diagnostic.py'
       - 'scripts/operator_store_github_protection_v03_trusted.py'
       - 'scripts/validate_operator_store_ruleset_transient_source_settling.py'
       - 'scripts/validate_operator_store_ruleset_current_detail_binding.py'
