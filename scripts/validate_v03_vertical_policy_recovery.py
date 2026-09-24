@@ -361,6 +361,89 @@ def main() -> None:
             finally:
                 restore_env(old_env)
 
+            # A later trusted-main commit may refresh the exact reviewed bundle,
+            # but only after the old authority is fully validated and its
+            # installation is proven ancestral to the new trusted main.
+            (work / "main-seed").write_text("trusted main v2\n", encoding="utf-8")
+            git(work, "add", "main-seed")
+            git(work, "commit", "-m", "advance trusted main")
+            current_installation = git(work, "rev-parse", "HEAD")
+            git(work, "push", "origin", "HEAD:refs/heads/main")
+            current_proof = writer_proof(current_installation)
+
+            # An unrelated/non-descendant installation must not gain refresh
+            # authority merely because the protected namespace is complete.
+            try:
+                recovery.classify_or_recover(
+                    repository=REPO,
+                    installation_sha=bootstrap_sha,
+                    state_ref=STATE_REF,
+                    writer_surface_proof=writer_proof(bootstrap_sha),
+                    protection_receipt=Receipt(),
+                    loader_cls=FakeLoader,
+                )
+            except recovery.VerticalPolicyRecoveryError:
+                pass
+            else:
+                raise AssertionError("non-descendant installation gained policy refresh authority")
+
+            refresh = recovery.classify_or_recover(
+                repository=REPO,
+                installation_sha=current_installation,
+                state_ref=STATE_REF,
+                writer_surface_proof=current_proof,
+                protection_receipt=Receipt(),
+                loader_cls=FakeLoader,
+            )
+            require(refresh["policy_action"] == "materialize", "descendant main was not classified for policy refresh")
+            require(refresh["evidence"] is None, "refresh classification fabricated final evidence")
+            require(
+                refresh["refresh_from_installation_sha"] == installation,
+                "refresh lost previous installation identity",
+            )
+            require(
+                refresh["refresh_from_materialization_sha"] == materialization_sha,
+                "refresh lost previous materialization identity",
+            )
+            require(
+                git(work, "ls-remote", "--refs", "origin", STATE_REF).split()[0] == live_sha,
+                "refresh classification mutated protected state before materialization",
+            )
+
+            # Model the existing CAS materializer replacing exactly the six policy
+            # paths on top of unrelated Store progress with documents rebound to
+            # the new installation and current writer-surface proof.
+            git(work, "checkout", "state-build")
+            for path, value in policy_documents(
+                current_installation,
+                bootstrap_sha,
+                current_proof["proof_digest"],
+            ).items():
+                write_json(work, path, value)
+            git(work, "add", *sorted(REQUIRED_POLICY_PATHS))
+            git(work, "commit", "-m", "refresh protected Vertical policy")
+            refresh_sha = git(work, "rev-parse", "HEAD")
+            git(work, "push", "origin", f"HEAD:{STATE_REF}")
+            git(work, "checkout", "main")
+
+            refreshed = recovery.classify_or_recover(
+                repository=REPO,
+                installation_sha=current_installation,
+                state_ref=STATE_REF,
+                writer_surface_proof=current_proof,
+                protection_receipt=Receipt(),
+                loader_cls=FakeLoader,
+            )
+            require(refreshed["policy_action"] == "adopt", "refreshed policy bundle was not adopted")
+            require(
+                refreshed["evidence"]["materialization_commit_sha"] == refresh_sha,
+                "refreshed policy adoption bound the wrong materialization commit",
+            )
+            require(
+                refreshed["evidence"]["installation_commit_sha"] == current_installation,
+                "refreshed policy adoption lost current installation binding",
+            )
+
             # Policy drift after materialization must not be silently adopted.
             git(work, "checkout", "state-build")
             drift_path = f"{POLICY_NAMESPACE}/decision-policy.json"
@@ -393,6 +476,7 @@ def main() -> None:
             print("- durable materialization is adopted by exact commit with zero second push")
             print("- failed postverify deletes evidence; fresh run re-adopts and finalizes")
             print("- unrelated Store progress is allowed; policy drift fails closed")
+            print("- descendant trusted-main installs refresh exact old authority; unrelated installs fail closed")
     finally:
         os.chdir(original_cwd)
         postverify._verify_protection = original_verify
