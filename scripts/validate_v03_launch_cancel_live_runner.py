@@ -150,6 +150,46 @@ def expect_ledger_error(document, contains):
         raise AssertionError(f"expected launch/cancel ledger failure containing {contains!r}")
 
 
+class FakeConfiguredFeatureEventGateway:
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def read_feature(self, *, feature_id):
+        self.calls.append(feature_id)
+        return self.manifest
+
+
+def validate_feature_read_uses_configured_authority_only():
+    manifest = {"revision": 13}
+    gateway = FakeConfiguredFeatureEventGateway(manifest)
+    candidate = SimpleNamespace(candidate_pr_number=901, candidate_head_sha=CANDIDATE)
+    preflight = SimpleNamespace(
+        execution=SimpleNamespace(repository=REPOSITORY),
+        composition=SimpleNamespace(
+            feature_event_gateway=gateway,
+            feature_id=FEATURE,
+            target_ref=REF,
+            candidate_provider=SimpleNamespace(resolve=lambda: candidate),
+        ),
+    )
+    captured = {}
+    original = subject.FeatureSnapshot
+    subject.FeatureSnapshot = SimpleNamespace(
+        from_manifest=lambda **kwargs: captured.update(kwargs) or "snapshot"
+    )
+    try:
+        snapshot, actual_manifest = subject._feature(preflight)
+        require(snapshot == "snapshot", "configured Manifest read changed Feature snapshot")
+        require(actual_manifest is manifest, "configured Manifest truth was replaced")
+        require(gateway.calls == [FEATURE], "launch/cancel Manifest read escaped configured Feature authority")
+        require(captured["repository"] == REPOSITORY, "Feature snapshot lost trusted repository")
+        require(captured["target_ref"] == REF, "Feature snapshot lost trusted target ref")
+        require(captured["candidate_head_sha"] == CANDIDATE, "Feature snapshot lost exact candidate")
+    finally:
+        subject.FeatureSnapshot = original
+
+
 def validate_pair_ledger_is_strict_and_partial():
     document = pair_document()
     raw, proof = provenance(document)
@@ -305,6 +345,7 @@ def validate_authorized_gateway_launches_once_then_cancels_before_return():
 
 
 def main():
+    validate_feature_read_uses_configured_authority_only()
     validate_pair_ledger_is_strict_and_partial()
     validate_no_external_gateway_is_fail_closed()
     validate_cancel_after_new_claim_injects_once()
