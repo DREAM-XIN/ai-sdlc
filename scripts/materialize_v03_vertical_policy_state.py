@@ -20,6 +20,7 @@ from operator_effect_rollout import (
 from operator_protected_policy_materializer import (
     DEFAULT_STATE_REF,
     POLICY_NAMESPACE,
+    REQUIRED_POLICY_PATHS,
     TRACKING_REF,
     ProtectedPolicyBundleMaterializer,
     ProtectedPolicyDocument,
