@@ -16,7 +16,7 @@ on:
           - stale-candidate-result
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: write
   pull-requests: read
