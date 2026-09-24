@@ -60,7 +60,14 @@ _AUTHORITY_STATE_FIELDS = (
 _ALLOWED_HISTORY_STATE_METADATA_FIELDS = (
     "created_at",
     "updated_at",
+    "current_user_can_bypass",
 )
+
+_ALLOWED_CURRENT_USER_BYPASS_VALUES = frozenset({
+    "always",
+    "pull_requests_only",
+    "never",
+})
 
 
 def _authority_state(value: dict) -> dict:
@@ -73,11 +80,30 @@ def _closed_history_authority_state(value: dict) -> dict | None:
     allowed = set(_AUTHORITY_STATE_FIELDS) | set(_ALLOWED_HISTORY_STATE_METADATA_FIELDS)
     if any(key not in allowed for key in value):
         return None
-    for field in _ALLOWED_HISTORY_STATE_METADATA_FIELDS:
-        if field in value:
-            metadata = value.get(field)
-            if not isinstance(metadata, str) or not metadata or len(metadata) > 128:
-                return None
+    if "created_at" in value:
+        created_at = value.get("created_at")
+        if not isinstance(created_at, str) or not created_at or len(created_at) > 128:
+            return None
+    if "updated_at" in value:
+        # Live exact-version history can serialize this response-only field as
+        # JSON null while the top-level version/history summary retains the real
+        # replay timestamp.  Admit only null or the previously observed bounded
+        # string shape; it never becomes protection authority.
+        updated_at = value.get("updated_at")
+        if updated_at is not None and (
+            not isinstance(updated_at, str)
+            or not updated_at
+            or len(updated_at) > 128
+        ):
+            return None
+    if "current_user_can_bypass" in value:
+        # This is requester-specific response metadata.  The live #263
+        # observation proved it is present alongside an otherwise exact
+        # authority state.  Keep the accepted surface closed to GitHub's known
+        # enum and project it away from the authority digest.
+        bypass = value.get("current_user_can_bypass")
+        if bypass not in _ALLOWED_CURRENT_USER_BYPASS_VALUES:
+            return None
     return _authority_state(value)
 
 
