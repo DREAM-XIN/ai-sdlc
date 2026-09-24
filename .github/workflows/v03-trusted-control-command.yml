@@ -71,6 +71,12 @@ jobs:
               239: {
                   '/ai-sdlc v03-trusted-control dogfood-bindings':
                       ('v03-dogfood-execution-bindings-preflight.yml', ''),
+                  '/ai-sdlc v03-trusted-control dogfood happy_path':
+                      ('v03-real-dogfood-scenario.yml', 'happy_path'),
+                  '/ai-sdlc v03-trusted-control dogfood review_remediation':
+                      ('v03-real-dogfood-scenario.yml', 'review_remediation'),
+                  '/ai-sdlc v03-trusted-control dogfood session_recovery':
+                      ('v03-real-dogfood-scenario.yml', 'session_recovery'),
               },
           }
 
