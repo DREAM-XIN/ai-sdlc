@@ -1,0 +1,65 @@
+name: Validate v0.3 Dogfood Live Gate
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/v03_dogfood_live_gate.py'
+      - 'scripts/validate_v03_dogfood_live_gate.py'
+      - 'scripts/v03_dogfood_fixture_pool.py'
+      - 'scripts/validate_v03_dogfood_fixture_pool.py'
+      - 'scripts/v03_dogfood_fixture_pr_authority.py'
+      - 'scripts/provision_v03_dogfood_fixture.py'
+      - 'scripts/v03_dogfood_full_composition.py'
+      - 'scripts/v03_dogfood_runtime_preflight.py'
+      - 'scripts/validate_v03_dogfood_runtime_composition.py'
+      - 'scripts/v03_dogfood_openai_host.py'
+      - 'scripts/validate_v03_dogfood_openai_host.py'
+      - 'scripts/v03_dogfood_production_provenance.py'
+      - 'scripts/validate_v03_dogfood_production_provenance.py'
+      - 'scripts/v03_dogfood_scenario_runner.py'
+      - 'scripts/validate_v03_dogfood_scenario_runner.py'
+      - 'scripts/v03_dogfood_runtime_driver.py'
+      - 'scripts/validate_v03_dogfood_runtime_driver.py'
+      - 'scripts/v03_dogfood_release_finalizer.py'
+      - 'scripts/validate_v03_dogfood_release_finalizer.py'
+      - 'scripts/v03_dogfood_post_run_finalizer.py'
+      - 'scripts/v03_dogfood_execution_bindings.py'
+      - 'scripts/v03_effect_safety_final_live_ledger.py'
+      - 'scripts/operator_openai_responses_production.py'
+      - 'scripts/v03_dogfood_trusted_provenance.py'
+      - 'scripts/validate_v03_dogfood_evidence.py'
+      - 'runtimes/gh-aw/engine-profiles.yaml'
+      - '.github/workflows/v03-real-dogfood-scenario.yml'
+      - '.github/workflows/v03-finalize-real-dogfood-scenario.yml'
+      - '.github/workflows/validate-v03-dogfood-live-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Validate closed real-dogfood upstream gate
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_live_gate.py
+      - name: Validate independent real-dogfood fixture pool
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_fixture_pool.py
+      - name: Validate Responses-only real-dogfood production composition
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_composition.py
+      - name: Validate bounded real OpenAI Responses dogfood host
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_openai_host.py
+      - name: Validate bounded production dogfood scenario runner
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_scenario_runner.py
+      - name: Validate trusted-main dogfood runtime driver
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
+      - name: Validate trusted production dogfood provenance
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_production_provenance.py
+      - name: Validate closed dogfood release-run finalizer
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_release_finalizer.py
+      - name: Validate trusted post-run finalizer imports
+        run: PYTHONPATH=scripts python -m py_compile scripts/v03_dogfood_post_run_finalizer.py
