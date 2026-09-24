@@ -77,20 +77,23 @@ def _namespace_paths(ref: str) -> frozenset[str]:
 
 
 def _existing_materialization_commit(snapshot_sha: str) -> tuple[str, str]:
-    commits: set[str] = set()
-    for path in sorted(REQUIRED_POLICY_PATHS):
-        commit = _git("log", "-1", "--format=%H", snapshot_sha, "--", path)
-        if not commit:
-            raise VerticalPolicyRecoveryError(
-                f"protected policy path lacks durable materialization history: {path}"
-            )
-        commits.add(_sha(commit, f"materialization history for {path}"))
-    if len(commits) != 1:
+    # bundle-receipt.json changes for every installation refresh and is the
+    # canonical generation anchor. Other policy documents may be byte-identical
+    # across a refresh, so their most recent path commits need not be identical.
+    materialization_sha = _git(
+        "log", "-1", "--format=%H", snapshot_sha, "--", RECEIPT_PATH
+    )
+    if not materialization_sha:
         raise VerticalPolicyRecoveryError(
-            "protected policy paths do not share one exact materialization commit"
+            "protected policy receipt lacks durable materialization history"
         )
-    materialization_sha = next(iter(commits))
-    parent_row = _git("rev-list", "--parents", "-n", "1", materialization_sha).split()
+    materialization_sha = _sha(
+        materialization_sha,
+        "policy receipt materialization history",
+    )
+    parent_row = _git(
+        "rev-list", "--parents", "-n", "1", materialization_sha
+    ).split()
     if len(parent_row) != 2 or parent_row[0] != materialization_sha:
         raise VerticalPolicyRecoveryError(
             "protected policy materialization is not one linear commit"
@@ -103,9 +106,14 @@ def _existing_materialization_commit(snapshot_sha: str) -> tuple[str, str]:
         ).splitlines()
         if path
     )
-    if changed != REQUIRED_POLICY_PATHS:
+    if (
+        not changed
+        or changed - REQUIRED_POLICY_PATHS
+        or RECEIPT_PATH not in changed
+        or WRITER_FENCE_PATH not in changed
+    ):
         raise VerticalPolicyRecoveryError(
-            "protected policy materialization commit changed paths outside the exact bundle"
+            "protected policy materialization commit escaped the exact bundle refresh boundary"
         )
     if subprocess.run(
         ["git", "merge-base", "--is-ancestor", materialization_sha, snapshot_sha],
@@ -116,8 +124,23 @@ def _existing_materialization_commit(snapshot_sha: str) -> tuple[str, str]:
         raise VerticalPolicyRecoveryError(
             "protected policy materialization is not an ancestor of the live state ref"
         )
-    return materialization_sha, parent_sha
 
+    # No policy path may have drifted after the receipt generation, even when a
+    # byte-identical path was inherited from an earlier materialization commit.
+    for path in sorted(REQUIRED_POLICY_PATHS):
+        current_blob = _sha(
+            _git("rev-parse", f"{snapshot_sha}:{path}"),
+            f"current policy blob for {path}",
+        )
+        materialized_blob = _sha(
+            _git("rev-parse", f"{materialization_sha}:{path}"),
+            f"materialized policy blob for {path}",
+        )
+        if current_blob != materialized_blob:
+            raise VerticalPolicyRecoveryError(
+                f"protected policy path drifted after materialization: {path}"
+            )
+    return materialization_sha, parent_sha
 
 def _protection_dict(receipt) -> dict[str, Any]:
     return {
