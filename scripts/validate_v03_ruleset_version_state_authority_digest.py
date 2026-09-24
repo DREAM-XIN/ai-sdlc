@@ -49,6 +49,13 @@ def omission_state(*, extra_metadata: bool = True) -> dict:
     return state
 
 
+def live_history_state() -> dict:
+    state = omission_state(extra_metadata=False)
+    state["updated_at"] = None
+    state["current_user_can_bypass"] = "never"
+    return state
+
+
 def current_detail() -> dict:
     state = omission_state(extra_metadata=False)
     state["updated_at"] = UPDATED_AT
@@ -96,16 +103,24 @@ def verifier_for(state: dict):
     return provisioner.protection_verifier(), current, api
 
 
-def validate_observed_timestamp_metadata_does_not_change_policy_digest():
-    state = omission_state(extra_metadata=True)
+def validate_observed_response_metadata_does_not_change_policy_digest():
+    timestamp_state = omission_state(extra_metadata=True)
     require(
         _state_digest(_authority_state(canonical_state()))
         == _state_digest(_authority_state({**canonical_state(), "updated_at": HISTORY_UPDATED_AT})),
         "observed timestamp metadata changed authority projection digest",
     )
-    verifier, current, _ = verifier_for(state)
+    verifier, current, _ = verifier_for(timestamp_state)
     resolved = verifier._latest_version_state(REPOSITORY, RULESET_ID, current)
     require(resolved is not None, "bounded timestamp-only history drift was rejected")
+
+    live_state = live_history_state()
+    verifier, current, _ = verifier_for(live_state)
+    resolved = verifier._latest_version_state(REPOSITORY, RULESET_ID, current)
+    require(
+        resolved is not None,
+        "live nullable updated_at/current_user_can_bypass response metadata was rejected",
+    )
     resolved_state, proof = resolved
     require(resolved_state == canonical_state(), "resolved state was not exact authority projection")
     require(proof["version_id"] == VERSION_ID, "exact history generation binding was lost")
@@ -126,6 +141,14 @@ def validate_unknown_or_malformed_metadata_fails_closed():
     require(
         verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
         "malformed admitted timestamp metadata was accepted",
+    )
+
+    invalid_bypass = live_history_state()
+    invalid_bypass["current_user_can_bypass"] = "future-mode"
+    verifier, current, _ = verifier_for(invalid_bypass)
+    require(
+        verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
+        "unknown current_user_can_bypass value was accepted",
     )
 
 
@@ -187,7 +210,7 @@ def validate_canonical_projection_matches_submitted_writer():
 
 
 def main():
-    validate_observed_timestamp_metadata_does_not_change_policy_digest()
+    validate_observed_response_metadata_does_not_change_policy_digest()
     validate_unknown_or_malformed_metadata_fails_closed()
     validate_authoritative_drift_remains_rejected()
     validate_generic_attested_verifier_remains_strict()
