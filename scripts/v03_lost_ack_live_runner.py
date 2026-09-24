@@ -38,10 +38,11 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def _binding(preflight) -> LostAckDispatchBinding:
+    # Repository and exact Feature -> ref authority are already bound by the
+    # configured production gateway.  The live runner may select only the fixed
+    # Feature identity; it must not reintroduce caller-selectable repo/ref input.
     manifest = preflight.composition.feature_event_gateway.read_feature(
-        repository=preflight.execution.repository,
         feature_id=preflight.composition.feature_id,
-        target_ref=preflight.composition.target_ref,
     )
     return derive_lost_ack_dispatch_binding(
         repository=preflight.execution.repository,

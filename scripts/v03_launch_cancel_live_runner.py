@@ -45,10 +45,11 @@ def _events(preflight, operation_id: str) -> list[dict[str, Any]]:
 
 
 def _feature(preflight) -> tuple[FeatureSnapshot, dict[str, Any]]:
+    # Keep Manifest truth behind the configured production authority boundary:
+    # repository and Feature -> ref mapping are server-bound, so this runner may
+    # pass only the fixed Feature identity.
     manifest = preflight.composition.feature_event_gateway.read_feature(
-        repository=preflight.execution.repository,
         feature_id=preflight.composition.feature_id,
-        target_ref=preflight.composition.target_ref,
     )
     candidate = preflight.composition.candidate_provider.resolve()
     return (

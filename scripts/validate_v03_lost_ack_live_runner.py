@@ -97,6 +97,45 @@ class ExitSignal(BaseException):
         self.code = code
 
 
+class FakeConfiguredFeatureEventGateway:
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def read_feature(self, *, feature_id):
+        self.calls.append(feature_id)
+        return self.manifest
+
+
+def validate_binding_uses_configured_feature_authority_only():
+    expected = binding()
+    gateway = FakeConfiguredFeatureEventGateway({"revision": expected.feature_revision})
+    captured = {}
+    original = subject.derive_lost_ack_dispatch_binding
+    subject.derive_lost_ack_dispatch_binding = lambda **kwargs: captured.update(kwargs) or expected
+    preflight = SimpleNamespace(
+        execution=SimpleNamespace(repository=expected.repository),
+        fixture_candidate=SimpleNamespace(
+            candidate_pr_number=expected.candidate_pr_number,
+            candidate_head_sha=expected.candidate_head_sha,
+        ),
+        composition=SimpleNamespace(
+            feature_event_gateway=gateway,
+            feature_id=expected.feature_id,
+            target_ref=expected.target_ref,
+            bundle=SimpleNamespace(runtime=SimpleNamespace(clock=lambda: "2026-08-18T00:00:00Z")),
+        ),
+    )
+    try:
+        actual = subject._binding(preflight)
+        require(actual == expected, "configured Manifest read changed lost-ACK binding")
+        require(gateway.calls == [expected.feature_id], "lost-ACK Manifest read escaped configured Feature authority")
+        require(captured["repository"] == expected.repository, "derived binding lost trusted repository")
+        require(captured["target_ref"] == expected.target_ref, "derived binding lost trusted target ref")
+    finally:
+        subject.derive_lost_ack_dispatch_binding = original
+
+
 def validate_phase1_uses_real_fault_wrapper_and_hard_exit():
     preflight = Preflight()
     b = binding()
@@ -216,6 +255,7 @@ def validate_phase2_is_fresh_binding_checked_and_remains_pending_until_result_pe
 
 
 def main():
+    validate_binding_uses_configured_feature_authority_only()
     validate_phase1_uses_real_fault_wrapper_and_hard_exit()
     validate_phase2_is_fresh_binding_checked_and_remains_pending_until_result_persist()
     print("PASS: lost-ACK runner proves hard-crash + same-key takeover while full scenario remains PENDING until exact result/Persist")
