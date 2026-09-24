@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Classify or recover the protected v0.3 Vertical policy materialization.
 
-A fresh trusted-control run must distinguish the only two release-safe states:
+A fresh trusted-control run must distinguish the three release-safe states:
 
-* bootstrap-only: the existing materializer may perform the one policy write;
-* exact previously materialized bundle: adopt the durable commit with zero write,
-  reconstruct preliminary authority evidence, then let the independent post-write
-  verifier close the live ref/protection proof.
+* bootstrap-only: the materializer may perform the first policy write;
+* exact bundle bound to this installation: adopt the durable commit with zero write;
+* exact bundle bound to an ancestor trusted-main installation: fully revalidate the
+  old authority, then authorize one CAS refresh of the exact six-file bundle.
 
 Every other protected-state shape fails closed.
 """
@@ -26,6 +26,7 @@ from materialize_v03_vertical_policy_state import (
     _git,
     _load_writer_fence_proof,
     _read_json_at,
+    _refresh_bootstrap_quiescence_proof,
     _required_env,
     _sha,
 )
@@ -76,20 +77,23 @@ def _namespace_paths(ref: str) -> frozenset[str]:
 
 
 def _existing_materialization_commit(snapshot_sha: str) -> tuple[str, str]:
-    commits: set[str] = set()
-    for path in sorted(REQUIRED_POLICY_PATHS):
-        commit = _git("log", "-1", "--format=%H", snapshot_sha, "--", path)
-        if not commit:
-            raise VerticalPolicyRecoveryError(
-                f"protected policy path lacks durable materialization history: {path}"
-            )
-        commits.add(_sha(commit, f"materialization history for {path}"))
-    if len(commits) != 1:
+    # bundle-receipt.json changes for every installation refresh and is the
+    # canonical generation anchor. Other policy documents may be byte-identical
+    # across a refresh, so their most recent path commits need not be identical.
+    materialization_sha = _git(
+        "log", "-1", "--format=%H", snapshot_sha, "--", RECEIPT_PATH
+    )
+    if not materialization_sha:
         raise VerticalPolicyRecoveryError(
-            "protected policy paths do not share one exact materialization commit"
+            "protected policy receipt lacks durable materialization history"
         )
-    materialization_sha = next(iter(commits))
-    parent_row = _git("rev-list", "--parents", "-n", "1", materialization_sha).split()
+    materialization_sha = _sha(
+        materialization_sha,
+        "policy receipt materialization history",
+    )
+    parent_row = _git(
+        "rev-list", "--parents", "-n", "1", materialization_sha
+    ).split()
     if len(parent_row) != 2 or parent_row[0] != materialization_sha:
         raise VerticalPolicyRecoveryError(
             "protected policy materialization is not one linear commit"
@@ -102,9 +106,14 @@ def _existing_materialization_commit(snapshot_sha: str) -> tuple[str, str]:
         ).splitlines()
         if path
     )
-    if changed != REQUIRED_POLICY_PATHS:
+    if (
+        not changed
+        or changed - REQUIRED_POLICY_PATHS
+        or RECEIPT_PATH not in changed
+        or WRITER_FENCE_PATH not in changed
+    ):
         raise VerticalPolicyRecoveryError(
-            "protected policy materialization commit changed paths outside the exact bundle"
+            "protected policy materialization commit escaped the exact bundle refresh boundary"
         )
     if subprocess.run(
         ["git", "merge-base", "--is-ancestor", materialization_sha, snapshot_sha],
@@ -115,8 +124,23 @@ def _existing_materialization_commit(snapshot_sha: str) -> tuple[str, str]:
         raise VerticalPolicyRecoveryError(
             "protected policy materialization is not an ancestor of the live state ref"
         )
-    return materialization_sha, parent_sha
 
+    # No policy path may have drifted after the receipt generation, even when a
+    # byte-identical path was inherited from an earlier materialization commit.
+    for path in sorted(REQUIRED_POLICY_PATHS):
+        current_blob = _sha(
+            _git("rev-parse", f"{snapshot_sha}:{path}"),
+            f"current policy blob for {path}",
+        )
+        materialized_blob = _sha(
+            _git("rev-parse", f"{materialization_sha}:{path}"),
+            f"materialized policy blob for {path}",
+        )
+        if current_blob != materialized_blob:
+            raise VerticalPolicyRecoveryError(
+                f"protected policy path drifted after materialization: {path}"
+            )
+    return materialization_sha, parent_sha
 
 def _protection_dict(receipt) -> dict[str, Any]:
     return {
@@ -140,13 +164,7 @@ def _adopt_existing_materialization(
         raise VerticalPolicyRecoveryError(
             "existing protected policy namespace is not the exact reviewed bundle"
         )
-    materialization_sha, parent_sha = _existing_materialization_commit(snapshot_sha)
-    bootstrap_proof = _bootstrap_quiescence_proof(parent_sha)
-    quiescence_proof = {
-        **bootstrap_proof,
-        "installation_commit_sha": installation_sha,
-        "writer_surface_proof_digest": writer_surface_proof["proof_digest"],
-    }
+    materialization_sha, _parent_sha = _existing_materialization_commit(snapshot_sha)
 
     receipt = _read_json_at(materialization_sha, RECEIPT_PATH)
     if _sha(receipt.get("installation_commit_sha", ""), "receipt installation") != installation_sha:
@@ -154,7 +172,22 @@ def _adopt_existing_materialization(
             "existing policy bundle is not bound to this trusted-main installation"
         )
     fence = _read_json_at(materialization_sha, WRITER_FENCE_PATH)
-    if fence.get("quiescence_proof") != quiescence_proof:
+    stored_quiescence = fence.get("quiescence_proof")
+    if not isinstance(stored_quiescence, dict):
+        raise VerticalPolicyRecoveryError(
+            "existing writer-fence quiescence proof is missing"
+        )
+    original_ref = _sha(
+        stored_quiescence.get("pre_materialization_ref_sha", ""),
+        "original bootstrap state ref",
+    )
+    bootstrap_proof = _bootstrap_quiescence_proof(original_ref)
+    quiescence_proof = {
+        **bootstrap_proof,
+        "installation_commit_sha": installation_sha,
+        "writer_surface_proof_digest": writer_surface_proof["proof_digest"],
+    }
+    if stored_quiescence != quiescence_proof:
         raise VerticalPolicyRecoveryError(
             "existing writer-fence quiescence proof does not match trusted bootstrap/writer audit"
         )
@@ -253,6 +286,117 @@ def _adopt_existing_materialization(
     }
 
 
+
+def _validate_existing_materialization_for_refresh(
+    *,
+    repository: str,
+    current_installation_sha: str,
+    state_ref: str,
+    snapshot_sha: str,
+    writer_surface_proof: dict,
+    loader_cls,
+) -> dict[str, str]:
+    """Prove an exact old bundle is safe to refresh onto descendant trusted main."""
+    materialization_sha, _parent_sha = _existing_materialization_commit(snapshot_sha)
+    receipt = _read_json_at(materialization_sha, RECEIPT_PATH)
+    existing_installation = _sha(
+        receipt.get("installation_commit_sha", ""),
+        "existing policy installation",
+    )
+    if existing_installation == current_installation_sha:
+        raise VerticalPolicyRecoveryError(
+            "same-installation policy bundle must be adopted instead of refreshed"
+        )
+    if writer_surface_proof.get("installation_commit_sha") != current_installation_sha:
+        raise VerticalPolicyRecoveryError(
+            "current writer-surface proof is not bound to trusted main"
+        )
+    if subprocess.run(
+        ["git", "merge-base", "--is-ancestor", existing_installation, current_installation_sha],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode != 0:
+        raise VerticalPolicyRecoveryError(
+            "existing policy installation is not an ancestor of current trusted main"
+        )
+
+    # Independently reconstruct the old bootstrap proof from Git history before
+    # trusting the old protected bundle as refresh input.
+    _refresh_bootstrap_quiescence_proof(
+        snapshot_sha,
+        current_installation_sha,
+    )
+
+    def installation_verifier(requested_repo: str, sha: str) -> bool:
+        return (
+            normalize_repository(requested_repo) == repository
+            and sha == existing_installation
+            and subprocess.run(
+                ["git", "merge-base", "--is-ancestor", sha, current_installation_sha],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            == 0
+            and _sha(_git("rev-parse", "HEAD"), "checkout")
+            == current_installation_sha
+        )
+
+    def materialization_verifier(
+        requested_repo: str, requested_ref: str, sha: str
+    ) -> bool:
+        return (
+            normalize_repository(requested_repo) == repository
+            and requested_ref == state_ref
+            and sha == materialization_sha
+            and subprocess.run(
+                ["git", "merge-base", "--is-ancestor", sha, TRACKING_REF],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    authority = loader_cls(
+        repository=repository,
+        installation_commit_sha=existing_installation,
+        materialization_commit_sha=materialization_sha,
+        state_ref=state_ref,
+        operation_profile=VERTICAL_PROFILE,
+        receipt_path=RECEIPT_PATH,
+        document_loader=lambda sha, path: _read_json_at(sha, path),
+        protected_document_loader=lambda repo, ref, path: (
+            _read_json_at(TRACKING_REF, path)
+            if normalize_repository(repo) == repository and ref == state_ref
+            else {}
+        ),
+        installation_commit_verifier=installation_verifier,
+        materialization_commit_verifier=materialization_verifier,
+    ).load()
+
+    rollout = authority.rollout_verifier.verify(
+        repository=repository,
+        state_ref=state_ref,
+        operation_profile=VERTICAL_PROFILE,
+    )
+    resolution = authority.resolution_policy_verifier.verify_current()
+    authority.decision_policy_verifier._load_base()
+    if (
+        not rollout.effect_lineage_required
+        or rollout.writer_capability != LINEAGE_WRITER_CAPABILITY
+        or resolution.policy_epoch != POLICY_EPOCH
+    ):
+        raise VerticalPolicyRecoveryError(
+            "existing protected Vertical policy authority is not refreshable"
+        )
+    return {
+        "previous_installation_commit_sha": existing_installation,
+        "previous_materialization_commit_sha": materialization_sha,
+    }
+
+
 def classify_or_recover(
     *,
     repository: str,
@@ -276,19 +420,43 @@ def classify_or_recover(
         raise VerticalPolicyRecoveryError(
             "protected state contains partial, foreign, or drifted Vertical policy paths"
         )
-    evidence = _adopt_existing_materialization(
+
+    materialization_sha, _parent_sha = _existing_materialization_commit(snapshot_sha)
+    receipt = _read_json_at(materialization_sha, RECEIPT_PATH)
+    existing_installation = _sha(
+        receipt.get("installation_commit_sha", ""),
+        "existing policy installation",
+    )
+    if existing_installation == installation_sha:
+        evidence = _adopt_existing_materialization(
+            repository=repository,
+            installation_sha=installation_sha,
+            state_ref=state_ref,
+            snapshot_sha=snapshot_sha,
+            writer_surface_proof=writer_surface_proof,
+            protection_receipt=protection_receipt,
+            loader_cls=loader_cls,
+        )
+        return {
+            "policy_action": "adopt",
+            "state_ref_sha": snapshot_sha,
+            "evidence": evidence,
+        }
+
+    refresh = _validate_existing_materialization_for_refresh(
         repository=repository,
-        installation_sha=installation_sha,
+        current_installation_sha=installation_sha,
         state_ref=state_ref,
         snapshot_sha=snapshot_sha,
         writer_surface_proof=writer_surface_proof,
-        protection_receipt=protection_receipt,
         loader_cls=loader_cls,
     )
     return {
-        "policy_action": "adopt",
+        "policy_action": "materialize",
         "state_ref_sha": snapshot_sha,
-        "evidence": evidence,
+        "refresh_from_installation_sha": refresh["previous_installation_commit_sha"],
+        "refresh_from_materialization_sha": refresh["previous_materialization_commit_sha"],
+        "evidence": None,
     }
 
 
