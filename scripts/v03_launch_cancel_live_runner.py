@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
 from operator_store import plan_cancel
 from operator_store_model import operation_events, operation_id_for, reservation_path
 from operator_vertical import FeatureSnapshot
@@ -67,6 +68,22 @@ def _feature(preflight) -> tuple[FeatureSnapshot, dict[str, Any]]:
 def _base_executor(preflight):
     executor = preflight.composition.bundle.executor
     return getattr(executor, "base", executor)
+
+
+def _production_one_shot_dispatch(preflight):
+    """Return the exact Store-backed production dispatch fence."""
+    bundle = preflight.composition.bundle
+    base = _base_executor(preflight)
+    gateway = getattr(base, "dispatch_gateway", None)
+    if not isinstance(gateway, StoreBackedOneShotExternalCreateGateway):
+        raise V03LaunchCancelLiveError("executor lacks production one-shot dispatch gateway")
+    if gateway.runtime is not bundle.runtime:
+        raise V03LaunchCancelLiveError("production one-shot dispatch gateway escaped the exact Store runtime")
+    if gateway.delegate is not preflight.composition.dispatch_gateway:
+        raise V03LaunchCancelLiveError("production one-shot dispatch delegate differs from exact gh-aw gateway")
+    if gateway.trusted_context_digest != base.config.trusted_context_digest:
+        raise V03LaunchCancelLiveError("production one-shot dispatch trusted context differs from executor")
+    return base, gateway
 
 
 def _persist_after_sequence(events: list[dict[str, Any]], sequence: int) -> int:
@@ -277,11 +294,9 @@ def run_cancel_before_authorization(
         raise V03LaunchCancelLiveError("cancel pair requires verification stage READY after Reviewer PASS")
 
     bundle = preflight.composition.bundle
-    base = _base_executor(preflight)
+    base, one_shot_gateway = _production_one_shot_dispatch(preflight)
     if base.feature_gateway is not preflight.composition.feature_truth_gateway:
         raise V03LaunchCancelLiveError("executor does not use exact production Feature truth gateway")
-    if base.dispatch_gateway is not preflight.composition.dispatch_gateway:
-        raise V03LaunchCancelLiveError("executor does not use exact production dispatch gateway")
 
     feature_fence = CancelAfterNewClaimFeatureGateway(
         delegate=base.feature_gateway,
@@ -291,7 +306,7 @@ def run_cancel_before_authorization(
         operation_id=operation_id,
         baseline_claim_ids=baseline_claim_ids,
     )
-    external_fence = NoExternalDispatchGateway(base.dispatch_gateway)
+    external_fence = NoExternalDispatchGateway(one_shot_gateway)
     base.feature_gateway = feature_fence
     base.dispatch_gateway = external_fence
     try:
@@ -504,11 +519,9 @@ def run_authorized_before_cancel(
     )
     if _events(preflight, operation_id):
         raise V03LaunchCancelLiveError("authorization-before-cancel requires a clean second Operation idempotency key")
-    base = _base_executor(preflight)
-    if base.dispatch_gateway is not preflight.composition.dispatch_gateway:
-        raise V03LaunchCancelLiveError("fresh executor does not use exact production dispatch gateway")
+    base, one_shot_gateway = _production_one_shot_dispatch(preflight)
     gateway = CancelAfterAuthorizedProductionGateway(
-        delegate=base.dispatch_gateway,
+        delegate=one_shot_gateway,
         runtime=preflight.composition.bundle.runtime,
         clock=preflight.composition.bundle.runtime.clock,
         trusted_context_digest=base.config.trusted_context_digest,

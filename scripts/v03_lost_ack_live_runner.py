@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
 from operator_store_model import operation_events
 from v03_real_runtime_driver import assemble_live_preflight
 from v03_real_runtime_fault_injection import (
@@ -78,6 +79,26 @@ def _scenario_events(preflight, binding: LostAckDispatchBinding) -> list[dict[st
     )
 
 
+def _production_one_shot_dispatch(preflight):
+    """Return the executor's exact production one-shot create gateway.
+
+    Fault injection must wrap this gateway, not its raw gh-aw delegate, so the
+    durable external-create election/fence remains in force.
+    """
+    bundle = preflight.composition.bundle
+    base = getattr(bundle.executor, "base", bundle.executor)
+    gateway = getattr(base, "dispatch_gateway", None)
+    if not isinstance(gateway, StoreBackedOneShotExternalCreateGateway):
+        raise V03LostAckLiveError("phase1 executor lacks production one-shot dispatch gateway")
+    if gateway.runtime is not bundle.runtime:
+        raise V03LostAckLiveError("production one-shot dispatch gateway escaped the exact Store runtime")
+    if gateway.delegate is not preflight.composition.dispatch_gateway:
+        raise V03LostAckLiveError("production one-shot dispatch delegate differs from exact gh-aw gateway")
+    if gateway.trusted_context_digest != base.config.trusted_context_digest:
+        raise V03LostAckLiveError("production one-shot dispatch trusted context differs from executor")
+    return base, gateway
+
+
 def run_phase1(
     *,
     preflight,
@@ -92,12 +113,9 @@ def run_phase1(
             "lost-ACK live scenario requires a clean idempotency key; durable Operation already exists"
         )
     bundle = preflight.composition.bundle
-    base = getattr(bundle.executor, "base", bundle.executor)
-    normal_gateway = getattr(base, "dispatch_gateway", None)
-    if normal_gateway is not preflight.composition.dispatch_gateway:
-        raise V03LostAckLiveError("phase1 executor does not use exact production dispatch gateway")
+    base, one_shot_gateway = _production_one_shot_dispatch(preflight)
     base.dispatch_gateway = LostAckCrashAfterLaunchDispatchGateway(
-        delegate=normal_gateway,
+        delegate=one_shot_gateway,
         expected_external_dispatch_key=binding.external_dispatch_key,
     )
     start = bundle.backends.get("operation.start")
