@@ -23,7 +23,8 @@ from v03_real_runtime_lost_ack_orchestration import (
 )
 
 PHASE1_EXIT = 86
-IDEMPOTENCY_KEY = "v03-release-fi-lost-ack"
+BASE_IDEMPOTENCY_KEY = "v03-release-fi-lost-ack"
+IDEMPOTENCY_KEY = BASE_IDEMPOTENCY_KEY
 ADAPTER_ID = "v03-real-runtime-release-verifier"
 PHASE1_EVIDENCE = Path("evidence/v03-live-lost-ack-phase1.json")
 FINAL_EVIDENCE = Path("evidence/v03-live-lost-ack.json")
@@ -33,7 +34,7 @@ class V03LostAckLiveError(RuntimeError):
     pass
 
 
-def installation_scoped_idempotency_key(preflight, base_key: str = IDEMPOTENCY_KEY) -> str:
+def installation_scoped_idempotency_key(preflight, base_key: str = BASE_IDEMPOTENCY_KEY) -> str:
     """Bind a frozen live-scenario identity to one exact trusted-main installation."""
     installation_sha = str(
         getattr(preflight.execution, "installation_commit_sha", "") or ""
@@ -45,6 +46,23 @@ def installation_scoped_idempotency_key(preflight, base_key: str = IDEMPOTENCY_K
             "live idempotency scope lacks exact trusted-main installation SHA"
         )
     return f"{base_key}-{installation_sha}"
+
+
+def _exported_idempotency_key() -> str:
+    """Keep companion live runners on the same exact-main Operation identity."""
+    if str(os.environ.get("GITHUB_REF") or "") != "refs/heads/main":
+        return BASE_IDEMPOTENCY_KEY
+    github_sha = str(os.environ.get("GITHUB_SHA") or "").lower()
+    if len(github_sha) != 40 or any(
+        char not in "0123456789abcdef" for char in github_sha
+    ):
+        raise V03LostAckLiveError(
+            "trusted-main live idempotency export lacks exact GITHUB_SHA"
+        )
+    return f"{BASE_IDEMPOTENCY_KEY}-{github_sha}"
+
+
+IDEMPOTENCY_KEY = _exported_idempotency_key()
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:

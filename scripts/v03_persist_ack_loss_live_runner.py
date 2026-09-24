@@ -34,10 +34,7 @@ from operator_vertical import (
 from operator_vertical_gh_aw_collector import _build_receipts, _current_launch_binding, _validate_run
 from operator_vertical_recovery import derive_role_independence_policy
 from operator_vertical_store import vertical_projection
-from v03_lost_ack_live_runner import (
-    IDEMPOTENCY_KEY as LOST_ACK_IDEMPOTENCY_KEY,
-    installation_scoped_idempotency_key,
-)
+from v03_lost_ack_live_runner import IDEMPOTENCY_KEY as LOST_ACK_IDEMPOTENCY_KEY
 from v03_real_runtime_driver import assemble_live_preflight
 from v03_real_runtime_fault_injection import InjectedPersistRunnerCrash, LostAckCrashAfterPersistGateway
 
@@ -61,7 +58,7 @@ def _operation_id(preflight) -> str:
     return operation_id_for(
         preflight.execution.repository,
         preflight.composition.feature_id,
-        installation_scoped_idempotency_key(preflight, LOST_ACK_IDEMPOTENCY_KEY),
+        LOST_ACK_IDEMPOTENCY_KEY,
     )
 
 

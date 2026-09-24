@@ -155,7 +155,7 @@ def validate_binding_uses_configured_feature_authority_only():
         require(captured["repository"] == expected.repository, "derived binding lost trusted repository")
         require(captured["target_ref"] == expected.target_ref, "derived binding lost trusted target ref")
         require(
-            captured["idempotency_key"] == f"{subject.IDEMPOTENCY_KEY}-{INSTALLATION_SHA}",
+            captured["idempotency_key"] == f"{subject.BASE_IDEMPOTENCY_KEY}-{INSTALLATION_SHA}",
             "derived binding was not scoped to exact trusted-main installation",
         )
     finally:
