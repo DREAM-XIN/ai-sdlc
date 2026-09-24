@@ -49,6 +49,13 @@ def omission_state(*, extra_metadata: bool = True) -> dict:
     return state
 
 
+def live_response_metadata_state() -> dict:
+    state = omission_state(extra_metadata=False)
+    state["updated_at"] = None
+    state["current_user_can_bypass"] = "always"
+    return state
+
+
 def current_detail() -> dict:
     state = omission_state(extra_metadata=False)
     state["updated_at"] = UPDATED_AT
@@ -111,6 +118,26 @@ def validate_observed_timestamp_metadata_does_not_change_policy_digest():
     require(proof["version_id"] == VERSION_ID, "exact history generation binding was lost")
 
 
+def validate_live_response_metadata_does_not_change_policy_digest():
+    state = live_response_metadata_state()
+    verifier, current, _ = verifier_for(state)
+    resolved = verifier._latest_version_state(REPOSITORY, RULESET_ID, current)
+    require(resolved is not None, "live response-only ruleset metadata was rejected")
+    resolved_state, proof = resolved
+    require(resolved_state == canonical_state(), "live metadata leaked into authority projection")
+    require(proof["version_id"] == VERSION_ID, "live metadata weakened exact version binding")
+
+    for bypass in ("always", "pull_requests_only", "never"):
+        candidate = omission_state(extra_metadata=False)
+        candidate["updated_at"] = None
+        candidate["current_user_can_bypass"] = bypass
+        verifier, current, _ = verifier_for(candidate)
+        require(
+            verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is not None,
+            f"documented bypass metadata enum was rejected: {bypass}",
+        )
+
+
 def validate_unknown_or_malformed_metadata_fails_closed():
     unknown = omission_state(extra_metadata=True)
     unknown["future_protection_semantics"] = {"enabled": True}
@@ -126,6 +153,22 @@ def validate_unknown_or_malformed_metadata_fails_closed():
     require(
         verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
         "malformed admitted timestamp metadata was accepted",
+    )
+
+    malformed_bypass = live_response_metadata_state()
+    malformed_bypass["current_user_can_bypass"] = "future-unknown-mode"
+    verifier, current, _ = verifier_for(malformed_bypass)
+    require(
+        verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
+        "unknown current_user_can_bypass metadata enum was accepted",
+    )
+
+    wrong_bypass_type = live_response_metadata_state()
+    wrong_bypass_type["current_user_can_bypass"] = True
+    verifier, current, _ = verifier_for(wrong_bypass_type)
+    require(
+        verifier._latest_version_state(REPOSITORY, RULESET_ID, current) is None,
+        "malformed current_user_can_bypass metadata type was accepted",
     )
 
 
@@ -188,6 +231,7 @@ def validate_canonical_projection_matches_submitted_writer():
 
 def main():
     validate_observed_timestamp_metadata_does_not_change_policy_digest()
+    validate_live_response_metadata_does_not_change_policy_digest()
     validate_unknown_or_malformed_metadata_fails_closed()
     validate_authoritative_drift_remains_rejected()
     validate_generic_attested_verifier_remains_strict()
