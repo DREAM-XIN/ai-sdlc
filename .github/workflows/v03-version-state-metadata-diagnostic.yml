@@ -71,13 +71,13 @@ jobs:
               'id', 'name', 'target', 'source_type', 'source',
               'enforcement', 'conditions', 'bypass_actors', 'rules',
           )
-          known_metadata = ('created_at', 'updated_at', 'node_id', '_links')
+          known_metadata = ('created_at', 'updated_at', 'node_id', '_links', 'current_user_can_bypass')
           extra = [key for key in state if key not in authority]
           unknown_extra = [key for key in extra if key not in known_metadata]
 
           expected = {
               'id': ruleset_id,
-              'name': 'AI-SDLC Operator Store Writer',
+              'name': 'AI-SDLC Operator Store writer',
               'target': 'branch',
               'source_type': 'Repository',
               'source': repository,
@@ -111,6 +111,11 @@ jobs:
                   'dict:self+html'
                   if isinstance(links, dict) and set(links) == {'self', 'html'}
                   else ('absent' if '_links' not in state else type(links).__name__)
+              ),
+              'current_user_can_bypass_shape': (
+                  'enum'
+                  if state.get('current_user_can_bypass') in {'always', 'pull_requests_only', 'never'}
+                  else ('absent' if 'current_user_can_bypass' not in state else type(state.get('current_user_can_bypass')).__name__)
               ),
               'extra_key_count': len(extra),
               'unknown_extra_key_count': len(unknown_extra),
