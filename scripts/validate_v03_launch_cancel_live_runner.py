@@ -190,6 +190,36 @@ def validate_feature_read_uses_configured_authority_only():
         subject.FeatureSnapshot = original
 
 
+def validate_production_one_shot_dispatch_topology():
+    runtime = object()
+    raw_gateway = object()
+    one_shot = subject.StoreBackedOneShotExternalCreateGateway(
+        runtime=runtime,
+        delegate=raw_gateway,
+        trusted_context_digest="trusted-context",
+        effect_lineage_required=True,
+    )
+    base = SimpleNamespace(
+        dispatch_gateway=one_shot,
+        config=SimpleNamespace(trusted_context_digest="trusted-context"),
+    )
+    preflight = SimpleNamespace(
+        composition=SimpleNamespace(
+            bundle=SimpleNamespace(runtime=runtime, executor=SimpleNamespace(base=base)),
+            dispatch_gateway=raw_gateway,
+        )
+    )
+    actual_base, actual_gateway = subject._production_one_shot_dispatch(preflight)
+    require(actual_base is base and actual_gateway is one_shot, "launch/cancel did not preserve exact one-shot gateway")
+    base.dispatch_gateway = raw_gateway
+    try:
+        subject._production_one_shot_dispatch(preflight)
+    except subject.V03LaunchCancelLiveError:
+        pass
+    else:
+        raise AssertionError("launch/cancel accepted raw dispatch bypass around one-shot fence")
+
+
 def validate_pair_ledger_is_strict_and_partial():
     document = pair_document()
     raw, proof = provenance(document)
@@ -346,6 +376,7 @@ def validate_authorized_gateway_launches_once_then_cancels_before_return():
 
 def main():
     validate_feature_read_uses_configured_authority_only()
+    validate_production_one_shot_dispatch_topology()
     validate_pair_ledger_is_strict_and_partial()
     validate_no_external_gateway_is_fail_closed()
     validate_cancel_after_new_claim_injects_once()
