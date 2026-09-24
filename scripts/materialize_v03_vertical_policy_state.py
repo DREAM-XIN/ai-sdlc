@@ -351,8 +351,9 @@ def _refresh_bootstrap_quiescence_proof(
     """Revalidate the original bootstrap fence before rebinding a complete bundle.
 
     Refresh is permitted only when the protected namespace is still the exact
-    reviewed six-file bundle, every policy path still comes from one durable
-    materialization commit, that bundle is bound to an ancestor trusted-main
+    reviewed six-file bundle, the latest bundle receipt anchors one durable
+    materialization generation whose tree still matches every current policy
+    path, and that bundle is bound to an ancestor trusted-main
     installation, and its original bootstrap-only quiescence proof can still be
     reconstructed from Git history.  The returned base proof is then combined
     with the *current* installation SHA and current writer-surface proof.
