@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Classify or recover the protected v0.3 Vertical policy materialization.
 
-A fresh trusted-control run must distinguish the only two release-safe states:
+A fresh trusted-control run must distinguish the three release-safe states:
 
 * bootstrap-only: the materializer may perform the first policy write;
 * exact bundle bound to this installation: adopt the durable commit with zero write;
