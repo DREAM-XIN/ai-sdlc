@@ -283,6 +283,114 @@ def _bootstrap_quiescence_proof(expected_ref_sha: str) -> dict:
     }
 
 
+
+def _policy_namespace_paths(ref: str) -> frozenset[str]:
+    raw = _git("ls-tree", "-r", "--name-only", ref, "--", POLICY_NAMESPACE)
+    return frozenset(path for path in raw.splitlines() if path)
+
+
+def _latest_policy_materialization_commit(snapshot_sha: str) -> str:
+    commits: set[str] = set()
+    for path in sorted(REQUIRED_POLICY_PATHS):
+        commit = _git("log", "-1", "--format=%H", snapshot_sha, "--", path)
+        if not commit:
+            raise TrustedVerticalPolicyMaterializationError(
+                f"protected policy path lacks durable materialization history: {path}"
+            )
+        commits.add(_sha(commit, f"materialization history for {path}"))
+    if len(commits) != 1:
+        raise TrustedVerticalPolicyMaterializationError(
+            "protected policy paths do not share one exact materialization commit"
+        )
+    materialization_sha = next(iter(commits))
+    if subprocess.run(
+        ["git", "merge-base", "--is-ancestor", materialization_sha, snapshot_sha],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode != 0:
+        raise TrustedVerticalPolicyMaterializationError(
+            "protected policy materialization is not an ancestor of the live state ref"
+        )
+    return materialization_sha
+
+
+def _refresh_bootstrap_quiescence_proof(
+    expected_ref_sha: str,
+    current_installation_sha: str,
+) -> dict:
+    """Revalidate the original bootstrap fence before rebinding a complete bundle.
+
+    Refresh is permitted only when the protected namespace is still the exact
+    reviewed six-file bundle, every policy path still comes from one durable
+    materialization commit, that bundle is bound to an ancestor trusted-main
+    installation, and its original bootstrap-only quiescence proof can still be
+    reconstructed from Git history.  The returned base proof is then combined
+    with the *current* installation SHA and current writer-surface proof.
+    """
+    if _policy_namespace_paths(expected_ref_sha) != REQUIRED_POLICY_PATHS:
+        raise TrustedVerticalPolicyMaterializationError(
+            "policy refresh requires the exact existing reviewed bundle"
+        )
+    materialization_sha = _latest_policy_materialization_commit(expected_ref_sha)
+    receipt_path = f"{POLICY_NAMESPACE}/bundle-receipt.json"
+    fence_path = f"{POLICY_NAMESPACE}/writer-fence-receipt.json"
+    receipt = _read_json_at(materialization_sha, receipt_path)
+    fence = _read_json_at(materialization_sha, fence_path)
+    existing_installation = _sha(
+        receipt.get("installation_commit_sha", ""),
+        "existing policy installation",
+    )
+    if existing_installation == current_installation_sha:
+        raise TrustedVerticalPolicyMaterializationError(
+            "same-installation policy bundle must be adopted instead of refreshed"
+        )
+    if subprocess.run(
+        ["git", "merge-base", "--is-ancestor", existing_installation, current_installation_sha],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode != 0:
+        raise TrustedVerticalPolicyMaterializationError(
+            "existing policy installation is not an ancestor of current trusted main"
+        )
+    if (
+        fence.get("schema_version") != WRITER_FENCE_SCHEMA
+        or fence.get("state") != "QUIESCED"
+        or not REQUIRED_FENCED_CAPABILITIES.issubset(
+            frozenset(str(v) for v in fence.get("fenced_capabilities", []))
+        )
+    ):
+        raise TrustedVerticalPolicyMaterializationError(
+            "existing writer-fence receipt is not a complete production fence"
+        )
+    proof = fence.get("quiescence_proof")
+    if not isinstance(proof, dict):
+        raise TrustedVerticalPolicyMaterializationError(
+            "existing writer-fence quiescence proof is missing"
+        )
+    if proof.get("installation_commit_sha") != existing_installation:
+        raise TrustedVerticalPolicyMaterializationError(
+            "existing writer-fence installation binding is inconsistent"
+        )
+    writer_digest = str(proof.get("writer_surface_proof_digest") or "")
+    if len(writer_digest) != 64 or any(ch not in "0123456789abcdef" for ch in writer_digest):
+        raise TrustedVerticalPolicyMaterializationError(
+            "existing writer-fence writer-surface digest is invalid"
+        )
+    original_ref = _sha(
+        proof.get("pre_materialization_ref_sha", ""),
+        "original bootstrap state ref",
+    )
+    base = _bootstrap_quiescence_proof(original_ref)
+    for key, value in base.items():
+        if proof.get(key) != value:
+            raise TrustedVerticalPolicyMaterializationError(
+                "existing writer-fence bootstrap proof cannot be reconstructed"
+            )
+    return base
+
+
 def main() -> None:
     if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
         raise TrustedVerticalPolicyMaterializationError(
@@ -338,7 +446,18 @@ def main() -> None:
     expected = _sha(remote_sha, "protected Operator state-ref")
 
     writer_surface_proof = _load_writer_fence_proof(installation_sha)
-    bootstrap_proof = _bootstrap_quiescence_proof(expected)
+    namespace = _policy_namespace_paths(expected)
+    if not namespace:
+        bootstrap_proof = _bootstrap_quiescence_proof(expected)
+    elif namespace == REQUIRED_POLICY_PATHS:
+        bootstrap_proof = _refresh_bootstrap_quiescence_proof(
+            expected,
+            installation_sha,
+        )
+    else:
+        raise TrustedVerticalPolicyMaterializationError(
+            "protected policy namespace is partial, foreign, or drifted"
+        )
     quiescence_proof = {
         **bootstrap_proof,
         "installation_commit_sha": installation_sha,
