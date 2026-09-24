@@ -139,10 +139,11 @@ def _trusted_context(preflight):
 
 
 def _manifest(preflight) -> dict[str, Any]:
+    # The production configured gateway already binds the trusted repository and
+    # exact Feature -> target-ref mapping.  The live runner must not reintroduce
+    # caller-selectable repository/ref authority at this boundary.
     manifest = preflight.composition.feature_event_gateway.read_feature(
-        repository=preflight.execution.repository,
         feature_id=preflight.slot.feature_id,
-        target_ref=preflight.slot.target_ref,
     )
     if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) < 0:
         raise V03DispatchRecoveryLiveError("scenario fixture Manifest is invalid")
