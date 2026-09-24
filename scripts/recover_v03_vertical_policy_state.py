@@ -164,13 +164,7 @@ def _adopt_existing_materialization(
         raise VerticalPolicyRecoveryError(
             "existing protected policy namespace is not the exact reviewed bundle"
         )
-    materialization_sha, parent_sha = _existing_materialization_commit(snapshot_sha)
-    bootstrap_proof = _bootstrap_quiescence_proof(parent_sha)
-    quiescence_proof = {
-        **bootstrap_proof,
-        "installation_commit_sha": installation_sha,
-        "writer_surface_proof_digest": writer_surface_proof["proof_digest"],
-    }
+    materialization_sha, _parent_sha = _existing_materialization_commit(snapshot_sha)
 
     receipt = _read_json_at(materialization_sha, RECEIPT_PATH)
     if _sha(receipt.get("installation_commit_sha", ""), "receipt installation") != installation_sha:
@@ -178,7 +172,22 @@ def _adopt_existing_materialization(
             "existing policy bundle is not bound to this trusted-main installation"
         )
     fence = _read_json_at(materialization_sha, WRITER_FENCE_PATH)
-    if fence.get("quiescence_proof") != quiescence_proof:
+    stored_quiescence = fence.get("quiescence_proof")
+    if not isinstance(stored_quiescence, dict):
+        raise VerticalPolicyRecoveryError(
+            "existing writer-fence quiescence proof is missing"
+        )
+    original_ref = _sha(
+        stored_quiescence.get("pre_materialization_ref_sha", ""),
+        "original bootstrap state ref",
+    )
+    bootstrap_proof = _bootstrap_quiescence_proof(original_ref)
+    quiescence_proof = {
+        **bootstrap_proof,
+        "installation_commit_sha": installation_sha,
+        "writer_surface_proof_digest": writer_surface_proof["proof_digest"],
+    }
+    if stored_quiescence != quiescence_proof:
         raise VerticalPolicyRecoveryError(
             "existing writer-fence quiescence proof does not match trusted bootstrap/writer audit"
         )
