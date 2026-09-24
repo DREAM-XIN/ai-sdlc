@@ -19,6 +19,7 @@ strict and receive no persisted relaxation.
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from urllib.parse import unquote, urlparse
 
 from operator_store_github_ruleset_attested import (
@@ -29,13 +30,76 @@ from operator_store_github_ruleset_attested import (
 from operator_store_github_ruleset_generation_bound import (
     GenerationBoundAttestedGitHubOperatorStoreRulesetProvisioner,
 )
-from operator_store_github_ruleset_provision import RulesetProvisioningError
+from operator_store_github_ruleset_provision import (
+    RulesetProvisioningError,
+    writer_ruleset_payload,
+)
 from operator_store_github_ruleset_stabilized import (
     _OMISSION_ONLY_WRITER_RULES,
     _STRICT_WRITER_RULES,
     _safe_source_shape,
     _state_mismatch_fields,
 )
+
+_AUTHORITY_STATE_FIELDS = (
+    "id",
+    "name",
+    "target",
+    "source_type",
+    "source",
+    "enforcement",
+    "conditions",
+    "bypass_actors",
+    "rules",
+)
+
+# The live #263 history observation demonstrated only these timestamp keys as
+# response metadata outside the protection-authority state.  Keep this schema
+# deliberately closed: any new/unknown state key must fail closed rather than
+# being silently projected away.
+_ALLOWED_HISTORY_STATE_METADATA_FIELDS = (
+    "created_at",
+    "updated_at",
+)
+
+
+def _authority_state(value: dict) -> dict:
+    """Project one ruleset state onto the fields that carry protection authority."""
+    return {field: copy.deepcopy(value.get(field)) for field in _AUTHORITY_STATE_FIELDS}
+
+
+def _closed_history_authority_state(value: dict) -> dict | None:
+    """Return authority fields only for the explicitly observed closed state schema."""
+    allowed = set(_AUTHORITY_STATE_FIELDS) | set(_ALLOWED_HISTORY_STATE_METADATA_FIELDS)
+    if any(key not in allowed for key in value):
+        return None
+    for field in _ALLOWED_HISTORY_STATE_METADATA_FIELDS:
+        if field in value:
+            metadata = value.get(field)
+            if not isinstance(metadata, str) or not metadata or len(metadata) > 128:
+                return None
+    return _authority_state(value)
+
+
+def _canonical_writer_authority_state(
+    repository: str,
+    ruleset_id: int,
+    state_ref: str,
+    operator_app_id: int,
+) -> dict:
+    """Build the exact authority projection of the trusted canonical writer payload."""
+    payload = writer_ruleset_payload(state_ref, operator_app_id)
+    return {
+        "id": ruleset_id,
+        "name": payload.get("name"),
+        "target": payload.get("target"),
+        "source_type": "Repository",
+        "source": repository,
+        "enforcement": payload.get("enforcement"),
+        "conditions": copy.deepcopy(payload.get("conditions")),
+        "bypass_actors": copy.deepcopy(payload.get("bypass_actors")),
+        "rules": copy.deepcopy(payload.get("rules")),
+    }
 
 
 class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
@@ -119,6 +183,36 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
             "final writer ruleset current detail did not produce a stable causal observation"
         )
 
+    def _attest_writer_ruleset(
+        self,
+        repository: str,
+        ruleset_id: int | None,
+        state_ref: str,
+    ) -> int:
+        """Rebind the process-local digest to the exact submitted authority projection.
+
+        The inherited marker -> canonical generation proof still establishes the
+        exact version and current ``updated_at``.  GitHub history responses can
+        later add or vary the narrowly observed timestamp metadata inside
+        ``state``.  That metadata is admitted only by a closed schema and never
+        becomes protection authority.
+        """
+        writer_id = super()._attest_writer_ruleset(repository, ruleset_id, state_ref)
+        attestation = self.write_attestations.get(writer_id)
+        if attestation is None or attestation.ruleset_id != writer_id:
+            raise RulesetProvisioningError("writer ruleset attestation was not retained")
+        canonical = _canonical_writer_authority_state(
+            repository,
+            writer_id,
+            state_ref,
+            self.operator_app_id,
+        )
+        self.write_attestations[writer_id] = replace(
+            attestation,
+            state_digest=_state_digest(canonical),
+        )
+        return writer_id
+
     @staticmethod
     def _ruleset_path_identity(url: str) -> tuple[str, int, int | None] | None:
         """Return (repository, ruleset_id, history_version_id) for exact endpoints."""
@@ -148,18 +242,7 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
             return None
         if value.get("source_type") != "Repository" or value.get("rules") != _OMISSION_ONLY_WRITER_RULES:
             return None
-        state_fields = (
-            "id",
-            "name",
-            "target",
-            "source_type",
-            "source",
-            "enforcement",
-            "conditions",
-            "bypass_actors",
-            "rules",
-        )
-        state = {field: copy.deepcopy(value.get(field)) for field in state_fields}
+        state = _authority_state(value)
         state["source"] = repository
         state["rules"] = copy.deepcopy(_STRICT_WRITER_RULES)
         return _state_digest(state)
@@ -239,21 +322,23 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
                         return status, normalized
                 return status, value
 
-            # History authority is already bound by the exact attested generation
-            # and canonical state digest.  It must not depend on whether the
-            # separate current-detail replica happened to require an opaque-source
-            # replay binding.  This keeps the normalization process-local and
-            # fail-closed while allowing canonical current + replica-opaque history.
+            # History authority is bound to the exact attested generation and the
+            # exact submitted protection fields.  Admit only the explicitly
+            # observed timestamp metadata outside those fields; every unknown key
+            # remains a fail-closed version-state drift signal.
             if version_id != attestation.version_id or value.get("version_id") != version_id:
                 return status, value
             state = value.get("state")
             if not isinstance(state, dict):
                 return status, value
-            normalized_state = copy.deepcopy(state)
-            if normalized_state.get("source_type") != "Repository":
+            normalized_state = _closed_history_authority_state(state)
+            if normalized_state is None or normalized_state.get("source_type") != "Repository":
                 return status, value
-            if _safe_source_shape(normalized_state.get("source"), repository) == "other-string":
+            source_shape = _safe_source_shape(normalized_state.get("source"), repository)
+            if source_shape == "other-string":
                 normalized_state["source"] = repository
+            elif source_shape != "equals-repository":
+                return status, value
             if normalized_state.get("rules") == _OMISSION_ONLY_WRITER_RULES:
                 normalized_state["rules"] = copy.deepcopy(_STRICT_WRITER_RULES)
             if _state_digest(normalized_state) != attestation.state_digest:
