@@ -13,7 +13,7 @@ on:
           - reservation-committed-pre-authorization-crash-recovery
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: write
   pull-requests: read
