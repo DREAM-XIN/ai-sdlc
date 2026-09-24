@@ -33,6 +33,20 @@ class V03LostAckLiveError(RuntimeError):
     pass
 
 
+def installation_scoped_idempotency_key(preflight, base_key: str = IDEMPOTENCY_KEY) -> str:
+    """Bind a frozen live-scenario identity to one exact trusted-main installation."""
+    installation_sha = str(
+        getattr(preflight.execution, "installation_commit_sha", "") or ""
+    ).lower()
+    if len(installation_sha) != 40 or any(
+        char not in "0123456789abcdef" for char in installation_sha
+    ):
+        raise V03LostAckLiveError(
+            "live idempotency scope lacks exact trusted-main installation SHA"
+        )
+    return f"{base_key}-{installation_sha}"
+
+
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -52,7 +66,7 @@ def _binding(preflight) -> LostAckDispatchBinding:
         manifest=manifest,
         candidate_pr_number=preflight.fixture_candidate.candidate_pr_number,
         candidate_head_sha=preflight.fixture_candidate.candidate_head_sha,
-        idempotency_key=IDEMPOTENCY_KEY,
+        idempotency_key=installation_scoped_idempotency_key(preflight),
         occurred_at=preflight.composition.bundle.runtime.clock(),
     )
 
