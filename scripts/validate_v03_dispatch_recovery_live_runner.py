@@ -46,6 +46,43 @@ class FakeRuntime:
         return SimpleNamespace(result=self.results.pop(0))
 
 
+class FakeConfiguredFeatureEventGateway:
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def read_feature(self, *, feature_id):
+        self.calls.append(feature_id)
+        return self.manifest
+
+
+def validate_manifest_uses_configured_authority_only():
+    gateway = FakeConfiguredFeatureEventGateway({"revision": 1})
+    preflight = SimpleNamespace(
+        composition=SimpleNamespace(feature_event_gateway=gateway),
+        slot=SimpleNamespace(feature_id="F-OPERATOR-V03-FI-TEST-0001"),
+    )
+    manifest = subject._manifest(preflight)
+    require(manifest == {"revision": 1}, "scenario Manifest read changed returned truth")
+    require(
+        gateway.calls == ["F-OPERATOR-V03-FI-TEST-0001"],
+        "scenario Manifest read escaped configured Feature authority",
+    )
+
+    invalid = SimpleNamespace(
+        composition=SimpleNamespace(
+            feature_event_gateway=FakeConfiguredFeatureEventGateway({"revision": -1})
+        ),
+        slot=SimpleNamespace(feature_id="F-OPERATOR-V03-FI-TEST-0001"),
+    )
+    try:
+        subject._manifest(invalid)
+    except subject.V03DispatchRecoveryLiveError:
+        pass
+    else:
+        raise AssertionError("invalid configured Feature Manifest was accepted")
+
+
 def validate_closed_phase_map():
     require(set(subject.PHASE_SCENARIO.values()) == {subject.UNKNOWN, subject.CONCURRENT, subject.PREAUTH}, "#314 live phase map escaped closed trio")
     require(subject.IDEMPOTENCY.keys() == {subject.UNKNOWN, subject.CONCURRENT, subject.PREAUTH}, "#314 idempotency map escaped closed trio")
@@ -179,6 +216,7 @@ def validate_generic_record_is_anti_overclaim():
 
 
 def main():
+    validate_manifest_uses_configured_authority_only()
     validate_closed_phase_map()
     validate_unknown_wrapper()
     validate_no_external_access_fence()
