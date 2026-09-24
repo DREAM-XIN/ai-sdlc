@@ -12,7 +12,11 @@ from types import SimpleNamespace
 
 import postverify_v03_vertical_policy_state as postverify
 import recover_v03_vertical_policy_state as recovery
-from operator_effect_rollout import LINEAGE_WRITER_CAPABILITY
+from operator_effect_rollout import (
+    LINEAGE_WRITER_CAPABILITY,
+    REQUIRED_FENCED_CAPABILITIES,
+    WRITER_FENCE_SCHEMA,
+)
 from operator_protected_policy_materializer import POLICY_NAMESPACE, REQUIRED_POLICY_PATHS
 from operator_store_model import digest_json
 
@@ -116,7 +120,15 @@ def policy_documents(installation: str, bootstrap_sha: str, proof_digest: str) -
             "effect_lineage_required": True,
         },
         f"{POLICY_NAMESPACE}/writer-fence-receipt.json": {
-            "kind": "writer-fence",
+            "schema_version": WRITER_FENCE_SCHEMA,
+            "repository": REPO,
+            "state_ref": STATE_REF,
+            "operation_profile": "vertical-loop-v1",
+            "state": "QUIESCED",
+            "fenced_capabilities": sorted(REQUIRED_FENCED_CAPABILITIES),
+            "receipt_id": "writer-fence-v03-release-1",
+            "issued_at": "2026-08-15T09:00:00Z",
+            "issuer": "trusted-release-controller",
             "quiescence_proof": quiescence,
         },
         f"{POLICY_NAMESPACE}/effect-resolution-policy.json": {
