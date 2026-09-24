@@ -53,14 +53,21 @@ _AUTHORITY_STATE_FIELDS = (
     "rules",
 )
 
-# The live #263 history observation demonstrated only these timestamp keys as
-# response metadata outside the protection-authority state.  Keep this schema
-# deliberately closed: any new/unknown state key must fail closed rather than
-# being silently projected away.
+# Live #263 history observations demonstrated only these repository-ruleset
+# response metadata fields outside the protection-authority state. Keep this
+# schema deliberately closed: any new/unknown state key must fail closed rather
+# than being silently projected away.
 _ALLOWED_HISTORY_STATE_METADATA_FIELDS = (
     "created_at",
     "updated_at",
+    "current_user_can_bypass",
 )
+
+_CURRENT_USER_CAN_BYPASS_VALUES = frozenset({
+    "always",
+    "pull_requests_only",
+    "never",
+})
 
 
 def _authority_state(value: dict) -> dict:
@@ -73,11 +80,22 @@ def _closed_history_authority_state(value: dict) -> dict | None:
     allowed = set(_AUTHORITY_STATE_FIELDS) | set(_ALLOWED_HISTORY_STATE_METADATA_FIELDS)
     if any(key not in allowed for key in value):
         return None
-    for field in _ALLOWED_HISTORY_STATE_METADATA_FIELDS:
-        if field in value:
-            metadata = value.get(field)
-            if not isinstance(metadata, str) or not metadata or len(metadata) > 128:
-                return None
+    if "created_at" in value:
+        metadata = value.get("created_at")
+        if not isinstance(metadata, str) or not metadata or len(metadata) > 128:
+            return None
+
+    if "updated_at" in value:
+        metadata = value.get("updated_at")
+        if metadata is not None and (
+            not isinstance(metadata, str) or not metadata or len(metadata) > 128
+        ):
+            return None
+
+    if "current_user_can_bypass" in value:
+        if value.get("current_user_can_bypass") not in _CURRENT_USER_CAN_BYPASS_VALUES:
+            return None
+
     return _authority_state(value)
 
 
@@ -192,10 +210,11 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
         """Rebind the process-local digest to the exact submitted authority projection.
 
         The inherited marker -> canonical generation proof still establishes the
-        exact version and current ``updated_at``.  GitHub history responses can
-        later add or vary the narrowly observed timestamp metadata inside
-        ``state``.  That metadata is admitted only by a closed schema and never
-        becomes protection authority.
+        exact version and current ``updated_at``. GitHub history responses can
+        later expose narrowly observed response metadata inside ``state``,
+        including a nullable history-state ``updated_at`` and
+        ``current_user_can_bypass``. Those fields are admitted only by a closed
+        schema and never become protection authority.
         """
         writer_id = super()._attest_writer_ruleset(repository, ruleset_id, state_ref)
         attestation = self.write_attestations.get(writer_id)
@@ -323,9 +342,9 @@ class CausalCurrentAttestedGitHubOperatorStoreRulesetProvisioner(
                 return status, value
 
             # History authority is bound to the exact attested generation and the
-            # exact submitted protection fields.  Admit only the explicitly
-            # observed timestamp metadata outside those fields; every unknown key
-            # remains a fail-closed version-state drift signal.
+            # exact submitted protection fields. Admit only the explicitly
+            # observed repository-response metadata outside those fields; every
+            # unknown key remains a fail-closed version-state drift signal.
             if version_id != attestation.version_id or value.get("version_id") != version_id:
                 return status, value
             state = value.get("state")
