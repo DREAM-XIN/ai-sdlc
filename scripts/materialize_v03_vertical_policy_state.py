@@ -291,19 +291,35 @@ def _policy_namespace_paths(ref: str) -> frozenset[str]:
 
 
 def _latest_policy_materialization_commit(snapshot_sha: str) -> str:
-    commits: set[str] = set()
-    for path in sorted(REQUIRED_POLICY_PATHS):
-        commit = _git("log", "-1", "--format=%H", snapshot_sha, "--", path)
-        if not commit:
-            raise TrustedVerticalPolicyMaterializationError(
-                f"protected policy path lacks durable materialization history: {path}"
-            )
-        commits.add(_sha(commit, f"materialization history for {path}"))
-    if len(commits) != 1:
+    receipt_path = f"{POLICY_NAMESPACE}/bundle-receipt.json"
+    fence_path = f"{POLICY_NAMESPACE}/writer-fence-receipt.json"
+    materialization_sha = _git(
+        "log", "-1", "--format=%H", snapshot_sha, "--", receipt_path
+    )
+    if not materialization_sha:
         raise TrustedVerticalPolicyMaterializationError(
-            "protected policy paths do not share one exact materialization commit"
+            "protected policy receipt lacks durable materialization history"
         )
-    materialization_sha = next(iter(commits))
+    materialization_sha = _sha(
+        materialization_sha,
+        "policy receipt materialization history",
+    )
+    changed = frozenset(
+        path
+        for path in _git(
+            "diff-tree", "--no-commit-id", "--name-only", "-r", materialization_sha
+        ).splitlines()
+        if path
+    )
+    if (
+        not changed
+        or changed - REQUIRED_POLICY_PATHS
+        or receipt_path not in changed
+        or fence_path not in changed
+    ):
+        raise TrustedVerticalPolicyMaterializationError(
+            "protected policy materialization escaped the exact refresh boundary"
+        )
     if subprocess.run(
         ["git", "merge-base", "--is-ancestor", materialization_sha, snapshot_sha],
         stdout=subprocess.DEVNULL,
@@ -313,8 +329,20 @@ def _latest_policy_materialization_commit(snapshot_sha: str) -> str:
         raise TrustedVerticalPolicyMaterializationError(
             "protected policy materialization is not an ancestor of the live state ref"
         )
+    for path in sorted(REQUIRED_POLICY_PATHS):
+        current_blob = _sha(
+            _git("rev-parse", f"{snapshot_sha}:{path}"),
+            f"current policy blob for {path}",
+        )
+        materialized_blob = _sha(
+            _git("rev-parse", f"{materialization_sha}:{path}"),
+            f"materialized policy blob for {path}",
+        )
+        if current_blob != materialized_blob:
+            raise TrustedVerticalPolicyMaterializationError(
+                f"protected policy path drifted after materialization: {path}"
+            )
     return materialization_sha
-
 
 def _refresh_bootstrap_quiescence_proof(
     expected_ref_sha: str,
