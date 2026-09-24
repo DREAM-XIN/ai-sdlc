@@ -67,8 +67,23 @@ class StartBackend:
 class Bundle:
     def __init__(self):
         self.runtime = SimpleNamespace(backend=object())
-        self.executor = SimpleNamespace(base=SimpleNamespace(dispatch_gateway=DelegateGateway()))
-        self.backends = {"operation.start": StartBackend(self.executor.base)}
+        self.raw_dispatch_gateway = DelegateGateway()
+        self.one_shot_dispatch_gateway = subject.StoreBackedOneShotExternalCreateGateway(
+            runtime=self.runtime,
+            delegate=self.raw_dispatch_gateway,
+            trusted_context_digest="trusted-context",
+            effect_lineage_required=True,
+        )
+        # The focused runner test does not re-test the one-shot implementation;
+        # keep the exact topology while making its calls zero-effect/in-memory.
+        self.one_shot_dispatch_gateway.launch = self.raw_dispatch_gateway.launch
+        self.one_shot_dispatch_gateway.lookup = self.raw_dispatch_gateway.lookup
+        base = SimpleNamespace(
+            dispatch_gateway=self.one_shot_dispatch_gateway,
+            config=SimpleNamespace(trusted_context_digest="trusted-context"),
+        )
+        self.executor = SimpleNamespace(base=base)
+        self.backends = {"operation.start": StartBackend(base)}
         provider = SimpleNamespace(for_request=lambda request: {"trusted": request})
         self.write_bundle = SimpleNamespace(read_bundle=SimpleNamespace(trusted_context_provider=provider))
 
@@ -88,8 +103,11 @@ class Preflight:
             candidate_pr_number=901,
             candidate_head_sha="c" * 40,
         )
-        self.composition = SimpleNamespace(bundle=Bundle(), dispatch_gateway=None)
-        self.composition.dispatch_gateway = self.composition.bundle.executor.base.dispatch_gateway
+        bundle = Bundle()
+        self.composition = SimpleNamespace(
+            bundle=bundle,
+            dispatch_gateway=bundle.raw_dispatch_gateway,
+        )
 
 
 class ExitSignal(BaseException):
@@ -134,6 +152,20 @@ def validate_binding_uses_configured_feature_authority_only():
         require(captured["target_ref"] == expected.target_ref, "derived binding lost trusted target ref")
     finally:
         subject.derive_lost_ack_dispatch_binding = original
+
+
+def validate_phase1_requires_exact_one_shot_production_topology():
+    preflight = Preflight()
+    base, gateway = subject._production_one_shot_dispatch(preflight)
+    require(gateway is preflight.composition.bundle.one_shot_dispatch_gateway, "lost-ACK runner did not retain production one-shot fence")
+    require(gateway.delegate is preflight.composition.dispatch_gateway, "one-shot fence lost exact raw gh-aw delegate")
+    base.dispatch_gateway = preflight.composition.dispatch_gateway
+    try:
+        subject._production_one_shot_dispatch(preflight)
+    except subject.V03LostAckLiveError:
+        pass
+    else:
+        raise AssertionError("lost-ACK runner accepted raw dispatch bypass around one-shot fence")
 
 
 def validate_phase1_uses_real_fault_wrapper_and_hard_exit():
@@ -256,6 +288,7 @@ def validate_phase2_is_fresh_binding_checked_and_remains_pending_until_result_pe
 
 def main():
     validate_binding_uses_configured_feature_authority_only()
+    validate_phase1_requires_exact_one_shot_production_topology()
     validate_phase1_uses_real_fault_wrapper_and_hard_exit()
     validate_phase2_is_fresh_binding_checked_and_remains_pending_until_result_persist()
     print("PASS: lost-ACK runner proves hard-crash + same-key takeover while full scenario remains PENDING until exact result/Persist")
