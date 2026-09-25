@@ -51,6 +51,7 @@ tools:
     toolsets: [repos, issues, pull_requests]
     github-token: ${{ secrets.GITHUB_TOKEN }}
     allowed-repos: ["${{ github.repository }}"]
+    min-integrity: none
 max-turn-cache-misses: 20
 checkout:
   repository: ${{ inputs.target_repository }}
