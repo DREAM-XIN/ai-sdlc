@@ -15,8 +15,8 @@ from v03_effect_safety_live_ledger import (
 )
 
 REPOSITORY = "dream-xin/ai-sdlc"
-FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0005"
-REF = "verification/v0.3-real-runtime-fixture-221-r5"
+FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0006"
+REF = "verification/v0.3-real-runtime-fixture-221-r6"
 MAIN = "1" * 40
 MATERIALIZATION = "2" * 40
 POLICY = "3" * 64
