@@ -38,6 +38,8 @@ def main():
     require("issues: write" in local_source,"v0.3 local Reviewer conclusion must have bounded comment rewrite authority")
     require("verdict: PASS" in local_source and "verdict: REWORK" in local_source and "verdict: BLOCKED" in local_source,"v0.3 local Reviewer must request one bounded verdict field")
     require("gh api --method PATCH" in local_source,"v0.3 local Reviewer must rewrite the exact Safe Output comment")
+    require("jq -j '.body' /tmp/reviewer-comment.patched.json > /tmp/reviewer-comment.actual" in local_source,"v0.3 local Reviewer must compare patched comment bytes without jq newline synthesis")
+    require("jq -j '.body' /tmp/reviewer-comment.patched.json > /tmp/reviewer-comment.actual" in local_lock,"compiled v0.3 local Reviewer must preserve byte-exact patched-comment readback")
     require("TARGET_REF: ${{ inputs.target_ref }}" in local_lock,"compiled v0.3 local Reviewer must bind trusted target_ref input")
     require("TARGET_REPOSITORY: ${{ inputs.target_repository }}" in local_lock,"compiled v0.3 local Reviewer must bind trusted target_repository input")
     require("CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}" in local_lock,"compiled v0.3 local Reviewer must bind trusted candidate head input")
