@@ -146,6 +146,24 @@ def run_phase1(
         )
     bundle = preflight.composition.bundle
     base, one_shot_gateway = _production_one_shot_dispatch(preflight)
+    prelaunch_lookup = one_shot_gateway.lookup(external_dispatch_key=binding.external_dispatch_key)
+    if str((prelaunch_lookup or {}).get("lookup_state") or "UNKNOWN") != "NOT_LAUNCHED":
+        _write_json(
+            evidence_path,
+            {
+                "schema_version": "ai-sdlc.v03-live-lost-ack-phase1-diagnostic/v2",
+                "installation_commit_sha": preflight.execution.installation_commit_sha,
+                "external_dispatch_key": binding.external_dispatch_key,
+                "prelaunch_lookup": prelaunch_lookup,
+                "durable_event_types": [
+                    str(row.get("event_type") or "") for row in _scenario_events(preflight, binding)
+                ],
+            },
+        )
+        raise V03LostAckLiveError(
+            "phase1 prelaunch lookup is not exact NOT_LAUNCHED; "
+            f"prelaunch_lookup={json.dumps(prelaunch_lookup, sort_keys=True, separators=(',', ':'))}"
+        )
     base.dispatch_gateway = LostAckCrashAfterLaunchDispatchGateway(
         delegate=one_shot_gateway,
         expected_external_dispatch_key=binding.external_dispatch_key,
