@@ -72,7 +72,9 @@ jobs:
           repo_name="${TARGET_REPOSITORY#*/}"
           echo "owner=$owner" >> "$GITHUB_OUTPUT"
           echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
-          if [[ "$TARGET_REPOSITORY" == "$GITHUB_REPOSITORY" ]]; then
+          target_repository_lc="${TARGET_REPOSITORY,,}"
+          current_repository_lc="${GITHUB_REPOSITORY,,}"
+          if [[ "$target_repository_lc" == "$current_repository_lc" ]]; then
             echo "cross_repo=false" >> "$GITHUB_OUTPUT"
           else
             echo "cross_repo=true" >> "$GITHUB_OUTPUT"
