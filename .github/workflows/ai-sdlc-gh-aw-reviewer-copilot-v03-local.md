@@ -47,6 +47,7 @@ permissions:
   issues: read
   pull-requests: read
 tools:
+  bash: false
   github:
     toolsets: [repos, issues, pull_requests]
     github-token: ${{ secrets.GITHUB_TOKEN }}
