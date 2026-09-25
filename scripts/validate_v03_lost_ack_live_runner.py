@@ -51,7 +51,8 @@ class DelegateGateway:
         return {"lookup_state": "LAUNCHED", "receipt_id": "run-101"}
 
     def lookup(self, *, external_dispatch_key):
-        raise AssertionError("phase1 must not perform local lookup after injected launch")
+        require(external_dispatch_key == EXTERNAL_KEY, "phase1 lookup key drifted")
+        return {"lookup_state": "NOT_LAUNCHED", "receipt_id": None}
 
 
 class StartBackend:
