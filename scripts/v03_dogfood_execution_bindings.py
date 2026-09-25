@@ -25,7 +25,7 @@ WORKFLOW_ROOT = ROOT / ".github" / "workflows"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _METADATA_PREFIX = "# gh-aw-metadata: "
 _MANIFEST_PREFIX = "# gh-aw-manifest: "
-STRICT_COMPILER_VERSION = "v0.83.4"
+STRICT_COMPILER_VERSION = "v0.89.21"
 
 
 class V03DogfoodExecutionBindingError(RuntimeError):
