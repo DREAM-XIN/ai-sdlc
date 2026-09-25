@@ -28,6 +28,12 @@ _WORKFLOW_BINDINGS = {
         "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
         "credential_name": "COPILOT_GITHUB_TOKEN",
     },
+    "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml": {
+        "worker_id": "code-review-reviewer-copilot",
+        "profile": "copilot",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "credential_name": "COPILOT_GITHUB_TOKEN",
+    },
     "ai-sdlc-gh-aw-qa-gemini.lock.yml": {
         "worker_id": "verification-qa-gemini",
         "profile": "gemini",
