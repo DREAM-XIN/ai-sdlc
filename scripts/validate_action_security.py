@@ -17,7 +17,7 @@ INSTALL_PLACEHOLDERS = {
 PLACEHOLDER_MARKER = "ai-sdlc-install-placeholder"
 GHAW_LOCK_CANDIDATE = re.compile(r"^ai-sdlc-gh-aw-worker(?:-[a-z][a-z0-9-]*)?\.lock\.yml$")
 GHAW_METADATA_PREFIX = "# gh-aw-metadata: "
-PINNED_GHAW_COMPILER = "v0.83.4"
+PINNED_GHAW_COMPILER = "v0.89.21"
 
 
 def workflow_files():

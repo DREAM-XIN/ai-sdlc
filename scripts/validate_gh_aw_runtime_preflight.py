@@ -88,7 +88,7 @@ def validate_provider_preflight() -> None:
             f"{profile.profile_id}: valid lock + credential must reach entitlement probe readiness",
         )
         require(
-            present.get("compiler_version") == "v0.83.4" and present.get("lock_strict") is True,
+            present.get("compiler_version") == "v0.89.21" and present.get("lock_strict") is True,
             f"{profile.profile_id}: preflight must verify pinned strict compiler metadata",
         )
         require(
