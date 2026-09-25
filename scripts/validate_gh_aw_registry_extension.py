@@ -225,7 +225,7 @@ if profile_id == "fixture-provider":
 
         metadata = {
             "schema_version": "v4",
-            "compiler_version": "v0.83.4",
+            "compiler_version": "v0.89.21",
             "strict": True,
             "agent_id": "copilot",
             "agent_model": fixture["model"],
