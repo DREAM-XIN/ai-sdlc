@@ -32,7 +32,7 @@ class GitHubActionsWorkflowTransportConfig:
     api_version: str = "2022-11-28"
     user_agent: str = "ai-sdlc-operator-v0.3-gh-aw-transport"
     page_size: int = 100
-    max_lookup_pages: int = 20
+    max_lookup_pages: int = 100
     launch_poll_attempts: int = 8
     launch_poll_seconds: float = 1.0
 
