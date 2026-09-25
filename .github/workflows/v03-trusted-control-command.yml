@@ -69,6 +69,8 @@ jobs:
                       ('v03-live-remaining-six.yml', 'stale-candidate-result'),
                   '/ai-sdlc v03-trusted-control final-ledger':
                       ('v03-final-live-ledger.yml', ''),
+                  '/ai-sdlc v03-trusted-control auto-continue':
+                      ('v03-issue-221-auto-continue.yml', ''),
               },
               239: {
                   '/ai-sdlc v03-trusted-control dogfood-bindings':
