@@ -49,7 +49,10 @@ engine:
   id: gemini
   version: "0.52.0"
   model: gemini-3.5-flash-lite
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 # Cross-repository reads use a short-lived GitHub App installation token scoped to exactly the target repository.
 tools:
   github:

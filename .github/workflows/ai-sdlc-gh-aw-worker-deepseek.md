@@ -58,7 +58,10 @@ network:
   allowed:
     - defaults
     - api.deepseek.com
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 # Cross-repository reads use a short-lived GitHub App installation token scoped to exactly the target repository.
 tools:
   github:
