@@ -10,6 +10,7 @@ from gh_aw_provider_registry import load_registry
 from gh_aw_role_workers import AUTHORING_ROLE_STAGES, GATE_ROLE_STAGES, load_role_workers
 
 ROOT = Path(__file__).resolve().parents[1]
+# Gate/authoring agents intentionally mint only the reviewed minimal GitHub read scopes.
 
 GATE_TEMPLATE = r'''---
 name: __NAME__
@@ -55,7 +56,10 @@ on:
         required: true
         type: string
 __ENGINE__
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 tools:
   github:
     toolsets: [repos, issues, pull_requests]
