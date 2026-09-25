@@ -1,0 +1,99 @@
+name: v0.3 Issue 221 Auto Continue
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: v03-issue-221-auto-continue
+  cancel-in-progress: false
+
+jobs:
+  continue-live-matrix:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Run exact-main live matrix sequentially
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REF" = refs/heads/main
+          current_main() {
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+          }
+          test "$(current_main)" = "$EXPECTED_SHA"
+
+          run_one() {
+            local workflow="$1"
+            local scenario="${2:-}"
+            local started_at
+            started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            sleep 1
+
+            test "$(current_main)" = "$EXPECTED_SHA"
+            args=(workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main)
+            if [[ -n "$scenario" ]]; then
+              args+=(--field "scenario=$scenario")
+            fi
+            gh "${args[@]}"
+
+            local run_json=''
+            for attempt in $(seq 1 30); do
+              run_json=$(gh run list                 --repo "$GITHUB_REPOSITORY"                 --workflow "$workflow"                 --event workflow_dispatch                 --branch main                 --limit 40                 --json databaseId,createdAt,headSha,status,conclusion,url |                 jq -c --arg started_at "$started_at" --arg sha "$EXPECTED_SHA" '
+                  map(select(.createdAt >= $started_at and .headSha == $sha)) |
+                  sort_by(.createdAt) | reverse | .[0] // empty
+                ')
+              [[ -n "$run_json" ]] && break
+              sleep 2
+            done
+            test -n "$run_json"
+
+            local run_id run_head
+            run_id=$(jq -r '.databaseId' <<<"$run_json")
+            run_head=$(jq -r '.headSha' <<<"$run_json")
+            test "$run_head" = "$EXPECTED_SHA"
+            test "$(current_main)" = "$EXPECTED_SHA"
+
+            echo "Waiting for $workflow ${scenario:+($scenario) }run $run_id"
+            gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
+
+            test "$(current_main)" = "$EXPECTED_SHA"
+          }
+
+          run_one v03-live-lost-ack-persist-sequence.yml
+          run_one v03-live-launch-cancel-pair.yml
+          run_one v03-live-dispatch-recovery-trio.yml unknown-takeover
+          run_one v03-live-dispatch-recovery-trio.yml concurrent-resume
+          run_one v03-live-dispatch-recovery-trio.yml reservation-committed-pre-authorization-crash-recovery
+          run_one v03-live-remaining-six.yml cancel-before-persist-linearization
+          run_one v03-live-remaining-six.yml persist-linearized-before-cancel
+          run_one v03-live-remaining-six.yml duplicate-callback
+          run_one v03-live-remaining-six.yml out-of-order-callback
+          run_one v03-live-remaining-six.yml duplicate-worker-completion
+          run_one v03-live-remaining-six.yml stale-candidate-result
+          run_one v03-final-live-ledger.yml
+
+      - name: Publish auto-continue result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh issue comment 221 --repo "$GITHUB_REPOSITORY" --body "v0.3 Issue #221 auto-continue: **$JOB_STATUS**
+
+Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+Exact trusted-main head: \`$HEAD_SHA\`
+
+The driver is fail-closed: it stops on the first failed downstream workflow or if main changes."
