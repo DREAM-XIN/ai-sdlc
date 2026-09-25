@@ -9,7 +9,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: v03-issue-221-auto-continue
+  group: v03-issue-221-auto-continue-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
