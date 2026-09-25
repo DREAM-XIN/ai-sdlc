@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   continue-live-matrix:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -37,6 +37,7 @@ jobs:
             local scenario="${2:-}"
             local started_at
             started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            sleep 1
 
             test "$(current_main)" = "$EXPECTED_SHA"
             args=(workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main)
