@@ -195,7 +195,6 @@ def select_v03_reviewer_worker(
                 stage=option.stage,
                 profile=option.profile,
                 workflow_file=option.workflow_file,
-                registry_workflow_file=option.registry_workflow_file,
                 credential_env=option.credential_env,
                 credential_present=True,
                 selection_policy=SELECTION_POLICY,
@@ -221,5 +220,4 @@ def selection_from_environment(*, registry_path: Path, workflow_dir: Path) -> Re
 
 def public_selection(selection: ReviewerWorkerSelection) -> dict:
     result = asdict(selection)
-    result.pop("registry_workflow_file", None)
     return result
