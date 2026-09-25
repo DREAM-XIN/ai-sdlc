@@ -56,7 +56,7 @@ def validate_selection_semantics():
 
     copilot = select(ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=True)
     require(copilot.worker_id == "code-review-reviewer-copilot", copilot)
-    require(copilot.workflow_file == "ai-sdlc-gh-aw-reviewer-copilot.lock.yml", copilot)
+    require(copilot.workflow_file == "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml", copilot)
     require(copilot.credential_env == "COPILOT_GITHUB_TOKEN", copilot)
 
     both = select(ANTHROPIC_API_KEY=True, COPILOT_GITHUB_TOKEN=True)
