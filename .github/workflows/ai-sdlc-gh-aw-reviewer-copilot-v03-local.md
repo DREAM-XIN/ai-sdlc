@@ -137,7 +137,7 @@ This worker is intentionally bounded to avoid broad repository discovery. The tr
    - Manifest: protocol `0.1.0`, revision `1`, exact feature id, profile `v03-real-runtime-fixture`, workflow ACTIVE at `code-review`; code-review WORKING with code-gate, verification/acceptance TODO, all three gates PENDING, exactly one draft implementation artifact, and exactly the start Event in `applied_events`.
    A semantic mismatch is REWORK. Unreadable/incomplete evidence is BLOCKED. PASS is allowed only when every frozen condition above is established from the single exact PR-files result and there is no BLOCKER/MAJOR finding.
 5. Call `add_comment` Safe Output exactly once for PASS, REWORK, or BLOCKED. Never use `noop`, `missing_data`, or `missing_tool`. Do not make any further evidence-read call after the single `get_files` operation.
-6. Call `add_comment` with the exact machine-envelope shape below. Copy every trusted identity field literally from this template; do not substitute a Manifest path, inferred ref, alternate repository spelling, or a different task id. Change only `<VERDICT>`, `<FINDINGS_JSON>`, `<EVIDENCE_STATUS>`, `<UTC_ISO_8601>`, optional `reason`, and the human summary as required by the review result:
+6. Call `add_comment` with the exact machine-envelope shape below. Copy every trusted identity field literally from this template; do not substitute a Manifest path, inferred ref, alternate repository spelling, or a different task id. Change only `<EXACT_TASK_ID_FROM_TASK_PAYLOAD>`, `<VERDICT>`, `<FINDINGS_JSON>`, `<EVIDENCE_STATUS>`, `<UTC_ISO_8601>`, optional `reason`, and the human summary as required by the review result. `<EXACT_TASK_ID_FROM_TASK_PAYLOAD>` must be copied exactly from the already-decoded trusted task payload:
 
    ```text
    <!-- AI-SDLC-GATE-RESULT
@@ -146,7 +146,7 @@ This worker is intentionally bounded to avoid broad repository discovery. The tr
      "contract": "ai-sdlc-gh-aw-reviewer-result-v0.1",
      "id": "vertical:code-review:${{ inputs.candidate_head_sha }}",
      "feature_id": "${{ inputs.feature_id }}",
-     "task_id": "${{ fromJSON(inputs.task_payload).task.id }}",
+     "task_id": "<EXACT_TASK_ID_FROM_TASK_PAYLOAD>",
      "stage": "${{ inputs.stage }}",
      "role": "${{ inputs.role }}",
      "expected_revision": ${{ inputs.expected_revision }},
