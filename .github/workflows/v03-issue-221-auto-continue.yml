@@ -96,9 +96,9 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          gh issue comment 221 --repo "$GITHUB_REPOSITORY" --body "v0.3 Issue #221 bootstrap + auto-continue: **$JOB_STATUS**
-
-Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-Exact trusted-main head: \`$HEAD_SHA\`
-
-The driver is fail-closed: it stops on the first failed downstream workflow or if main changes."
+          body=$(printf '%s\\n\\n%s\\n%s\\n\\n%s' \
+            "v0.3 Issue #221 bootstrap + auto-continue: **$JOB_STATUS**" \
+            "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "Exact trusted-main head: \`$HEAD_SHA\`" \
+            "The driver is fail-closed: it stops on the first failed downstream workflow or if main changes.")
+          gh issue comment 221 --repo "$GITHUB_REPOSITORY" --body "$body"
