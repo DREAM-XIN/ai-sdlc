@@ -221,4 +221,5 @@ def selection_from_environment(*, registry_path: Path, workflow_dir: Path) -> Re
 
 def public_selection(selection: ReviewerWorkerSelection) -> dict:
     result = asdict(selection)
+    result.pop("registry_workflow_file", None)
     return result
