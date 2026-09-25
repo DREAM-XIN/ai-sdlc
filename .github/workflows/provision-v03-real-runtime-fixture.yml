@@ -25,11 +25,11 @@ jobs:
       pull-requests: write
       issues: write
     env:
-      FIXTURE_FEATURE_ID: F-OPERATOR-V03-REAL-RUNTIME-FI-0008
-      FIXTURE_REF: verification/v0.3-real-runtime-fixture-221-r8
-      FIXTURE_MANIFEST: state/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0008.yaml
-      FIXTURE_EVENT: state/events/F-OPERATOR-V03-REAL-RUNTIME-FI-0008/EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0008-CODE-REVIEW-START.yaml
-      FIXTURE_IMPLEMENTATION: docs/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0008/implementation.md
+      FIXTURE_FEATURE_ID: F-OPERATOR-V03-REAL-RUNTIME-FI-0009
+      FIXTURE_REF: verification/v0.3-real-runtime-fixture-221-r9
+      FIXTURE_MANIFEST: state/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0009.yaml
+      FIXTURE_EVENT: state/events/F-OPERATOR-V03-REAL-RUNTIME-FI-0009/EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0009-CODE-REVIEW-START.yaml
+      FIXTURE_IMPLEMENTATION: docs/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0009/implementation.md
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
