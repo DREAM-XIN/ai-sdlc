@@ -13,8 +13,8 @@ from operator_store_protection import ProtectionReceipt
 import v03_live_evidence_provenance as subject
 
 REPOSITORY = "dream-xin/ai-sdlc"
-FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0002"
-REF = "verification/v0.3-real-runtime-fixture-221-r2"
+FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0003"
+REF = "verification/v0.3-real-runtime-fixture-221-r3"
 MAIN = "1" * 40
 MATERIALIZATION = "2" * 40
 POLICY = "3" * 64
