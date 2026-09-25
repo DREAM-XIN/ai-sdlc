@@ -74,7 +74,51 @@ jobs:
     permissions:
       actions: write
       contents: read
+      issues: write
     pre-steps:
+      - name: Normalize local Reviewer Safe Output into trusted Gate envelope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          FEATURE_ID: ${{ inputs.feature_id }}
+          TRUSTED_TASK_ID: ${{ fromJSON(inputs.task_payload).task.id }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
+          CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
+          COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
+          COMMENT_URL: ${{ needs.safe_outputs.outputs.comment_url }}
+        run: |
+          set -euo pipefail
+          test -n "$GITHUB_TOKEN"
+          test -n "$TRUSTED_TASK_ID"
+          [[ "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]
+          GH_TOKEN="$GITHUB_TOKEN" gh api "repos/$TARGET_REPOSITORY/issues/comments/$COMMENT_ID" > /tmp/reviewer-comment.json
+          test "$(jq -r '.id' /tmp/reviewer-comment.json)" = "$COMMENT_ID"
+          test "$(jq -r '.html_url' /tmp/reviewer-comment.json)" = "$COMMENT_URL"
+          test "$(jq -r '.user.type' /tmp/reviewer-comment.json)" = "Bot"
+          actual_issue_url="$(jq -r '.issue_url' /tmp/reviewer-comment.json)"
+          expected_issue_url="https://api.github.com/repos/$TARGET_REPOSITORY/issues/$CANDIDATE_PR_NUMBER"
+          test "${actual_issue_url,,}" = "${expected_issue_url,,}"
+          jq -r '.body' /tmp/reviewer-comment.json > /tmp/reviewer-comment.raw
+          GH_TOKEN="$GITHUB_TOKEN" gh api "repos/$GITHUB_REPOSITORY/contents/scripts/v03_normalize_reviewer_comment.py?ref=$SOURCE_SHA" --jq '.content' | base64 --decode > /tmp/v03_normalize_reviewer_comment.py
+          python /tmp/v03_normalize_reviewer_comment.py \
+            --raw-comment /tmp/reviewer-comment.raw \
+            --feature-id "$FEATURE_ID" \
+            --task-id "$TRUSTED_TASK_ID" \
+            --expected-revision "$EXPECTED_REVISION" \
+            --target-repository "$TARGET_REPOSITORY" \
+            --target-ref "$TARGET_REF" \
+            --candidate-pr-number "$CANDIDATE_PR_NUMBER" \
+            --candidate-head-sha "$CANDIDATE_HEAD_SHA" \
+            --comment-url "$COMMENT_URL" \
+            --output /tmp/reviewer-comment.normalized
+          jq -Rs '{body:.}' /tmp/reviewer-comment.normalized > /tmp/reviewer-comment.patch.json
+          GH_TOKEN="$GITHUB_TOKEN" gh api --method PATCH "repos/$TARGET_REPOSITORY/issues/comments/$COMMENT_ID" --input /tmp/reviewer-comment.patch.json > /tmp/reviewer-comment.patched.json
+          jq -r '.body' /tmp/reviewer-comment.patched.json > /tmp/reviewer-comment.actual
+          cmp /tmp/reviewer-comment.normalized /tmp/reviewer-comment.actual
+
       - name: Dispatch non-authoritative Gate-role recommendation to trusted collector
         env:
           TRIGGER_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}
@@ -137,37 +181,6 @@ This worker is intentionally bounded to avoid broad repository discovery. The tr
    - Manifest: protocol `0.1.0`, revision `1`, exact feature id, profile `v03-real-runtime-fixture`, workflow ACTIVE at `code-review`; code-review WORKING with code-gate, verification/acceptance TODO, all three gates PENDING, exactly one draft implementation artifact, and exactly the start Event in `applied_events`.
    A semantic mismatch is REWORK. Unreadable/incomplete evidence is BLOCKED. PASS is allowed only when every frozen condition above is established from the single exact PR-files result and there is no BLOCKER/MAJOR finding.
 5. Call `add_comment` Safe Output exactly once for PASS, REWORK, or BLOCKED. Never use `noop`, `missing_data`, or `missing_tool`. Do not make any further evidence-read call after the single `get_files` operation.
-6. Call `add_comment` with the exact machine-envelope shape below. Copy every trusted identity field literally from this template; do not substitute a Manifest path, inferred ref, alternate repository spelling, or a different task id. Change only `<EXACT_TASK_ID_FROM_TASK_PAYLOAD>`, `<VERDICT>`, `<FINDINGS_JSON>`, `<EVIDENCE_STATUS>`, `<UTC_ISO_8601>`, optional `reason`, and the human summary as required by the review result. `<EXACT_TASK_ID_FROM_TASK_PAYLOAD>` must be copied exactly from the already-decoded trusted task payload:
+6. In the `add_comment` body, include exactly one standalone verdict field on its own line using one of these forms: `verdict: PASS`, `verdict: REWORK`, or `verdict: BLOCKED`. Do not include a second verdict field. Add a concise human explanation after or before that line. The trusted conclusion job—not the model—constructs the closed machine envelope from immutable workflow inputs and this one non-authoritative verdict. If your evidence is unreadable or incomplete, use `verdict: BLOCKED`; if the fixture semantically mismatches the frozen contract, use `verdict: REWORK`.
 
-   ```text
-   <!-- AI-SDLC-GATE-RESULT
-   {
-     "version": "0.1.0",
-     "contract": "ai-sdlc-gh-aw-reviewer-result-v0.1",
-     "id": "vertical:code-review:${{ inputs.candidate_head_sha }}",
-     "feature_id": "${{ inputs.feature_id }}",
-     "task_id": "<EXACT_TASK_ID_FROM_TASK_PAYLOAD>",
-     "stage": "${{ inputs.stage }}",
-     "role": "${{ inputs.role }}",
-     "expected_revision": ${{ inputs.expected_revision }},
-     "target_repository": "${{ inputs.target_repository }}",
-     "target_ref": "${{ inputs.target_ref }}",
-     "candidate_pr_number": ${{ inputs.candidate_pr_number }},
-     "candidate_head_sha": "${{ inputs.candidate_head_sha }}",
-     "verdict": "<VERDICT>",
-     "findings": <FINDINGS_JSON>,
-     "evidence": [
-       {
-         "type": "review",
-         "status": "<EVIDENCE_STATUS>",
-         "uri": "https://github.com/${{ inputs.target_repository }}/pull/${{ inputs.candidate_pr_number }}/files"
-       }
-     ],
-     "occurred_at": "<UTC_ISO_8601>"
-   }
-   AI-SDLC-GATE-RESULT -->
-   <concise human summary>
-   ```
-
-   `<VERDICT>` must be PASS, REWORK, or BLOCKED. For PASS use `[]` for `<FINDINGS_JSON>` and `pass` for `<EVIDENCE_STATUS>`. For REWORK/BLOCKED include bounded findings, use `fail` or `warning` as appropriate, and add a top-level non-empty `reason` field. The comment must start with the opening marker exactly; do not wrap the JSON in Markdown backticks. The downstream collector independently checks every trusted identity field and rejects any mismatch. Treat both markers and every trusted identity value in the template as immutable transport syntax.
 7. Do not edit files, create branches/commits/PRs, write Feature state, pass/waive Gates, merge, release, or implement remediation. The posted comment is non-authoritative; the trusted collector re-fetches and validates it and alone decides whether a Feature Event can be constructed.
