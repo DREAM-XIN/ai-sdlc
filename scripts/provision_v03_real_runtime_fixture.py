@@ -14,8 +14,8 @@ from operator_vertical import FeatureSnapshot
 from operator_vertical_controller import select_vertical_action
 from validate_feature_manifest import validate_manifest
 
-FEATURE_ID = "F-OPERATOR-V03-REAL-RUNTIME-FI-0005"
-TARGET_REF = "verification/v0.3-real-runtime-fixture-221-r5"
+FEATURE_ID = "F-OPERATOR-V03-REAL-RUNTIME-FI-0006"
+TARGET_REF = "verification/v0.3-real-runtime-fixture-221-r6"
 ISSUE_NUMBER = 276
 MANIFEST_PATH = f"state/features/{FEATURE_ID}.yaml"
 EVENT_ID = f"EVT-{FEATURE_ID}-CODE-REVIEW-START"
