@@ -47,6 +47,7 @@ class LostAckCrashAfterLaunchDispatchGateway:
         self.delegate = delegate
         self.expected_external_dispatch_key = str(expected_external_dispatch_key)
         self.injected = False
+        self.last_launch_receipt = None
 
     def launch(self, *, dispatch: dict[str, Any]):
         if self.injected:
@@ -58,6 +59,7 @@ class LostAckCrashAfterLaunchDispatchGateway:
             raise ValueError("fault injection dispatch key does not match trusted expected key")
 
         receipt = self.delegate.launch(dispatch=dispatch)
+        self.last_launch_receipt = receipt
         if not isinstance(receipt, dict):
             return receipt
         lookup_state = str(receipt.get("lookup_state") or "UNKNOWN")

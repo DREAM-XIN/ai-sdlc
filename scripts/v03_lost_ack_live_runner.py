@@ -192,7 +192,23 @@ def run_phase1(
         )
         hard_exit(PHASE1_EXIT)
         raise V03LostAckLiveError("hard-exit hook returned instead of terminating phase1")
-    raise V03LostAckLiveError("phase1 returned without exact injected process crash")
+    fault_gateway = base.dispatch_gateway
+    receipt = getattr(fault_gateway, "last_launch_receipt", None)
+    events = _scenario_events(preflight, binding)
+    diagnostic = {
+        "schema_version": "ai-sdlc.v03-live-lost-ack-phase1-diagnostic/v1",
+        "installation_commit_sha": preflight.execution.installation_commit_sha,
+        "external_dispatch_key": binding.external_dispatch_key,
+        "launch_receipt": receipt,
+        "durable_event_types": [str(row.get("event_type") or "") for row in events],
+        "fault_injected": bool(getattr(fault_gateway, "injected", False)),
+    }
+    _write_json(evidence_path, diagnostic)
+    raise V03LostAckLiveError(
+        "phase1 returned without exact injected process crash; "
+        f"launch_receipt={json.dumps(receipt, sort_keys=True, separators=(',', ':'))}; "
+        f"durable_event_types={json.dumps(diagnostic['durable_event_types'], separators=(',', ':'))}"
+    )
 
 
 def _load_phase1(path: Path) -> dict[str, Any]:
