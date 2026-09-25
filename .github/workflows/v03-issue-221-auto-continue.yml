@@ -69,6 +69,11 @@ jobs:
             test "$(current_main)" = "$EXPECTED_SHA"
           }
 
+          # Bootstrap the exact-main trusted runtime before executing live evidence.
+          run_one materialize-v03-vertical-policy-state.yml
+          run_one provision-v03-real-runtime-fixture.yml
+          run_one v03-real-runtime-preflight-live.yml
+
           run_one v03-live-lost-ack-persist-sequence.yml
           run_one v03-live-launch-cancel-pair.yml
           run_one v03-live-dispatch-recovery-trio.yml unknown-takeover
@@ -91,7 +96,7 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          gh issue comment 221 --repo "$GITHUB_REPOSITORY" --body "v0.3 Issue #221 auto-continue: **$JOB_STATUS**
+          gh issue comment 221 --repo "$GITHUB_REPOSITORY" --body "v0.3 Issue #221 bootstrap + auto-continue: **$JOB_STATUS**
 
 Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 Exact trusted-main head: \`$HEAD_SHA\`
