@@ -282,7 +282,7 @@ def collect_trusted_main_prerequisites(
         ),
         "real_runtime_fixture_provisioner_on_main": bool(
             fixture_runtime
-            and "F-OPERATOR-V03-REAL-RUNTIME-FI-0009" in fixture_runtime
+            and "F-OPERATOR-V03-REAL-RUNTIME-FI-0010" in fixture_runtime
             and "def verify_active_files" in fixture_runtime
         ),
         "canonical_repository_feature_event_gateway_on_main": bool(
