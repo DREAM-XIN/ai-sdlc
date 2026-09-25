@@ -62,7 +62,7 @@ def main():
 
     canonical = CANONICAL.read_text(encoding="utf-8")
     require(canonical.count("engine: copilot\n") == 1, "canonical worker must retain one renderer engine marker")
-    require("permissions: read-all" in canonical, "canonical agent must remain read-only")
+    require("permissions:\n  contents: read\n  issues: read\n  pull-requests: read" in canonical, "canonical agent must use the minimal reviewed read permission set")
     for marker in (
         "target_repository:",
         "target_owner:",
