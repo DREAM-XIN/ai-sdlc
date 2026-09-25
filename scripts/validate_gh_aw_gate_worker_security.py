@@ -24,7 +24,7 @@ def main():
         source_path=ROOT/worker.worker_source; lock_path=ROOT/".github"/"workflows"/worker.worker_workflow
         require(source_path.is_file(),f"missing Gate worker source: {worker.worker_source}"); require(lock_path.is_file(),f"missing Gate worker lock: {worker.worker_workflow}")
         source=source_path.read_text(encoding="utf-8"); lock=lock_path.read_text(encoding="utf-8")
-        require("permissions: read-all" in source,f"{worker.id}: source must default to read-all"); require("  add-comment:" in source,f"{worker.id}: add-comment Safe Output required"); require("ref: ${{ inputs.candidate_head_sha }}" in source,f"{worker.id}: checkout must pin candidate SHA")
+        require("permissions:\n  contents: read\n  issues: read\n  pull-requests: read" in source,f"{worker.id}: source must use the minimal reviewed read permission set"); require("  add-comment:" in source,f"{worker.id}: add-comment Safe Output required"); require("ref: ${{ inputs.candidate_head_sha }}" in source,f"{worker.id}: checkout must pin candidate SHA")
         require("fromJSON(inputs.task_payload).task.id" in source,f"{worker.id}: trusted task id required"); require("SOURCE_RUN_ID: ${{ github.run_id }}" in source,f"{worker.id}: source run id required"); require("SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}" in source,f"{worker.id}: workflow ref required")
         for token in BANNED_SOURCE_TOKENS: require(token not in source,f"{worker.id}: banned source-write token: {token}")
         for token in BANNED_LOCK_TOKENS: require(token not in lock,f"{worker.id}: compiled lock banned source-write token: {token}")
