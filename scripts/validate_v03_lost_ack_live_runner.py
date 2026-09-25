@@ -14,6 +14,7 @@ from v03_real_runtime_lost_ack_orchestration import LostAckDispatchBinding
 REPOSITORY = "dream-xin/ai-sdlc"
 EXTERNAL_KEY = "ext-" + "a" * 32
 OPERATION_ID = "op-" + "b" * 32
+INSTALLATION_SHA = "1" * 40
 
 
 def require(value, message):
@@ -92,7 +93,7 @@ class Preflight:
     def __init__(self):
         self.execution = SimpleNamespace(
             repository=REPOSITORY,
-            installation_commit_sha="1" * 40,
+            installation_commit_sha=INSTALLATION_SHA,
         )
         self.live_authority = SimpleNamespace(
             materialization_commit_sha="2" * 40,
@@ -132,7 +133,10 @@ def validate_binding_uses_configured_feature_authority_only():
     original = subject.derive_lost_ack_dispatch_binding
     subject.derive_lost_ack_dispatch_binding = lambda **kwargs: captured.update(kwargs) or expected
     preflight = SimpleNamespace(
-        execution=SimpleNamespace(repository=expected.repository),
+        execution=SimpleNamespace(
+            repository=expected.repository,
+            installation_commit_sha=INSTALLATION_SHA,
+        ),
         fixture_candidate=SimpleNamespace(
             candidate_pr_number=expected.candidate_pr_number,
             candidate_head_sha=expected.candidate_head_sha,
@@ -150,6 +154,10 @@ def validate_binding_uses_configured_feature_authority_only():
         require(gateway.calls == [expected.feature_id], "lost-ACK Manifest read escaped configured Feature authority")
         require(captured["repository"] == expected.repository, "derived binding lost trusted repository")
         require(captured["target_ref"] == expected.target_ref, "derived binding lost trusted target ref")
+        require(
+            captured["idempotency_key"] == f"{subject.BASE_IDEMPOTENCY_KEY}-{INSTALLATION_SHA}",
+            "derived binding was not scoped to exact trusted-main installation",
+        )
     finally:
         subject.derive_lost_ack_dispatch_binding = original
 
