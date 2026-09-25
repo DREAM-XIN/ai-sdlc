@@ -7,6 +7,7 @@ from pathlib import Path
 
 from gh_aw_role_workers import GATE_ROLE_STAGES, load_role_workers
 from validate_gh_aw_gate_provenance import main as validate_gate_provenance
+from v03_normalize_reviewer_comment import normalize_reviewer_comment
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNED_SOURCE_TOKENS = ("create-pull-request:","push-to-pull-request-branch:","create_pull_request","push_to_pull_request_branch")
@@ -32,10 +33,11 @@ def main():
     local_source=(ROOT/".github/workflows/ai-sdlc-gh-aw-reviewer-copilot-v03-local.md").read_text(encoding="utf-8")
     local_lock=(ROOT/".github/workflows/ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml").read_text(encoding="utf-8")
     collector=(ROOT/".github/workflows/ai-sdlc-gh-aw-gate-result.yml").read_text(encoding="utf-8")
-    require('<!-- AI-SDLC-GATE-RESULT' in local_source,"v0.3 local Reviewer exact Gate envelope opening marker required")
-    require('"target_repository": "${{ inputs.target_repository }}"' in local_source,"v0.3 local Reviewer must copy trusted target_repository literally")
-    require('"target_ref": "${{ inputs.target_ref }}"' in local_source,"v0.3 local Reviewer must copy trusted target_ref literally")
-    require('"candidate_head_sha": "${{ inputs.candidate_head_sha }}"' in local_source,"v0.3 local Reviewer must copy trusted candidate head literally")
+    require("Normalize local Reviewer Safe Output into trusted Gate envelope" in local_source,"v0.3 local Reviewer trusted normalization step required")
+    require("scripts/v03_normalize_reviewer_comment.py?ref=$SOURCE_SHA" in local_source,"v0.3 local Reviewer normalizer must be fetched from exact workflow SHA")
+    require("issues: write" in local_source,"v0.3 local Reviewer conclusion must have bounded comment rewrite authority")
+    require("verdict: PASS" in local_source and "verdict: REWORK" in local_source and "verdict: BLOCKED" in local_source,"v0.3 local Reviewer must request one bounded verdict field")
+    require("gh api --method PATCH" in local_source,"v0.3 local Reviewer must rewrite the exact Safe Output comment")
     require("GH_AW_INPUTS_TARGET_REF" in local_lock,"compiled v0.3 local Reviewer must bind trusted target_ref input")
     require("GH_AW_INPUTS_TARGET_REPOSITORY" in local_lock,"compiled v0.3 local Reviewer must bind trusted target_repository input")
     require("GH_AW_INPUTS_CANDIDATE_HEAD_SHA" in local_lock,"compiled v0.3 local Reviewer must bind trusted candidate head input")
@@ -43,6 +45,39 @@ def main():
     require('current_repository_lc="${GITHUB_REPOSITORY,,}"' in collector,"Gate collector must canonicalize control repository case")
     require('[[ "$target_repository_lc" == "$current_repository_lc" ]]' in collector,"Gate collector same-repo decision must be case-insensitive")
     require("if: ${{ steps.target.outputs.cross_repo == 'true' }}" in collector,"Runtime App token must remain cross-repo only")
+    normalized=normalize_reviewer_comment(
+        "review complete\nverdict: PASS\n",
+        feature_id="F-TEST",
+        task_id="vertical:code-review:" + "a"*40,
+        expected_revision=1,
+        target_repository="DREAM-XIN/ai-sdlc",
+        target_ref="verification/test",
+        candidate_pr_number=42,
+        candidate_head_sha="a"*40,
+        comment_url="https://github.com/DREAM-XIN/ai-sdlc/pull/42#issuecomment-1",
+        occurred_at="2026-09-25T00:00:00Z",
+    )
+    require(normalized.startswith("<!-- AI-SDLC-GATE-RESULT\n"),"trusted Reviewer normalizer must emit closed Gate envelope")
+    payload=normalized.split("\n",1)[1].split("\nAI-SDLC-GATE-RESULT -->",1)[0]
+    import json
+    parsed=json.loads(payload)
+    require(parsed["verdict"]=="PASS","trusted Reviewer normalizer lost exact PASS recommendation")
+    require(parsed["target_repository"]=="dream-xin/ai-sdlc","trusted Reviewer normalizer must canonicalize repository identity")
+    require(parsed["target_ref"]=="verification/test","trusted Reviewer normalizer must use trusted ref")
+    blocked=normalize_reviewer_comment(
+        "ambiguous\nverdict: PASS\nverdict: REWORK\n",
+        feature_id="F-TEST",
+        task_id="vertical:code-review:" + "a"*40,
+        expected_revision=1,
+        target_repository="dream-xin/ai-sdlc",
+        target_ref="verification/test",
+        candidate_pr_number=42,
+        candidate_head_sha="a"*40,
+        comment_url="https://github.com/dream-xin/ai-sdlc/pull/42#issuecomment-1",
+        occurred_at="2026-09-25T00:00:00Z",
+    )
+    blocked_payload=json.loads(blocked.split("\n",1)[1].split("\nAI-SDLC-GATE-RESULT -->",1)[0])
+    require(blocked_payload["verdict"]=="BLOCKED" and blocked_payload.get("reason"),"ambiguous Reviewer verdict must fail closed")
     validate_gate_provenance(); print("gh-aw Gate-role read-only worker security validation passed")
 
 
