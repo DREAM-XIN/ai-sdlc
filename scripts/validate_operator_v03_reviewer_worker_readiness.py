@@ -136,7 +136,7 @@ def validate_registry_drift_fails_closed():
 
         exact_registry = root / "role-workers-exact.yaml"
         exact_registry.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
-        copilot_path = workflow_dir / "ai-sdlc-gh-aw-reviewer-copilot.lock.yml"
+        copilot_path = workflow_dir / "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml"
         lines = copilot_path.read_text(encoding="utf-8").splitlines()
         for index, line in enumerate(lines):
             if line.startswith("# gh-aw-manifest: "):
