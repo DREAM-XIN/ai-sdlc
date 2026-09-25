@@ -55,7 +55,10 @@ on:
         required: true
         type: string
 __ENGINE__
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 tools:
   github:
     toolsets: [repos, issues, pull_requests]
