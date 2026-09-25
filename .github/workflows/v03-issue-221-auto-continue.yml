@@ -1,7 +1,7 @@
 name: v0.3 Issue 221 Auto Continue
 
-'on':
-  workflow_dispatch:
+on:
+  workflow_dispatch: {}
 
 permissions:
   actions: write
