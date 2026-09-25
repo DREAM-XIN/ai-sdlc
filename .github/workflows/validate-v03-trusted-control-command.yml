@@ -6,6 +6,7 @@ on:
       - '.github/workflows/v03-trusted-control-command.yml'
       - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
       - '.github/workflows/provision-v03-real-runtime-fixture.yml'
+      - '.github/workflows/v03-issue-221-auto-continue.yml'
       - '.github/workflows/validate-v03-trusted-control-command.yml'
 
 permissions:
@@ -64,6 +65,8 @@ jobs:
               "('v03-live-remaining-six.yml', 'stale-candidate-result')",
               "'/ai-sdlc v03-trusted-control final-ledger'",
               "('v03-final-live-ledger.yml', '')",
+              "'/ai-sdlc v03-trusted-control auto-continue'",
+              "('v03-issue-221-auto-continue.yml', '')",
               "'/ai-sdlc v03-trusted-control dogfood-bindings'",
               "('v03-dogfood-execution-bindings-preflight.yml', '')",
           ]
@@ -71,7 +74,7 @@ jobs:
               if literal not in text:
                   raise SystemExit(f'missing trusted-control invariant: {literal}')
 
-          if text.count('/ai-sdlc v03-trusted-control ') != 18:
+          if text.count('/ai-sdlc v03-trusted-control ') != 19:
               raise SystemExit('trusted-control command surface changed unexpectedly')
 
           contents_write = 'contents:' + ' write'
@@ -99,6 +102,7 @@ jobs:
               'v03-live-dispatch-recovery-trio.yml',
               'v03-live-remaining-six.yml',
               'v03-final-live-ledger.yml',
+              'v03-issue-221-auto-continue.yml',
               'v03-dogfood-execution-bindings-preflight.yml',
           ]
           for workflow in workflows:
