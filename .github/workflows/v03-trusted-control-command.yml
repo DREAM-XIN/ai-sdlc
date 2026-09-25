@@ -41,6 +41,8 @@ jobs:
                       ('v03-ruleset-source-identity-diagnostic.yml', ''),
               },
               221: {
+                  '/ai-sdlc v03-trusted-control provision-primary-fixture':
+                      ('provision-v03-real-runtime-fixture.yml', ''),
                   '/ai-sdlc v03-trusted-control preflight':
                       ('v03-real-runtime-preflight-live.yml', ''),
                   '/ai-sdlc v03-trusted-control lost-ack-persist':

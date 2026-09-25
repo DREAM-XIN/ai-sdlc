@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/v03-trusted-control-command.yml'
       - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
+      - '.github/workflows/provision-v03-real-runtime-fixture.yml'
       - '.github/workflows/validate-v03-trusted-control-command.yml'
 
 permissions:
@@ -44,6 +45,8 @@ jobs:
               "('materialize-v03-vertical-policy-state.yml', '')",
               "'/ai-sdlc v03-trusted-control diagnose-ruleset-source'",
               "('v03-ruleset-source-identity-diagnostic.yml', '')",
+              "'/ai-sdlc v03-trusted-control provision-primary-fixture'",
+              "('provision-v03-real-runtime-fixture.yml', '')",
               "'/ai-sdlc v03-trusted-control preflight'",
               "('v03-real-runtime-preflight-live.yml', '')",
               "'/ai-sdlc v03-trusted-control lost-ack-persist'",
@@ -68,7 +71,7 @@ jobs:
               if literal not in text:
                   raise SystemExit(f'missing trusted-control invariant: {literal}')
 
-          if text.count('/ai-sdlc v03-trusted-control ') != 17:
+          if text.count('/ai-sdlc v03-trusted-control ') != 18:
               raise SystemExit('trusted-control command surface changed unexpectedly')
 
           contents_write = 'contents:' + ' write'
@@ -89,6 +92,7 @@ jobs:
           workflows = [
               'materialize-v03-vertical-policy-state.yml',
               'v03-ruleset-source-identity-diagnostic.yml',
+              'provision-v03-real-runtime-fixture.yml',
               'v03-real-runtime-preflight-live.yml',
               'v03-live-lost-ack-persist-sequence.yml',
               'v03-live-launch-cancel-pair.yml',
