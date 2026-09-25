@@ -42,6 +42,7 @@ on:
         required: true
         type: string
 engine: copilot
+model: gpt-4.1
 permissions:
   contents: read
   issues: read
