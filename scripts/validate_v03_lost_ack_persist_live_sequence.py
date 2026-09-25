@@ -12,8 +12,8 @@ from operator_store_protection import ProtectionReceipt
 import v03_lost_ack_persist_live_sequence as subject
 
 REPOSITORY = "dream-xin/ai-sdlc"
-FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0011"
-REF = "verification/v0.3-real-runtime-fixture-221-r11"
+FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0012"
+REF = "verification/v0.3-real-runtime-fixture-221-r12"
 MAIN = "1" * 40
 MATERIALIZATION = "2" * 40
 POLICY = "3" * 64
