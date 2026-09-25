@@ -116,6 +116,7 @@ jobs:
             --output /tmp/reviewer-comment.normalized
           jq -Rs '{body:.}' /tmp/reviewer-comment.normalized > /tmp/reviewer-comment.patch.json
           GH_TOKEN="$GITHUB_TOKEN" gh api --method PATCH "repos/$TARGET_REPOSITORY/issues/comments/$COMMENT_ID" --input /tmp/reviewer-comment.patch.json > /tmp/reviewer-comment.patched.json
+          # Preserve the exact GitHub comment body bytes; jq -r would synthesize a trailing newline.
           jq -j '.body' /tmp/reviewer-comment.patched.json > /tmp/reviewer-comment.actual
           cmp /tmp/reviewer-comment.normalized /tmp/reviewer-comment.actual
 
