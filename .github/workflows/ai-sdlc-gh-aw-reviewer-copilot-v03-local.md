@@ -52,11 +52,11 @@ tools:
   github:
     toolsets: [repos, issues, pull_requests]
     github-token: ${{ secrets.GITHUB_TOKEN }}
-    allowed-repos: ["${{ github.repository }}"]
+    allowed-repos: ["dream-xin/ai-sdlc"]
     min-integrity: none
 max-turn-cache-misses: 20
 checkout:
-  repository: ${{ inputs.target_repository }}
+  repository: dream-xin/ai-sdlc
   ref: ${{ inputs.candidate_head_sha }}
   fetch-depth: 0
   current: true
@@ -66,7 +66,7 @@ safe-outputs:
   add-comment:
     max: 1
     target: ${{ inputs.candidate_pr_number }}
-    target-repo: ${{ inputs.target_repository }}
+    target-repo: dream-xin/ai-sdlc
     footer: false
 jobs:
   conclusion:
