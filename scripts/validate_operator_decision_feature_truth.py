@@ -171,8 +171,12 @@ def main():
         revision=7,
         key="foreign-operation",
     )
+    reads_before_foreign = len(transport.reads)
     assert_code("UNAUTHORIZED", lambda: adapter.read_feature(operation_id=foreign_operation))
-    require(len(transport.reads) == 1, "foreign Operation reached trusted Feature read transport")
+    require(
+        len(transport.reads) == reads_before_foreign,
+        "foreign Operation reached trusted Feature read transport",
+    )
 
     transport.manifest["revision"] = 9
     assert_code("STALE_REVISION", lambda: adapter.read_feature(operation_id=operation_id))
