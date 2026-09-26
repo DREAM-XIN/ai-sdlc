@@ -222,7 +222,7 @@ def _retire_prelaunch_unknown_contamination(preflight) -> None:
             "legacy UNKNOWN contamination does not match an exact prelaunch-only shape"
         )
     status = str(projection.get("status") or "")
-    if (not lookup and status != "RUNNING") or (lookup and status != "BLOCKED"):
+    if (not lookup and status != "WAITING_EXTERNAL") or (lookup and status != "BLOCKED"):
         raise V03DispatchRecoveryLiveError(
             "legacy UNKNOWN contamination status does not match its durable prelaunch shape"
         )
