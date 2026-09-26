@@ -215,6 +215,20 @@ jobs:
               python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer a
           ) >"$shared/concurrent-resume-racer-a.log" 2>&1 &
           pid_a=$!
+
+          for _ in $(seq 1 900); do
+            if test -s "$shared/concurrent-resume-ready-a.json"; then
+              break
+            fi
+            if ! kill -0 "$pid_a" 2>/dev/null; then
+              wait "$pid_a" || true
+              cat "$shared/concurrent-resume-racer-a.log"
+              exit 1
+            fi
+            sleep 0.2
+          done
+          test -s "$shared/concurrent-resume-ready-a.json"
+
           (
             cd "$race_b"
             AI_SDLC_STORE_CHECKOUT="$race_b" PYTHONPATH=scripts \
@@ -223,10 +237,16 @@ jobs:
           pid_b=$!
 
           for _ in $(seq 1 900); do
-            test -s "$shared/concurrent-resume-ready-a.json" && test -s "$shared/concurrent-resume-ready-b.json" && break
+            if test -s "$shared/concurrent-resume-ready-b.json"; then
+              break
+            fi
+            if ! kill -0 "$pid_b" 2>/dev/null; then
+              wait "$pid_b" || true
+              cat "$shared/concurrent-resume-racer-b.log"
+              exit 1
+            fi
             sleep 0.2
           done
-          test -s "$shared/concurrent-resume-ready-a.json"
           test -s "$shared/concurrent-resume-ready-b.json"
 
           printf '{}\n' > "$shared/concurrent-resume-go-a.json"

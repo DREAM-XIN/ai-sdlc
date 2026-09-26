@@ -93,6 +93,10 @@ def validate_closed_phase_map():
         "UNKNOWN recovery reused the consumed fail-closed Operation identity",
     )
     require(subject.CONCURRENT == "concurrent-resume", "concurrent row identity drifted")
+    require(
+        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r2",
+        "concurrent recovery reused the consumed partial Operation identity",
+    )
     require(subject.PREAUTH == "reservation-committed-pre-authorization-crash-recovery", "preauth row identity drifted")
 
 
@@ -224,6 +228,27 @@ def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
     )
 
 
+
+def validate_concurrent_racer_preflight_is_sequenced():
+    from pathlib import Path
+    workflow = (
+        Path(subject.__file__).resolve().parents[1]
+        / ".github/workflows/v03-live-dispatch-recovery-trio.yml"
+    ).read_text(encoding="utf-8")
+    markers = [
+        'pid_a=$!',
+        'if test -s "$shared/concurrent-resume-ready-a.json"; then',
+        'python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer b',
+        'if test -s "$shared/concurrent-resume-ready-b.json"; then',
+        'printf \'{}\\n\' > "$shared/concurrent-resume-go-a.json"',
+    ]
+    positions = [workflow.find(marker) for marker in markers]
+    require(all(pos >= 0 for pos in positions), "concurrent racer sequencing markers are incomplete")
+    require(positions == sorted(positions), "concurrent racer authority preflight is no longer sequenced before action release")
+    require('kill -0 "$pid_a" 2>/dev/null' in workflow, "racer A preflight failure is not detected before racer B starts")
+    require('kill -0 "$pid_b" 2>/dev/null' in workflow, "racer B preflight failure is not detected before action release")
+
+
 def validate_generic_record_is_anti_overclaim():
     record = subject._generic_record(
         scenario=subject.UNKNOWN,
@@ -256,6 +281,7 @@ def main():
     validate_no_external_access_fence()
     validate_preauthorization_crash_boundary()
     validate_legacy_unknown_cleanup_is_strictly_prelaunch_only()
+    validate_concurrent_racer_preflight_is_sequenced()
     validate_generic_record_is_anti_overclaim()
     print("PASS: #314 dispatch/recovery live wrappers are closed, zero-effect in PR validation, and fail-closed")
     print("- UNKNOWN permits one exact delegated launch then suppresses certainty without fallback lookup")
