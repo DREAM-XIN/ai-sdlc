@@ -19,7 +19,7 @@ from v03_scenario_runtime_composition import (
 )
 
 DEVELOPER_WORKFLOW = "ai-sdlc-gh-aw-worker-codex.lock.yml"
-QA_WORKFLOW = "ai-sdlc-gh-aw-qa-gemini.lock.yml"
+QA_WORKFLOW = "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml"
 
 
 class V03ScenarioRuntimePreflightError(RuntimeError):

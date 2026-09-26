@@ -78,6 +78,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: gh aw compile "ai-sdlc-gh-aw-reviewer-copilot-v03-local" --strict
+      - name: Strict-compile v0.3 local QA Gemini worker
+        env:
+          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
+        run: gh aw compile "ai-sdlc-gh-aw-qa-gemini-v03-local" --strict
       - name: Strict-compile every specialized role worker
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
@@ -111,6 +115,8 @@ jobs:
               print('.github/workflows/' + worker.worker_workflow)
           print('.github/workflows/ai-sdlc-gh-aw-reviewer-copilot-v03-local.md')
           print('.github/workflows/ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml')
+          print('.github/workflows/ai-sdlc-gh-aw-qa-gemini-v03-local.md')
+          print('.github/workflows/ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml')
           print('.github/workflows/ai-sdlc-gh-aw-preflight.yml')
           print('.github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml')
           PY
