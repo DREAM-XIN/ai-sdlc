@@ -8,15 +8,17 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import v03_persist_ack_loss_live_runner as subject
+from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+from operator_v03_vertical_production_runtime import _DeferredExactVerticalPersistGateway
 from v03_real_runtime_fault_injection import LostAckCrashAfterPersistGateway
 
 REPOSITORY = "dream-xin/ai-sdlc"
 OPERATION_ID = "op-" + "a" * 32
 EXTERNAL_KEY = "ext-" + "b" * 32
 SEMANTIC_KEY = "d" * 64
-EVENT_ID = "EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0015-CODE-REVIEW-PASS-DEADBEEF0001"
+EVENT_ID = "EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0016-CODE-REVIEW-PASS-DEADBEEF0001"
 CALLBACK_ID = "gh-aw-callback-" + "c" * 24
-TARGET_REF = "verification/v0.3-real-runtime-fixture-221-r15"
+TARGET_REF = "verification/v0.3-real-runtime-fixture-221-r16"
 
 
 def require(value, message):
@@ -38,6 +40,18 @@ class PersistDelegate:
         self.lookup_calls += 1
         require(event_id == EVENT_ID and target_ref == TARGET_REF, "phase2 lookup escaped exact Event/ref")
         return {"event_id": EVENT_ID, "result_revision": 2}
+
+
+class FakeDurablePersistGateway(DurableVerticalFeaturePersistGateway):
+    def __init__(self, *, runtime, event_gateway):
+        self.runtime = runtime
+        self.event_gateway = event_gateway
+
+    def persist_feature_event(self, *, event, target_ref):
+        return self.event_gateway.persist_feature_event(event=event, target_ref=target_ref)
+
+    def lookup_feature_event(self, *, event_id, target_ref):
+        return self.event_gateway.lookup_feature_event(event_id=event_id, target_ref=target_ref)
 
 
 class FakeBackend:
@@ -90,18 +104,25 @@ class Preflight:
             candidate_pr_number=901,
             candidate_head_sha="4" * 40,
         )
-        persist = PersistDelegate()
-        base = SimpleNamespace(persist_gateway=persist)
+        event_gateway = PersistDelegate()
+        runtime = SimpleNamespace(backend=FakeBackend())
+        durable_persist = FakeDurablePersistGateway(
+            runtime=runtime,
+            event_gateway=event_gateway,
+        )
+        persist_bridge = _DeferredExactVerticalPersistGateway()
+        persist_bridge.bind(durable_persist)
+        base = SimpleNamespace(persist_gateway=persist_bridge)
         executor = Phase2Executor(base) if phase2 else SimpleNamespace(base=base)
         bundle = SimpleNamespace(
             executor=executor,
-            runtime=SimpleNamespace(backend=FakeBackend()),
+            runtime=runtime,
         )
         if not phase2:
             bundle.executor = SimpleNamespace(base=base)
         self.composition = SimpleNamespace(
             target_ref=TARGET_REF,
-            feature_event_gateway=persist,
+            feature_event_gateway=event_gateway,
             bundle=bundle,
         )
         if not phase2:
@@ -132,6 +153,31 @@ def combined_events():
         {"event_type": "feature.event.translated", "operation_generation": 1, "event_id": "e-trans", "payload": {"feature_event_id": EVENT_ID}},
         {"event_type": "persist.confirmed", "operation_generation": 1, "event_id": "e-confirm", "payload": {"feature_event_id": EVENT_ID, "result_revision": 2}},
     ]
+
+
+def validate_exact_production_persist_chain_is_strict():
+    preflight = Preflight()
+    base, bridge = subject._exact_production_persist_binding(preflight, phase="test")
+    require(base is preflight.composition.bundle.executor.base, "exact Persist binding returned wrong executor base")
+    require(isinstance(bridge, _DeferredExactVerticalPersistGateway), "exact Persist binding lost production bridge")
+
+    wrong_event = Preflight()
+    wrong_event.composition.feature_event_gateway = object()
+    try:
+        subject._exact_production_persist_binding(wrong_event, phase="test")
+    except subject.V03PersistAckLossLiveError as exc:
+        require("Event gateway" in str(exc), "wrong Event authority failed for unexpected reason")
+    else:
+        raise AssertionError("Persist chain accepted a different Event authority")
+
+    wrong_runtime = Preflight()
+    wrong_runtime.composition.bundle.executor.base.persist_gateway.delegate.runtime = object()
+    try:
+        subject._exact_production_persist_binding(wrong_runtime, phase="test")
+    except subject.V03PersistAckLossLiveError as exc:
+        require("Store runtime" in str(exc), "wrong Store runtime failed for unexpected reason")
+    else:
+        raise AssertionError("Persist chain accepted a different Store runtime")
 
 
 def validate_phase1_continues_existing_takeover_and_hard_exits():
@@ -254,6 +300,7 @@ def validate_phase2_is_lookup_only_idempotent_and_completes_lost_ack():
 
 
 def main():
+    validate_exact_production_persist_chain_is_strict()
     validate_phase1_continues_existing_takeover_and_hard_exits()
     validate_phase2_is_lookup_only_idempotent_and_completes_lost_ack()
     print("PASS: Persist ACK-loss fresh recovery also completes the chained lost-ACK end-to-end result/Persist proof")
