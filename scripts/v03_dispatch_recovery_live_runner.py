@@ -39,7 +39,7 @@ CONCURRENT = "concurrent-resume"
 PREAUTH = "reservation-committed-pre-authorization-crash-recovery"
 LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"
 IDEMPOTENCY = {
-    UNKNOWN: "v03-release-fi-unknown-takeover-r2",
+    UNKNOWN: "v03-release-fi-unknown-takeover-r3",
     CONCURRENT: "v03-release-fi-concurrent-resume-r2",
     PREAUTH: "v03-release-fi-preauth-crash",
 }
