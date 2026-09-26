@@ -39,6 +39,11 @@ _WORKFLOW_BINDINGS = {
         "profile": "gemini",
         "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
     },
+    "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml": {
+        "worker_id": "verification-qa-gemini",
+        "profile": "gemini",
+        "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
+    },
     "ai-sdlc-gh-aw-qa-copilot.lock.yml": {
         "worker_id": "verification-qa-copilot",
         "profile": "copilot",
