@@ -208,33 +208,41 @@ def _retire_prelaunch_unknown_contamination(preflight) -> None:
     )
     if projection.get("status") == "CANCELLED":
         return
-    if projection.get("status") != "BLOCKED" or int(projection.get("generation", -1)) != 0:
+    if int(projection.get("generation", -1)) != 0:
         raise V03DispatchRecoveryLiveError(
-            "legacy UNKNOWN contamination has unexpected Operation state"
+            "legacy UNKNOWN contamination has unexpected Operation generation"
         )
     claims = _events(preflight, legacy_operation_id, "dispatch.claimed", 0)
     auth = _authorization_rows(preflight, legacy_operation_id, 0)
     lookup = _lookup_rows(preflight, legacy_operation_id, 0)
     callbacks = _events(preflight, legacy_operation_id, "worker.callback.recorded", 0)
     persists = _persist_rows(preflight, legacy_operation_id)
-    if len(claims) != 1 or len(auth) != 1 or len(lookup) != 1 or callbacks or persists:
+    if len(claims) != 1 or len(auth) != 1 or len(lookup) > 1 or callbacks or persists:
         raise V03DispatchRecoveryLiveError(
-            "legacy UNKNOWN contamination does not match the exact prelaunch-only shape"
+            "legacy UNKNOWN contamination does not match an exact prelaunch-only shape"
+        )
+    status = str(projection.get("status") or "")
+    if (not lookup and status != "RUNNING") or (lookup and status != "BLOCKED"):
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination status does not match its durable prelaunch shape"
         )
     claim_payload = claims[0].get("payload") or {}
     auth_payload = auth[0].get("payload") or {}
-    lookup_payload = lookup[0].get("payload") or {}
     external_key = str(claim_payload.get("external_dispatch_key") or "")
-    if (
-        not external_key
-        or auth_payload.get("external_dispatch_key") != external_key
-        or lookup_payload.get("external_dispatch_key") != external_key
-        or lookup_payload.get("lookup_state") != "UNKNOWN"
-        or lookup_payload.get("receipt_id") is not None
-    ):
+    if not external_key or auth_payload.get("external_dispatch_key") != external_key:
         raise V03DispatchRecoveryLiveError(
-            "legacy UNKNOWN contamination external identity is not exact"
+            "legacy UNKNOWN contamination claim/authorization identity is not exact"
         )
+    if lookup:
+        lookup_payload = lookup[0].get("payload") or {}
+        if (
+            lookup_payload.get("external_dispatch_key") != external_key
+            or lookup_payload.get("lookup_state") != "UNKNOWN"
+            or lookup_payload.get("receipt_id") is not None
+        ):
+            raise V03DispatchRecoveryLiveError(
+                "legacy UNKNOWN contamination lookup identity is not exact"
+            )
     snapshot = preflight.composition.bundle.runtime.backend.read_snapshot()
     if find_external_create_attempt(snapshot, external_dispatch_key=external_key) is not None:
         raise V03DispatchRecoveryLiveError(
