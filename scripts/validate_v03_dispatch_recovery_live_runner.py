@@ -205,8 +205,14 @@ def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
         "legacy UNKNOWN cleanup does not fail closed after external-create attempt",
     )
     require(
+        'len(lookup) > 1' in source
+        and 'not lookup and status != "RUNNING"' in source
+        and 'lookup and status != "BLOCKED"' in source,
+        "legacy UNKNOWN cleanup does not distinguish exact authorized-prelookup and BLOCKED-UNKNOWN shapes",
+    )
+    require(
         'lookup_payload.get("lookup_state") != "UNKNOWN"' in source,
-        "legacy UNKNOWN cleanup does not require durable UNKNOWN lookup shape",
+        "legacy UNKNOWN cleanup does not validate UNKNOWN when a durable lookup exists",
     )
     require(
         'callbacks or persists' in source,
