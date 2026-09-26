@@ -41,7 +41,13 @@ on:
       task_payload:
         required: true
         type: string
-engine: copilot
+engine:
+  id: copilot
+  harness:
+    max-retries: 6
+    initial-delay-ms: 10000
+    backoff-multiplier: 2
+    max-delay-ms: 120000
 model: gpt-4.1
 permissions:
   contents: read
