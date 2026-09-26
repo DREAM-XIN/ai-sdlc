@@ -222,7 +222,12 @@ def _retire_prelaunch_unknown_contamination(preflight) -> None:
             "legacy UNKNOWN contamination does not match an exact prelaunch-only shape"
         )
     status = str(projection.get("status") or "")
-    if (not lookup and status != "RUNNING") or (lookup and status != "BLOCKED"):
+    # dispatch.launch.authorized is itself the durable launch linearization
+    # point and the reducer moves the Operation to WAITING_EXTERNAL before the
+    # one-shot external-create attempt is acquired.  Therefore an authorized
+    # legacy harness Operation with no lookup is safely pre-create only when
+    # it is WAITING_EXTERNAL and no external-create attempt exists below.
+    if (not lookup and status != "WAITING_EXTERNAL") or (lookup and status != "BLOCKED"):
         raise V03DispatchRecoveryLiveError(
             "legacy UNKNOWN contamination status does not match its durable prelaunch shape"
         )
