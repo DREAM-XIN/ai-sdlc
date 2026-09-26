@@ -15,8 +15,8 @@ from v03_effect_safety_live_ledger_launch_cancel import (
 import v03_launch_cancel_live_runner as subject
 
 REPOSITORY = "dream-xin/ai-sdlc"
-FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0020"
-REF = "verification/v0.3-real-runtime-fixture-221-r20"
+FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0021"
+REF = "verification/v0.3-real-runtime-fixture-221-r21"
 MAIN = "1" * 40
 MATERIALIZATION = "2" * 40
 POLICY = "3" * 64
