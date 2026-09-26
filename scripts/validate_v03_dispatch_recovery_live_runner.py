@@ -206,9 +206,9 @@ def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
     )
     require(
         'len(lookup) > 1' in source
-        and 'not lookup and status != "RUNNING"' in source
+        and 'not lookup and status != "WAITING_EXTERNAL"' in source
         and 'lookup and status != "BLOCKED"' in source,
-        "legacy UNKNOWN cleanup does not distinguish exact authorized-prelookup and BLOCKED-UNKNOWN shapes",
+        "legacy UNKNOWN cleanup does not distinguish exact authorized-precreate and BLOCKED-UNKNOWN shapes",
     )
     require(
         'lookup_payload.get("lookup_state") != "UNKNOWN"' in source,
@@ -222,6 +222,96 @@ def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
         '_retire_prelaunch_unknown_contamination(preflight)' in source,
         "UNKNOWN inject does not retire the exact old prelaunch contamination first",
     )
+
+
+def validate_legacy_unknown_cleanup_accepts_exact_waiting_external_precreate():
+    """Regression for the durable legacy shape observed on protected Store.
+
+    launch.authorization moves the projection to WAITING_EXTERNAL before the
+    one-shot external-create-attempt record exists.  Cleanup may cancel only
+    that exact pre-create shape; the external-create absence check remains
+    authoritative and all other shape checks remain fail-closed.
+    """
+    originals = {
+        "_events": subject._events,
+        "vertical_projection": subject.vertical_projection,
+        "find_external_create_attempt": subject.find_external_create_attempt,
+    }
+
+    external_key = "dispatch-" + "a" * 40
+    claim_id = "dc-" + "b" * 40
+    operation_id = "op-" + "c" * 40
+    projections = iter(({"status": "WAITING_EXTERNAL", "generation": 0}, {"status": "CANCELLED", "generation": 0}))
+
+    class Backend:
+        def read_snapshot(self):
+            return object()
+
+    class Runtime:
+        def __init__(self):
+            self.backend = Backend()
+            self.clock = lambda: "2026-09-26T00:00:00Z"
+            self.commits = 0
+
+        def commit_replanned(self, planner, *, max_attempts=4):
+            self.commits += 1
+            # The production planner is already covered by Store cancellation
+            # validation; this test isolates the live-cleanup admission fence.
+            return SimpleNamespace(result={"status": "CANCELLED"})
+
+    runtime = Runtime()
+    preflight = SimpleNamespace(
+        execution=SimpleNamespace(repository="dream-xin/ai-sdlc"),
+        slot=SimpleNamespace(feature_id="F-OPERATOR-V03-FI-UNKNOWN-TAKEOVER-0001"),
+        composition=SimpleNamespace(
+            bundle=SimpleNamespace(
+                runtime=runtime,
+                executor=SimpleNamespace(
+                    base=SimpleNamespace(
+                        config=SimpleNamespace(trusted_context_digest="ctx")
+                    )
+                ),
+            )
+        ),
+    )
+
+    def fake_events(_preflight, _operation_id, event_type=None, generation=None):
+        require(_operation_id == operation_id, "cleanup targeted wrong legacy Operation")
+        if event_type is None:
+            return [{"event_type": "operation.started"}]
+        if event_type == "dispatch.claimed":
+            return [{
+                "payload": {
+                    "claim_id": claim_id,
+                    "external_dispatch_key": external_key,
+                    "semantic_effect_key": "d" * 64,
+                }
+            }]
+        if event_type == "dispatch.launch.authorized":
+            return [{
+                "payload": {
+                    "claim_id": claim_id,
+                    "external_dispatch_key": external_key,
+                }
+            }]
+        return []
+
+    try:
+        subject._events = fake_events
+        subject.vertical_projection = lambda *_args, **_kwargs: next(projections)
+        subject.find_external_create_attempt = lambda *_args, **_kwargs: None
+        # Fix the legacy Operation identity to keep the fake event fixture small.
+        original_operation_id_for = subject.operation_id_for
+        subject.operation_id_for = lambda *_args, **_kwargs: operation_id
+        try:
+            subject._retire_prelaunch_unknown_contamination(preflight)
+        finally:
+            subject.operation_id_for = original_operation_id_for
+        require(runtime.commits == 1, "exact WAITING_EXTERNAL pre-create contamination was not retired")
+    finally:
+        subject._events = originals["_events"]
+        subject.vertical_projection = originals["vertical_projection"]
+        subject.find_external_create_attempt = originals["find_external_create_attempt"]
 
 
 def validate_generic_record_is_anti_overclaim():
@@ -256,6 +346,7 @@ def main():
     validate_no_external_access_fence()
     validate_preauthorization_crash_boundary()
     validate_legacy_unknown_cleanup_is_strictly_prelaunch_only()
+    validate_legacy_unknown_cleanup_accepts_exact_waiting_external_precreate()
     validate_generic_record_is_anti_overclaim()
     print("PASS: #314 dispatch/recovery live wrappers are closed, zero-effect in PR validation, and fail-closed")
     print("- UNKNOWN permits one exact delegated launch then suppresses certainty without fallback lookup")
