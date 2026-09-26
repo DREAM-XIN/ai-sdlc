@@ -43,7 +43,7 @@ on:
         type: string
 engine:
   id: gemini
-  version: "0.52.0"
+  version: "0.39.1" # release-path API-key auth compatibility; see prior live Gemini remediation
   model: gemini-3.5-flash-lite
 permissions:
   contents: read

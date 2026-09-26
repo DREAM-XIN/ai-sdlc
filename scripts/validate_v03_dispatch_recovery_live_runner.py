@@ -206,7 +206,7 @@ def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
     )
     require(
         'len(lookup) > 1' in source
-        and 'not lookup and status != "RUNNING"' in source
+        and 'not lookup and status != "WAITING_EXTERNAL"' in source
         and 'lookup and status != "BLOCKED"' in source,
         "legacy UNKNOWN cleanup does not distinguish exact authorized-prelookup and BLOCKED-UNKNOWN shapes",
     )
