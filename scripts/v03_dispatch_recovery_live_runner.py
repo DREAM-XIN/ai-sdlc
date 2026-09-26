@@ -19,6 +19,7 @@ import time
 from typing import Any
 
 from operator_external_create_attempt import find_external_create_attempt
+from operator_store import plan_cancel
 from operator_store_model import operation_events, operation_id_for, reservation_path
 from operator_vertical_controller import select_vertical_action
 from operator_vertical_recovery import plan_vertical_takeover
@@ -36,6 +37,7 @@ from v03_scenario_runtime_driver import ADAPTER_ID, assemble_scenario_live_prefl
 UNKNOWN = "unknown-takeover"
 CONCURRENT = "concurrent-resume"
 PREAUTH = "reservation-committed-pre-authorization-crash-recovery"
+LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"
 IDEMPOTENCY = {
     UNKNOWN: "v03-release-fi-unknown-takeover-r2",
     CONCURRENT: "v03-release-fi-concurrent-resume",
@@ -184,6 +186,77 @@ def _start_request(preflight, scenario: str, revision: int) -> dict[str, Any]:
         },
         "context": {"expected_feature_revision": revision},
     }
+
+
+def _retire_prelaunch_unknown_contamination(preflight) -> None:
+    """Cancel only the known prelaunch-UNKNOWN harness Operation from the prior bug.
+
+    The old scenario attempt is safe to retire only when durable Store truth proves
+    the external-create boundary was never crossed. Any shape drift fails closed.
+    """
+    legacy_operation_id = operation_id_for(
+        preflight.execution.repository,
+        preflight.slot.feature_id,
+        LEGACY_UNKNOWN_IDEMPOTENCY,
+    )
+    events = _events(preflight, legacy_operation_id)
+    if not events:
+        return
+    projection = vertical_projection(
+        preflight.composition.bundle.runtime.backend.read_snapshot(),
+        legacy_operation_id,
+    )
+    if projection.get("status") == "CANCELLED":
+        return
+    if projection.get("status") != "BLOCKED" or int(projection.get("generation", -1)) != 0:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination has unexpected Operation state"
+        )
+    claims = _events(preflight, legacy_operation_id, "dispatch.claimed", 0)
+    auth = _authorization_rows(preflight, legacy_operation_id, 0)
+    lookup = _lookup_rows(preflight, legacy_operation_id, 0)
+    callbacks = _events(preflight, legacy_operation_id, "worker.callback.recorded", 0)
+    persists = _persist_rows(preflight, legacy_operation_id)
+    if len(claims) != 1 or len(auth) != 1 or len(lookup) != 1 or callbacks or persists:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination does not match the exact prelaunch-only shape"
+        )
+    claim_payload = claims[0].get("payload") or {}
+    auth_payload = auth[0].get("payload") or {}
+    lookup_payload = lookup[0].get("payload") or {}
+    external_key = str(claim_payload.get("external_dispatch_key") or "")
+    if (
+        not external_key
+        or auth_payload.get("external_dispatch_key") != external_key
+        or lookup_payload.get("external_dispatch_key") != external_key
+        or lookup_payload.get("lookup_state") != "UNKNOWN"
+        or lookup_payload.get("receipt_id") is not None
+    ):
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination external identity is not exact"
+        )
+    snapshot = preflight.composition.bundle.runtime.backend.read_snapshot()
+    if find_external_create_attempt(snapshot, external_dispatch_key=external_key) is not None:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination crossed the external-create attempt boundary"
+        )
+    preflight.composition.bundle.runtime.commit_replanned(
+        lambda state: plan_cancel(
+            state,
+            operation_id=legacy_operation_id,
+            reason="harness remediation: preflight UNKNOWN before external-create attempt",
+            occurred_at=preflight.composition.bundle.runtime.clock(),
+            trusted_context_digest=_base(preflight).config.trusted_context_digest,
+        )
+    )
+    retired = vertical_projection(
+        preflight.composition.bundle.runtime.backend.read_snapshot(),
+        legacy_operation_id,
+    )
+    if retired.get("status") != "CANCELLED":
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination did not converge to CANCELLED"
+        )
 
 
 def _start_only(preflight, scenario: str) -> tuple[str, int]:
@@ -403,6 +476,7 @@ class CrashAfterDurableReservationRuntime:
 
 def run_unknown_inject() -> None:
     preflight = _preflight(UNKNOWN)
+    _retire_prelaunch_unknown_contamination(preflight)
     operation_id, revision = _start_only(preflight, UNKNOWN)
     feature, action = _select_dispatch(preflight, operation_id)
     base = _base(preflight)

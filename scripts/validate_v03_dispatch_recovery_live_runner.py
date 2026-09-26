@@ -194,6 +194,30 @@ def validate_preauthorization_crash_boundary():
     require(result.result == blocked and wrapper3.injected is False, "crash wrapper injected on blocked lineage proposal")
 
 
+def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
+    source = open(subject.__file__, encoding="utf-8").read()
+    require(
+        'LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"' in source,
+        "legacy UNKNOWN cleanup lost exact consumed identity",
+    )
+    require(
+        'find_external_create_attempt(snapshot, external_dispatch_key=external_key) is not None' in source,
+        "legacy UNKNOWN cleanup does not fail closed after external-create attempt",
+    )
+    require(
+        'lookup_payload.get("lookup_state") != "UNKNOWN"' in source,
+        "legacy UNKNOWN cleanup does not require durable UNKNOWN lookup shape",
+    )
+    require(
+        'callbacks or persists' in source,
+        "legacy UNKNOWN cleanup does not reject callback/Persist contamination",
+    )
+    require(
+        '_retire_prelaunch_unknown_contamination(preflight)' in source,
+        "UNKNOWN inject does not retire the exact old prelaunch contamination first",
+    )
+
+
 def validate_generic_record_is_anti_overclaim():
     record = subject._generic_record(
         scenario=subject.UNKNOWN,
@@ -225,6 +249,7 @@ def main():
     validate_unknown_wrapper()
     validate_no_external_access_fence()
     validate_preauthorization_crash_boundary()
+    validate_legacy_unknown_cleanup_is_strictly_prelaunch_only()
     validate_generic_record_is_anti_overclaim()
     print("PASS: #314 dispatch/recovery live wrappers are closed, zero-effect in PR validation, and fail-closed")
     print("- UNKNOWN permits one exact delegated launch then suppresses certainty without fallback lookup")
