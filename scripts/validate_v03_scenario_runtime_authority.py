@@ -103,6 +103,10 @@ def live(*, exec_obj=None, policy_obj=None):
 
 
 def validate_closed_inventory_and_api_surface():
+    require(
+        preflight_subject.DEVELOPER_WORKFLOW == "ai-sdlc-gh-aw-worker-codex.lock.yml",
+        "scenario Developer workflow escaped the frozen production worker binding",
+    )
     require(len(SLOTS) == 9, "scenario runtime authority inventory is not exactly nine slots")
     require(tuple(slot.scenario for slot in SLOTS) == EXPECTED_SCENARIOS, "scenario order drifted")
     require(len(set(EXPECTED_SCENARIOS)) == 9, "scenario ids are not unique")
