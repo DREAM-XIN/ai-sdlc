@@ -69,6 +69,11 @@ checkout:
   current: true
   github-token: ${{ secrets.GITHUB_TOKEN }}
 safe-outputs:
+  threat-detection:
+    engine:
+      id: copilot
+      harness:
+        max-retries: 0
   github-token: ${{ secrets.GITHUB_TOKEN }}
   add-comment:
     max: 1
