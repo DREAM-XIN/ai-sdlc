@@ -15,8 +15,8 @@ from v03_effect_safety_live_ledger_launch_cancel import (
 import v03_launch_cancel_live_runner as subject
 
 REPOSITORY = "dream-xin/ai-sdlc"
-FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0017"
-REF = "verification/v0.3-real-runtime-fixture-221-r17"
+FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0018"
+REF = "verification/v0.3-real-runtime-fixture-221-r18"
 MAIN = "1" * 40
 MATERIALIZATION = "2" * 40
 POLICY = "3" * 64
@@ -164,13 +164,17 @@ def validate_feature_read_uses_configured_authority_only():
     manifest = {"revision": 13}
     gateway = FakeConfiguredFeatureEventGateway(manifest)
     candidate = SimpleNamespace(candidate_pr_number=901, candidate_head_sha=CANDIDATE)
+    candidate_calls = []
+    def current_candidate(**kwargs):
+        candidate_calls.append(dict(kwargs))
+        return candidate
     preflight = SimpleNamespace(
         execution=SimpleNamespace(repository=REPOSITORY),
         composition=SimpleNamespace(
             feature_event_gateway=gateway,
             feature_id=FEATURE,
             target_ref=REF,
-            candidate_provider=SimpleNamespace(resolve=lambda: candidate),
+            candidate_provider=SimpleNamespace(current_candidate=current_candidate),
         ),
     )
     captured = {}
@@ -179,10 +183,16 @@ def validate_feature_read_uses_configured_authority_only():
         from_manifest=lambda **kwargs: captured.update(kwargs) or "snapshot"
     )
     try:
-        snapshot, actual_manifest = subject._feature(preflight)
+        snapshot, actual_manifest = subject._feature(preflight, operation_id="op-feature-read")
         require(snapshot == "snapshot", "configured Manifest read changed Feature snapshot")
         require(actual_manifest is manifest, "configured Manifest truth was replaced")
         require(gateway.calls == [FEATURE], "launch/cancel Manifest read escaped configured Feature authority")
+        require(candidate_calls == [{
+            "operation_id": "op-feature-read",
+            "repository": REPOSITORY,
+            "feature_id": FEATURE,
+            "target_ref": REF,
+        }], "launch/cancel candidate read escaped Operation-bound authority")
         require(captured["repository"] == REPOSITORY, "Feature snapshot lost trusted repository")
         require(captured["target_ref"] == REF, "Feature snapshot lost trusted target ref")
         require(captured["candidate_head_sha"] == CANDIDATE, "Feature snapshot lost exact candidate")

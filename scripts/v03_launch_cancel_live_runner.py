@@ -45,14 +45,19 @@ def _events(preflight, operation_id: str) -> list[dict[str, Any]]:
     return operation_events(preflight.composition.bundle.runtime.backend.read_snapshot(), operation_id)
 
 
-def _feature(preflight) -> tuple[FeatureSnapshot, dict[str, Any]]:
-    # Keep Manifest truth behind the configured production authority boundary:
-    # repository and Feature -> ref mapping are server-bound, so this runner may
-    # pass only the fixed Feature identity.
+def _feature(preflight, *, operation_id: str) -> tuple[FeatureSnapshot, dict[str, Any]]:
+    # Keep Manifest and candidate truth behind configured production authority
+    # boundaries. Candidate lookup stays Operation-bound; this live runner must
+    # not revive the former unscoped resolve() compatibility path.
     manifest = preflight.composition.feature_event_gateway.read_feature(
         feature_id=preflight.composition.feature_id,
     )
-    candidate = preflight.composition.candidate_provider.resolve()
+    candidate = preflight.composition.candidate_provider.current_candidate(
+        operation_id=operation_id,
+        repository=preflight.execution.repository,
+        feature_id=preflight.composition.feature_id,
+        target_ref=preflight.composition.target_ref,
+    )
     return (
         FeatureSnapshot.from_manifest(
             repository=preflight.execution.repository,
@@ -285,7 +290,7 @@ def run_cancel_before_authorization(
     projection_before = vertical_projection(
         preflight.composition.bundle.runtime.backend.read_snapshot(), operation_id
     )
-    feature_before, _ = _feature(preflight)
+    feature_before, _ = _feature(preflight, operation_id=operation_id)
     if projection_before.get("status") != "RUNNING":
         raise V03LaunchCancelLiveError("cancel pair requires the chained lost-ACK Operation to be RUNNING")
     if projection_before.get("expected_feature_revision") != feature_before.revision:
@@ -357,7 +362,7 @@ def run_cancel_before_authorization(
     reservation = snapshot.get(reservation_path(semantic_key))
     if not isinstance(reservation, dict) or reservation.get("external_dispatch_key") != external_key:
         raise V03LaunchCancelLiveError("cancel-before-authorization lacks exact immutable reservation")
-    feature_after, _ = _feature(preflight)
+    feature_after, _ = _feature(preflight, operation_id=operation_id)
     new_persist = [
         row for row in events
         if row.get("event_type") == "persist.confirmed" and row["event_id"] not in baseline_persist_ids
@@ -497,7 +502,7 @@ def run_authorized_before_cancel(
     ledger_evaluator: Callable[..., dict[str, Any]] = evaluate_issue_221_with_launch_cancel,
 ) -> dict[str, Any]:
     before = _load_before(before_path)
-    feature, _ = _feature(preflight)
+    feature, _ = _feature(preflight, operation_id=str(before["operation_id"]))
     if (
         feature.revision != before.get("feature_revision_before")
         or feature.current_stage != "verification"

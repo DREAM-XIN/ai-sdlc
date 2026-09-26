@@ -16,9 +16,9 @@ REPOSITORY = "dream-xin/ai-sdlc"
 OPERATION_ID = "op-" + "a" * 32
 EXTERNAL_KEY = "ext-" + "b" * 32
 SEMANTIC_KEY = "d" * 64
-EVENT_ID = "EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0017-CODE-REVIEW-PASS-DEADBEEF0001"
+EVENT_ID = "EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0018-CODE-REVIEW-PASS-DEADBEEF0001"
 CALLBACK_ID = "gh-aw-callback-" + "c" * 24
-TARGET_REF = "verification/v0.3-real-runtime-fixture-221-r17"
+TARGET_REF = "verification/v0.3-real-runtime-fixture-221-r18"
 
 
 def require(value, message):
