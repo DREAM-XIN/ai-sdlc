@@ -32,6 +32,8 @@ from operator_vertical import (
     validate_worker_result,
 )
 from operator_vertical_gh_aw_collector import _build_receipts, _current_launch_binding, _validate_run
+from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+from operator_v03_vertical_production_runtime import _DeferredExactVerticalPersistGateway
 from operator_vertical_recovery import derive_role_independence_policy
 from operator_vertical_store import vertical_projection
 from v03_lost_ack_live_runner import IDEMPOTENCY_KEY as LOST_ACK_IDEMPOTENCY_KEY
@@ -64,6 +66,26 @@ def _operation_id(preflight) -> str:
 
 def _scenario_events(preflight, operation_id: str) -> list[dict[str, Any]]:
     return operation_events(preflight.composition.bundle.runtime.backend.read_snapshot(), operation_id)
+
+
+def _exact_production_persist_binding(preflight, *, phase: str):
+    """Return the exact executor Persist bridge after proving the production authority chain."""
+    bundle = preflight.composition.bundle
+    base = getattr(bundle.executor, "base", bundle.executor)
+    bridge = getattr(base, "persist_gateway", None)
+    if not isinstance(bridge, _DeferredExactVerticalPersistGateway):
+        raise V03PersistAckLossLiveError(f"{phase} executor does not use production Persist bridge")
+    try:
+        durable = bridge.delegate
+    except Exception as exc:
+        raise V03PersistAckLossLiveError(f"{phase} production Persist bridge is not bound") from exc
+    if not isinstance(durable, DurableVerticalFeaturePersistGateway):
+        raise V03PersistAckLossLiveError(f"{phase} Persist bridge delegate is not Durable production Persist")
+    if durable.runtime is not bundle.runtime:
+        raise V03PersistAckLossLiveError(f"{phase} Durable Persist does not share exact production Store runtime")
+    if durable.event_gateway is not preflight.composition.feature_event_gateway:
+        raise V03PersistAckLossLiveError(f"{phase} Durable Persist does not use exact production Event gateway")
+    return base, bridge
 
 
 def _one_event(events: list[dict[str, Any]], event_type: str, *, generation: int | None = None) -> dict[str, Any]:
@@ -314,10 +336,7 @@ def run_phase1(
         raise V03PersistAckLossLiveError("Reviewer completion runtime receipt differs from G1 adopted receipt")
 
     bundle = preflight.composition.bundle
-    base = getattr(bundle.executor, "base", bundle.executor)
-    normal_persist = getattr(base, "persist_gateway", None)
-    if normal_persist is not preflight.composition.feature_event_gateway:
-        raise V03PersistAckLossLiveError("phase1 executor does not use exact production Persist gateway")
+    base, normal_persist = _exact_production_persist_binding(preflight, phase="phase1")
     base.persist_gateway = LostAckCrashAfterPersistGateway(
         delegate=normal_persist,
         expected_feature_event_id=prepared["feature_event_id"],
@@ -470,10 +489,7 @@ def run_phase2(
         raise V03PersistAckLossLiveError("phase1 Reviewer run/receipt identity was not exact")
 
     bundle = preflight.composition.bundle
-    base = getattr(bundle.executor, "base", bundle.executor)
-    normal_persist = getattr(base, "persist_gateway", None)
-    if normal_persist is not preflight.composition.feature_event_gateway:
-        raise V03PersistAckLossLiveError("phase2 executor does not use exact production Persist gateway")
+    base, normal_persist = _exact_production_persist_binding(preflight, phase="phase2")
     fence = LookupOnlyPersistRecoveryGateway(
         delegate=normal_persist,
         expected_event_id=str(prior["feature_event_id"]),
