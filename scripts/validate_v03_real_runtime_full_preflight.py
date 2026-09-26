@@ -100,8 +100,8 @@ def validate_positive_preflight_is_fixed_and_zero_effect():
         "Developer must bind the actually installed trusted Registry Codex Worker",
     )
     require(
-        subject.QA_WORKFLOW == "ai-sdlc-gh-aw-qa-gemini.lock.yml",
-        "QA must bind the reviewed specialized Gemini Gate Worker",
+        subject.QA_WORKFLOW == "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml",
+        "QA must bind the reviewed same-repo local Gemini Gate Worker",
     )
     for workflow in (
         subject.DEVELOPER_WORKFLOW,
