@@ -18,7 +18,7 @@ from v03_scenario_runtime_composition import (
     slot_for_scenario,
 )
 
-DEVELOPER_WORKFLOW = "ai-sdlc-gh-aw-developer-codex.lock.yml"
+DEVELOPER_WORKFLOW = "ai-sdlc-gh-aw-worker-codex.lock.yml"
 QA_WORKFLOW = "ai-sdlc-gh-aw-qa-gemini.lock.yml"
 
 
