@@ -1,0 +1,28 @@
+changes:
+- kind: evidence
+  record:
+    id: vertical-evidence-4a8172d8f149005ffa34
+    status: pass
+    type: review
+    uri: docs/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0017/worker-runs/vertical-9672960ea5d3d91e400e90cc66bd6ffc/reviewer-comment-5842804556-binding-1023a0b5567ea0a5c0654173db102d9fa9020715d5512a6dceae409bcf418c9f--first-attempt--key-dispatch-d96d3cb82eaf214d347509b687fe8bd81b86fe3f--run-36214940184--head-eb1397331af5c4ffa912f9a5036701175c80ca79--lease-8ef343ee653b3f12d679415d07099b1019f1be00d55cb53febf1d0d62d99637b.json
+- evidence:
+  - vertical-evidence-4a8172d8f149005ffa34
+  id: implementation-v1
+  kind: artifact
+  status: approved
+- evidence:
+  - vertical-evidence-4a8172d8f149005ffa34
+  id: code-gate
+  kind: gate
+  status: PASS
+- id: code-review
+  kind: stage
+  status: DONE
+- id: verification
+  kind: stage
+  status: READY
+expected_revision: 1
+feature_id: F-OPERATOR-V03-REAL-RUNTIME-FI-0017
+id: EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0017-VERTICAL-CODE-REVIEW-PASS-4564CB6850B2
+occurred_at: '2026-09-26T03:33:54Z'
+version: 0.1.0
