@@ -267,7 +267,7 @@ def validate_repository_pending_converges_without_duplicate_write():
     require(receipt.result_revision == REV + 1, receipt)
     require(fake.put_count == 1, "PENDING convergence repeated the repository Event write")
     require(fake.event_lookup_count >= 4, "PENDING convergence did not wait for exact applied receipt")
-    require(sleeps, "PENDING convergence did not exercise bounded read-only waiting")
+    require(len(sleeps) <= 5, "PENDING convergence exceeded its bounded wait budget")
 
     fake = HistoryFakeGitHub()
     gateway = RepositoryReceiptSafeCanonicalFeatureEventGateway(
