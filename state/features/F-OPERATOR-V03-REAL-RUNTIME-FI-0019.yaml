@@ -1,0 +1,45 @@
+protocol_version: 0.1.0
+revision: 2
+feature:
+  id: F-OPERATOR-V03-REAL-RUNTIME-FI-0019
+  title: v0.3 trusted real-runtime fault-injection fixture
+  risk: low
+  issue: '#276'
+workflow:
+  profile: v03-real-runtime-fixture
+  status: ACTIVE
+  current_stage: verification
+  stages:
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: READY
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts:
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0019/implementation.md
+  status: approved
+gates:
+- id: code-gate
+  status: PASS
+  evidence:
+  - vertical-evidence-b5c20960e558b66b11e8
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence:
+- id: vertical-evidence-b5c20960e558b66b11e8
+  status: pass
+  type: review
+  uri: docs/features/F-OPERATOR-V03-REAL-RUNTIME-FI-0019/worker-runs/vertical-094afbb522783cd4d27a1b9d988fc60c/reviewer-comment-5843314603-binding-3f52f78f8797d98d2f59dde867ab9a5116ab816ee3bf4f057d41e5e8026ce950--first-attempt--key-dispatch-ef826b763d6422cff91e5e1e0ca48ad7fe0c6fbf--run-36218935967--head-69647a76c94c2642679954aeabb8b545abe70f46--lease-55a6575262bf23df0dcb4138148d65838296df8cbeaba46307826df89140e733.json
+applied_events:
+- EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0019-CODE-REVIEW-START
+- EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0019-VERTICAL-CODE-REVIEW-PASS-533EB8DD9D13
+updated_at: '2026-09-26T04:53:42Z'
