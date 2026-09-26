@@ -7,6 +7,11 @@ from operator_decision_feature_truth import DurableDecisionFeatureTruthGateway, 
 from operator_github_feature_event_gateway import FeatureEventGatewayError
 from operator_production_feature_event_gateway import ProductionConfiguredFeatureEventGateway, TrustedFeatureEventWriteScope
 from operator_store import plan_operation_start
+from operator_vertical_store import (
+    plan_vertical_persist_confirmed,
+    plan_vertical_persist_linearized,
+    plan_vertical_persist_requested,
+)
 from operator_store_backends import OperatorStoreRuntime
 from operator_store_git import MemoryStateRefBackend
 from operator_store_protection import PROTECTED, StaticProtectionVerifier
@@ -125,6 +130,35 @@ def main():
     require(transport.reads == [(REPOSITORY, FEATURE, REF)], transport.reads)
     require(candidates.calls == [(operation_id, REPOSITORY, FEATURE, REF)], candidates.calls)
 
+    # A trusted Vertical Persist advances the same Operation's effective
+    # revision fence. Subsequent Feature truth must use that durable overlay,
+    # not the immutable revision from operation.started.
+    event_id = "EVT-F-DECISION-TRUTH-0001-REVIEW-PASS"
+    for planner, extra in (
+        (plan_vertical_persist_requested, {}),
+        (plan_vertical_persist_linearized, {}),
+        (plan_vertical_persist_confirmed, {"result_revision": 8}),
+    ):
+        store.commit_replanned(
+            lambda snapshot, planner=planner, extra=extra: planner(
+                snapshot,
+                operation_id=operation_id,
+                generation=0,
+                feature_event_id=event_id,
+                expected_revision=7,
+                target_ref=REF,
+                candidate_head_sha=HEAD,
+                occurred_at=NOW,
+                trusted_context_digest="decision-truth-fixture",
+                **extra,
+            )
+        )
+    transport.manifest["revision"] = 8
+    feature_after_persist, manifest_after_persist = adapter.read_feature(operation_id=operation_id)
+    require(feature_after_persist.revision == 8, feature_after_persist)
+    require(manifest_after_persist["revision"] == 8, manifest_after_persist)
+    require(candidates.calls[-1] == (operation_id, REPOSITORY, FEATURE, REF), candidates.calls[-1])
+
     # Client/caller cannot ask this adapter to persist Events: it is the read-only
     # accepted FeatureTruthGateway used by Decision response verification.
     require(not hasattr(adapter, "persist_decision_response"), "Feature truth adapter unexpectedly owns Decision Event writes")
@@ -140,9 +174,9 @@ def main():
     assert_code("UNAUTHORIZED", lambda: adapter.read_feature(operation_id=foreign_operation))
     require(len(transport.reads) == 1, "foreign Operation reached trusted Feature read transport")
 
-    transport.manifest["revision"] = 8
+    transport.manifest["revision"] = 9
     assert_code("STALE_REVISION", lambda: adapter.read_feature(operation_id=operation_id))
-    transport.manifest["revision"] = 7
+    transport.manifest["revision"] = 8
 
     bad_candidates = CandidateProvider(result=object())
     bad_adapter = DurableDecisionFeatureTruthGateway(
@@ -156,9 +190,10 @@ def main():
 
     print("Decision durable Feature truth validation passed")
     print("- operation_id is the only accepted lookup authority")
-    print("- repository/Feature/revision come from durable Operation state")
+    print("- repository/Feature/revision come from durable Vertical Operation state")
     print("- target ref comes from server-owned Feature configuration")
     print("- current candidate head comes from a separate trusted provider")
+    print("- persist.confirmed advances the same Operation's effective revision fence")
     print("- foreign Operation, stale Feature and invalid candidate provider fail closed")
     print("- Feature truth adapter exposes no Feature Event write method")
 
