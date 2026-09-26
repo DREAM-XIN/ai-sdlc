@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 2
+revision: 3
 feature:
   id: F-OPERATOR-V03-REAL-RUNTIME-FI-0026
   title: v0.3 trusted real-runtime fault-injection fixture
@@ -14,7 +14,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: READY
+    status: WORKING
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -42,4 +42,5 @@ evidence:
 applied_events:
 - EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0026-CODE-REVIEW-START
 - EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0026-VERTICAL-CODE-REVIEW-PASS-5A25A71960B0
-updated_at: '2026-09-26T14:17:54Z'
+- EVT-F-OPERATOR-V03-REAL-RUNTIME-FI-0026-VERTICAL-VERIFICATION-START-25790C7D74DA
+updated_at: '2026-09-26T14:20:26Z'
