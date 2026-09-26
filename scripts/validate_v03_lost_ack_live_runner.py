@@ -25,8 +25,8 @@ def require(value, message):
 def binding():
     return LostAckDispatchBinding(
         repository=REPOSITORY,
-        feature_id="F-OPERATOR-V03-REAL-RUNTIME-FI-0019",
-        target_ref="verification/v0.3-real-runtime-fixture-221-r19",
+        feature_id="F-OPERATOR-V03-REAL-RUNTIME-FI-0020",
+        target_ref="verification/v0.3-real-runtime-fixture-221-r20",
         feature_revision=11,
         current_stage="implementation",
         candidate_pr_number=901,
