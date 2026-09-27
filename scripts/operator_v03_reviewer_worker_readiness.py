@@ -66,6 +66,15 @@ V03_REVIEWER_OPTIONS = (
         credential_env="DASHSCOPE_API_KEY",
     ),
     ReviewerWorkerOption(
+        worker_id="code-review-reviewer-gemini",
+        role="reviewer",
+        stage="code-review",
+        profile="gemini",
+        workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+        credential_env="GEMINI_API_KEY",
+    ),
+    ReviewerWorkerOption(
         worker_id="code-review-reviewer-copilot",
         role="reviewer",
         stage="code-review",
@@ -100,7 +109,7 @@ def _registry_reviewers(path: Path) -> tuple[dict, ...]:
     if len(rows) != len(V03_REVIEWER_OPTIONS):
         raise ReviewerWorkerReadinessError(
             "WORKER_REGISTRY_DRIFT",
-            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Qwen/Copilot options",
+            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Qwen/Gemini/Copilot options",
         )
     return rows
 
