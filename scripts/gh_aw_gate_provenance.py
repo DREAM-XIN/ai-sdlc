@@ -9,6 +9,7 @@ import re
 from pathlib import Path, PurePosixPath
 
 from gh_aw_role_workers import RoleWorkerError, require_role_worker_workflow
+from operator_store_model import external_dispatch_key, semantic_effect_key
 
 
 class GateProvenanceError(ValueError):
@@ -27,14 +28,35 @@ def _registry_workflow(role: str, stage: str, workflow: str) -> str:
     return V03_GATE_WORKFLOW_ALIASES.get((role, stage, workflow), workflow)
 
 
-def dispatch_key(feature_id: str, task_id: str, revision: int, head_sha: str) -> str:
+def dispatch_key(
+    *,
+    target_repository: str,
+    feature_id: str,
+    task_id: str,
+    revision: int,
+    stage: str,
+    role: str,
+    head_sha: str,
+) -> str:
     if not feature_id or not task_id:
         raise GateProvenanceError("feature_id and task_id are required")
     if not isinstance(revision, int) or revision < 0:
         raise GateProvenanceError("revision must be a non-negative integer")
     if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         raise GateProvenanceError("candidate head must be a lowercase 40-character SHA")
-    return f"{feature_id}:{task_id}:r{revision}:{head_sha}"
+    try:
+        effect_key = semantic_effect_key(
+            target_repository=target_repository,
+            feature_id=feature_id,
+            expected_revision=revision,
+            current_stage=stage,
+            task_identity=task_id,
+            role=role,
+            candidate_head_sha=head_sha,
+        )
+    except Exception as exc:
+        raise GateProvenanceError("cannot derive trusted external dispatch identity") from exc
+    return external_dispatch_key(effect_key)
 
 
 def validate_run(
@@ -43,6 +65,7 @@ def validate_run(
     source_run_id: int,
     source_workflow_ref: str,
     control_repository: str,
+    target_repository: str,
     default_branch: str,
     role: str,
     stage: str,
@@ -78,9 +101,16 @@ def validate_run(
     if source_workflow_ref != expected_ref:
         raise GateProvenanceError("source workflow_ref does not match the trusted role-worker/default-branch identity")
 
-    key = dispatch_key(feature_id, task_id, expected_revision, candidate_head_sha)
-    label = "reviewer" if role == "reviewer" else "qa"
-    expected_title = f"AI-SDLC gh-aw gate {label} {key}"
+    key = dispatch_key(
+        target_repository=target_repository,
+        feature_id=feature_id,
+        task_id=task_id,
+        revision=expected_revision,
+        stage=stage,
+        role=role,
+        head_sha=candidate_head_sha,
+    )
+    expected_title = f"AI-SDLC gh-aw {key}"
     if run.get("display_title") != expected_title:
         raise GateProvenanceError("source run title is not bound to the trusted Feature/task/revision/candidate identity")
     return worker
@@ -92,6 +122,7 @@ def main():
     parser.add_argument("--source-run-id", required=True, type=int)
     parser.add_argument("--source-workflow-ref", required=True)
     parser.add_argument("--control-repository", required=True)
+    parser.add_argument("--target-repository", required=True)
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--role", required=True)
     parser.add_argument("--stage", required=True)
@@ -106,6 +137,7 @@ def main():
             source_run_id=args.source_run_id,
             source_workflow_ref=args.source_workflow_ref,
             control_repository=args.control_repository,
+            target_repository=args.target_repository,
             default_branch=args.default_branch,
             role=args.role,
             stage=args.stage,
