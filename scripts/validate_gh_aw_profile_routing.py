@@ -40,7 +40,7 @@ def main():
         ("architect", "design"): ("claude", "copilot"),
         ("orchestrator", "plan"): ("codex", "copilot"),
         ("developer", "implementation"): ("codex", "copilot"),
-        ("reviewer", "code-review"): ("claude", "qwen", "copilot"),
+        ("reviewer", "code-review"): ("claude", "qwen", "gemini", "copilot"),
         ("qa", "verification"): ("gemini", "copilot"),
     }
     for key, candidates in expected.items():
