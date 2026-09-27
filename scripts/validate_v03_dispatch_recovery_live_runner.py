@@ -253,6 +253,10 @@ def validate_concurrent_racer_preflight_is_sequenced():
 def validate_concurrent_racer_refreshes_protection_before_commit():
     source = open(subject.__file__, encoding="utf-8").read()
     require(
+        'refresh_process_attested_ruleset_verifiers()' in source,
+        "concurrent racer does not drop stale process-local protection authority",
+    )
+    require(
         'fresh = _preflight(CONCURRENT)' in source,
         "concurrent racer does not refresh trusted protection after the release barrier",
     )
@@ -275,11 +279,12 @@ def validate_concurrent_racer_refreshes_protection_before_commit():
     )
     ready_pos = source.find('_write_json(ready, {')
     go_pos = source.find('_wait(_path(CONCURRENT, f"go-{racer}"))')
+    refresh_pos = source.find('refresh_process_attested_ruleset_verifiers()')
     fresh_pos = source.find('fresh = _preflight(CONCURRENT)')
     execute_pos = source.find('result = _base(fresh).advance_action(operation_id=operation_id, action=action)')
     require(
-        -1 not in (ready_pos, go_pos, fresh_pos, execute_pos)
-        and ready_pos < go_pos < fresh_pos < execute_pos,
+        -1 not in (ready_pos, go_pos, refresh_pos, fresh_pos, execute_pos)
+        and ready_pos < go_pos < refresh_pos < fresh_pos < execute_pos,
         "fresh protection proof is not sequenced after stale-action selection and immediately before commit",
     )
 
