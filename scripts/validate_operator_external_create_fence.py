@@ -154,15 +154,21 @@ def seed_authorized(runtime, *, feature_id=FEATURE):
     }
 
 
-def binding(workflow="ai-sdlc-gh-aw-reviewer-claude.lock.yml"):
+def binding(workflow="ai-sdlc-gh-aw-reviewer-gemini.lock.yml"):
+    if "gemini" in workflow:
+        worker_id, profile, credential = "code-review-reviewer-gemini", "gemini", "GEMINI_API_KEY"
+    elif "claude" in workflow:
+        worker_id, profile, credential = "code-review-reviewer-claude", "claude", "ANTHROPIC_API_KEY"
+    else:
+        worker_id, profile, credential = "code-review-reviewer-copilot", "copilot", "COPILOT_GITHUB_TOKEN"
     return {
-        "worker_id": "code-review-reviewer-claude" if "claude" in workflow else "code-review-reviewer-copilot",
+        "worker_id": worker_id,
         "role": "reviewer",
-        "profile": "claude" if "claude" in workflow else "copilot",
+        "profile": profile,
         "workflow_file": workflow,
-        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "default_branch": "main",
-        "credential_name": "ANTHROPIC_API_KEY" if "claude" in workflow else "COPILOT_GITHUB_TOKEN",
+        "credential_name": credential,
     }
 
 
