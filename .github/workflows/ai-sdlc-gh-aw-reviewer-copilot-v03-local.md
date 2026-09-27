@@ -48,7 +48,7 @@ engine:
     initial-delay-ms: 10000
     backoff-multiplier: 2
     max-delay-ms: 120000
-model: gpt-4.1
+model: auto
 permissions:
   contents: read
   issues: read
