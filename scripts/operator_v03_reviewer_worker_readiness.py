@@ -48,6 +48,15 @@ class ReviewerWorkerSelection:
 
 V03_REVIEWER_OPTIONS = (
     ReviewerWorkerOption(
+        worker_id="code-review-reviewer-gemini",
+        role="reviewer",
+        stage="code-review",
+        profile="gemini",
+        workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+        credential_env="GEMINI_API_KEY",
+    ),
+    ReviewerWorkerOption(
         worker_id="code-review-reviewer-claude",
         role="reviewer",
         stage="code-review",
@@ -66,7 +75,7 @@ V03_REVIEWER_OPTIONS = (
         credential_env="COPILOT_GITHUB_TOKEN",
     ),
 )
-SELECTION_POLICY = "v03-frozen-reviewer-provider-order/v1"
+SELECTION_POLICY = "v03-frozen-reviewer-provider-order/v2"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -91,7 +100,7 @@ def _registry_reviewers(path: Path) -> tuple[dict, ...]:
     if len(rows) != len(V03_REVIEWER_OPTIONS):
         raise ReviewerWorkerReadinessError(
             "WORKER_REGISTRY_DRIFT",
-            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Copilot options",
+            "v0.3 Reviewer registry must contain exactly the reviewed Gemini/Claude/Copilot options",
         )
     return rows
 
