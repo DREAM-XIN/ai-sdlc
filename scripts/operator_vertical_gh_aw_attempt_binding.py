@@ -102,14 +102,20 @@ class FirstAttemptDigestBoundGhAwResultSource(
             or str(run.get("display_title") or "")
             != f"AI-SDLC gh-aw {external_dispatch_key}"
             or run.get("event") != "workflow_dispatch"
-            or run.get("status") != "completed"
-            or run.get("conclusion") != "success"
             or str(run.get("head_branch") or "")
             != self.config.workflows.default_branch
             or not _SHA_RE.fullmatch(head_sha)
         ):
             raise VerticalInvariantError(
-                "BLOCKED", "first-attempt gh-aw run snapshot is not exact/successful"
+                "BLOCKED", "first-attempt gh-aw run snapshot identity is not exact"
+            )
+        if run.get("status") != "completed":
+            raise VerticalInvariantError(
+                "BLOCKED", "first-attempt gh-aw run is not completed"
+            )
+        if run.get("conclusion") != "success":
+            raise VerticalInvariantError(
+                "BLOCKED", "first-attempt gh-aw run completed without success"
             )
         return {
             "run_id": run_id,
