@@ -48,7 +48,8 @@ engine:
     initial-delay-ms: 10000
     backoff-multiplier: 2
     max-delay-ms: 120000
-model: auto
+# Keep the provider-qualified dynamic selector so gh-aw does not pre-resolve `auto` to a concrete model.
+model: copilot/auto
 permissions:
   contents: read
   issues: read
