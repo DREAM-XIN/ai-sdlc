@@ -32,6 +32,34 @@ jobs:
           }
           test "$(current_main)" = "$EXPECTED_SHA"
 
+          guard_recent_reviewer_429() {
+            local workflow="ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml"
+            local run_json run_id status conclusion updated_at updated_epoch now_epoch age_seconds
+            run_json=$(gh run list               --repo "$GITHUB_REPOSITORY"               --workflow "$workflow"               --event workflow_dispatch               --branch main               --limit 1               --json databaseId,status,conclusion,updatedAt,url | jq -c '.[0] // empty')
+            [[ -n "$run_json" ]] || return 0
+
+            run_id=$(jq -r '.databaseId' <<<"$run_json")
+            status=$(jq -r '.status' <<<"$run_json")
+            conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+            updated_at=$(jq -r '.updatedAt' <<<"$run_json")
+            [[ "$status" == "completed" && "$conclusion" == "failure" ]] || return 0
+
+            if ! gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log 2>/dev/null | grep -Fq '429 Too Many Requests'; then
+              return 0
+            fi
+
+            updated_epoch=$(date -u -d "$updated_at" +%s)
+            now_epoch=$(date -u +%s)
+            age_seconds=$((now_epoch - updated_epoch))
+            if (( age_seconds < 900 )); then
+              echo "::error::Recent v0.3 Reviewer run $run_id failed with Copilot 429; cooldown active before any release fixture is provisioned."
+              echo "Reviewer 429 cooldown remaining: $((900 - age_seconds)) seconds"
+              exit 75
+            fi
+          }
+
+          guard_recent_reviewer_429
+
           run_one() {
             local workflow="$1"
             local scenario="${2:-}"

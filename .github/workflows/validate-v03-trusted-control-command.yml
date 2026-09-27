@@ -26,6 +26,7 @@ jobs:
           path = Path('.github/workflows/v03-trusted-control-command.yml')
           text = path.read_text(encoding='utf-8')
           diagnostic = Path('.github/workflows/v03-ruleset-source-identity-diagnostic.yml').read_text(encoding='utf-8')
+          auto_continue = Path('.github/workflows/v03-issue-221-auto-continue.yml').read_text(encoding='utf-8')
 
           required_literals = [
               'issue_comment:',
@@ -134,6 +135,24 @@ jobs:
               for scenario in scenarios:
                   if scenario not in target_text:
                       raise SystemExit(f'allowlisted scenario missing from {workflow}: {scenario}')
+
+          auto_required = [
+              'guard_recent_reviewer_429()',
+              'ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml',
+              "grep -Fq '429 Too Many Requests'",
+              'age_seconds < 900',
+              'cooldown active before any release fixture is provisioned',
+              'guard_recent_reviewer_429',
+              'run_one provision-v03-real-runtime-fixture.yml',
+          ]
+          for literal in auto_required:
+              if literal not in auto_continue:
+                  raise SystemExit(f'missing auto-continue 429 cooldown invariant: {literal}')
+
+          guard_pos = auto_continue.find('guard_recent_reviewer_429\n')
+          provision_pos = auto_continue.find('run_one provision-v03-real-runtime-fixture.yml')
+          if guard_pos < 0 or provision_pos < 0 or guard_pos >= provision_pos:
+              raise SystemExit('429 cooldown must execute before primary fixture provisioning')
 
           diagnostic_required = [
               'workflow_dispatch:',
