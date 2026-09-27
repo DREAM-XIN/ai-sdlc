@@ -38,6 +38,7 @@ rules:
       role: reviewer
       stage: code-review
     candidates:
+      - gemini
       - claude
       - copilot
     allow_experimental: false
