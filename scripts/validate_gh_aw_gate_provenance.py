@@ -68,6 +68,7 @@ def main():
         source_run_id=RUN_ID,
         source_workflow_ref=REF,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role=ROLE,
         stage=STAGE,
@@ -88,6 +89,7 @@ def main():
         source_run_id=RUN_ID,
         source_workflow_ref=local_reviewer_ref,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role=ROLE,
         stage=STAGE,
@@ -126,6 +128,7 @@ def main():
         source_run_id=RUN_ID,
         source_workflow_ref=local_qa_ref,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role="qa",
         stage="verification",
@@ -142,6 +145,7 @@ def main():
 
     expect_invalid(run, source_run_id=RUN_ID + 1)
     expect_invalid(run, task_id="F-GATE-OTHER-TASK")
+    expect_invalid(run, target_repository="other/repo")
     expect_invalid(run, source_workflow_ref=f"{CONTROL}/.github/workflows/ai-sdlc-gh-aw-worker.lock.yml@refs/heads/{BRANCH}")
 
     wrong_workflow = deepcopy(run)
