@@ -57,6 +57,19 @@ class AttemptAwareFakeHttp(FakeHttp):
         return super().__call__(method=method, url=url, token=token)
 
 
+class RunStateFakeHttp(AttemptAwareFakeHttp):
+    def __init__(self, *, run_status, run_conclusion, **kwargs):
+        super().__init__(**kwargs)
+        self.run_status = run_status
+        self.run_conclusion = run_conclusion
+
+    def _run(self):
+        row = super()._run()
+        row["status"] = self.run_status
+        row["conclusion"] = self.run_conclusion
+        return row
+
+
 def config():
     return GitHubActionsGhAwResultSourceConfig(
         control_repository=CONTROL,
@@ -175,8 +188,39 @@ def validate_supported_builder():
     assert collector.callback_coordinator.content_loader.__self__ is collector.result_source
 
 
+
+def validate_pending_and_terminal_run_states_are_distinct():
+    pending = source(
+        RunStateFakeHttp(
+            role="reviewer",
+            run_status="in_progress",
+            run_conclusion=None,
+        )
+    )
+    try:
+        resolve(pending, "reviewer")
+    except VerticalInvariantError as exc:
+        assert "first-attempt gh-aw run is not completed" in str(exc)
+    else:
+        raise AssertionError("in-progress first attempt unexpectedly resolved")
+
+    failed = source(
+        RunStateFakeHttp(
+            role="reviewer",
+            run_status="completed",
+            run_conclusion="failure",
+        )
+    )
+    try:
+        resolve(failed, "reviewer")
+    except VerticalInvariantError as exc:
+        assert "first-attempt gh-aw run completed without success" in str(exc)
+    else:
+        raise AssertionError("terminal failed first attempt unexpectedly resolved")
+
 def main():
     validate_first_attempt_happy_path()
+    validate_pending_and_terminal_run_states_are_distinct()
     validate_initial_rerun_rejection()
     validate_run_jobs_logs_bracket()
     validate_after_resolve_before_receipt_rerun()
