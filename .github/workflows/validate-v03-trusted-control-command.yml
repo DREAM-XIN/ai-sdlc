@@ -6,6 +6,7 @@ on:
       - '.github/workflows/v03-trusted-control-command.yml'
       - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
       - '.github/workflows/provision-v03-real-runtime-fixture.yml'
+      - '.github/workflows/provision-v03-scenario-fixture-pool.yml'
       - '.github/workflows/v03-issue-221-auto-continue.yml'
       - '.github/workflows/validate-v03-trusted-control-command.yml'
 
@@ -48,6 +49,8 @@ jobs:
               "('v03-ruleset-source-identity-diagnostic.yml', '')",
               "'/ai-sdlc v03-trusted-control provision-primary-fixture'",
               "('provision-v03-real-runtime-fixture.yml', '')",
+              "'/ai-sdlc v03-trusted-control provision-scenario-fixtures'",
+              "('provision-v03-scenario-fixture-pool.yml', '')",
               "'/ai-sdlc v03-trusted-control preflight'",
               "('v03-real-runtime-preflight-live.yml', '')",
               "'/ai-sdlc v03-trusted-control lost-ack-persist'",
@@ -74,7 +77,7 @@ jobs:
               if literal not in text:
                   raise SystemExit(f'missing trusted-control invariant: {literal}')
 
-          if text.count('/ai-sdlc v03-trusted-control ') != 19:
+          if text.count('/ai-sdlc v03-trusted-control ') != 20:
               raise SystemExit('trusted-control command surface changed unexpectedly')
 
           contents_write = 'contents:' + ' write'
@@ -96,6 +99,7 @@ jobs:
               'materialize-v03-vertical-policy-state.yml',
               'v03-ruleset-source-identity-diagnostic.yml',
               'provision-v03-real-runtime-fixture.yml',
+              'provision-v03-scenario-fixture-pool.yml',
               'v03-real-runtime-preflight-live.yml',
               'v03-live-lost-ack-persist-sequence.yml',
               'v03-live-launch-cancel-pair.yml',
