@@ -43,7 +43,17 @@ on:
         type: string
 engine:
   id: copilot
-  model: qwen3.7-plus
+  model: "qwen3.7-plus"
+  env:
+    COPILOT_PROVIDER_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+    COPILOT_MODEL: qwen3.7-plus
+    COPILOT_PROVIDER_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+    COPILOT_PROVIDER_TYPE: openai
+    COPILOT_PROVIDER_WIRE_API: completions
+network:
+  allowed:
+    - defaults
+    - dashscope.aliyuncs.com
 permissions:
   contents: read
   issues: read
