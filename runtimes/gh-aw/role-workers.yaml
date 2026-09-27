@@ -48,6 +48,12 @@ workers:
     profile: qwen
     worker_source: .github/workflows/ai-sdlc-gh-aw-reviewer-qwen.md
     worker_workflow: ai-sdlc-gh-aw-reviewer-qwen.lock.yml
+  - id: code-review-reviewer-gemini
+    role: reviewer
+    stage: code-review
+    profile: gemini
+    worker_source: .github/workflows/ai-sdlc-gh-aw-reviewer-gemini.md
+    worker_workflow: ai-sdlc-gh-aw-reviewer-gemini.lock.yml
   - id: code-review-reviewer-copilot
     role: reviewer
     stage: code-review
