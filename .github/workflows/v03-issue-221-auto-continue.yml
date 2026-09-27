@@ -72,6 +72,7 @@ jobs:
           # Bootstrap the exact-main trusted runtime before executing live evidence.
           run_one materialize-v03-vertical-policy-state.yml
           run_one provision-v03-real-runtime-fixture.yml
+          run_one provision-v03-scenario-fixture-pool.yml
           run_one v03-real-runtime-preflight-live.yml
 
           run_one v03-live-lost-ack-persist-sequence.yml

@@ -128,6 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CONTROL_REPOSITORY: ${{ github.repository }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           FEATURE_ID: ${{ inputs.feature_id }}
           TASK_ID: ${{ inputs.task_id }}
@@ -145,6 +146,7 @@ jobs:
             --source-run-id "$SOURCE_RUN_ID" \
             --source-workflow-ref "$SOURCE_WORKFLOW_REF" \
             --control-repository "$CONTROL_REPOSITORY" \
+            --target-repository "$TARGET_REPOSITORY" \
             --default-branch "$DEFAULT_BRANCH" \
             --role "$ROLE" \
             --stage "$STAGE" \
