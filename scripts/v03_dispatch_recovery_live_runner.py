@@ -39,8 +39,8 @@ CONCURRENT = "concurrent-resume"
 PREAUTH = "reservation-committed-pre-authorization-crash-recovery"
 LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"
 IDEMPOTENCY = {
-    UNKNOWN: "v03-release-fi-unknown-takeover-r3",
-    CONCURRENT: "v03-release-fi-concurrent-resume-r2",
+    UNKNOWN: "v03-release-fi-unknown-takeover-r4",
+    CONCURRENT: "v03-release-fi-concurrent-resume-r3",
     PREAUTH: "v03-release-fi-preauth-crash",
 }
 PHASE_SCENARIO = {
@@ -761,7 +761,28 @@ def run_concurrent_racer(racer: str) -> None:
     _wait(_path(CONCURRENT, "ready-a"))
     _wait(_path(CONCURRENT, "ready-b"))
     _wait(_path(CONCURRENT, f"go-{racer}"))
-    result = _base(preflight).advance_action(operation_id=operation_id, action=action)
+
+    # Each racer establishes a fresh trusted protection attestation immediately
+    # before its actual commit.  The attested ruleset verifier is process-local
+    # and causal; another racer's preflight may legitimately refresh the global
+    # ruleset updated_at/version proof while this racer is waiting at the barrier.
+    # Rebuild only the trusted runtime/protection authority here, but keep using
+    # the exact stale action selected before either racer was released.
+    fresh = _preflight(CONCURRENT)
+    require(
+        fresh.execution.installation_commit_sha == preflight.execution.installation_commit_sha,
+        "concurrent racer fresh preflight crossed trusted-main head",
+    )
+    require(
+        fresh.slot.feature_id == preflight.slot.feature_id
+        and fresh.slot.target_ref == preflight.slot.target_ref,
+        "concurrent racer fresh preflight changed fixed scenario identity",
+    )
+    require(
+        fresh.fixture_candidate.candidate_head_sha == feature.candidate_head_sha,
+        "concurrent racer fresh preflight changed candidate head",
+    )
+    result = _base(fresh).advance_action(operation_id=operation_id, action=action)
     if result.get("status") != "WAITING_EXTERNAL":
         raise V03DispatchRecoveryLiveError(f"concurrent racer {racer} did not converge to WAITING_EXTERNAL")
     _write_json(_path(CONCURRENT, f"result-{racer}"), {

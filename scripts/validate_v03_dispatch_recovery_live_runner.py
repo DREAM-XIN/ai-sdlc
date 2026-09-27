@@ -89,12 +89,12 @@ def validate_closed_phase_map():
     require(len(set(subject.IDEMPOTENCY.values())) == 3, "#314 scenarios reuse one idempotency key")
     require(subject.UNKNOWN == "unknown-takeover", "UNKNOWN row identity drifted")
     require(
-        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r3",
+        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r4",
         "UNKNOWN recovery reused the consumed fail-closed Operation identity",
     )
     require(subject.CONCURRENT == "concurrent-resume", "concurrent row identity drifted")
     require(
-        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r2",
+        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r3",
         "concurrent recovery reused the consumed partial Operation identity",
     )
     require(subject.PREAUTH == "reservation-committed-pre-authorization-crash-recovery", "preauth row identity drifted")
@@ -249,6 +249,40 @@ def validate_concurrent_racer_preflight_is_sequenced():
     require('kill -0 "$pid_b" 2>/dev/null' in workflow, "racer B preflight failure is not detected before action release")
 
 
+
+def validate_concurrent_racer_refreshes_protection_before_commit():
+    source = open(subject.__file__, encoding="utf-8").read()
+    require(
+        'fresh = _preflight(CONCURRENT)' in source,
+        "concurrent racer does not refresh trusted protection after the release barrier",
+    )
+    require(
+        'fresh.execution.installation_commit_sha == preflight.execution.installation_commit_sha' in source,
+        "fresh concurrent preflight is not pinned to the same trusted-main head",
+    )
+    require(
+        'fresh.slot.feature_id == preflight.slot.feature_id' in source
+        and 'fresh.slot.target_ref == preflight.slot.target_ref' in source,
+        "fresh concurrent preflight is not pinned to the same frozen scenario slot",
+    )
+    require(
+        'fresh.fixture_candidate.candidate_head_sha == feature.candidate_head_sha' in source,
+        "fresh concurrent preflight is not pinned to the preselected candidate head",
+    )
+    require(
+        'result = _base(fresh).advance_action(operation_id=operation_id, action=action)' in source,
+        "concurrent racer does not execute the exact preselected stale action with fresh protection authority",
+    )
+    ready_pos = source.find('_write_json(ready, {')
+    go_pos = source.find('_wait(_path(CONCURRENT, f"go-{racer}"))')
+    fresh_pos = source.find('fresh = _preflight(CONCURRENT)')
+    execute_pos = source.find('result = _base(fresh).advance_action(operation_id=operation_id, action=action)')
+    require(
+        -1 not in (ready_pos, go_pos, fresh_pos, execute_pos)
+        and ready_pos < go_pos < fresh_pos < execute_pos,
+        "fresh protection proof is not sequenced after stale-action selection and immediately before commit",
+    )
+
 def validate_generic_record_is_anti_overclaim():
     record = subject._generic_record(
         scenario=subject.UNKNOWN,
@@ -282,6 +316,7 @@ def main():
     validate_preauthorization_crash_boundary()
     validate_legacy_unknown_cleanup_is_strictly_prelaunch_only()
     validate_concurrent_racer_preflight_is_sequenced()
+    validate_concurrent_racer_refreshes_protection_before_commit()
     validate_generic_record_is_anti_overclaim()
     print("PASS: #314 dispatch/recovery live wrappers are closed, zero-effect in PR validation, and fail-closed")
     print("- UNKNOWN permits one exact delegated launch then suppresses certainty without fallback lookup")

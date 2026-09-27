@@ -50,11 +50,11 @@ class SlotSpec:
 SLOTS = (
     SlotSpec("cancel-before-persist-linearization", "F-OPERATOR-V03-FI-CANCEL-BEFORE-PERSIST-0001", "verification/v0.3-fi-cancel-before-persist-221", "2026-08-18T05:10:01Z", "2026-08-18T05:11:01Z"),
     SlotSpec("persist-linearized-before-cancel", "F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0001", "verification/v0.3-fi-persist-before-cancel-221", "2026-08-18T05:10:02Z", "2026-08-18T05:11:02Z"),
-    SlotSpec("unknown-takeover", "F-OPERATOR-V03-FI-UNKNOWN-TAKEOVER-0002", "verification/v0.3-fi-unknown-takeover-221-r2", "2026-08-18T05:10:03Z", "2026-08-18T05:11:03Z"),
+    SlotSpec("unknown-takeover", "F-OPERATOR-V03-FI-UNKNOWN-TAKEOVER-0003", "verification/v0.3-fi-unknown-takeover-221-r3", "2026-08-18T05:10:03Z", "2026-08-18T05:11:03Z"),
     SlotSpec("duplicate-callback", "F-OPERATOR-V03-FI-DUPLICATE-CALLBACK-0001", "verification/v0.3-fi-duplicate-callback-221", "2026-08-18T05:10:04Z", "2026-08-18T05:11:04Z"),
     SlotSpec("out-of-order-callback", "F-OPERATOR-V03-FI-OUT-OF-ORDER-CALLBACK-0001", "verification/v0.3-fi-out-of-order-callback-221", "2026-08-18T05:10:05Z", "2026-08-18T05:11:05Z"),
     SlotSpec("duplicate-worker-completion", "F-OPERATOR-V03-FI-DUPLICATE-WORKER-0001", "verification/v0.3-fi-duplicate-worker-221", "2026-08-18T05:10:06Z", "2026-08-18T05:11:06Z"),
-    SlotSpec("concurrent-resume", "F-OPERATOR-V03-FI-CONCURRENT-RESUME-0002", "verification/v0.3-fi-concurrent-resume-221-r2", "2026-08-18T05:10:07Z", "2026-08-18T05:11:07Z"),
+    SlotSpec("concurrent-resume", "F-OPERATOR-V03-FI-CONCURRENT-RESUME-0003", "verification/v0.3-fi-concurrent-resume-221-r3", "2026-08-18T05:10:07Z", "2026-08-18T05:11:07Z"),
     SlotSpec("stale-candidate-result", "F-OPERATOR-V03-FI-STALE-CANDIDATE-0001", "verification/v0.3-fi-stale-candidate-221", "2026-08-18T05:10:08Z", "2026-08-18T05:11:08Z"),
     SlotSpec("reservation-committed-pre-authorization-crash-recovery", "F-OPERATOR-V03-FI-PREAUTH-CRASH-0001", "verification/v0.3-fi-preauth-crash-221", "2026-08-18T05:10:09Z", "2026-08-18T05:11:09Z"),
 )
