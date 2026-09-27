@@ -39,8 +39,9 @@ rules:
       stage: code-review
     candidates:
       - claude
+      - qwen
       - copilot
-    allow_experimental: false
+    allow_experimental: true
   - id: verification-qa
     match:
       role: qa
