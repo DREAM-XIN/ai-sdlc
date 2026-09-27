@@ -4,6 +4,7 @@ from copy import deepcopy
 from gh_aw_gate_provenance import GateProvenanceError, dispatch_key, validate_run
 
 CONTROL = "DREAM-XIN/ai-sdlc"
+TARGET = "dream-xin/ai-sdlc"
 BRANCH = "main"
 ROLE = "reviewer"
 STAGE = "code-review"
@@ -27,6 +28,7 @@ def expect_invalid(run, **overrides):
         source_run_id=RUN_ID,
         source_workflow_ref=REF,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role=ROLE,
         stage=STAGE,
@@ -44,20 +46,29 @@ def expect_invalid(run, **overrides):
 
 
 def main():
-    key = dispatch_key(FEATURE, TASK, REVISION, HEAD)
+    key = dispatch_key(
+        target_repository=TARGET,
+        feature_id=FEATURE,
+        task_id=TASK,
+        revision=REVISION,
+        stage=STAGE,
+        role=ROLE,
+        head_sha=HEAD,
+    )
     run = {
         "id": RUN_ID,
         "repository": {"full_name": CONTROL},
         "event": "workflow_dispatch",
         "head_branch": BRANCH,
         "path": PATH,
-        "display_title": f"AI-SDLC gh-aw gate reviewer {key}",
+        "display_title": f"AI-SDLC gh-aw {key}",
     }
     worker = validate_run(
         run,
         source_run_id=RUN_ID,
         source_workflow_ref=REF,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role=ROLE,
         stage=STAGE,
@@ -78,6 +89,7 @@ def main():
         source_run_id=RUN_ID,
         source_workflow_ref=local_reviewer_ref,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role=ROLE,
         stage=STAGE,
@@ -101,12 +113,22 @@ def main():
     local_qa_ref = f"{CONTROL}/{local_qa_path}@refs/heads/{BRANCH}"
     local_qa_run = deepcopy(run)
     local_qa_run["path"] = local_qa_path
-    local_qa_run["display_title"] = f"AI-SDLC gh-aw gate qa {key}"
+    local_qa_key = dispatch_key(
+        target_repository=TARGET,
+        feature_id=FEATURE,
+        task_id=TASK,
+        revision=REVISION,
+        stage="verification",
+        role="qa",
+        head_sha=HEAD,
+    )
+    local_qa_run["display_title"] = f"AI-SDLC gh-aw {local_qa_key}"
     local_qa_worker = validate_run(
         local_qa_run,
         source_run_id=RUN_ID,
         source_workflow_ref=local_qa_ref,
         control_repository=CONTROL,
+        target_repository=TARGET,
         default_branch=BRANCH,
         role="qa",
         stage="verification",
@@ -123,6 +145,7 @@ def main():
 
     expect_invalid(run, source_run_id=RUN_ID + 1)
     expect_invalid(run, task_id="F-GATE-OTHER-TASK")
+    expect_invalid(run, target_repository="other/repo")
     expect_invalid(run, source_workflow_ref=f"{CONTROL}/.github/workflows/ai-sdlc-gh-aw-worker.lock.yml@refs/heads/{BRANCH}")
 
     wrong_workflow = deepcopy(run)
@@ -137,7 +160,7 @@ def main():
     expect_invalid(bot_comment_only)
 
     wrong_title = deepcopy(run)
-    wrong_title["display_title"] = "AI-SDLC gh-aw gate reviewer spoofed"
+    wrong_title["display_title"] = "AI-SDLC gh-aw dispatch-" + "0" * 40
     expect_invalid(wrong_title)
 
     print("gh-aw Gate provenance validation passed")
