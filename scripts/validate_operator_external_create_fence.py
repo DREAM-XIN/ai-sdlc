@@ -437,12 +437,90 @@ def validate_lost_ack_fresh_process_provider_drift_and_cancel():
     require(receipt["lookup_state"] == "LAUNCHED" and delegate2.post_count == 1, "authorization-before-cancel ordering was incorrectly revoked")
 
 
+class WorkflowMapOnly:
+    default_branch = "main"
+
+    def __init__(self, workflow):
+        self.workflow = workflow
+
+    def workflow_for(self, role):
+        require(role == "reviewer", "frozen workflow-map test escaped Reviewer role")
+        return self.workflow
+
+
+class WorkflowMapOnlyDelegate:
+    """Exercise the production frozen binding fallback without execution_binding()."""
+
+    def __init__(self, workflow):
+        self.workflows = WorkflowMapOnly(workflow)
+        self.post_count = 0
+
+    def lookup(self, *, external_dispatch_key):
+        return {"lookup_state": "NOT_LAUNCHED", "receipt_id": None}
+
+    def launch(self, *, dispatch):
+        self.post_count += 1
+        return {"lookup_state": "LAUNCHED", "receipt_id": f"run-{self.post_count}"}
+
+
+def validate_registered_reviewer_provider_bindings_cross_post_boundary():
+    cases = (
+        (
+            "qwen",
+            "ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+            "code-review-reviewer-qwen",
+            "DASHSCOPE_API_KEY",
+        ),
+        (
+            "gemini",
+            "ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+            "code-review-reviewer-gemini",
+            "GEMINI_API_KEY",
+        ),
+    )
+    for profile, workflow, worker_id, credential in cases:
+        backend = MemoryStateRefBackend(repository=REPO, state_ref=STATE_REF)
+        runtime = runtime_for(backend)
+        seeded = seed_authorized(
+            runtime,
+            feature_id=f"F-EXTERNAL-CREATE-{profile.upper()}-REVIEWER",
+        )
+        delegate = WorkflowMapOnlyDelegate(workflow)
+        gateway = StoreBackedOneShotExternalCreateGateway(
+            runtime=runtime,
+            delegate=delegate,
+            trusted_context_digest=TRUST,
+            effect_lineage_required=True,
+        )
+        receipt = gateway.launch(dispatch=dispatch_dict(seeded))
+        require(
+            receipt["lookup_state"] == "LAUNCHED" and delegate.post_count == 1,
+            f"{profile} Reviewer binding did not cross the one-shot POST boundary",
+        )
+        attempt = find_external_create_attempt(
+            backend.read_snapshot(),
+            external_dispatch_key=seeded["external_dispatch_key"],
+        )
+        require(attempt is not None, f"{profile} Reviewer did not durably bind external-create authority")
+        execution = attempt["execution_binding"]
+        require(execution["worker_id"] == worker_id, f"{profile} Reviewer worker binding drifted")
+        require(execution["profile"] == profile, f"{profile} Reviewer profile binding drifted")
+        require(execution["workflow_file"] == workflow, f"{profile} Reviewer workflow binding drifted")
+        require(execution["credential_name"] == credential, f"{profile} Reviewer credential binding drifted")
+        require(
+            execution["selection_policy_id"] == "v03-frozen-reviewer-provider-order/v1",
+            f"{profile} Reviewer selection policy binding drifted",
+        )
+
+
 def main():
+    validate_registered_reviewer_provider_bindings_cross_post_boundary()
     validate_real_git_cas_single_winner()
     validate_replay_forgery_takeover_and_projection_rebuild()
     validate_raw_writer_is_fenced()
     validate_lost_ack_fresh_process_provider_drift_and_cancel()
     print("Operator one-shot external-create fence validation passed")
+    print("- Qwen/Gemini Reviewer frozen workflow bindings cross the one-shot POST boundary")
     print("- real Git CAS elects one durable attempt creator; loser replans lookup-only")
     print("- replay, forged authorization, takeover and projection rebuild preserve immutable authority")
     print("- raw attempt writer is fenced and capability inventory includes raw-external-create-attempt")

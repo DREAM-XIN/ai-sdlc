@@ -16,6 +16,18 @@ _WORKFLOW_BINDINGS = {
         "profile": "codex",
         "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
     },
+    "ai-sdlc-gh-aw-reviewer-qwen.lock.yml": {
+        "worker_id": "code-review-reviewer-qwen",
+        "profile": "qwen",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "credential_name": "DASHSCOPE_API_KEY",
+    },
+    "ai-sdlc-gh-aw-reviewer-gemini.lock.yml": {
+        "worker_id": "code-review-reviewer-gemini",
+        "profile": "gemini",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "credential_name": "GEMINI_API_KEY",
+    },
     "ai-sdlc-gh-aw-reviewer-claude.lock.yml": {
         "worker_id": "code-review-reviewer-claude",
         "profile": "claude",
