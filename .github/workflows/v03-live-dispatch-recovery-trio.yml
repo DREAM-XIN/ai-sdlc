@@ -209,8 +209,19 @@ jobs:
           cp -a "$GITHUB_WORKSPACE/." "$race_b/"
           test "$(git -C "$race_a" rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C "$race_b" rev-parse HEAD)" = "$GITHUB_SHA"
+
+          # actions/checkout scopes its credential include to the original gitdir.
+          # The independent racer copies intentionally have different gitdirs, so
+          # pass the already-configured auth header to each process without
+          # persisting credentials into either copied repository.
+          racer_auth_header="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
+          test -n "$racer_auth_header"
+
           (
             cd "$race_a"
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="$racer_auth_header" \
             AI_SDLC_STORE_CHECKOUT="$race_a" PYTHONPATH=scripts \
               python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer a
           ) >"$shared/concurrent-resume-racer-a.log" 2>&1 &
@@ -231,6 +242,9 @@ jobs:
 
           (
             cd "$race_b"
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="$racer_auth_header" \
             AI_SDLC_STORE_CHECKOUT="$race_b" PYTHONPATH=scripts \
               python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer b
           ) >"$shared/concurrent-resume-racer-b.log" 2>&1 &
@@ -251,14 +265,27 @@ jobs:
 
           printf '{}\n' > "$shared/concurrent-resume-go-a.json"
           for _ in $(seq 1 900); do
-            test -s "$shared/concurrent-resume-result-a.json" && break
+            if test -s "$shared/concurrent-resume-result-a.json"; then
+              break
+            fi
+            if ! kill -0 "$pid_a" 2>/dev/null; then
+              wait "$pid_a" || true
+              cat "$shared/concurrent-resume-racer-a.log"
+              exit 1
+            fi
             sleep 0.2
           done
           test -s "$shared/concurrent-resume-result-a.json"
 
           printf '{}\n' > "$shared/concurrent-resume-go-b.json"
-          wait "$pid_a"
-          wait "$pid_b"
+          if ! wait "$pid_a"; then
+            cat "$shared/concurrent-resume-racer-a.log"
+            exit 1
+          fi
+          if ! wait "$pid_b"; then
+            cat "$shared/concurrent-resume-racer-b.log"
+            exit 1
+          fi
           test -s "$shared/concurrent-resume-result-b.json"
           cat "$shared/concurrent-resume-racer-a.log"
           cat "$shared/concurrent-resume-racer-b.log"
