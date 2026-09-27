@@ -43,6 +43,7 @@ jobs:
           APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
           APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -89,6 +90,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -106,6 +108,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -125,6 +128,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -142,6 +146,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -159,6 +164,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -178,6 +184,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -195,6 +202,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -299,6 +307,7 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
