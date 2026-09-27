@@ -11,6 +11,7 @@ import v03_persist_ack_loss_live_runner as subject
 from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
 from operator_v03_vertical_production_runtime import _DeferredExactVerticalPersistGateway
 from v03_real_runtime_fault_injection import LostAckCrashAfterPersistGateway
+from operator_vertical import VerticalInvariantError
 
 REPOSITORY = "dream-xin/ai-sdlc"
 OPERATION_ID = "op-" + "a" * 32
@@ -299,8 +300,24 @@ def validate_phase2_is_lookup_only_idempotent_and_completes_lost_ack():
         subject.vertical_projection = original_projection
 
 
+
+def validate_reviewer_wait_retries_only_while_run_is_pending():
+    pending = VerticalInvariantError(
+        "BLOCKED", "first-attempt gh-aw run is not completed"
+    )
+    terminal = VerticalInvariantError(
+        "BLOCKED", "first-attempt gh-aw run completed without success"
+    )
+    legacy_broad = VerticalInvariantError(
+        "BLOCKED", "first-attempt gh-aw run snapshot is not exact/successful"
+    )
+    require(subject._retryable_wait(pending), "pending first attempt no longer polls")
+    require(not subject._retryable_wait(terminal), "terminal failed first attempt still burns the full wait window")
+    require(not subject._retryable_wait(legacy_broad), "broad run-state error remains retryable and can mask terminal failure")
+
 def main():
     validate_exact_production_persist_chain_is_strict()
+    validate_reviewer_wait_retries_only_while_run_is_pending()
     validate_phase1_continues_existing_takeover_and_hard_exits()
     validate_phase2_is_lookup_only_idempotent_and_completes_lost_ack()
     print("PASS: Persist ACK-loss fresh recovery also completes the chained lost-ACK end-to-end result/Persist proof")
