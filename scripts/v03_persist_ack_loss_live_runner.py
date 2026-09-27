@@ -161,12 +161,9 @@ def _require_lost_ack_takeover_state(preflight, operation_id: str) -> dict[str, 
 
 def _retryable_wait(exc: VerticalInvariantError) -> bool:
     text = str(exc)
-    return exc.code == "BLOCKED" and any(
-        token in text
-        for token in (
-            "first-attempt gh-aw run snapshot is not exact/successful",
-            "exact gh-aw run is not successful workflow_dispatch",
-        )
+    return (
+        exc.code == "BLOCKED"
+        and "first-attempt gh-aw run is not completed" in text
     )
 
 
