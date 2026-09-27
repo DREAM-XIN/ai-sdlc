@@ -48,18 +48,24 @@ def select(**presence):
 def validate_selection_semantics():
     validate_v03_reviewer_registry(registry_path=REGISTRY, workflow_dir=WORKFLOWS)
 
-    claude = select(ANTHROPIC_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
+    gemini = select(GEMINI_API_KEY=True, ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=False)
+    require(gemini.worker_id == "code-review-reviewer-gemini", gemini)
+    require(gemini.workflow_file == "ai-sdlc-gh-aw-reviewer-gemini.lock.yml", gemini)
+    require(gemini.credential_env == "GEMINI_API_KEY", gemini)
+    require(gemini.selection_policy == SELECTION_POLICY, gemini)
+
+    claude = select(GEMINI_API_KEY=False, ANTHROPIC_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
     require(claude.worker_id == "code-review-reviewer-claude", claude)
     require(claude.workflow_file == "ai-sdlc-gh-aw-reviewer-claude.lock.yml", claude)
     require(claude.credential_env == "ANTHROPIC_API_KEY", claude)
     require(claude.selection_policy == SELECTION_POLICY, claude)
 
-    copilot = select(ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=True)
+    copilot = select(GEMINI_API_KEY=False, ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=True)
     require(copilot.worker_id == "code-review-reviewer-copilot", copilot)
     require(copilot.workflow_file == "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml", copilot)
     require(copilot.credential_env == "COPILOT_GITHUB_TOKEN", copilot)
 
-    both = select(ANTHROPIC_API_KEY=True, COPILOT_GITHUB_TOKEN=True)
+    both = select(GEMINI_API_KEY=True, ANTHROPIC_API_KEY=True, COPILOT_GITHUB_TOKEN=True)
     require(
         both.worker_id == V03_REVIEWER_OPTIONS[0].worker_id,
         "simultaneous credentials did not follow fixed reviewed provider order",
@@ -67,38 +73,38 @@ def validate_selection_semantics():
 
     expect_error(
         "WORKER_PROVIDER_UNAVAILABLE",
-        lambda: select(ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=False),
+        lambda: select(GEMINI_API_KEY=False, ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=False),
     )
     expect_error(
         "WORKER_PROVIDER_INPUT_INVALID",
-        lambda: select(ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=False, RANDOM_TOKEN=True),
+        lambda: select(GEMINI_API_KEY=False, ANTHROPIC_API_KEY=False, COPILOT_GITHUB_TOKEN=False, RANDOM_TOKEN=True),
     )
     expect_error(
         "WORKER_PROVIDER_INPUT_INVALID",
         lambda: select_v03_reviewer_worker(
             registry_path=REGISTRY,
             workflow_dir=WORKFLOWS,
-            credential_presence={"ANTHROPIC_API_KEY": 1, "COPILOT_GITHUB_TOKEN": False},
+            credential_presence={"GEMINI_API_KEY": False, "ANTHROPIC_API_KEY": 1, "COPILOT_GITHUB_TOKEN": False},
         ),
     )
 
 
 def validate_secret_non_disclosure():
-    old = {name: os.environ.get(name) for name in ("ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN")}
+    old = {name: os.environ.get(name) for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN")}
     secret_value = "super-secret-provider-value-that-must-not-leak"
     try:
-        os.environ["ANTHROPIC_API_KEY"] = secret_value
-        os.environ.pop("COPILOT_GITHUB_TOKEN", None)
+        os.environ["GEMINI_API_KEY"] = secret_value
+        os.environ.pop("ANTHROPIC_API_KEY", None)\n        os.environ.pop("COPILOT_GITHUB_TOKEN", None)
         selected = selection_from_environment(registry_path=REGISTRY, workflow_dir=WORKFLOWS)
         public = public_selection(selected)
         encoded = json.dumps(public, sort_keys=True)
         require(secret_value not in encoded, "provider secret leaked into public selection")
         require(public["credential_present"] is True, public)
-        require(public["credential_env"] == "ANTHROPIC_API_KEY", public)
+        require(public["credential_env"] == "GEMINI_API_KEY", public)
         require("credential_value" not in public and "token" not in public, public)
 
         # Whitespace-only installation values are not valid configured secrets.
-        os.environ["ANTHROPIC_API_KEY"] = "   "
+        os.environ["GEMINI_API_KEY"] = "   "
         expect_error(
             "WORKER_PROVIDER_UNAVAILABLE",
             lambda: selection_from_environment(registry_path=REGISTRY, workflow_dir=WORKFLOWS),
@@ -156,7 +162,7 @@ def main():
     validate_secret_non_disclosure()
     validate_registry_drift_fails_closed()
     print("v0.3 Reviewer Worker readiness validation passed")
-    print("- frozen Claude/Copilot Reviewer registry + locked workflow secret contract")
+    print("- frozen Gemini/Claude/Copilot Reviewer registry + locked workflow secret contract")
     print("- deterministic configured-provider selection; no caller-selected provider")
     print("- zero configured providers => WORKER_PROVIDER_UNAVAILABLE before external authority")
     print("- credential values never enter public selection/evidence")
