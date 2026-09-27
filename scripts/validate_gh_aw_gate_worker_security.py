@@ -20,7 +20,7 @@ def require(condition: bool, message: str):
 
 def main():
     workers=[w for w in load_role_workers() if (w.role,w.stage) in GATE_ROLE_STAGES]
-    require(len(workers)==4,"expected exactly four Gate-role workers")
+    require(len(workers)==5,"expected exactly five Gate-role workers")
     for worker in workers:
         source_path=ROOT/worker.worker_source; lock_path=ROOT/".github"/"workflows"/worker.worker_workflow
         require(source_path.is_file(),f"missing Gate worker source: {worker.worker_source}"); require(lock_path.is_file(),f"missing Gate worker lock: {worker.worker_workflow}")
