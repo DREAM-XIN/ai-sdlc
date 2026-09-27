@@ -15,6 +15,18 @@ class GateProvenanceError(ValueError):
     pass
 
 
+V03_GATE_WORKFLOW_ALIASES = {
+    ("reviewer", "code-review", "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml"):
+        "ai-sdlc-gh-aw-reviewer-copilot.lock.yml",
+    ("qa", "verification", "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml"):
+        "ai-sdlc-gh-aw-qa-gemini.lock.yml",
+}
+
+
+def _registry_workflow(role: str, stage: str, workflow: str) -> str:
+    return V03_GATE_WORKFLOW_ALIASES.get((role, stage, workflow), workflow)
+
+
 def dispatch_key(feature_id: str, task_id: str, revision: int, head_sha: str) -> str:
     if not feature_id or not task_id:
         raise GateProvenanceError("feature_id and task_id are required")
@@ -56,8 +68,9 @@ def validate_run(
     workflow = PurePosixPath(path).name
     if PurePosixPath(path) != PurePosixPath(".github/workflows") / workflow:
         raise GateProvenanceError("source run workflow path escapes the trusted workflow directory")
+    registry_workflow = _registry_workflow(role, stage, workflow)
     try:
-        worker = require_role_worker_workflow(role, stage, workflow)
+        worker = require_role_worker_workflow(role, stage, registry_workflow)
     except RoleWorkerError as exc:
         raise GateProvenanceError("source run workflow is not registered for the trusted Gate role/stage") from exc
 
