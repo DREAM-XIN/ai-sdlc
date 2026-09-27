@@ -20,6 +20,9 @@ from typing import Any
 
 from operator_external_create_attempt import find_external_create_attempt
 from operator_store import plan_cancel
+from operator_store_github_protection_v03_trusted import (
+    refresh_process_attested_ruleset_verifiers,
+)
 from operator_store_model import operation_events, operation_id_for, reservation_path
 from operator_vertical_controller import select_vertical_action
 from operator_vertical_recovery import plan_vertical_takeover
@@ -39,8 +42,8 @@ CONCURRENT = "concurrent-resume"
 PREAUTH = "reservation-committed-pre-authorization-crash-recovery"
 LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"
 IDEMPOTENCY = {
-    UNKNOWN: "v03-release-fi-unknown-takeover-r4",
-    CONCURRENT: "v03-release-fi-concurrent-resume-r3",
+    UNKNOWN: "v03-release-fi-unknown-takeover-r5",
+    CONCURRENT: "v03-release-fi-concurrent-resume-r4",
     PREAUTH: "v03-release-fi-preauth-crash",
 }
 PHASE_SCENARIO = {
@@ -763,11 +766,13 @@ def run_concurrent_racer(racer: str) -> None:
     _wait(_path(CONCURRENT, f"go-{racer}"))
 
     # Each racer establishes a fresh trusted protection attestation immediately
-    # before its actual commit.  The attested ruleset verifier is process-local
-    # and causal; another racer's preflight may legitimately refresh the global
-    # ruleset updated_at/version proof while this racer is waiting at the barrier.
-    # Rebuild only the trusted runtime/protection authority here, but keep using
-    # the exact stale action selected before either racer was released.
+    # before its actual commit.  The trusted verifier caches its causal ruleset
+    # proof per process; another racer's ready-phase preflight can refresh the
+    # global ruleset while this process waits at the barrier, so merely calling
+    # _preflight() again would reuse stale process-local authority.  Drop only
+    # the process-local verifier lease, then rebuild exact trusted authority.
+    # Keep using the exact stale action selected before either racer was released.
+    refresh_process_attested_ruleset_verifiers()
     fresh = _preflight(CONCURRENT)
     require(
         fresh.execution.installation_commit_sha == preflight.execution.installation_commit_sha,
