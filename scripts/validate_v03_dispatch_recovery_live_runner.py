@@ -89,12 +89,12 @@ def validate_closed_phase_map():
     require(len(set(subject.IDEMPOTENCY.values())) == 3, "#314 scenarios reuse one idempotency key")
     require(subject.UNKNOWN == "unknown-takeover", "UNKNOWN row identity drifted")
     require(
-        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r5",
+        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r6",
         "UNKNOWN recovery reused the consumed fail-closed Operation identity",
     )
     require(subject.CONCURRENT == "concurrent-resume", "concurrent row identity drifted")
     require(
-        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r4",
+        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r5",
         "concurrent recovery reused the consumed partial Operation identity",
     )
     require(subject.PREAUTH == "reservation-committed-pre-authorization-crash-recovery", "preauth row identity drifted")
@@ -250,6 +250,45 @@ def validate_concurrent_racer_preflight_is_sequenced():
 
 
 
+
+
+def validate_concurrent_racer_copies_inherit_ephemeral_git_auth_and_fail_fast():
+    from pathlib import Path
+    workflow = (
+        Path(subject.__file__).resolve().parents[1]
+        / ".github/workflows/v03-live-dispatch-recovery-trio.yml"
+    ).read_text(encoding="utf-8")
+    require(
+        'racer_auth_header="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"' in workflow,
+        "independent racer copies do not recover the original actions/checkout Git auth header",
+    )
+    require(
+        workflow.count("GIT_CONFIG_COUNT=1") == 2
+        and workflow.count("GIT_CONFIG_KEY_0=http.https://github.com/.extraheader") == 2
+        and workflow.count('GIT_CONFIG_VALUE_0="$racer_auth_header"') == 2,
+        "ephemeral Git auth is not injected into both independent racer processes",
+    )
+    require(
+        'git config --local http.https://github.com/.extraheader' not in workflow,
+        "racer Git auth must not be persisted into copied repository config",
+    )
+    require(
+        'cp -a "$GITHUB_WORKSPACE/." "$race_a/"' in workflow
+        and 'cp -a "$GITHUB_WORKSPACE/." "$race_b/"' in workflow,
+        "concurrent racers no longer use independent repository copies",
+    )
+
+    go_a = workflow.find('printf \'{}\\n\' > "$shared/concurrent-resume-go-a.json"')
+    result_a = workflow.find('if test -s "$shared/concurrent-resume-result-a.json"; then', go_a)
+    dead_a = workflow.find('if ! kill -0 "$pid_a" 2>/dev/null; then', go_a)
+    go_b = workflow.find('printf \'{}\\n\' > "$shared/concurrent-resume-go-b.json"')
+    require(
+        -1 not in (go_a, result_a, dead_a, go_b)
+        and go_a < result_a < dead_a < go_b,
+        "post-release racer A failure is not detected before the old 180-second result timeout",
+    )
+
+
 def validate_concurrent_racer_refreshes_protection_before_commit():
     source = open(subject.__file__, encoding="utf-8").read()
     require(
@@ -321,6 +360,7 @@ def main():
     validate_preauthorization_crash_boundary()
     validate_legacy_unknown_cleanup_is_strictly_prelaunch_only()
     validate_concurrent_racer_preflight_is_sequenced()
+    validate_concurrent_racer_copies_inherit_ephemeral_git_auth_and_fail_fast()
     validate_concurrent_racer_refreshes_protection_before_commit()
     validate_generic_record_is_anti_overclaim()
     print("PASS: #314 dispatch/recovery live wrappers are closed, zero-effect in PR validation, and fail-closed")
