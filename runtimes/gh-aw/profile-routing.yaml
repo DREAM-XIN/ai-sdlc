@@ -41,6 +41,7 @@ rules:
     candidates:
       - claude
       - qwen
+      - gemini
       - copilot
     allow_experimental: true
   - id: verification-qa
