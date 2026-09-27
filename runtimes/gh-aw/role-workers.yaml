@@ -42,6 +42,12 @@ workers:
     profile: claude
     worker_source: .github/workflows/ai-sdlc-gh-aw-reviewer-claude.md
     worker_workflow: ai-sdlc-gh-aw-reviewer-claude.lock.yml
+  - id: code-review-reviewer-qwen
+    role: reviewer
+    stage: code-review
+    profile: qwen
+    worker_source: .github/workflows/ai-sdlc-gh-aw-reviewer-qwen.md
+    worker_workflow: ai-sdlc-gh-aw-reviewer-qwen.lock.yml
   - id: code-review-reviewer-copilot
     role: reviewer
     stage: code-review

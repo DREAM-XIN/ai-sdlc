@@ -301,6 +301,23 @@ After posting the Safe Output comment, stop.
 
 
 def engine_block(profile):
+    if profile.is_openai_compatible:
+        lines = [
+            "engine:",
+            "  id: copilot",
+            f'  model: "{profile.model}"',
+            "  env:",
+            f"    COPILOT_PROVIDER_BASE_URL: {profile.base_url}",
+            f"    COPILOT_MODEL: {profile.model}",
+            f"    COPILOT_PROVIDER_API_KEY: ${{{{ secrets.{profile.credential} }}}}",
+            f"    COPILOT_PROVIDER_TYPE: {profile.provider_type}",
+            f"    COPILOT_PROVIDER_WIRE_API: {profile.wire_api}",
+            "network:",
+            "  allowed:",
+            "    - defaults",
+            f"    - {profile.network_host}",
+        ]
+        return "\n".join(lines)
     if profile.engine == "gemini":
         lines = ["engine:", "  id: gemini"]
         if profile.engine_version:

@@ -57,6 +57,15 @@ V03_REVIEWER_OPTIONS = (
         credential_env="ANTHROPIC_API_KEY",
     ),
     ReviewerWorkerOption(
+        worker_id="code-review-reviewer-qwen",
+        role="reviewer",
+        stage="code-review",
+        profile="qwen",
+        workflow_file="ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+        credential_env="DASHSCOPE_API_KEY",
+    ),
+    ReviewerWorkerOption(
         worker_id="code-review-reviewer-copilot",
         role="reviewer",
         stage="code-review",
@@ -91,7 +100,7 @@ def _registry_reviewers(path: Path) -> tuple[dict, ...]:
     if len(rows) != len(V03_REVIEWER_OPTIONS):
         raise ReviewerWorkerReadinessError(
             "WORKER_REGISTRY_DRIFT",
-            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Copilot options",
+            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Qwen/Copilot options",
         )
     return rows
 

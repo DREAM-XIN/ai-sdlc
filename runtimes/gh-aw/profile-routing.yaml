@@ -33,14 +33,16 @@ rules:
       - codex
       - copilot
     allow_experimental: false
+  # v0.3 trusted reviewer fallback may use the registered Qwen BYOK profile.
   - id: code-review-reviewer
     match:
       role: reviewer
       stage: code-review
     candidates:
       - claude
+      - qwen
       - copilot
-    allow_experimental: false
+    allow_experimental: true
   - id: verification-qa
     match:
       role: qa
