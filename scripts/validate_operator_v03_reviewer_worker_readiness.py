@@ -48,23 +48,28 @@ def select(**presence):
 def validate_selection_semantics():
     validate_v03_reviewer_registry(registry_path=REGISTRY, workflow_dir=WORKFLOWS)
 
-    claude = select(ANTHROPIC_API_KEY=True, DASHSCOPE_API_KEY=False, COPILOT_GITHUB_TOKEN=False)
+    claude = select(ANTHROPIC_API_KEY=True, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=False, COPILOT_GITHUB_TOKEN=False)
     require(claude.worker_id == "code-review-reviewer-claude", claude)
     require(claude.workflow_file == "ai-sdlc-gh-aw-reviewer-claude.lock.yml", claude)
     require(claude.credential_env == "ANTHROPIC_API_KEY", claude)
     require(claude.selection_policy == SELECTION_POLICY, claude)
 
-    qwen = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
+    qwen = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=True, GEMINI_API_KEY=False, COPILOT_GITHUB_TOKEN=False)
     require(qwen.worker_id == "code-review-reviewer-qwen", qwen)
     require(qwen.workflow_file == "ai-sdlc-gh-aw-reviewer-qwen.lock.yml", qwen)
     require(qwen.credential_env == "DASHSCOPE_API_KEY", qwen)
 
-    copilot = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, COPILOT_GITHUB_TOKEN=True)
+    gemini = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
+    require(gemini.worker_id == "code-review-reviewer-gemini", gemini)
+    require(gemini.workflow_file == "ai-sdlc-gh-aw-reviewer-gemini.lock.yml", gemini)
+    require(gemini.credential_env == "GEMINI_API_KEY", gemini)
+
+    copilot = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=False, COPILOT_GITHUB_TOKEN=True)
     require(copilot.worker_id == "code-review-reviewer-copilot", copilot)
     require(copilot.workflow_file == "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml", copilot)
     require(copilot.credential_env == "COPILOT_GITHUB_TOKEN", copilot)
 
-    both = select(ANTHROPIC_API_KEY=True, DASHSCOPE_API_KEY=True, COPILOT_GITHUB_TOKEN=True)
+    both = select(ANTHROPIC_API_KEY=True, DASHSCOPE_API_KEY=True, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=True)
     require(
         both.worker_id == V03_REVIEWER_OPTIONS[0].worker_id,
         "simultaneous credentials did not follow fixed reviewed provider order",
@@ -72,28 +77,29 @@ def validate_selection_semantics():
 
     expect_error(
         "WORKER_PROVIDER_UNAVAILABLE",
-        lambda: select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, COPILOT_GITHUB_TOKEN=False),
+        lambda: select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=False, COPILOT_GITHUB_TOKEN=False),
     )
     expect_error(
         "WORKER_PROVIDER_INPUT_INVALID",
-        lambda: select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, COPILOT_GITHUB_TOKEN=False, RANDOM_TOKEN=True),
+        lambda: select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=False, COPILOT_GITHUB_TOKEN=False, RANDOM_TOKEN=True),
     )
     expect_error(
         "WORKER_PROVIDER_INPUT_INVALID",
         lambda: select_v03_reviewer_worker(
             registry_path=REGISTRY,
             workflow_dir=WORKFLOWS,
-            credential_presence={"ANTHROPIC_API_KEY": 1, "DASHSCOPE_API_KEY": False, "COPILOT_GITHUB_TOKEN": False},
+            credential_presence={"ANTHROPIC_API_KEY": 1, "DASHSCOPE_API_KEY": False, "GEMINI_API_KEY": False, "COPILOT_GITHUB_TOKEN": False},
         ),
     )
 
 
 def validate_secret_non_disclosure():
-    old = {name: os.environ.get(name) for name in ("ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY", "COPILOT_GITHUB_TOKEN")}
+    old = {name: os.environ.get(name) for name in ("ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY", "GEMINI_API_KEY", "COPILOT_GITHUB_TOKEN")}
     secret_value = "super-secret-provider-value-that-must-not-leak"
     try:
         os.environ["ANTHROPIC_API_KEY"] = secret_value
         os.environ.pop("DASHSCOPE_API_KEY", None)
+        os.environ.pop("GEMINI_API_KEY", None)
         os.environ.pop("COPILOT_GITHUB_TOKEN", None)
         selected = selection_from_environment(registry_path=REGISTRY, workflow_dir=WORKFLOWS)
         public = public_selection(selected)
@@ -162,7 +168,7 @@ def main():
     validate_secret_non_disclosure()
     validate_registry_drift_fails_closed()
     print("v0.3 Reviewer Worker readiness validation passed")
-    print("- frozen Claude/Qwen/Copilot Reviewer registry + locked workflow secret contract")
+    print("- frozen Claude/Qwen/Gemini/Copilot Reviewer registry + locked workflow secret contract")
     print("- deterministic configured-provider selection; no caller-selected provider")
     print("- zero configured providers => WORKER_PROVIDER_UNAVAILABLE before external authority")
     print("- credential values never enter public selection/evidence")

@@ -60,9 +60,10 @@ def validate_routes():
 
 def validate_role_registry():
     workers=[w for w in load_role_workers() if (w.role,w.stage) in GATE_ROLE_STAGES]
-    assert_true(len(workers)==5,"expected exactly five Gate-role worker variants")
+    assert_true(len(workers)==6,"expected exactly six Gate-role worker variants")
     assert_true(resolve_role_worker("reviewer","code-review","claude").worker_workflow.endswith("reviewer-claude.lock.yml"),"reviewer claude worker mismatch")
     assert_true(resolve_role_worker("reviewer","code-review","qwen").worker_workflow.endswith("reviewer-qwen.lock.yml"),"reviewer qwen worker mismatch")
+    assert_true(resolve_role_worker("reviewer","code-review","gemini").worker_workflow.endswith("reviewer-gemini.lock.yml"),"reviewer gemini worker mismatch")
     assert_true(resolve_role_worker("qa","verification","gemini").worker_workflow.endswith("qa-gemini.lock.yml"),"qa gemini worker mismatch")
     try: resolve_role_worker("reviewer","design-review","claude"); raise AssertionError("design-review unexpectedly resolved")
     except RoleWorkerError: pass

@@ -81,21 +81,21 @@ def validate_preferred_bindings():
 
 def validate_fallbacks_are_explicit():
     cases = (
-        ("developer", ("OPENAI_API_KEY", "CODEX_API_KEY"), "ai-sdlc-gh-aw-worker.lock.yml"),
-        ("reviewer", ("ANTHROPIC_API_KEY",), "ai-sdlc-gh-aw-reviewer-copilot.lock.yml"),
-        ("qa", ("GEMINI_API_KEY",), "ai-sdlc-gh-aw-qa-copilot.lock.yml"),
+        ("developer", ("OPENAI_API_KEY", "CODEX_API_KEY"), "copilot", "ai-sdlc-gh-aw-worker.lock.yml", ("COPILOT_GITHUB_TOKEN",)),
+        ("reviewer", ("ANTHROPIC_API_KEY",), "gemini", "ai-sdlc-gh-aw-reviewer-gemini.lock.yml", ("GEMINI_API_KEY",)),
+        ("qa", ("GEMINI_API_KEY",), "copilot", "ai-sdlc-gh-aw-qa-copilot.lock.yml", ("COPILOT_GITHUB_TOKEN",)),
     )
-    for role, preferred_credentials, expected_workflow in cases:
+    for role, preferred_credentials, expected_profile, expected_workflow, expected_credentials in cases:
         presence = preferred_presence()
         for identity in preferred_credentials:
             presence[identity] = False
         rows = by_role(resolve_dogfood_execution_bindings(presence))
         binding = rows[role]
-        require(binding.selected_profile == "copilot", f"{role}: missing preferred credential must select copilot fallback")
+        require(binding.selected_profile == expected_profile, f"{role}: missing preferred credential selected unexpected fallback")
         require(binding.fallback is True, f"{role}: fallback must be explicit")
         require(binding.fallback_reason == "PREFERRED_CANDIDATE_NOT_READY", f"{role}: fallback reason drifted")
         require(binding.worker_workflow == expected_workflow, f"{role}: fallback Worker identity drifted")
-        require(binding.present_credential_identities == ("COPILOT_GITHUB_TOKEN",), f"{role}: fallback credential binding drifted")
+        require(binding.present_credential_identities == expected_credentials, f"{role}: fallback credential binding drifted")
 
 
 def validate_no_ready_candidate_fails_closed():
@@ -165,7 +165,7 @@ def main():
     validate_main_only_gate()
     print("v0.3 dogfood execution binding validation passed")
     print("- Developer: codex -> copilot; generic trusted Registry Worker")
-    print("- Reviewer: claude -> copilot; specialized read-only Gate Worker")
+    print("- Reviewer: claude -> qwen -> gemini -> copilot; specialized read-only Gate Worker")
     print("- QA: gemini -> copilot; specialized read-only Gate Worker")
     print("- exact credential presence + Worker identity are bound before cloud spend")
     print("- no model call, Worker dispatch, Store/Event mutation, or dogfood/release evidence")

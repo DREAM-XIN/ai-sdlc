@@ -83,7 +83,7 @@ def load_role_workers(path: Path = DEFAULT_PATH):
         ("product", "requirement", "claude"), ("product", "requirement", "copilot"),
         ("architect", "design", "claude"), ("architect", "design", "copilot"),
         ("orchestrator", "plan", "codex"), ("orchestrator", "plan", "copilot"),
-        ("reviewer", "code-review", "claude"), ("reviewer", "code-review", "qwen"), ("reviewer", "code-review", "copilot"),
+        ("reviewer", "code-review", "claude"), ("reviewer", "code-review", "qwen"), ("reviewer", "code-review", "gemini"), ("reviewer", "code-review", "copilot"),
         ("qa", "verification", "gemini"), ("qa", "verification", "copilot"),
     }
     if seen_keys != expected:
