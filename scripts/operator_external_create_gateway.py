@@ -16,22 +16,28 @@ _WORKFLOW_BINDINGS = {
         "profile": "codex",
         "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
     },
+    "ai-sdlc-gh-aw-reviewer-gemini.lock.yml": {
+        "worker_id": "code-review-reviewer-gemini",
+        "profile": "gemini",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
+        "credential_name": "GEMINI_API_KEY",
+    },
     "ai-sdlc-gh-aw-reviewer-claude.lock.yml": {
         "worker_id": "code-review-reviewer-claude",
         "profile": "claude",
-        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "credential_name": "ANTHROPIC_API_KEY",
     },
     "ai-sdlc-gh-aw-reviewer-copilot.lock.yml": {
         "worker_id": "code-review-reviewer-copilot",
         "profile": "copilot",
-        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "credential_name": "COPILOT_GITHUB_TOKEN",
     },
     "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml": {
         "worker_id": "code-review-reviewer-copilot",
         "profile": "copilot",
-        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "credential_name": "COPILOT_GITHUB_TOKEN",
     },
     "ai-sdlc-gh-aw-qa-gemini.lock.yml": {
