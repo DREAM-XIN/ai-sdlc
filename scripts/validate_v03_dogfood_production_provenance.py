@@ -12,6 +12,7 @@ from v03_dogfood_trusted_provenance import DogfoodProvenanceVerificationError
 
 REPOSITORY = "dream-xin/ai-sdlc"
 HEAD = "a" * 40
+CONTROL_HEAD = "b" * 40
 RUN_ID = 7001
 ADAPTER_ID = "ai-sdlc.openai.responses"
 RUNTIME_KIND = "github-actions-gh-aw"
@@ -30,6 +31,7 @@ def record():
         "adapter": {"adapter_id": ADAPTER_ID},
         "runtime": {
             "runtime_kind": RUNTIME_KIND,
+            "control_head_sha": CONTROL_HEAD,
             "receipt_identity": "gh-aw-run:7001:first-attempt",
             "workflow_run_ids": [RUN_ID],
         },
@@ -53,7 +55,7 @@ def github_get(url, _headers):
         return 200, {
             "event": "workflow_dispatch",
             "conclusion": "success",
-            "head_sha": HEAD,
+            "head_sha": CONTROL_HEAD,
             "repository": {"full_name": REPOSITORY},
         }
     return 404, {"message": "not found"}
@@ -77,6 +79,7 @@ def verifier(**overrides):
             verifier_identity=VERIFIER,
             supported_adapter_id=ADAPTER_ID,
             runtime_kind=RUNTIME_KIND,
+            control_head_sha=CONTROL_HEAD,
             github_token="test-token",
             github_api_base="https://api.github.test",
         ),
@@ -99,6 +102,7 @@ def main():
     attestation = verifier().verify(base)
     require(attestation.repository == REPOSITORY, "repository attestation drifted")
     require(attestation.candidate_head_sha == HEAD, "candidate attestation drifted")
+    require(attestation.workflow_runs[0].head_sha == CONTROL_HEAD, "control head attestation drifted")
     require([row.run_id for row in attestation.workflow_runs] == [RUN_ID], "workflow run attestation drifted")
     require(attestation.receipt_identity == base["runtime"]["receipt_identity"], "receipt attestation drifted")
     require(attestation.milestone_evidence_categories == milestone_resolver(base), "milestone attestation drifted")
@@ -119,6 +123,17 @@ def main():
     changed_head = deepcopy(base)
     changed_head["candidate"]["head_sha"] = "b" * 40
     expect_failure(changed_head, label="stale candidate head")
+
+    wrong_control = deepcopy(base)
+    wrong_control["runtime"]["control_head_sha"] = "c" * 40
+    expect_failure(wrong_control, label="wrong control installation head")
+
+    wrong_run_head = verifier(http_get=lambda url, headers: (
+        github_get(url, headers) if "/pulls/" in url else
+        (200, {"event": "workflow_dispatch", "conclusion": "success", "head_sha": HEAD,
+               "repository": {"full_name": REPOSITORY}})
+    ))
+    expect_failure(base, subject=wrong_run_head, label="Worker run used candidate rather than control head")
 
     duplicate_run = deepcopy(base)
     duplicate_run["runtime"]["workflow_run_ids"] = [RUN_ID, RUN_ID]

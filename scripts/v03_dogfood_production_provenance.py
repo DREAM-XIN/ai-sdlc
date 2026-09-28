@@ -67,6 +67,7 @@ class ProductionDogfoodProvenanceConfig:
     verifier_identity: str
     supported_adapter_id: str
     runtime_kind: str
+    control_head_sha: str
     github_token: str
     github_api_base: str = "https://api.github.com"
 
@@ -74,6 +75,7 @@ class ProductionDogfoodProvenanceConfig:
         object.__setattr__(self, "repository", normalize_repository(self.repository))
         if not all((self.verifier_identity, self.supported_adapter_id, self.runtime_kind, self.github_token)):
             raise ValueError("production dogfood provenance configuration is incomplete")
+        object.__setattr__(self, "control_head_sha", _sha40(self.control_head_sha, "control installation head"))
         if not str(self.github_api_base).startswith("https://"):
             raise ValueError("production dogfood provenance GitHub API must use HTTPS")
 
@@ -139,8 +141,11 @@ class ProductionDogfoodProvenanceVerifier:
             raise DogfoodProvenanceVerificationError("candidate head changed after dogfood evidence was recorded")
         return pr_number, head_sha
 
-    def _verify_runs(self, record: Mapping[str, Any], candidate_head: str | None) -> tuple[VerifiedWorkflowRun, ...]:
+    def _verify_runs(self, record: Mapping[str, Any]) -> tuple[VerifiedWorkflowRun, ...]:
         runtime = record.get("runtime") or {}
+        control_head = _sha40(runtime.get("control_head_sha"), "record control installation head")
+        if control_head != self.config.control_head_sha:
+            raise DogfoodProvenanceVerificationError("record control installation head differs from trusted preflight")
         declared = runtime.get("workflow_run_ids") or []
         run_ids = tuple(_positive_int(value, "workflow run id") for value in declared)
         if not run_ids or len(set(run_ids)) != len(run_ids):
@@ -156,8 +161,8 @@ class ProductionDogfoodProvenanceVerifier:
             if payload.get("event") != "workflow_dispatch" or str(payload.get("conclusion") or "").lower() != "success":
                 raise DogfoodProvenanceVerificationError(f"workflow run {run_id} is not a successful trusted dispatch")
             head_sha = _sha40(payload.get("head_sha"), f"workflow run {run_id} head")
-            if candidate_head is not None and head_sha != candidate_head:
-                raise DogfoodProvenanceVerificationError(f"workflow run {run_id} candidate head mismatch")
+            if head_sha != control_head:
+                raise DogfoodProvenanceVerificationError(f"workflow run {run_id} control installation head mismatch")
             verified.append(VerifiedWorkflowRun(run_id, str(record.get("repository")), "success", head_sha))
         return tuple(verified)
 
@@ -204,7 +209,7 @@ class ProductionDogfoodProvenanceVerifier:
             raise DogfoodProvenanceVerificationError("dogfood record does not use the configured production runtime")
 
         pr_number, candidate_head = self._verify_candidate(record)
-        runs = self._verify_runs(record, candidate_head)
+        runs = self._verify_runs(record)
         receipt_identity = self._verify_runtime_receipt(record, tuple(run.run_id for run in runs))
         milestones = self._verify_milestones(record)
         provenance = record.get("provenance") or {}

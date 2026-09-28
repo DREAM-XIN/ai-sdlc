@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
+
+from v03_dogfood_candidate_provenance import reconstruct_candidate_head, V03DogfoodCandidateProvenanceError
+import v03_dogfood_post_run_finalizer as post_run_finalizer
 
 from v03_dogfood_post_run_finalizer import (
     V03DogfoodPostRunFinalizerError,
@@ -14,6 +18,7 @@ from validate_v03_dogfood_evidence import SCENARIO_PROFILES
 
 REPO = "DREAM-XIN/ai-sdlc"
 HEAD = "1" * 40
+CONTROL_HEAD = "2" * 40
 PR = 348
 ADAPTER = "openai.responses"
 RUNTIME = "github-actions-gh-aw"
@@ -40,7 +45,7 @@ class ExactVerifier:
             runtime_kind=RUNTIME,
             receipt_identity=runtime["receipt_identity"],
             workflow_runs=tuple(
-                VerifiedWorkflowRun(run_id, REPO, "success", HEAD)
+                VerifiedWorkflowRun(run_id, REPO, "success", CONTROL_HEAD)
                 for run_id in sorted(runtime["workflow_run_ids"])
             ),
             milestone_evidence_categories=categories,
@@ -73,6 +78,7 @@ def observation(scenario: str):
         "feature_id": f"F-DOGFOOD-{scenario}",
         "target_ref": "refs/heads/v03-dogfood-target",
         "candidate_pr_number": PR,
+        "candidate_initial_head_sha": HEAD,
         "candidate_head_sha": HEAD,
         "release_eligible": False,
         "provenance_verified": False,
@@ -110,6 +116,7 @@ def facts(scenario: str, run_ids):
         "assertions": trusted_assertions(scenario),
         "evidence_uris": evidence,
         "provenance_verifier": ExactVerifier(),
+        "control_head_sha": CONTROL_HEAD,
     }
 
 
@@ -128,7 +135,7 @@ def finalize(scenario: str):
 def require_rejected(label, fn):
     try:
         fn()
-    except (V03DogfoodReleaseFinalizerError, V03DogfoodPostRunFinalizerError, AssertionError):
+    except (V03DogfoodReleaseFinalizerError, V03DogfoodPostRunFinalizerError, V03DogfoodCandidateProvenanceError, AssertionError):
         return
     raise AssertionError(f"{label} unexpectedly finalized release evidence")
 
@@ -165,6 +172,84 @@ def durable_history(scenario: str):
     return rows, projection
 
 
+def candidate_history(scenario: str):
+    roles = {
+        "happy_path": ("developer", "reviewer", "qa"),
+        "review_remediation": ("developer", "reviewer", "developer", "reviewer", "qa"),
+        "session_recovery": ("developer",),
+    }[scenario]
+    rows = []
+    current = HEAD
+    developer_head = "5" * 40
+    for index, role in enumerate(roles):
+        if role == "reviewer" and index in (1, 3):
+            current = ("3" if index == 1 else "4") * 40
+        dispatch = f"dispatch-{index}"
+        rows.append(event(len(rows) + 1, "dispatch.launch.authorized", {
+            "role": role, "dispatch_id": dispatch, "candidate_head_sha": current,
+        }))
+        if role == "developer" and scenario != "session_recovery":
+            event_id = f"event-{index}"
+            rows.append(event(len(rows) + 1, "feature.event.translated", {
+                "feature_event_id": event_id,
+                "feature_event": {"id": event_id, "changes": [{"kind": "artifact-record", "record": {
+                    "type": "implementation", "uri": f"docs/features/F-DOGFOOD-{scenario}/worker-runs/{dispatch}/developer-pr-{PR + 1}-{developer_head}-binding-{'a' * 64}.json",
+                }}]},
+            }))
+            rows.append(event(len(rows) + 1, "persist.confirmed", {"feature_event_id": event_id}))
+    return rows, current
+
+
+def validate_candidate_reconstruction():
+    for scenario in ("happy_path", "review_remediation", "session_recovery"):
+        rows, expected = candidate_history(scenario)
+        actual = reconstruct_candidate_head(rows, scenario=scenario, feature_id=f"F-DOGFOOD-{scenario}", pr_number=PR, initial_head=HEAD)
+        assert actual == expected, f"{scenario} final candidate head drifted"
+    assert reconstruct_candidate_head(candidate_history("happy_path")[0], scenario="happy_path", feature_id="F-DOGFOOD-happy_path", pr_number=PR, initial_head=HEAD) == "3" * 40
+    assert reconstruct_candidate_head(candidate_history("review_remediation")[0], scenario="review_remediation", feature_id="F-DOGFOOD-review_remediation", pr_number=PR, initial_head=HEAD) == "4" * 40
+    require_rejected("missing initial candidate", lambda: reconstruct_candidate_head(candidate_history("happy_path")[0], scenario="happy_path", feature_id="F-DOGFOOD-happy_path", pr_number=PR, initial_head=None))
+    rows, _ = candidate_history("review_remediation")
+    stale = deepcopy(rows)
+    stale[-1]["payload"]["candidate_head_sha"] = "3" * 40
+    require_rejected("stale re-review launch", lambda: reconstruct_candidate_head(stale, scenario="review_remediation", feature_id="F-DOGFOOD-review_remediation", pr_number=PR, initial_head=HEAD))
+    unpersisted = [row for row in rows if not (row["event_type"] == "persist.confirmed" and row["payload"]["feature_event_id"] == "event-2")]
+    require_rejected("unpersisted remediation head", lambda: reconstruct_candidate_head(unpersisted, scenario="review_remediation", feature_id="F-DOGFOOD-review_remediation", pr_number=PR, initial_head=HEAD))
+
+
+def validate_post_run_candidate_boundary():
+    class ReachedReceipt(Exception):
+        pass
+
+    old_facts = post_run_finalizer._durable_operation_facts
+    old_receipt = post_run_finalizer._durable_receipt
+    try:
+        for scenario in ("happy_path", "review_remediation"):
+            rows, final_head = candidate_history(scenario)
+            obs = observation(scenario)
+            obs["candidate_head_sha"] = final_head
+            obs["installation_commit_sha"] = CONTROL_HEAD
+            preflight = SimpleNamespace(
+                slot=SimpleNamespace(scenario=scenario, feature_id=obs["feature_id"], target_ref=obs["target_ref"]),
+                execution=SimpleNamespace(repository=REPO, installation_commit_sha=CONTROL_HEAD),
+                candidate_pr_number=PR, candidate_head_sha=final_head,
+            )
+            post_run_finalizer._durable_operation_facts = lambda _preflight, _observation: (rows, {"status": obs["final_status"]})
+            post_run_finalizer._durable_receipt = lambda _rows, _observation: (_ for _ in ()).throw(ReachedReceipt())
+            try:
+                post_run_finalizer.finalize(observation=obs, preflight=preflight, source_run_id=8001, finalizer_run_id=8002, github_token="test")
+            except ReachedReceipt:
+                pass
+            else:
+                raise AssertionError(f"{scenario} candidate transition did not reach durable receipt validation")
+            stale_raw = dict(obs, candidate_head_sha=HEAD)
+            require_rejected("stale raw candidate", lambda: post_run_finalizer.finalize(observation=stale_raw, preflight=preflight, source_run_id=8001, finalizer_run_id=8002, github_token="test"))
+            stale_live = SimpleNamespace(**dict(vars(preflight), candidate_head_sha=HEAD))
+            require_rejected("stale live candidate", lambda: post_run_finalizer.finalize(observation=obs, preflight=stale_live, source_run_id=8001, finalizer_run_id=8002, github_token="test"))
+    finally:
+        post_run_finalizer._durable_operation_facts = old_facts
+        post_run_finalizer._durable_receipt = old_receipt
+
+
 def validate_durable_authority_reconstruction():
     for scenario in SCENARIO_PROFILES:
         rows, projection = durable_history(scenario)
@@ -196,6 +281,8 @@ def validate_durable_authority_reconstruction():
 
 
 def main() -> int:
+    validate_candidate_reconstruction()
+    validate_post_run_candidate_boundary()
     validate_durable_authority_reconstruction()
     for scenario in SCENARIO_PROFILES:
         record = finalize(scenario)

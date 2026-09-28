@@ -22,6 +22,7 @@ from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceVerifier,
 )
 from v03_dogfood_release_finalizer import build_release_record
+from v03_dogfood_candidate_provenance import reconstruct_candidate_head
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
 from validate_v03_dogfood_evidence import SCENARIO_PROFILES
@@ -250,8 +251,18 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         raise V03DogfoodPostRunFinalizerError("observation escaped the frozen scenario fixture")
     if int(observation.get("candidate_pr_number") or 0) != preflight.candidate_pr_number:
         raise V03DogfoodPostRunFinalizerError("candidate PR differs from independently resolved fixture authority")
+    if observation.get("installation_commit_sha") != preflight.execution.installation_commit_sha:
+        raise V03DogfoodPostRunFinalizerError("raw control installation head differs from trusted preflight")
 
     events, projection = _durable_operation_facts(preflight, observation)
+    candidate_head = reconstruct_candidate_head(
+        events, scenario=scenario, feature_id=preflight.slot.feature_id,
+        pr_number=preflight.candidate_pr_number, initial_head=observation.get("candidate_initial_head_sha"),
+    )
+    if observation.get("candidate_head_sha") != candidate_head:
+        raise V03DogfoodPostRunFinalizerError("raw candidate head differs from durable post-Developer head")
+    if preflight.candidate_head_sha != candidate_head:
+        raise V03DogfoodPostRunFinalizerError("fixture PR head changed after durable dogfood execution")
     receipt = _durable_receipt(events, observation)
     categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation)
     generation = int(projection.get("generation") or 0)
@@ -265,7 +276,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     attestation_uri = _run_uri(repository, finalizer_run_id)
     evidence_uris = [
         f"https://github.com/{repository}/pull/{int(observation['candidate_pr_number'])}",
-        f"https://github.com/{repository}/commit/{observation['candidate_head_sha']}",
+        f"https://github.com/{repository}/commit/{candidate_head}",
         _run_uri(repository, source_run_id),
         attestation_uri,
         *[_run_uri(repository, value) for value in worker_run_ids],
@@ -276,6 +287,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
             verifier_identity=VERIFIER_IDENTITY,
             supported_adapter_id=OPENAI_RESPONSES_ADAPTER_ID,
             runtime_kind=RUNTIME_KIND,
+            control_head_sha=preflight.execution.installation_commit_sha,
             github_token=github_token,
             github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         ),
@@ -290,6 +302,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         "assertions": assertions,
         "evidence_uris": evidence_uris,
         "provenance_verifier": verifier,
+        "control_head_sha": preflight.execution.installation_commit_sha,
     }
     return build_release_record(
         observation=observation,

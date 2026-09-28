@@ -40,6 +40,7 @@
       "type": "object", "additionalProperties": false, "required": ["runtime_kind", "real_supported_runtime", "receipt_identity", "workflow_run_ids"],
       "properties": {
         "runtime_kind": {"type": "string", "minLength": 1},
+        "control_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "real_supported_runtime": {"type": "boolean"},
         "receipt_identity": {"type": ["string", "null"]},
         "workflow_run_ids": {"type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": true}

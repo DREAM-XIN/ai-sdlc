@@ -12,12 +12,14 @@ import subprocess
 from typing import Any, Mapping
 
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
+from operator_store_model import operation_events
 from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_live_gate import ALLOWED_SCENARIOS, assemble_dogfood_live_gate
 from v03_dogfood_openai_host import V03DogfoodOpenAIHostConfig, V03DogfoodOpenAIResponsesHost
 from v03_dogfood_runtime_preflight import build_v03_dogfood_runtime_preflight
 from v03_dogfood_scenario_runner import run_scenario
+from v03_dogfood_candidate_provenance import reconstruct_candidate_head
 from v03_real_runtime_live_authority import load_live_authority, require_trusted_main_execution
 
 VALIDATE_ONLY = "validate-only"
@@ -170,6 +172,11 @@ def main() -> int:
         else None
     )
     observation = run_scenario(preflight=preflight, host=host, recovery_host=recovery_host)
+    events = operation_events(preflight.composition.runtime.backend.read_snapshot(), observation.operation_id)
+    candidate_head = reconstruct_candidate_head(
+        events, scenario=scenario, feature_id=preflight.slot.feature_id,
+        pr_number=preflight.candidate_pr_number, initial_head=preflight.candidate_head_sha,
+    )
     doc = {
         "schema_version": "ai-sdlc.v03-dogfood-runtime-observation/v1",
         **asdict(observation),
@@ -178,7 +185,8 @@ def main() -> int:
         "feature_id": preflight.slot.feature_id,
         "target_ref": preflight.slot.target_ref,
         "candidate_pr_number": preflight.candidate_pr_number,
-        "candidate_head_sha": preflight.candidate_head_sha,
+        "candidate_initial_head_sha": preflight.candidate_head_sha,
+        "candidate_head_sha": candidate_head,
         "trusted_context_digest": preflight.trusted_context_digest,
         "release_eligible": False,
         "provenance_verified": False,

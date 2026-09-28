@@ -140,6 +140,7 @@ def build_release_record(
         "adapter": {"adapter_id": adapter_id, "supported": True, "write_capable": True},
         "runtime": {
             "runtime_kind": runtime_kind,
+            "control_head_sha": str(_required(trusted_facts, "control_head_sha")),
             "real_supported_runtime": True,
             "receipt_identity": str(_required(observation, "runtime_receipt_identity")),
             "workflow_run_ids": list(run_ids),
