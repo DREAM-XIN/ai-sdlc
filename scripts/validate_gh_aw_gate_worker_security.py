@@ -46,6 +46,8 @@ def main():
     require(local_lock.count("GH_AW_HARNESS_MAX_RETRIES: 6")==1,"compiled v0.3 local Reviewer must apply six retries only to the primary agent")
     require(local_lock.count("GH_AW_HARNESS_MAX_RETRIES: 0")==1,"compiled v0.3 local Reviewer threat detection must retain zero retries")
     require('version: "0.39.1"' in local_gemini_source,"v0.3 local Gemini Reviewer must pin auth-compatible Gemini CLI 0.39.1")
+    require("  model: auto" in local_gemini_source,"v0.3 local Gemini Reviewer must retain automatic model routing for transient provider capacity failures")
+    require('GH_AW_ENGINE_MODEL: "auto"' in local_gemini_lock and "GEMINI_MODEL: auto" in local_gemini_lock,"compiled v0.3 local Gemini Reviewer must retain automatic model routing")
     require('"engine_versions":{"gemini":"0.39.1"}' in local_gemini_lock,"compiled v0.3 local Gemini Reviewer must retain Gemini CLI 0.39.1 metadata")
     require("@google/gemini-cli@0.39.1" in local_gemini_lock,"compiled v0.3 local Gemini Reviewer must install auth-compatible Gemini CLI 0.39.1")
     require("AI_SDLC_RUNTIME_APP_CLIENT_ID" not in local_gemini_source and "AI_SDLC_RUNTIME_APP_PRIVATE_KEY" not in local_gemini_source,"v0.3 local Gemini Reviewer must not depend on Runtime App permissions")

@@ -45,7 +45,7 @@ on:
 engine:
   id: gemini
   version: "0.39.1" # release-path API-key auth compatibility; see prior live Gemini remediation
-  model: gemini-3.5-flash-lite
+  model: auto
 permissions:
   contents: read
   issues: read
