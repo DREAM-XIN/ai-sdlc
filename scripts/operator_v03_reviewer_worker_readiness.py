@@ -70,7 +70,7 @@ V03_REVIEWER_OPTIONS = (
         role="reviewer",
         stage="code-review",
         profile="gemini",
-        workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+        workflow_file="ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml",
         registry_workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
         credential_env="GEMINI_API_KEY",
     ),

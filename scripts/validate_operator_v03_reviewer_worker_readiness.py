@@ -61,7 +61,7 @@ def validate_selection_semantics():
 
     gemini = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
     require(gemini.worker_id == "code-review-reviewer-gemini", gemini)
-    require(gemini.workflow_file == "ai-sdlc-gh-aw-reviewer-gemini.lock.yml", gemini)
+    require(gemini.workflow_file == "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml", gemini)
     require(gemini.credential_env == "GEMINI_API_KEY", gemini)
 
     copilot = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=False, COPILOT_GITHUB_TOKEN=True)
