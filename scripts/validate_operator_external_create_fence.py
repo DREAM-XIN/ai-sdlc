@@ -473,7 +473,7 @@ def validate_registered_reviewer_provider_bindings_cross_post_boundary():
         ),
         (
             "gemini",
-            "ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+            "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml",
             "code-review-reviewer-gemini",
             "GEMINI_API_KEY",
         ),
