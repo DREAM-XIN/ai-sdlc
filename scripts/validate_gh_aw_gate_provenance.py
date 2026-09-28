@@ -108,6 +108,31 @@ def main():
         source_workflow_ref=f"{CONTROL}/.github/workflows/ai-sdlc-gh-aw-reviewer-copilot.lock.yml@refs/heads/{BRANCH}",
     )
 
+    local_gemini_reviewer_workflow = "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml"
+    local_gemini_reviewer_path = f".github/workflows/{local_gemini_reviewer_workflow}"
+    local_gemini_reviewer_ref = f"{CONTROL}/{local_gemini_reviewer_path}@refs/heads/{BRANCH}"
+    local_gemini_reviewer_run = deepcopy(run)
+    local_gemini_reviewer_run["path"] = local_gemini_reviewer_path
+    local_gemini_reviewer_worker = validate_run(
+        local_gemini_reviewer_run,
+        source_run_id=RUN_ID,
+        source_workflow_ref=local_gemini_reviewer_ref,
+        control_repository=CONTROL,
+        target_repository=TARGET,
+        default_branch=BRANCH,
+        role=ROLE,
+        stage=STAGE,
+        feature_id=FEATURE,
+        task_id=TASK,
+        expected_revision=REVISION,
+        candidate_head_sha=HEAD,
+    )
+    require(
+        local_gemini_reviewer_worker.worker_workflow == "ai-sdlc-gh-aw-reviewer-gemini.lock.yml"
+        and local_gemini_reviewer_worker.profile == "gemini",
+        "reviewed local Reviewer alias did not resolve to canonical Gemini worker identity",
+    )
+
     local_qa_workflow = "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml"
     local_qa_path = f".github/workflows/{local_qa_workflow}"
     local_qa_ref = f"{CONTROL}/{local_qa_path}@refs/heads/{BRANCH}"
