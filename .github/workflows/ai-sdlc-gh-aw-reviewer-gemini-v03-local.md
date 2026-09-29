@@ -44,7 +44,7 @@ on:
 # Same-repository v0.3 release evidence uses GITHUB_TOKEN; do not depend on Runtime App installation permissions here.
 engine:
   id: gemini
-  version: "0.61.0" # current stable; preserves explicit versioned Flash model IDs
+  version: "0.39.1" # release-path API-key auth compatibility; retain explicit versioned Flash model
   model: gemini-3.8-flash
 permissions:
   contents: read
