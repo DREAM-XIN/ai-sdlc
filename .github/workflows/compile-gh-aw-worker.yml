@@ -77,6 +77,7 @@ jobs:
         env:
           KIND: ${{ matrix.worker.kind }}
           PROFILE: ${{ matrix.worker.profile }}
+          SOURCE: ${{ matrix.worker.source }}
         run: |
           if [[ "$KIND" == "profile" ]]; then
             python scripts/render_gh_aw_workers.py --profile "$PROFILE" --check
