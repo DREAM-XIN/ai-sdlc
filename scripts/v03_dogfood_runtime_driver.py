@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
@@ -60,6 +62,42 @@ def require_mode(*, mode: str, scenario: str, event_name: str, ref: str) -> tupl
     if event_name != "workflow_dispatch" or ref != "refs/heads/main":
         raise V03DogfoodRuntimeDriverError("dogfood preflight/run is authorized only by workflow_dispatch on main")
     return mode, scenario
+
+
+@contextmanager
+def store_git_transport(*, token: str, repository: str, repo_path: Path = Path(".")):
+    """Limit Git authentication to this process and the installed origin URL."""
+    if not token or repository.lower() != "dream-xin/ai-sdlc":
+        raise V03DogfoodRuntimeDriverError("Store Git transport lacks fixed repository/App authority")
+    result = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo_path,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    origin = result.stdout.strip()
+    canonical = origin.lower().removesuffix(".git")
+    if result.returncode or canonical != "https://github.com/" + repository.lower():
+        raise V03DogfoodRuntimeDriverError("Store Git origin differs from installed repository")
+    if os.environ.get("GIT_CONFIG_COUNT") not in {None, "0"}:
+        raise V03DogfoodRuntimeDriverError("unexpected inherited Git transport configuration")
+    encoded = base64.b64encode(("x-access-token:" + token).encode()).decode("ascii")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print("::add-mask::" + encoded, flush=True)
+    transient = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http." + origin + ".extraheader",
+        "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic " + encoded,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    previous = {key: os.environ.get(key) for key in transient}
+    try:
+        os.environ.update(transient)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def assemble_preflight(*, scenario: str, env: Mapping[str, str], checkout_sha: str):
@@ -154,6 +192,14 @@ def main() -> int:
         }, sort_keys=True))
         return 0
 
+    with store_git_transport(
+        token=_required(os.environ, "AI_SDLC_EVENT_WRITE_TOKEN"),
+        repository=_required(os.environ, "GITHUB_REPOSITORY"),
+    ):
+        return _execute_live(mode=mode, scenario=scenario)
+
+
+def _execute_live(*, mode: str, scenario: str) -> int:
     preflight = assemble_preflight(scenario=scenario, env=os.environ, checkout_sha=_head())
     if mode == PREFLIGHT_ONLY:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))

@@ -31,6 +31,7 @@ def git_store_transport_tests(live):
     import subprocess
     import tempfile
     from unittest.mock import patch
+    from v03_dogfood_runtime_driver import store_git_transport
     from operator_store_git import CasConflict
     from operator_store_model import StoreMutation, StoreMutationPlan
     from operator_store_protection import ProtectionReceipt
@@ -51,8 +52,8 @@ def git_store_transport_tests(live):
     settings = checkouts[0].get("with", {})
     expect(settings.get("token") == "${{ steps.event-token.outputs.token }}",
            "Store Git transport must use the bounded Runtime App token")
-    expect(settings.get("persist-credentials") is True,
-           "Store Git push lacks checkout-managed authentication")
+    expect(settings.get("persist-credentials") is False,
+           "Store Git credentials must not persist in checkout")
     tokens = [step for step in job["steps"] if step.get("id") == "event-token"]
     expect(len(tokens) == 1, "Runtime App token identity is ambiguous")
     app = tokens[0]["with"]
@@ -68,7 +69,7 @@ def git_store_transport_tests(live):
     isolated = {key: value for key, value in os.environ.items()
                 if not key.startswith("GIT_")}
     isolated.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-                    GIT_TERMINAL_PROMPT="0")
+                    GIT_TERMINAL_PROMPT="0", GITHUB_ACTIONS="false")
     with tempfile.TemporaryDirectory(prefix="v03-dogfood-store-transport-") as temporary:
         root = Path(temporary)
         remote, first, second = root / "remote.git", root / "first", root / "second"
@@ -79,10 +80,11 @@ def git_store_transport_tests(live):
             git(root, "init", "--bare", str(remote))
             for directory in (first, second):
                 git(root, "init", str(directory))
-                git(directory, "remote", "add", "origin", str(remote))
+                git(directory, "remote", "add", "origin", "https://github.com/DREAM-XIN/ai-sdlc")
+                git(directory, "remote", "add", "store-fixture", str(remote))
             backend = RemoteGitStateRefBackend(
                 repo_path=first, repository="dream-xin/ai-sdlc",
-                state_ref="refs/heads/ai-sdlc-operator-state")
+                state_ref="refs/heads/ai-sdlc-operator-state", remote_name="store-fixture")
             path = "state/operator/v1/projections/op-transport-check.json"
             initial = StoreMutationPlan(
                 None, (StoreMutation("replace_projection", path, {"transport": 1}),),
@@ -98,34 +100,79 @@ def git_store_transport_tests(live):
                     repository=backend.repository, state_ref=backend.state_ref,
                     status="PROTECTED", verifier_identity="local-transport-test-only",
                     verified_at="2026-10-02T00:00:00Z", policy_digest="test-only")
-                created = backend.commit(initial, receipt)
-                expect(created.snapshot.get(path) == {"transport": 1},
-                       "remote Store did not confirm committed projection")
-                author = git(first, "show", "-s", "--format=%an <%ae>|%cn <%ce>",
-                             created.ref_sha).stdout.strip()
-                expect(author == "AI-SDLC Operator Store <operator-store@ai-sdlc.invalid>"
-                       "|AI-SDLC Operator Store <operator-store@ai-sdlc.invalid>",
-                       "commit-tree did not inherit configured workflow identity")
-                rival = RemoteGitStateRefBackend(
-                    repo_path=second, repository=backend.repository,
-                    state_ref=backend.state_ref)
-                stale = rival.read_snapshot()
-                advanced = backend.commit(StoreMutationPlan(
-                    created.ref_sha,
-                    (StoreMutation("replace_projection", path, {"transport": 2}),),
-                    {"transport": 2}), receipt)
+                with store_git_transport(token="local-test-token", repository=backend.repository,
+                                         repo_path=first):
+                    header = git(first, "config", "--get-urlmatch", "http.extraheader",
+                                 "https://github.com/DREAM-XIN/ai-sdlc").stdout.strip()
+                    expect(header.startswith("AUTHORIZATION: basic "),
+                           "Git subprocess did not receive process-scoped App authentication")
+                    created = backend.commit(initial, receipt)
+                    expect(created.snapshot.get(path) == {"transport": 1},
+                           "remote Store did not confirm committed projection")
+                    author = git(first, "show", "-s", "--format=%an <%ae>|%cn <%ce>",
+                                 created.ref_sha).stdout.strip()
+                    expect(author == "AI-SDLC Operator Store <operator-store@ai-sdlc.invalid>"
+                           "|AI-SDLC Operator Store <operator-store@ai-sdlc.invalid>",
+                           "commit-tree did not inherit configured workflow identity")
+                    rival = RemoteGitStateRefBackend(
+                        repo_path=second, repository=backend.repository,
+                        state_ref=backend.state_ref, remote_name="store-fixture")
+                    stale = rival.read_snapshot()
+                    advanced = backend.commit(StoreMutationPlan(
+                        created.ref_sha,
+                        (StoreMutation("replace_projection", path, {"transport": 2}),),
+                        {"transport": 2}), receipt)
+                    try:
+                        rival.commit(StoreMutationPlan(
+                            stale.ref_sha,
+                            (StoreMutation("replace_projection", path, {"transport": 3}),),
+                            {"transport": 3}), receipt)
+                    except CasConflict:
+                        pass
+                    else:
+                        raise AssertionError("stale Store writer overwrote remote CAS winner")
+                    truth = backend.read_snapshot()
+                    expect(truth.ref_sha == advanced.ref_sha and truth.get(path) == {"transport": 2},
+                           "rejected stale writer changed durable remote Store")
+                expect("GIT_CONFIG_VALUE_0" not in os.environ,
+                       "Store transport left credential material in the process environment")
+                expect("AUTHORIZATION" not in (first / ".git/config").read_text(),
+                       "Store transport persisted credential material to checkout")
                 try:
-                    rival.commit(StoreMutationPlan(
-                        stale.ref_sha,
-                        (StoreMutation("replace_projection", path, {"transport": 3}),),
-                        {"transport": 3}), receipt)
-                except CasConflict:
+                    with store_git_transport(token="local-test-token", repository=backend.repository,
+                                             repo_path=first):
+                        raise RuntimeError("simulated Store failure")
+                except RuntimeError:
+                    pass
+                expect("GIT_CONFIG_VALUE_0" not in os.environ,
+                       "exceptional Store exit left credential material in the environment")
+                with patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1"}):
+                    try:
+                        with store_git_transport(token="local-test-token", repository=backend.repository,
+                                                 repo_path=first):
+                            pass
+                    except V03DogfoodRuntimeDriverError:
+                        pass
+                    else:
+                        raise AssertionError("inherited Git transport authority was accepted")
+                git(first, "remote", "set-url", "origin", "https://github.com/other/repo")
+                try:
+                    with store_git_transport(token="local-test-token", repository=backend.repository,
+                                             repo_path=first):
+                        pass
+                except V03DogfoodRuntimeDriverError:
                     pass
                 else:
-                    raise AssertionError("stale Store writer overwrote remote CAS winner")
-                truth = backend.read_snapshot()
-                expect(truth.ref_sha == advanced.ref_sha and truth.get(path) == {"transport": 2},
-                       "rejected stale writer changed durable remote Store")
+                    raise AssertionError("credential transport accepted a different origin")
+                git(first, "remote", "set-url", "origin", "https://github.com/DREAM-XIN/ai-sdlc")
+                for token, repository in (("", backend.repository), ("local-test-token", "other/repo")):
+                    try:
+                        with store_git_transport(token=token, repository=repository, repo_path=first):
+                            pass
+                    except V03DogfoodRuntimeDriverError:
+                        pass
+                    else:
+                        raise AssertionError("unconfigured Store authority was accepted")
     print("- isolated real commit-tree/push/read-back and stale-writer CAS passed")
 
 
