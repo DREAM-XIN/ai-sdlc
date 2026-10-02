@@ -375,6 +375,41 @@ def _stable_stop_after(events: list[dict[str, Any]], sequence: int, expected_sta
     )
 
 
+def _accepted_callback_facts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    callbacks: dict[str, dict[str, Any]] = {}
+    accepted: list[dict[str, Any]] = []
+    for row in events:
+        payload = row.get("payload") or {}
+        if row.get("event_type") == "worker.callback.recorded":
+            callback_id = str(payload.get("callback_id") or "")
+            envelope = payload.get("trusted_callback_envelope")
+            if callback_id and isinstance(envelope, dict):
+                if callback_id in callbacks:
+                    raise V03DogfoodPostRunFinalizerError("duplicate durable callback identity")
+                callbacks[callback_id] = row
+        elif row.get("event_type") == "worker.result.validated":
+            callback_id = str(payload.get("callback_id") or "")
+            callback = callbacks.get(callback_id)
+            envelope = (callback.get("payload") or {}).get("trusted_callback_envelope") if callback else None
+            if not callback_id or not isinstance(envelope, dict):
+                raise V03DogfoodPostRunFinalizerError("accepted result lacks its original protected callback")
+            context = envelope.get("trusted_context")
+            worker_payload = envelope.get("worker_payload")
+            if not isinstance(context, dict) or not isinstance(worker_payload, dict):
+                raise V03DogfoodPostRunFinalizerError("accepted callback lacks protected role/result facts")
+            role = str(context.get("role") or "")
+            if role != str(payload.get("role") or role):
+                raise V03DogfoodPostRunFinalizerError("accepted result role differs from protected callback")
+            accepted.append({
+                "callback_id": callback_id,
+                "role": role,
+                "worker_payload": worker_payload,
+                "callback_sequence": int(callback.get("sequence") or 0),
+                "accepted_sequence": int(row.get("sequence") or 0),
+            })
+    return accepted
+
+
 def _persist_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reconstruct exact Feature Persist triplets after accepted Worker results."""
     cycles: list[dict[str, Any]] = []
@@ -456,6 +491,7 @@ def _reconstruct_release_authority(
         raise V03DogfoodPostRunFinalizerError("durable selected-step sequence differs from frozen scenario")
 
     validated_rows = [row for row in events if row.get("event_type") == "worker.result.validated"]
+    accepted_callbacks = _accepted_callback_facts(events)
     validated = [int(row.get("sequence") or 0) for row in validated_rows]
     launched = [
         int(row.get("sequence") or 0)
@@ -464,8 +500,14 @@ def _reconstruct_release_authority(
         and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"
     ]
     expected_validated = 0 if scenario == "session_recovery" else len(expected_roles)
-    if len(validated) != expected_validated or len(launched) != len(expected_roles):
+    if (
+        len(validated) != expected_validated
+        or len(accepted_callbacks) != expected_validated
+        or len(launched) != len(expected_roles)
+    ):
         raise V03DogfoodPostRunFinalizerError("durable worker validation/launch count differs from frozen role sequence")
+    if tuple(row["role"] for row in accepted_callbacks) != expected_roles[:expected_validated]:
+        raise V03DogfoodPostRunFinalizerError("accepted callback role sequence differs from frozen scenario")
     persist_cycles = _persist_cycles(events)
     if scenario == "session_recovery":
         if persist_cycles:
@@ -564,7 +606,54 @@ def _reconstruct_release_authority(
     if actual_assertions != required_assertions:
         raise V03DogfoodPostRunFinalizerError("durable assertion reconstruction differs from frozen scenario")
 
-    categories = {name: set(required) for name, _state, required in profile["milestones"]}
+    categories: dict[str, set[str]] = {}
+    if scenario == "happy_path":
+        payloads = [row["worker_payload"] for row in accepted_callbacks]
+        if payloads[0].get("status") != "COMPLETED":
+            raise V03DogfoodPostRunFinalizerError("Developer milestone lacks exact COMPLETED result")
+        if payloads[1].get("verdict") != "PASS":
+            raise V03DogfoodPostRunFinalizerError("independent review milestone lacks exact PASS verdict")
+        if payloads[2].get("verdict") != "PASS":
+            raise V03DogfoodPostRunFinalizerError("QA milestone lacks exact PASS verdict")
+        categories = {
+            "operation-started": {"operation", "persisted_state"},
+            "developer-completed": {"candidate", "runtime_receipt", "persisted_state"},
+            "independent-review-passed": {"candidate", "independent_review", "persisted_state"},
+            "qa-passed-and-done": {"verification", "notification", "persisted_state"},
+        }
+    elif scenario == "review_remediation":
+        payloads = [row["worker_payload"] for row in accepted_callbacks]
+        if (
+            payloads[0].get("status") != "COMPLETED"
+            or payloads[1].get("verdict") != "REWORK"
+            or payloads[2].get("status") != "COMPLETED"
+            or payloads[3].get("verdict") != "PASS"
+            or payloads[4].get("verdict") != "PASS"
+        ):
+            raise V03DogfoodPostRunFinalizerError("review/remediation milestone verdict sequence differs from durable callbacks")
+        categories = {
+            "developer-completed": {"candidate", "runtime_receipt", "persisted_state"},
+            "reviewer-requested-changes": {"independent_review", "decision", "persisted_state"},
+            "remediation-completed": {"remediation", "candidate", "runtime_receipt", "persisted_state"},
+            "independent-re-review-passed": {"candidate", "independent_review", "persisted_state"},
+            "qa-passed": {"verification", "notification", "persisted_state"},
+        }
+    else:
+        original_responses = tuple(str(value) for value in (observation.get("response_ids") or []))
+        original_calls = tuple(str(value) for value in (observation.get("function_call_ids") or []))
+        if not original_responses or not original_calls:
+            raise V03DogfoodPostRunFinalizerError("original session lacks durable client trace identity")
+        categories = {
+            "durable-state-created": {"operation", "persisted_state"},
+            "original-session-ended": {"persisted_state"},
+            "new-session-discovered-operation-and-user-items": {
+                "operation", "decision", "notification", "persisted_state", "session_recovery"
+            },
+        }
+
+    required_categories = {name: set(required) for name, _state, required in profile["milestones"]}
+    if categories != required_categories:
+        raise V03DogfoodPostRunFinalizerError("fact-derived milestone evidence categories differ from frozen requirements")
     return categories, assertions
 
 
