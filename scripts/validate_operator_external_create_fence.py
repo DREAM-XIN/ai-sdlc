@@ -473,7 +473,7 @@ def validate_registered_reviewer_provider_bindings_cross_post_boundary():
         ),
         (
             "deepseek",
-            "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+            "ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml",
             "code-review-reviewer-deepseek",
             "DEEPSEEK_API_KEY",
         ),

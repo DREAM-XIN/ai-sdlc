@@ -9,6 +9,8 @@ on:
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-claude.lock.yml'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.md'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-local.md'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-copilot.lock.yml'
       - '.github/workflows/validate-v03-reviewer-worker-readiness.yml'
   workflow_dispatch:
