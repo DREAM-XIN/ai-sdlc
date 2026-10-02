@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 from typing import Any, Callable, Mapping
+from urllib import request
 
 from gh_aw_provider_registry import load_registry
 from v03_dogfood_issue221_compatibility import SOURCE_MAIN, verify_installation
@@ -49,6 +50,96 @@ ALLOWED_SCENARIOS = frozenset({
 
 class V03DogfoodLiveGateError(RuntimeError):
     pass
+
+
+REVIEW_PASS_MARKER = "Independent Runtime / Dogfood Release-Evidence Review — PASS"
+REVIEW_ANCHOR_PREFIX = "Issue221-Compatibility-Anchor: "
+
+
+def _github_json_any(*, url: str, token: str) -> Any:
+    req = request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "ai-sdlc-v03-dogfood-review-anchor",
+        },
+        method="GET",
+    )
+    try:
+        with request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise V03DogfoodLiveGateError("cannot read independent dogfood review anchor") from exc
+
+
+def select_review_anchor(*, pulls: Any, reviews_by_pr: Mapping[int, Any], installation_sha: str, reviewed_delta_digest: str) -> dict[str, Any]:
+    if not isinstance(pulls, list):
+        raise V03DogfoodLiveGateError("associated pull-request response is malformed")
+    candidates: list[dict[str, Any]] = []
+    for pr in pulls:
+        if not isinstance(pr, dict):
+            continue
+        number = pr.get("number")
+        head = pr.get("head") or {}
+        head_sha = str(head.get("sha") or "").lower()
+        if type(number) is not int or number < 1 or not head_sha:
+            continue
+        reviews = reviews_by_pr.get(number)
+        if not isinstance(reviews, list):
+            continue
+        for review in reviews:
+            if not isinstance(review, dict):
+                continue
+            body = str(review.get("body") or "")
+            state = str(review.get("state") or "")
+            commit_id = str(review.get("commit_id") or "").lower()
+            if (
+                state in {"COMMENTED", "APPROVED"}
+                and commit_id == head_sha
+                and REVIEW_PASS_MARKER in body
+                and REVIEW_ANCHOR_PREFIX + reviewed_delta_digest in body
+            ):
+                candidates.append({
+                    "pull_number": number,
+                    "review_id": review.get("id"),
+                    "review_commit_id": commit_id,
+                    "reviewed_delta_digest": reviewed_delta_digest,
+                    "installation_commit_sha": installation_sha,
+                })
+    if len(candidates) != 1:
+        raise V03DogfoodLiveGateError("exact installation lacks one independent reviewed-delta anchor")
+    return candidates[0]
+
+
+def verify_review_anchor(*, repository: str, installation_sha: str, reviewed_delta_digest: str, token: str, api_base: str) -> dict[str, Any]:
+    if installation_sha == SOURCE_MAIN:
+        return {
+            "source_main": True,
+            "reviewed_delta_digest": reviewed_delta_digest,
+            "installation_commit_sha": installation_sha,
+        }
+    pulls = _github_json_any(
+        url=f"{api_base.rstrip('/')}/repos/{repository}/commits/{installation_sha}/pulls?per_page=100",
+        token=token,
+    )
+    reviews_by_pr: dict[int, Any] = {}
+    if isinstance(pulls, list):
+        for pr in pulls:
+            if not isinstance(pr, dict) or type(pr.get("number")) is not int:
+                continue
+            number = int(pr["number"])
+            reviews_by_pr[number] = _github_json_any(
+                url=f"{api_base.rstrip('/')}/repos/{repository}/pulls/{number}/reviews?per_page=100",
+                token=token,
+            )
+    return select_review_anchor(
+        pulls=pulls,
+        reviews_by_pr=reviews_by_pr,
+        installation_sha=installation_sha,
+        reviewed_delta_digest=reviewed_delta_digest,
+    )
 
 
 @dataclass(frozen=True)
@@ -102,6 +193,13 @@ def verify_issue_221_closed(
     if not actions_read_token:
         raise V03DogfoodLiveGateError("dogfood gate lacks Actions read authority")
     compatibility = verify_installation(installation_sha)
+    review_anchor = verify_review_anchor(
+        repository=repository,
+        installation_sha=installation_sha,
+        reviewed_delta_digest=str(compatibility["reviewed_delta_digest"]),
+        token=actions_read_token,
+        api_base=api_base,
+    )
     evidence_sha = SOURCE_MAIN
     plan = validate_closed_plan(producer_plan())
     api = api_factory(
