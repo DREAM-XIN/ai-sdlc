@@ -19,7 +19,7 @@ EXPECTED = (
     "stale-candidate-result",
 )
 EXPECTED_KEYS = {
-    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization",
+    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization-r2",
     "persist-linearized-before-cancel": "v03-release-fi-persist-linearized-before-cancel",
     "duplicate-callback": "v03-release-fi-duplicate-callback",
     "out-of-order-callback": "v03-release-fi-out-of-order-callback",
@@ -135,6 +135,14 @@ def main():
 
     require("CaptureCoordinator(" in runner and "result_source.load_content" in runner,
             "production callback capture lacks trusted output materializer")
+    require("WORKER_COMPLETION_WAIT_ATTEMPTS = 120" in runner
+            and "WORKER_COMPLETION_WAIT_SECONDS = 5.0" in runner,
+            "remaining-six lost bounded Worker completion wait")
+    require('"first-attempt gh-aw run is not completed"' in runner
+            and "_retryable_worker_completion_wait" in runner,
+            "remaining-six no longer retries only the exact pending first-attempt state")
+    require("_handle_when_worker_completed" in runner,
+            "remaining-six bypasses bounded completion wait helper")
     require("for _ in range(2)" in runner, "duplicate callback does not inject two exact deliveries")
     require("SUPERSEDED_GENERATION" in runner, "out-of-order callback lost exact rejection code")
     require("status == 404" in runner and "status == 201" in runner,
