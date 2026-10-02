@@ -1,0 +1,45 @@
+protocol_version: 0.1.0
+revision: 2
+feature:
+  id: F-OPERATOR-V03-FI-DUPLICATE-WORKER-0002
+  title: 'v0.3 real-runtime fixture: duplicate-worker-completion'
+  risk: low
+  issue: '#310'
+workflow:
+  profile: v03-real-runtime-fixture
+  status: ACTIVE
+  current_stage: verification
+  stages:
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: READY
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts:
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-V03-FI-DUPLICATE-WORKER-0002/implementation.md
+  status: approved
+gates:
+- id: code-gate
+  status: PASS
+  evidence:
+  - vertical-evidence-0c1a153065219274f679
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence:
+- id: vertical-evidence-0c1a153065219274f679
+  status: pass
+  type: review
+  uri: docs/features/F-OPERATOR-V03-FI-DUPLICATE-WORKER-0002/worker-runs/vertical-aa0e66d4b74c2807725bb0f6615fc427/reviewer-comment-5952811527-binding-b840fb923498ae5f4ef8497f48fa916f036d1d947204143d6cdd83a1d74b6d90--first-attempt--key-dispatch-2aa4d45a7293a3730276ef1f74f954e4e2eea3ab--run-37009293884--head-c2a5661953820c53e344c4e7bb0214e53d6df4eb--lease-4631a0b96822a1106652d2f598cdfa3c6b78a423754eece90a63deb2c0cae1db.json
+applied_events:
+- EVT-F-OPERATOR-V03-FI-DUPLICATE-WORKER-0002-CODE-REVIEW-START
+- EVT-F-OPERATOR-V03-FI-DUPLICATE-WORKER-0002-VERTICAL-CODE-REVIEW-PASS-4B4B95C9357F
+updated_at: '2026-10-02T12:56:13Z'
