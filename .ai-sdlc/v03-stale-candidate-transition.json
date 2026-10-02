@@ -1,0 +1,1 @@
+{"old_candidate_head_sha": "e73933b51458d695e52e9ebca92f686533a0bf68", "release_fixture_only": true, "scenario": "stale-candidate-result", "schema_version": "ai-sdlc.v03-stale-candidate-transition/v1", "trusted_main_head_sha": "c2a5661953820c53e344c4e7bb0214e53d6df4eb", "workflow_run_id": "37010011437"}
