@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from operator_vertical import VerticalInvariantError
 
 from v03_dogfood_post_run_finalizer import (
     V03DogfoodPostRunFinalizerError,
@@ -128,7 +129,7 @@ def finalize(scenario: str):
 def require_rejected(label, fn):
     try:
         fn()
-    except (V03DogfoodReleaseFinalizerError, V03DogfoodPostRunFinalizerError, AssertionError):
+    except (V03DogfoodReleaseFinalizerError, V03DogfoodPostRunFinalizerError, VerticalInvariantError, AssertionError):
         return
     raise AssertionError(f"{label} unexpectedly finalized release evidence")
 
@@ -196,6 +197,129 @@ def validate_durable_authority_reconstruction():
     )
 
 
+def consumed_result_fixture(role="reviewer"):
+    """A consumed production receipt, then mutable GitHub source truth."""
+    from types import SimpleNamespace
+    from operator_store_model import digest_json
+    from operator_vertical import TrustedDispatchContext
+    from operator_vertical_recovery import _context_payload
+    from operator_vertical_gh_aw_collector import _build_receipts, MaterializedGhAwOutput
+    context = TrustedDispatchContext(
+        operation_id="op-1", operation_generation=1,
+        operation_profile="vertical-implementation-review-qa/v1",
+        semantic_effect_key="1"*64, external_dispatch_key="dispatch-" + "a"*40,
+        dispatch_id="dispatch-id", runtime_receipt_identity="7001",
+        target_repository=REPO, target_ref="dogfood/ref", feature_id="F-DOGFOOD",
+        expected_revision=4, feature_stage="code-review" if role == "reviewer" else "implementation",
+        task_id="task-1", role=role, candidate_pr_number=401 if role == "reviewer" else None,
+        candidate_head_sha="a"*40, worker_identity="independent-" + role,
+        collector_identity="sealed-collector",
+    )
+    kind = "evidence" if role == "reviewer" else "artifact"
+    uri = "docs/features/F-DOGFOOD/worker-runs/dispatch-id/" + role + "-sealed-original.json"
+    material = (b'{"verdict":"REWORK"}\n' if role == "reviewer"
+                else b'{"developer_pr":402,"head":"original"}\n')
+    source = SimpleNamespace(load_content=lambda location: material if location == uri else b"replacement")
+    output = MaterializedGhAwOutput(role + "-result", kind, "application/json", uri)
+    worker_payload = (dict(verdict="REWORK", summary="Original review", findings=[],
+                           outputs=[dict(label=output.label, kind=kind)]) if role == "reviewer"
+                      else dict(status="COMPLETED", summary="Original implementation",
+                                outputs=[dict(label=output.label, kind=kind)]))
+    receipts = _build_receipts(
+        coordinator=SimpleNamespace(content_loader=source.load_content), context=context,
+        outputs=(output,), declared_outputs={output.label: kind},
+        collected_at="2026-10-02T00:00:00Z",
+    )
+    callback_id = "gh-aw-callback-" + digest_json(dict(
+        operation_id=context.operation_id, generation=1,
+        external_dispatch_key=context.external_dispatch_key,
+        runtime_receipt_identity="7001", run_id=7001,
+    ))[:24]
+    envelope = dict(trusted_context=_context_payload(context), worker_payload=worker_payload,
+                    collected_outputs=receipts)
+    rows = [
+        dict(sequence=3, event_type="worker.callback.recorded", operation_generation=1,
+             payload=dict(callback_id=callback_id, external_dispatch_key=context.external_dispatch_key,
+                          callback_digest=digest_json(dict(worker_payload=worker_payload, receipts=receipts)),
+                          trusted_callback_envelope=envelope,
+                          trusted_callback_envelope_digest=digest_json(envelope))),
+        dict(sequence=4, event_type="worker.result.validated", operation_generation=1,
+             payload=dict(callback_id=callback_id, role=role, dispatch_id=context.dispatch_id)),
+    ]
+    trusted = {name: getattr(context, name) for name in (
+        "operation_id", "operation_generation", "operation_profile", "semantic_effect_key",
+        "external_dispatch_key", "dispatch_id", "target_repository", "target_ref",
+        "feature_id", "expected_revision", "feature_stage", "role",
+    )}
+    trusted["launch_candidate_head_sha"] = context.candidate_head_sha
+    resolved = SimpleNamespace(
+        run=SimpleNamespace(run_id=7001, role=role, candidate_pr_number=context.candidate_pr_number,
+                            candidate_head_sha=context.candidate_head_sha, task_id=context.task_id,
+                            worker_identity=context.worker_identity, collector_identity=context.collector_identity),
+        role_payload=deepcopy(worker_payload), outputs=(output,),
+    )
+    return trusted, resolved, source, rows
+
+
+def validate_original_consumed_result():
+    from dataclasses import replace
+    from operator_store_model import digest_json
+    from v03_dogfood_post_run_finalizer import _verify_consumed_result
+    for role in ("reviewer", "developer"):
+        trusted, resolved, source, rows = consumed_result_fixture(role)
+        def check(events=rows, result=resolved, backing=source):
+            return _verify_consumed_result(
+                events=events, trusted=trusted, resolved=result,
+                result_source=backing, lookup_sequence=2,
+            )
+        check()
+        # Re-resolution may mint a new valid sealed URI after a Gate comment
+        # verdict or Developer PR head changes. It cannot replace the consumed one.
+        changed = deepcopy(resolved)
+        changed.outputs = (replace(changed.outputs[0], trusted_uri=changed.outputs[0].trusted_uri.replace(
+            "sealed-original", "sealed-replacement")),)
+        require_rejected(role + " replacement sealed URI", lambda: check(result=changed))
+        changed = deepcopy(resolved)
+        if role == "reviewer":
+            changed.role_payload["verdict"] = "PASS"
+        else:
+            changed.role_payload["candidate_head_sha"] = "b"*40
+        require_rejected(role + " replacement Worker result", lambda: check(result=changed))
+        from types import SimpleNamespace
+        require_rejected(role + " same-location content mutation",
+                         lambda: check(backing=SimpleNamespace(load_content=lambda uri: b"replacement bytes")))
+        require_rejected(role + " missing original callback", lambda: check(events=rows[1:]))
+        require_rejected(role + " duplicate original callback", lambda: check(events=rows + [rows[0]]))
+        require_rejected(role + " missing acceptance", lambda: check(events=rows[:1]))
+        require_rejected(role + " duplicate acceptance", lambda: check(events=rows + [rows[1]]))
+        changed_rows = deepcopy(rows)
+        changed_rows[1]["payload"]["dispatch_id"] = "other-dispatch"
+        require_rejected(role + " acceptance dispatch drift", lambda: check(events=changed_rows))
+        changed_rows = deepcopy(rows)
+        changed_rows[1]["sequence"] = 1
+        require_rejected(role + " reordered acceptance", lambda: check(events=changed_rows))
+        rejected = deepcopy(rows[1])
+        rejected["event_type"] = "worker.result.rejected"
+        require_rejected(role + " rejected original callback", lambda: check(events=rows + [rejected]))
+        changed_rows = deepcopy(rows)
+        changed_rows[0]["payload"]["trusted_callback_envelope"]["worker_payload"]["summary"] = "tampered"
+        require_rejected(role + " envelope corruption", lambda: check(events=changed_rows))
+        changed_rows = deepcopy(rows)
+        protected = changed_rows[0]["payload"]
+        protected["trusted_callback_envelope"]["trusted_context"]["expected_revision"] = 5
+        protected["trusted_callback_envelope_digest"] = digest_json(protected["trusted_callback_envelope"])
+        require_rejected(role + " historical context drift", lambda: check(events=changed_rows))
+        changed_rows = deepcopy(rows)
+        protected = changed_rows[0]["payload"]
+        protected["trusted_callback_envelope"]["collected_outputs"][0]["expected_revision"] = 5
+        protected["trusted_callback_envelope_digest"] = digest_json(protected["trusted_callback_envelope"])
+        protected["callback_digest"] = digest_json(dict(
+            worker_payload=protected["trusted_callback_envelope"]["worker_payload"],
+            receipts=protected["trusted_callback_envelope"]["collected_outputs"],
+        ))
+        require_rejected(role + " original receipt binding drift", lambda: check(events=changed_rows))
+
+
 def validate_historical_runtime_bindings():
 
     # Post-run binding reconstruction uses historical protected revisions and
@@ -208,24 +332,25 @@ def validate_historical_runtime_bindings():
     slot = SimpleNamespace(feature_id="F-DOGFOOD", target_ref="dogfood/ref")
     files = {reservation_path(semantic): dict(external_dispatch_key=key, feature_id=slot.feature_id,
                                               role="reviewer", expected_revision=4)}
+    trusted, resolved, source, callbacks = consumed_result_fixture()
     calls = []
     def resolve(**kwargs):
         calls.append(kwargs)
         assert kwargs["trusted_context"]["expected_revision"] == 4
-        return SimpleNamespace(run=SimpleNamespace(run_id=7001, role="reviewer",
-                               candidate_pr_number=401, candidate_head_sha="a"*40))
+        return resolved
     preflight = SimpleNamespace(slot=slot, execution=SimpleNamespace(repository=REPO),
         candidate_pr_number=401, workflows=SimpleNamespace(workflow_for=lambda role: "reviewer.yml"),
         composition=SimpleNamespace(runtime=SimpleNamespace(backend=SimpleNamespace(
             read_snapshot=lambda: SimpleNamespace(get=lambda path: files.get(path)))),
-            result_source=SimpleNamespace(resolve=resolve)))
+            result_source=SimpleNamespace(resolve=resolve, load_content=source.load_content)))
     events = [
-        dict(event_type="dispatch.launch.authorized", operation_generation=1,
+        dict(sequence=1, event_type="dispatch.launch.authorized", operation_generation=1,
              payload=dict(external_dispatch_key=key, semantic_effect_key=semantic,
                           dispatch_id="dispatch-id", role="reviewer", stage="code-review", candidate_head_sha="a"*40)),
-        dict(event_type="dispatch.launch.lookup-recorded", operation_generation=1,
+        dict(sequence=2, event_type="dispatch.launch.lookup-recorded", operation_generation=1,
              payload=dict(external_dispatch_key=key, lookup_state="LAUNCHED", receipt_id="7001")),
     ]
+    events += callbacks
     old_projection = post.vertical_projection
     try:
         post.vertical_projection = lambda snapshot, op: dict(operation_profile="vertical-implementation-review-qa/v1")
@@ -243,6 +368,7 @@ def validate_historical_runtime_bindings():
 def main() -> int:
     validate_durable_authority_reconstruction()
     validate_historical_runtime_bindings()
+    validate_original_consumed_result()
     for scenario in SCENARIO_PROFILES:
         record = finalize(scenario)
         assert record["evidence_kind"] == "release-run"

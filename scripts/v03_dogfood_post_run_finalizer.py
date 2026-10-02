@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
-from operator_store_model import operation_events
+from operator_store_model import digest_json, normalize_repository, operation_events
+from operator_vertical import (
+    FeatureSnapshot, TrustedDispatchContext, validate_collected_outputs, validate_worker_result,
+)
 from operator_vertical_store import vertical_projection
 from operator_store_model import reservation_path
 from v03_dogfood_production_provenance import (
@@ -94,6 +97,99 @@ def _durable_receipt(events: list[dict[str, Any]], observation: Mapping[str, Any
     return {"receipt_identity": receipt_identity, "workflow_run_ids": run_ids}
 
 
+def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence):
+    """Verify the original accepted callback; never mint replacement receipts."""
+    key, generation = trusted["external_dispatch_key"], trusted["operation_generation"]
+    callbacks = [row for row in events if row.get("event_type") == "worker.callback.recorded"
+                 and row.get("operation_generation") == generation
+                 and (row.get("payload") or {}).get("external_dispatch_key") == key]
+    if len(callbacks) != 1:
+        raise V03DogfoodPostRunFinalizerError("run lacks one original protected callback")
+    recorded = callbacks[0]
+    payload = recorded.get("payload") or {}
+    envelope = payload.get("trusted_callback_envelope")
+    if not isinstance(envelope, dict) or digest_json(envelope) != payload.get("trusted_callback_envelope_digest"):
+        raise V03DogfoodPostRunFinalizerError("original callback envelope digest differs")
+    worker_payload = envelope.get("worker_payload")
+    receipts = envelope.get("collected_outputs")
+    context = envelope.get("trusted_context")
+    if not isinstance(worker_payload, dict) or not isinstance(receipts, list) or not isinstance(context, dict):
+        raise V03DogfoodPostRunFinalizerError("original callback envelope is incomplete")
+    if digest_json({"worker_payload": worker_payload, "receipts": receipts}) != payload.get("callback_digest"):
+        raise V03DogfoodPostRunFinalizerError("original callback result digest differs")
+    expected_context = {name: trusted[name] for name in (
+        "operation_id", "operation_generation", "operation_profile", "semantic_effect_key",
+        "external_dispatch_key", "dispatch_id", "target_repository", "target_ref", "feature_id",
+        "expected_revision", "feature_stage", "role",
+    )}
+    expected_context.update(
+        runtime_receipt_identity=str(resolved.run.run_id), task_id=resolved.run.task_id,
+        candidate_pr_number=resolved.run.candidate_pr_number if trusted["role"] in {"reviewer", "qa"} else None,
+        candidate_head_sha=trusted["launch_candidate_head_sha"],
+        worker_identity=resolved.run.worker_identity, collector_identity=resolved.run.collector_identity,
+    )
+    comparable = dict(context)
+    comparable["target_repository"] = normalize_repository(str(context.get("target_repository") or ""))
+    expected_context["target_repository"] = normalize_repository(expected_context["target_repository"])
+    if comparable != expected_context:
+        raise V03DogfoodPostRunFinalizerError("original callback differs from historical launch/fresh run")
+    callback_id = "gh-aw-callback-" + digest_json({
+        "operation_id": trusted["operation_id"], "generation": generation,
+        "external_dispatch_key": key, "runtime_receipt_identity": str(resolved.run.run_id),
+        "run_id": resolved.run.run_id,
+    })[:24]
+    if payload.get("callback_id") != callback_id:
+        raise V03DogfoodPostRunFinalizerError("original callback identity differs from exact run")
+    accepted = [row for row in events if row.get("event_type") == "worker.result.validated"
+                and row.get("operation_generation") == generation
+                and (row.get("payload") or {}).get("callback_id") == callback_id]
+    rejected = [row for row in events if row.get("event_type") == "worker.result.rejected"
+                and row.get("operation_generation") == generation
+                and (row.get("payload") or {}).get("callback_id") == callback_id]
+    if len(accepted) != 1 or rejected:
+        raise V03DogfoodPostRunFinalizerError("original callback lacks one accepted result")
+    acceptance = accepted[0]
+    if not (lookup_sequence < int(recorded.get("sequence") or 0) < int(acceptance.get("sequence") or 0)):
+        raise V03DogfoodPostRunFinalizerError("original callback/acceptance ordering differs")
+    if ((acceptance.get("payload") or {}).get("role"),
+        (acceptance.get("payload") or {}).get("dispatch_id")) != (trusted["role"], trusted["dispatch_id"]):
+        raise V03DogfoodPostRunFinalizerError("accepted result differs from original dispatch")
+
+    fresh_payload = validate_worker_result(trusted["role"], resolved.role_payload)
+    if digest_json(fresh_payload) != digest_json(worker_payload):
+        raise V03DogfoodPostRunFinalizerError("fresh Worker result differs from originally consumed result")
+    def descriptors(outputs):
+        result = {}
+        for output in outputs:
+            label = output["label"]
+            if label in result:
+                raise V03DogfoodPostRunFinalizerError("duplicate sealed output label")
+            result[label] = tuple(output[name] for name in ("kind", "media_type", "trusted_uri"))
+        return result
+    original_descriptors = descriptors(receipts)
+    fresh_descriptors = descriptors([{
+        "label": output.label, "kind": output.kind, "media_type": output.media_type,
+        "trusted_uri": output.trusted_uri,
+    } for output in resolved.outputs])
+    if original_descriptors != fresh_descriptors:
+        raise V03DogfoodPostRunFinalizerError("fresh outputs differ from original sealed receipt locations")
+
+    # This narrow historical Feature view is only for the unchanged receipt
+    # validator's revision/stage/candidate fences; it cannot attest milestones.
+    historical_feature = FeatureSnapshot(
+        repository=expected_context["target_repository"], feature_id=trusted["feature_id"],
+        target_ref=trusted["target_ref"], revision=trusted["expected_revision"],
+        manifest_digest="", current_stage=trusted["feature_stage"],
+        stages={}, gates={}, remediation_tasks=(), artifacts=(),
+        candidate_pr_number=expected_context["candidate_pr_number"],
+        candidate_head_sha=trusted["launch_candidate_head_sha"],
+    )
+    validate_collected_outputs(
+        context=TrustedDispatchContext(**context), feature=historical_feature,
+        worker_payload=fresh_payload, receipts=receipts, content_loader=result_source.load_content,
+    )
+
+
 def _durable_run_bindings(preflight, observation, events):
     """Re-establish each historical launch through the production result source."""
     snapshot = preflight.composition.runtime.backend.read_snapshot()
@@ -137,6 +233,17 @@ def _durable_run_bindings(preflight, observation, events):
             or resolved.run.candidate_head_sha != launch.get("candidate_head_sha")
         ):
             raise V03DogfoodPostRunFinalizerError("Gate result differs from historical exact candidate")
+        if observation.get("scenario") == "session_recovery":
+            # Recovery deliberately leaves the completed Worker unconsumed.
+            if any(event.get("event_type") in {"worker.callback.recorded", "worker.result.validated"}
+                   for event in events):
+                raise V03DogfoodPostRunFinalizerError("recovery unexpectedly consumed a Worker callback")
+        else:
+            _verify_consumed_result(
+                events=events, trusted=trusted, resolved=resolved,
+                result_source=preflight.composition.result_source,
+                lookup_sequence=int(row.get("sequence") or 0),
+            )
         bindings[run_id] = {
             "repository": preflight.execution.repository, "feature_id": preflight.slot.feature_id,
             "target_ref": preflight.slot.target_ref, "candidate_pr_number": preflight.candidate_pr_number,
