@@ -13,9 +13,9 @@ import json
 import time
 
 from operator_vertical_gh_aw_github_source import _current_launch_binding
-from typing import Any
+from typing import Any, Mapping
 
-from operator_store_model import operation_events
+from operator_store_model import StoreMutation, StoreMutationPlan, digest_json, operation_events
 from operator_vertical_store import vertical_projection
 from v03_dogfood_fixture_pool import DogfoodSlot, task_text
 from v03_dogfood_openai_host import V03DogfoodOpenAIResponsesHost, V03DogfoodResponsesTrace
@@ -37,6 +37,35 @@ TERMINAL = {"DONE", "BLOCKED", "CANCELLED", "NEEDS_USER"}
 
 class V03DogfoodScenarioRunnerError(RuntimeError):
     pass
+
+
+SESSION_TRACE_SCHEMA = "ai-sdlc.v03-dogfood-session-trace/v1"
+
+
+def session_trace_path(operation_id: str) -> str:
+    if not operation_id or "/" in operation_id or ".." in operation_id:
+        raise V03DogfoodScenarioRunnerError("invalid Operation id for session trace")
+    return f"state/operator/v1/operations/{operation_id}/dogfood/session-recovery.json"
+
+
+def _trace_identity(trace: V03DogfoodResponsesTrace) -> dict[str, Any]:
+    response_ids = tuple(str(value) for value in trace.response_ids)
+    call_ids = tuple(str(value) for value in trace.function_call_ids)
+    terminal_id = str((trace.terminal_response or {}).get("id") or "")
+    if (
+        not response_ids
+        or not call_ids
+        or len(set(response_ids)) != len(response_ids)
+        or len(set(call_ids)) != len(call_ids)
+        or any(not value for value in response_ids + call_ids)
+        or terminal_id != response_ids[-1]
+    ):
+        raise V03DogfoodScenarioRunnerError("Responses trace lacks exact unique session identity")
+    return {
+        "response_ids": list(response_ids),
+        "function_call_ids": list(call_ids),
+        "terminal_response_id": terminal_id,
+    }
 
 
 @dataclass(frozen=True)
@@ -237,8 +266,8 @@ def recovery_instruction(slot: DogfoodSlot, *, operation_id: str) -> str:
 
 def _verify_fresh_session_discovery(
     trace: V03DogfoodResponsesTrace, *, operation_id: str
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    matches: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
     for item in trace.function_outputs:
         payload = _decode_output(item)
         result = payload.get("result") if payload.get("ok") is True else None
@@ -249,32 +278,97 @@ def _verify_fresh_session_discovery(
         notifications = result.get("notifications")
         if not isinstance(operations, list) or not isinstance(decisions, list) or not isinstance(notifications, list):
             continue
-        same_operation = any(isinstance(row, dict) and str(row.get("operation_id") or "") == operation_id for row in operations)
-        same_decision = any(isinstance(row, dict) and str(row.get("operation_id") or "") == operation_id and row.get("status") == "PENDING" for row in decisions)
-        same_notification = any(isinstance(row, dict) and str(row.get("operation_id") or "") == operation_id for row in notifications)
-        if same_operation and same_decision and same_notification:
-            decision_ids = tuple(sorted(
-                str(row.get("decision_id") or row.get("id") or "")
-                for row in decisions
-                if isinstance(row, dict)
-                and str(row.get("operation_id") or "") == operation_id
-                and row.get("status") == "PENDING"
-                and str(row.get("decision_id") or row.get("id") or "")
-            ))
-            notification_ids = tuple(sorted(
-                str(row.get("notification_id") or row.get("id") or "")
-                for row in notifications
-                if isinstance(row, dict)
-                and str(row.get("operation_id") or "") == operation_id
-                and str(row.get("notification_id") or row.get("id") or "")
-            ))
-            if decision_ids and notification_ids:
-                matches.append((decision_ids, notification_ids))
+        operation_rows = [
+            row for row in operations
+            if isinstance(row, dict) and str(row.get("operation_id") or "") == operation_id
+        ]
+        decision_rows = [
+            row for row in decisions
+            if isinstance(row, dict)
+            and str(row.get("operation_id") or "") == operation_id
+            and row.get("status") == "PENDING"
+            and str(row.get("decision_id") or row.get("id") or "")
+        ]
+        notification_rows = [
+            row for row in notifications
+            if isinstance(row, dict)
+            and str(row.get("operation_id") or "") == operation_id
+            and row.get("status") == "UNREAD"
+            and str(row.get("notification_id") or row.get("id") or "")
+        ]
+        if len(operation_rows) == len(decision_rows) == len(notification_rows) == 1:
+            call_id = str(item.get("call_id") or "")
+            if call_id not in trace.function_call_ids:
+                raise V03DogfoodScenarioRunnerError("inbox discovery output lacks exact Responses call binding")
+            matches.append({
+                "call_id": call_id,
+                "output_digest": digest_json(payload),
+                "operation_status": str(operation_rows[0].get("status") or ""),
+                "decision_id": str(decision_rows[0].get("decision_id") or decision_rows[0].get("id")),
+                "decision_status": "PENDING",
+                "notification_id": str(notification_rows[0].get("notification_id") or notification_rows[0].get("id")),
+                "notification_status": "UNREAD",
+            })
     if len(matches) != 1:
         raise V03DogfoodScenarioRunnerError(
-            "fresh session must contain exactly one inbox result for the same Operation plus pending Decision/Notification"
+            "fresh session must contain exactly one inbox result for the same Operation plus pending Decision/unread Notification"
         )
     return matches[0]
+
+
+def _persist_session_trace(
+    preflight: Any,
+    *,
+    operation_id: str,
+    original_trace: V03DogfoodResponsesTrace,
+    recovery_trace: V03DogfoodResponsesTrace,
+    discovery: Mapping[str, Any],
+    decision_request: Mapping[str, Any],
+    original_end_status: str,
+    final_status: str,
+) -> dict[str, Any]:
+    if original_end_status != "WAITING_EXTERNAL" or final_status != "NEEDS_USER":
+        raise V03DogfoodScenarioRunnerError("session recovery durable boundary states drifted")
+    if (
+        discovery.get("decision_id") != decision_request.get("decision_id")
+        or discovery.get("notification_id") != decision_request.get("notification_id")
+    ):
+        raise V03DogfoodScenarioRunnerError("fresh-session inbox items differ from exact protected Decision request")
+    projection = _projection(preflight, operation_id)
+    generation = int(projection.get("generation") or 0)
+    record = {
+        "schema_version": SESSION_TRACE_SCHEMA,
+        "scenario": "session_recovery",
+        "operation_id": operation_id,
+        "operation_generation": generation,
+        "repository": str(preflight.execution.repository).lower(),
+        "feature_id": preflight.slot.feature_id,
+        "target_ref": preflight.slot.target_ref,
+        "original_end_status": original_end_status,
+        "final_status": final_status,
+        "original_session": _trace_identity(original_trace),
+        "recovery_session": _trace_identity(recovery_trace),
+        "inbox_discovery": dict(discovery),
+        "decision_id": str(decision_request["decision_id"]),
+        "notification_id": str(decision_request["notification_id"]),
+    }
+    path = session_trace_path(operation_id)
+    runtime = preflight.composition.runtime
+
+    def planner(snapshot):
+        existing = snapshot.get(path)
+        if existing is not None:
+            if not isinstance(existing, dict) or digest_json(existing) != digest_json(record):
+                raise V03DogfoodScenarioRunnerError("protected session trace conflicts with existing immutable evidence")
+            return StoreMutationPlan(snapshot.ref_sha, tuple(), {"path": path})
+        return StoreMutationPlan(
+            snapshot.ref_sha,
+            (StoreMutation("create_immutable", path, record),),
+            {"path": path},
+        )
+
+    runtime.commit_replanned(planner)
+    return record
 
 
 def run_scenario(
@@ -312,12 +406,18 @@ def run_scenario(
         claims = _dispatch_rows(preflight, operation_id)
         if len(claims) != 1:
             raise V03DogfoodScenarioRunnerError("session recovery must retain one pending external dispatch")
-        preflight.composition.bundle.decision_notification_coordinator.request_decision(
+        decision_request = preflight.composition.bundle.decision_notification_coordinator.request_decision(
             operation_id=operation_id, decision_type="NEEDS_AUTHORIZATION",
             request_key="v03-session-recovery:" + operation_id,
             requested_by="trusted-v03-release-dogfood-controller",
             summary="Await the owner choice for this exact durable session-recovery Operation.",
         )
+        if (
+            not isinstance(decision_request, dict)
+            or not decision_request.get("decision_id")
+            or not decision_request.get("notification_id")
+        ):
+            raise V03DogfoodScenarioRunnerError("session recovery Decision request lacks exact protected user-item ids")
         # This scenario demonstrates unfinished work, so observe the exact real
         # Worker completion without accepting a callback or progressing lifecycle.
         _wait_current_dispatch(preflight, operation_id, _external_key(claims[0]))
@@ -331,8 +431,18 @@ def run_scenario(
         starts_after = len([row for row in _events(preflight, operation_id) if row.get("event_type") == "operation.started"])
         if starts_before != 1 or starts_after != 1:
             raise V03DogfoodScenarioRunnerError("fresh session replayed or altered operation.start authority")
-        recovery_decision_ids, recovery_notification_ids = _verify_fresh_session_discovery(
-            recovery_trace, operation_id=operation_id
+        discovery = _verify_fresh_session_discovery(recovery_trace, operation_id=operation_id)
+        recovery_decision_ids = (str(discovery["decision_id"]),)
+        recovery_notification_ids = (str(discovery["notification_id"]),)
+        _persist_session_trace(
+            preflight,
+            operation_id=operation_id,
+            original_trace=trace,
+            recovery_trace=recovery_trace,
+            discovery=discovery,
+            decision_request=decision_request,
+            original_end_status="WAITING_EXTERNAL",
+            final_status=status,
         )
     else:
         for _ in range(8):
@@ -345,6 +455,18 @@ def run_scenario(
         status = str(_projection(preflight, operation_id).get("status") or "")
         if status != "DONE":
             raise V03DogfoodScenarioRunnerError(f"{scenario} did not finish DONE")
+        completion = preflight.composition.bundle.decision_notification_coordinator.notify_operation(
+            operation_id=operation_id,
+            notification_type="operation.completed",
+            trigger_identity=f"v03-real-dogfood:{scenario}:{operation_id}",
+            summary=f"v0.3 real dogfood {scenario} completed on the exact durable Operation.",
+        )
+        if (
+            not isinstance(completion, dict)
+            or not completion.get("notification_id")
+            or completion.get("status") != "UNREAD"
+        ):
+            raise V03DogfoodScenarioRunnerError("completed dogfood scenario lacks durable completion Notification")
 
     claims = _dispatch_rows(preflight, operation_id)
     roles = tuple(_dispatch_role(row) for row in claims)

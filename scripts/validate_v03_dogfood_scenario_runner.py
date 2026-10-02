@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import v03_dogfood_scenario_runner as runner
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_openai_host import V03DogfoodResponsesTrace
+from operator_store_model import StoreSnapshot, apply_plan_to_snapshot
 
 
 def expect(condition, message):
@@ -49,7 +50,7 @@ class FakeRecoveryHost:
         result = {
             "operations": [{"operation_id": self.operation_id, "status": "NEEDS_USER"}],
             "decisions": [{"operation_id": self.operation_id, "decision_id": "decision-1", "status": "PENDING"}],
-            "notifications": [{"operation_id": self.operation_id, "notification_id": "notification-1", "status": "PENDING"}],
+            "notifications": [{"operation_id": self.operation_id, "notification_id": "notification-1", "status": "UNREAD"}],
         }
         if not self.include_all:
             result["notifications"] = []
@@ -66,10 +67,24 @@ class FakeRecoveryHost:
         )
 
 
+class FakeRuntime:
+    def __init__(self):
+        self.snapshot = StoreSnapshot(ref_sha="f" * 40, files={})
+
+    def commit_replanned(self, planner):
+        plan = planner(self.snapshot)
+        self.snapshot = apply_plan_to_snapshot(self.snapshot, plan, new_ref_sha=self.snapshot.ref_sha)
+        return SimpleNamespace(result=plan.result)
+
+
 def fake_preflight(scenario):
     slot = require_slot(scenario)
     gateway = SimpleNamespace(read_feature=lambda **kwargs: {"revision": 1})
-    composition = SimpleNamespace(feature_event_gateway=gateway, collector=SimpleNamespace(handle=lambda **kwargs: None))
+    composition = SimpleNamespace(
+        feature_event_gateway=gateway,
+        collector=SimpleNamespace(handle=lambda **kwargs: None),
+        runtime=FakeRuntime(),
+    )
     return SimpleNamespace(
         slot=slot,
         execution=SimpleNamespace(repository="dream-xin/ai-sdlc"),
@@ -92,9 +107,16 @@ def run_case(scenario, statuses, roles, *, recovery=True):
         expect(scenario == "session_recovery", "non-session requested Decision")
         expect(kwargs["decision_type"] == "NEEDS_AUTHORIZATION", "wrong Decision type")
         state["index"] = 1
-        return {"decision_id": "decision-1", "status": "PENDING"}
+        return {"decision_id": "decision-1", "notification_id": "notification-1", "status": "PENDING"}
+    def notify_operation(**kwargs):
+        expect(scenario != "session_recovery", "session recovery emitted completion Notification")
+        expect(kwargs["notification_type"] == "operation.completed", "wrong completion Notification type")
+        return {"notification_id": "completion-1", "status": "UNREAD"}
     preflight.composition.bundle = SimpleNamespace(
-        decision_notification_coordinator=SimpleNamespace(request_decision=request_decision))
+        decision_notification_coordinator=SimpleNamespace(
+            request_decision=request_decision,
+            notify_operation=notify_operation,
+        ))
     rows = [
         {"_dogfood_role": role, "payload": {"external_dispatch_key": f"key-{index}"}}
         for index, role in enumerate(roles, start=1)
@@ -123,6 +145,13 @@ def run_case(scenario, statuses, roles, *, recovery=True):
     expect(result.release_eligible is False, "raw runner observation must not self-authorize release PASS")
     expect(result.dispatch_roles == tuple(roles), "runner role sequence")
     expect("Start exactly one Operation" in host.instructions[0], "runner instruction must bound operation.start")
+    if scenario == "session_recovery":
+        trace = preflight.composition.runtime.snapshot.get(runner.session_trace_path(result.operation_id))
+        expect(isinstance(trace, dict), "session recovery did not persist protected session trace")
+        expect(trace["decision_id"] == "decision-1", "protected session trace Decision drifted")
+        expect(trace["notification_id"] == "notification-1", "protected session trace Notification drifted")
+        expect(trace["original_session"]["response_ids"] == ["resp_1"], "original Responses session not durably bound")
+        expect(trace["recovery_session"]["response_ids"] == ["resp_recovery"], "recovery Responses session not durably bound")
     return result
 
 

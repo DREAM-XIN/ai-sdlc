@@ -23,7 +23,7 @@ from operator_openai_responses_production import (
 )
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
-from operator_store_model import digest_json, normalize_repository, operation_events
+from operator_store_model import StoreMutation, StoreMutationPlan, digest_json, normalize_repository, operation_events
 from operator_vertical import VerticalInvariantError
 from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
@@ -43,6 +43,32 @@ _DEVELOPER_PR_URI = re.compile(
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
 PROVIDER_SCOPE_ID = "v03-real-release-dogfood"
+CANDIDATE_HANDOFF_SCHEMA = "ai-sdlc.v03-dogfood-candidate-handoff/v1"
+
+
+def candidate_handoff_path(operation_id: str, callback_id: str) -> str:
+    if not operation_id or "/" in operation_id or ".." in operation_id or not callback_id:
+        raise V03DogfoodCompositionError("invalid candidate handoff identity")
+    suffix = digest_json({"operation_id": operation_id, "callback_id": callback_id})[:32]
+    return f"state/operator/v1/operations/{operation_id}/dogfood/candidate-handoffs/{suffix}.json"
+
+
+def candidate_handoff_records(snapshot: Any, operation_id: str) -> tuple[dict[str, Any], ...]:
+    prefix = f"state/operator/v1/operations/{operation_id}/dogfood/candidate-handoffs/"
+    rows: list[dict[str, Any]] = []
+    for path, value in getattr(snapshot, "files", {}).items():
+        if not path.startswith(prefix) or not path.endswith(".json"):
+            continue
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != CANDIDATE_HANDOFF_SCHEMA
+            or value.get("operation_id") != operation_id
+            or candidate_handoff_path(operation_id, str(value.get("callback_id") or "")) != path
+        ):
+            raise V03DogfoodCompositionError("protected candidate handoff record is malformed")
+        rows.append(dict(value))
+    rows.sort(key=lambda row: (int(row.get("callback_sequence") or 0), str(row.get("callback_id") or "")))
+    return tuple(rows)
 
 
 class V03DogfoodCompositionError(RuntimeError):
@@ -108,11 +134,15 @@ class DogfoodGitHubCandidateProvider:
     def _pending_handoff(self, operation_id: str) -> dict[str, Any] | None:
         if self.runtime is None:
             return None
+        snapshot = self.runtime.backend.read_snapshot()
         callbacks: dict[str, dict[str, Any]] = {}
-        handoffs: dict[str, dict[str, Any]] = {}
+        handoffs = {
+            str(row["callback_id"]): row
+            for row in candidate_handoff_records(snapshot, operation_id)
+        }
         translated: dict[str, str] = {}
         confirmed: set[str] = set()
-        for row in operation_events(self.runtime.backend.read_snapshot(), operation_id):
+        for row in operation_events(snapshot, operation_id):
             event_type = str(row.get("event_type") or "")
             payload = row.get("payload") or {}
             if event_type == "worker.callback.recorded":
@@ -121,10 +151,6 @@ class DogfoodGitHubCandidateProvider:
                 callback_id = str(payload.get("callback_id") or "")
                 if isinstance(context, dict) and context.get("role") == "developer" and callback_id:
                     callbacks[callback_id] = envelope
-            elif event_type == "candidate.handoff.adopted":
-                callback_id = str(payload.get("callback_id") or "")
-                if callback_id:
-                    handoffs[callback_id] = payload
             elif event_type == "feature.event.translated":
                 callback_id = str(payload.get("callback_id") or "")
                 event_id = str(payload.get("feature_event_id") or "")
@@ -336,19 +362,45 @@ class DogfoodCandidateHandoff:
             status, updated = self._api("PATCH", ref_path, {"sha": source_head, "force": False})
             if status != 200 or str(((updated or {}).get("object") or {}).get("sha") or "").lower() != source_head:
                 raise V03DogfoodCompositionError("trusted Developer candidate fast-forward was not accepted")
-        executor._record_fact(
-            context.operation_id,
-            "candidate.handoff.adopted",
-            {
-                "callback_id": callback_id,
-                "dispatch_id": context.dispatch_id,
-                "target_ref": self.slot.target_ref,
-                "fixture_candidate_pr_number": int(fixture["number"]),
-                "prior_candidate_head_sha": prior_head,
-                "source_candidate_pr_number": source_pr,
-                "source_candidate_head_sha": source_head,
-            },
-        )
+        snapshot = executor.runtime.backend.read_snapshot()
+        callbacks = [
+            row for row in operation_events(snapshot, context.operation_id)
+            if row.get("event_type") == "worker.callback.recorded"
+            and row.get("operation_generation") == context.operation_generation
+            and str((row.get("payload") or {}).get("callback_id") or "") == callback_id
+        ]
+        if len(callbacks) != 1:
+            raise V03DogfoodCompositionError("candidate handoff lacks one exact protected callback")
+        callback = callbacks[0]
+        record = {
+            "schema_version": CANDIDATE_HANDOFF_SCHEMA,
+            "operation_id": context.operation_id,
+            "operation_generation": int(context.operation_generation),
+            "callback_id": callback_id,
+            "callback_sequence": int(callback.get("sequence") or 0),
+            "callback_event_id": str(callback.get("event_id") or ""),
+            "dispatch_id": context.dispatch_id,
+            "target_ref": self.slot.target_ref,
+            "fixture_candidate_pr_number": int(fixture["number"]),
+            "prior_candidate_head_sha": prior_head,
+            "source_candidate_pr_number": source_pr,
+            "source_candidate_head_sha": source_head,
+        }
+        path = candidate_handoff_path(context.operation_id, callback_id)
+
+        def planner(current_snapshot):
+            existing = current_snapshot.get(path)
+            if existing is not None:
+                if not isinstance(existing, dict) or digest_json(existing) != digest_json(record):
+                    raise V03DogfoodCompositionError("candidate handoff immutable record conflicts")
+                return StoreMutationPlan(current_snapshot.ref_sha, tuple(), {"path": path})
+            return StoreMutationPlan(
+                current_snapshot.ref_sha,
+                (StoreMutation("create_immutable", path, record),),
+                {"path": path},
+            )
+
+        executor.runtime.commit_replanned(planner)
 
 
 class DogfoodTrustedCallbackCoordinator:

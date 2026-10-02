@@ -4,10 +4,19 @@ from __future__ import annotations
 
 from copy import deepcopy
 from operator_vertical import VerticalInvariantError
+from operator_store_model import (
+    StoreSnapshot,
+    decision_path,
+    digest_json,
+    event_path,
+    make_event,
+    notification_path,
+    rebuild_projection,
+)
+from v03_dogfood_scenario_runner import SESSION_TRACE_SCHEMA, session_trace_path
 
 from v03_dogfood_post_run_finalizer import (
     V03DogfoodPostRunFinalizerError,
-    _milestone_facts,
     _reconstruct_release_authority,
 )
 from v03_dogfood_release_finalizer import V03DogfoodReleaseFinalizerError, build_release_record
@@ -95,8 +104,10 @@ def trusted_assertions(scenario: str):
 def facts(scenario: str, run_ids):
     milestones = []
     for name, _state, categories in SCENARIO_PROFILES[scenario]["milestones"]:
+        state = next(state for milestone_name, state, _categories in SCENARIO_PROFILES[scenario]["milestones"] if milestone_name == name)
         milestones.append({
             "name": name,
+            "state_after": state,
             "evidence_categories": sorted(categories),
             "evidence_uris": [f"https://github.com/{REPO}/issues/239#{scenario}-{name}"],
         })
@@ -108,8 +119,10 @@ def facts(scenario: str, run_ids):
     return {
         "release_run_id": f"release-{scenario}-9001",
         "recorded_at": "2026-08-26T00:00:00Z",
-        "operation_generation": 7,
+        "operation_generation": 0,
         "human_interventions": 0,
+        "start_state": SCENARIO_PROFILES[scenario]["start_state"],
+        "end_state": SCENARIO_PROFILES[scenario]["end_state"],
         "milestones": milestones,
         "assertions": trusted_assertions(scenario),
         "evidence_uris": evidence,
@@ -137,143 +150,340 @@ def require_rejected(label, fn):
     raise AssertionError(f"{label} unexpectedly finalized release evidence")
 
 
-def event(sequence, event_type, payload=None):
-    return {"sequence": sequence, "event_type": event_type, "payload": dict(payload or {})}
+def _event(operation_id, sequence, event_type, payload=None):
+    return make_event(
+        operation_id=operation_id,
+        generation=0,
+        sequence=sequence,
+        event_id=f"evt-{sequence:03d}-{event_type.replace('.', '-')}",
+        event_type=event_type,
+        occurred_at=f"2026-10-03T00:00:{sequence % 60:02d}Z",
+        payload=dict(payload or {}),
+        trusted_context_digest="trusted-test",
+    )
+
+
+def _snapshot_with_rows(snapshot: StoreSnapshot, rows):
+    files = {
+        path: value
+        for path, value in snapshot.files.items()
+        if "/events/" not in path
+    }
+    for row in rows:
+        files[event_path(row["operation_id"], row["sequence"], row["event_id"])] = row
+    return StoreSnapshot(ref_sha=snapshot.ref_sha, files=files)
 
 
 def durable_history(scenario: str):
+    obs = observation(scenario)
+    operation_id = obs["operation_id"]
+    feature_id = obs["feature_id"]
+    target_ref = obs["target_ref"]
     steps = {
         "happy_path": ["IMPLEMENTATION_WORK", "CODE_REVIEW", "VERIFICATION_QA"],
         "review_remediation": ["IMPLEMENTATION_WORK", "CODE_REVIEW", "CODE_REMEDIATION", "CODE_REREVIEW", "VERIFICATION_QA"],
         "session_recovery": ["IMPLEMENTATION_WORK"],
     }[scenario]
-    rows = [event(1, "operation.started")]
-    seq = 1
+    roles = {
+        "IMPLEMENTATION_WORK": "developer",
+        "CODE_REVIEW": "reviewer",
+        "CODE_REMEDIATION": "developer",
+        "CODE_REREVIEW": "reviewer",
+        "VERIFICATION_QA": "qa",
+    }
+    rows = []
+    seq = 0
+    revision = 1
+    def add(event_type, payload=None):
+        nonlocal seq
+        seq += 1
+        row = _event(operation_id, seq, event_type, payload)
+        rows.append(row)
+        return row
+    add("operation.started", {
+        "target_repository": REPO.lower(),
+        "feature_id": feature_id,
+        "expected_revision": 1,
+        "operation_profile": "vertical-implementation-review-qa/v1",
+    })
+
     for index, step in enumerate(steps):
-        seq += 1; rows.append(event(seq, "loop.step.selected", {"step": step}))
-        seq += 1; rows.append(event(seq, "dispatch.claimed"))
-        seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
-        if scenario != "session_recovery":
-            role = {
-                "IMPLEMENTATION_WORK": "developer",
-                "CODE_REVIEW": "reviewer",
-                "CODE_REMEDIATION": "developer",
-                "CODE_REREVIEW": "reviewer",
-                "VERIFICATION_QA": "qa",
-            }[step]
-            if role == "developer":
-                worker_payload = {"status": "COMPLETED"}
-            elif role == "reviewer":
-                worker_payload = {
-                    "verdict": "REWORK"
-                    if scenario == "review_remediation" and step == "CODE_REVIEW"
-                    else "PASS"
-                }
-            else:
-                worker_payload = {"verdict": "PASS"}
-            callback_id = f"callback-{scenario}-{index}"
-            seq += 1; rows.append(event(seq, "worker.callback.recorded", {
-                "callback_id": callback_id,
-                "trusted_callback_envelope": {
-                    "trusted_context": {"role": role},
-                    "worker_payload": worker_payload,
-                },
-            }))
-            seq += 1; rows.append(event(seq, "worker.result.validated", {
-                "callback_id": callback_id,
-                "role": role,
-            }))
-            feature_event_id = f"EVT-{scenario}-{index}"
-            expected_revision = 1 + index
-            persist_payload = {
+        role = roles[step]
+        key = "dispatch-" + str(index + 1).zfill(40)
+        dispatch_id = f"dispatch-{index + 1}"
+        callback_id = f"callback-{index + 1}"
+        add("loop.step.selected", {"step": step})
+        add("dispatch.claimed", {
+            "claim_id": f"claim-{index + 1}",
+            "semantic_effect_key": str(index + 1) * 64,
+            "external_dispatch_key": key,
+        })
+        add("dispatch.launch.authorized", {
+            "claim_id": f"claim-{index + 1}",
+            "dispatch_id": dispatch_id,
+            "semantic_effect_key": str(index + 1) * 64,
+            "external_dispatch_key": key,
+            "feature_id": feature_id,
+            "expected_revision": revision,
+            "stage": "implementation",
+            "role": role,
+            "candidate_head_sha": HEAD,
+        })
+        add("dispatch.launch.lookup-recorded", {
+            "external_dispatch_key": key,
+            "lookup_state": "LAUNCHED",
+            "receipt_id": str(9001 + index),
+        })
+        if scenario == "session_recovery":
+            continue
+
+        if role == "developer":
+            worker_payload = {"status": "COMPLETED"}
+        elif role == "reviewer":
+            verdict = "REWORK" if scenario == "review_remediation" and step == "CODE_REVIEW" else "PASS"
+            worker_payload = {"verdict": verdict}
+        else:
+            worker_payload = {"verdict": "PASS"}
+        add("worker.callback.recorded", {
+            "callback_id": callback_id,
+            "external_dispatch_key": key,
+            "callback_digest": "a" * 64,
+            "trusted_callback_envelope": {
+                "worker_payload": worker_payload,
+                "collected_outputs": [],
+                "trusted_context": {},
+            },
+            "trusted_callback_envelope_digest": "b" * 64,
+        })
+        add("worker.result.validated", {
+            "callback_id": callback_id,
+            "role": role,
+            "dispatch_id": dispatch_id,
+        })
+
+        def translate(changes, purpose=None):
+            nonlocal revision
+            feature_event_id = f"EVT-{scenario}-{seq + 1}"
+            feature_event = {
+                "version": "0.1.0",
+                "id": feature_event_id,
+                "feature_id": feature_id,
+                "expected_revision": revision,
+                "occurred_at": "2026-10-03T00:00:00Z",
+                "changes": changes,
+            }
+            payload = {
                 "feature_event_id": feature_event_id,
-                "expected_revision": expected_revision,
-                "target_ref": "refs/heads/v03-dogfood-target",
+                "feature_event_digest": digest_json(feature_event),
+                "feature_event": feature_event,
+                "feature_revision": revision,
+                "feature_stage": "implementation",
+                "feature_manifest_digest": "m" * 64,
+                "candidate_head_sha": HEAD,
+                "target_ref": target_ref,
+                "callback_id": callback_id,
+            }
+            if purpose:
+                payload["purpose"] = purpose
+            add("feature.event.translated", payload)
+            persist = {
+                "feature_event_id": feature_event_id,
+                "expected_revision": revision,
+                "target_ref": target_ref,
                 "candidate_head_sha": HEAD,
             }
-            seq += 1; rows.append(event(seq, "persist.requested", persist_payload))
-            seq += 1; rows.append(event(seq, "persist.linearized", persist_payload))
-            seq += 1; rows.append(event(seq, "persist.confirmed", {
-                **persist_payload, "result_revision": expected_revision + 1,
-            }))
-        if index < len(steps) - 1:
-            seq += 1; rows.append(event(seq, "loop.stable-stop", {"status": "WAITING_EXTERNAL"}))
+            add("persist.requested", persist)
+            add("persist.linearized", persist)
+            add("persist.confirmed", {**persist, "result_revision": revision + 1})
+            revision += 1
+
+        if step == "IMPLEMENTATION_WORK":
+            translate([
+                {"kind": "artifact-record", "record": {"id": "impl-1", "type": "implementation", "status": "draft"}},
+                {"kind": "stage", "id": "code-review", "status": "READY"},
+            ])
+        elif step == "CODE_REVIEW" and scenario == "review_remediation":
+            translate([
+                {"kind": "task-record", "record": {"id": "remediation-1", "kind": "remediation", "status": "READY"}},
+            ])
+        elif step == "CODE_REMEDIATION":
+            translate([
+                {"kind": "artifact-record", "record": {"id": "impl-2", "type": "implementation", "status": "draft"}},
+                {"kind": "task", "id": "remediation-1", "status": "DONE"},
+            ])
+            translate([
+                {"kind": "artifact", "id": "impl-1", "status": "superseded"},
+            ], purpose="remediation_artifact_supersession")
+        elif step in {"CODE_REVIEW", "CODE_REREVIEW"}:
+            translate([{"kind": "gate", "id": "code-gate", "status": "PASS"}])
+        elif step == "VERIFICATION_QA":
+            translate([{"kind": "gate", "id": "verification-gate", "status": "PASS"}])
+
+    files = {}
     if scenario == "session_recovery":
-        seq += 1; rows.append(event(seq, "loop.stable-stop", {"status": "WAITING_EXTERNAL"}))
-        seq += 1; rows.append(event(seq, "decision.requested", {"decision_id": "decision-1"}))
-        seq += 1; rows.append(event(seq, "notification.created", {"notification_id": "notification-1"}))
-        seq += 1; rows.append(event(seq, "loop.stable-stop", {"status": "NEEDS_USER"}))
-        projection = {"status": "NEEDS_USER", "pending_decisions": ["decision-1"], "unread_notifications": ["notification-1"]}
+        decision_id = "decision-1"
+        notification_id = "notification-1"
+        add("decision.requested", {"decision_id": decision_id, "decision_type": "NEEDS_AUTHORIZATION"})
+        add("notification.created", {
+            "notification_id": notification_id,
+            "notification_type": "decision.requested",
+        })
+        files[decision_path(decision_id)] = {
+            "decision_id": decision_id,
+            "operation_id": operation_id,
+            "operation_generation": 0,
+            "feature_id": feature_id,
+            "target_ref": target_ref,
+        }
+        files[notification_path(notification_id)] = {
+            "notification_id": notification_id,
+            "notification_type": "decision.requested",
+            "operation_id": operation_id,
+            "operation_generation": 0,
+            "feature_id": feature_id,
+            "decision_id": decision_id,
+        }
+        files[session_trace_path(operation_id)] = {
+            "schema_version": SESSION_TRACE_SCHEMA,
+            "scenario": "session_recovery",
+            "operation_id": operation_id,
+            "operation_generation": 0,
+            "repository": REPO.lower(),
+            "feature_id": feature_id,
+            "target_ref": target_ref,
+            "original_end_status": "WAITING_EXTERNAL",
+            "final_status": "NEEDS_USER",
+            "original_session": {
+                "response_ids": obs["response_ids"],
+                "function_call_ids": obs["function_call_ids"],
+                "terminal_response_id": obs["response_ids"][-1],
+            },
+            "recovery_session": {
+                "response_ids": obs["recovery_response_ids"],
+                "function_call_ids": obs["recovery_function_call_ids"],
+                "terminal_response_id": obs["recovery_response_ids"][-1],
+            },
+            "inbox_discovery": {
+                "call_id": obs["recovery_function_call_ids"][0],
+                "output_digest": "c" * 64,
+                "operation_status": "NEEDS_USER",
+                "decision_id": decision_id,
+                "decision_status": "PENDING",
+                "notification_id": notification_id,
+                "notification_status": "UNREAD",
+            },
+            "decision_id": decision_id,
+            "notification_id": notification_id,
+        }
     else:
-        seq += 1; rows.append(event(seq, "notification.created", {"notification_id": "notification-1"}))
-        seq += 1; rows.append(event(seq, "operation.done", {"feature_revision": 1 + len(steps)}))
-        projection = {"status": "DONE", "pending_decisions": [], "unread_notifications": ["notification-1"]}
-    return rows, projection
+        add("operation.done", {"feature_revision": revision})
+        notification_id = "completion-1"
+        add("notification.created", {
+            "notification_id": notification_id,
+            "notification_type": "operation.completed",
+        })
+        files[notification_path(notification_id)] = {
+            "notification_id": notification_id,
+            "notification_type": "operation.completed",
+            "operation_id": operation_id,
+            "operation_generation": 0,
+            "feature_id": feature_id,
+        }
+
+    for row in rows:
+        files[event_path(operation_id, row["sequence"], row["event_id"])] = row
+    snapshot = StoreSnapshot(ref_sha="f" * 40, files=files)
+    projection = rebuild_projection(snapshot, operation_id)
+    return snapshot, rows, projection
+
+
+def reconstruct(scenario, snapshot, rows, projection, obs=None):
+    return _reconstruct_release_authority(
+        scenario,
+        snapshot,
+        rows,
+        projection,
+        observation(scenario) if obs is None else obs,
+        repository=REPO,
+        source_run_id=8000,
+    )
 
 
 def validate_durable_authority_reconstruction():
     for scenario in SCENARIO_PROFILES:
-        rows, projection = durable_history(scenario)
-        categories, assertions = _reconstruct_release_authority(scenario, rows, projection, observation(scenario))
+        snapshot, rows, projection = durable_history(scenario)
+        milestones, assertions, start_state, end_state = reconstruct(scenario, snapshot, rows, projection)
         assert assertions == trusted_assertions(scenario)
-        assert set(categories) == {name for name, _state, _categories in SCENARIO_PROFILES[scenario]["milestones"]}
+        assert [row["name"] for row in milestones] == [
+            name for name, _state, _categories in SCENARIO_PROFILES[scenario]["milestones"]
+        ]
+        assert start_state == SCENARIO_PROFILES[scenario]["start_state"]
+        assert end_state == SCENARIO_PROFILES[scenario]["end_state"]
 
-    rows, projection = durable_history("review_remediation")
-    rows = [row for row in rows if not (row["event_type"] == "loop.step.selected" and row["payload"].get("step") == "CODE_REMEDIATION")]
+    snapshot, rows, projection = durable_history("review_remediation")
+    rows = [row for row in rows if not (
+        row["event_type"] == "feature.event.translated"
+        and any(
+            change.get("kind") == "task-record"
+            for change in ((row.get("payload") or {}).get("feature_event") or {}).get("changes", [])
+        )
+    )]
+    broken = _snapshot_with_rows(snapshot, rows)
     require_rejected(
-        "missing durable remediation step",
-        lambda: _reconstruct_release_authority("review_remediation", rows, projection, observation("review_remediation")),
+        "Reviewer REWORK without exact remediation Feature Event",
+        lambda: reconstruct("review_remediation", broken, rows, rebuild_projection(broken, observation("review_remediation")["operation_id"])),
     )
 
-    rows, projection = durable_history("session_recovery")
-    projection = dict(projection)
-    projection["pending_decisions"] = []
-    require_rejected(
-        "missing durable pending Decision",
-        lambda: _reconstruct_release_authority("session_recovery", rows, projection, observation("session_recovery")),
-    )
-
-    rows, projection = durable_history("review_remediation")
-    drift = deepcopy(rows)
-    first_review = next(
-        row for row in drift
-        if row["event_type"] == "worker.callback.recorded"
-        and ((row.get("payload") or {}).get("trusted_callback_envelope") or {}).get("trusted_context", {}).get("role") == "reviewer"
-    )
-    first_review["payload"]["trusted_callback_envelope"]["worker_payload"]["verdict"] = "PASS"
-    require_rejected(
-        "review remediation without durable REWORK verdict",
-        lambda: _reconstruct_release_authority("review_remediation", drift, projection, observation("review_remediation")),
-    )
-
-    rows, projection = durable_history("happy_path")
+    snapshot, rows, projection = durable_history("happy_path")
     rows = [row for row in rows if row["event_type"] != "persist.confirmed"]
+    broken = _snapshot_with_rows(snapshot, rows)
     require_rejected(
         "missing durable Persist confirmation",
-        lambda: _reconstruct_release_authority("happy_path", rows, projection, observation("happy_path")),
+        lambda: reconstruct("happy_path", broken, rows, rebuild_projection(broken, observation("happy_path")["operation_id"])),
     )
 
-    rows, projection = durable_history("session_recovery")
-    drift = observation("session_recovery")
-    drift["recovery_discovery_decision_ids"] = ["decision-other"]
+    snapshot, rows, projection = durable_history("happy_path")
+    changed = deepcopy(rows)
+    qa_translation = next(
+        row for row in changed
+        if row["event_type"] == "feature.event.translated"
+        and any(
+            change.get("id") == "verification-gate"
+            for change in ((row.get("payload") or {}).get("feature_event") or {}).get("changes", [])
+        )
+    )
+    qa_translation["payload"]["feature_event"]["changes"][0]["status"] = "FAIL"
+    qa_translation["payload"]["feature_event_digest"] = digest_json(qa_translation["payload"]["feature_event"])
+    broken = _snapshot_with_rows(snapshot, changed)
     require_rejected(
-        "fresh session wrong Decision identity",
-        lambda: _reconstruct_release_authority("session_recovery", rows, projection, drift),
+        "QA verdict without durable verification Gate PASS",
+        lambda: reconstruct("happy_path", broken, changed, rebuild_projection(broken, observation("happy_path")["operation_id"])),
     )
 
-    rows, projection = durable_history("happy_path")
-    rows = [row for row in rows if row["event_type"] != "notification.created"]
+    snapshot, rows, projection = durable_history("session_recovery")
+    drift = deepcopy(snapshot.files[session_trace_path(observation("session_recovery")["operation_id"])])
+    drift["decision_id"] = "decision-other"
+    files = dict(snapshot.files)
+    files[session_trace_path(observation("session_recovery")["operation_id"])] = drift
+    broken = StoreSnapshot(ref_sha=snapshot.ref_sha, files=files)
     require_rejected(
-        "missing durable Notification",
-        lambda: _reconstruct_release_authority("happy_path", rows, projection, observation("happy_path")),
+        "protected recovery trace wrong Decision identity",
+        lambda: reconstruct("session_recovery", broken, rows, projection),
     )
 
-    rows, projection = durable_history("happy_path")
-    categories, _ = _reconstruct_release_authority("happy_path", rows, projection, observation("happy_path"))
-    milestone_rows = _milestone_facts(
-        "happy_path", REPO, 8001, 8002, [9001, 9002, 9003], categories
+    snapshot, rows, projection = durable_history("session_recovery")
+    files = dict(snapshot.files)
+    files.pop(session_trace_path(observation("session_recovery")["operation_id"]))
+    broken = StoreSnapshot(ref_sha=snapshot.ref_sha, files=files)
+    require_rejected(
+        "missing protected recovery session trace",
+        lambda: reconstruct("session_recovery", broken, rows, projection),
     )
-    by_name = {row["name"]: row["evidence_uris"] for row in milestone_rows}
+
+
+    snapshot, rows, projection = durable_history("happy_path")
+    milestones, _assertions, _start, _end = reconstruct("happy_path", snapshot, rows, projection)
+    by_name = {row["name"]: row["evidence_uris"] for row in milestones}
     assert "/actions/runs/9001" in " ".join(by_name["developer-completed"])
     assert "/actions/runs/9002" not in " ".join(by_name["developer-completed"])
     assert "/actions/runs/9002" in " ".join(by_name["independent-review-passed"])
