@@ -50,6 +50,9 @@ def main():
     changed[-1]["new_sha"] = "d"*40
     reject(changed)
     reject(rows + [deepcopy(rows[0])])
+    reject(rows[:-1])
+    added_only = [row for row in rows if row["status"] == "A"]
+    reject(added_only)
     # Check the real CI checkout tree as well as adversarial supplied deltas.
     import subprocess
     from v03_dogfood_issue221_compatibility import verify_installation
