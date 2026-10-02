@@ -19,6 +19,8 @@ class GateProvenanceError(ValueError):
 V03_GATE_WORKFLOW_ALIASES = {
     ("reviewer", "code-review", "ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml"):
         "ai-sdlc-gh-aw-reviewer-copilot.lock.yml",
+    ("reviewer", "code-review", "ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml"):
+        "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
     ("reviewer", "code-review", "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml"):
         "ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
     ("qa", "verification", "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml"):
