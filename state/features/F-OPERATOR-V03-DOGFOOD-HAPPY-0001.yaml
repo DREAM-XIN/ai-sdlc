@@ -1,0 +1,35 @@
+protocol_version: 0.1.0
+revision: 0
+feature:
+  id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
+  title: 'v0.3 release dogfood: happy_path'
+  risk: low
+  issue: '#342'
+workflow:
+  profile: v03-release-dogfood
+  status: ACTIVE
+  current_stage: implementation
+  stages:
+  - id: implementation
+    status: READY
+  - id: code-review
+    status: TODO
+    gate: code-gate
+  - id: verification
+    status: TODO
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts: []
+gates:
+- id: code-gate
+  status: PENDING
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence: []
+applied_events: []
+updated_at: '2026-08-25T07:20:01Z'
