@@ -227,9 +227,9 @@ def _trusted_provenance_errors(record, verifier, *, allow_test_verifier=False):
                 errors.append(f"trusted workflow run {run.run_id} repository mismatch")
             if str(run.conclusion).lower() != "success":
                 errors.append(f"trusted workflow run {run.run_id} did not conclude success")
-            head_sha = candidate.get("head_sha")
-            if head_sha is not None and run.head_sha != head_sha:
-                errors.append(f"trusted workflow run {run.run_id} candidate head mismatch")
+            control_head = runtime.get("control_head_sha")
+            if control_head is not None and run.head_sha != control_head:
+                errors.append(f"trusted workflow run {run.run_id} control installation head mismatch")
 
     declared_categories = {
         milestone["name"]: frozenset(milestone.get("evidence_categories") or [])
@@ -298,6 +298,8 @@ def semantic_errors(record, provenance_verifier=None, *, allow_test_verifier=Fal
                 errors.append("real PASS requires a supported adapter")
             if runtime.get("real_supported_runtime") is not True:
                 errors.append("real PASS requires a real supported runtime")
+            if not runtime.get("control_head_sha"):
+                errors.append("real PASS requires an exact control installation head")
             workflow_run_ids = runtime.get("workflow_run_ids") or []
             if not workflow_run_ids:
                 errors.append("real PASS requires at least one workflow run id")
@@ -414,6 +416,7 @@ def _promoted_release_record():
     promoted["adapter"]["adapter_id"] = "ai-sdlc.openai.responses"
     promoted["adapter"]["supported"] = True
     promoted["runtime"]["runtime_kind"] = "github-actions-gh-aw"
+    promoted["runtime"]["control_head_sha"] = "b" * 40
     promoted["runtime"]["real_supported_runtime"] = True
     promoted["runtime"]["receipt_identity"] = "gh-aw-receipt-001"
     promoted["runtime"]["workflow_run_ids"] = [123456789]
@@ -450,7 +453,7 @@ def _matching_test_attestation(record):
                 run_id=run_id,
                 repository=record["repository"],
                 conclusion="success",
-                head_sha=candidate["head_sha"],
+                head_sha=runtime["control_head_sha"],
             )
             for run_id in runtime["workflow_run_ids"]
         ),
@@ -501,6 +504,16 @@ def validate_fixtures():
         allow_test_verifier=True,
     )
 
+    missing_control = copy.deepcopy(promoted)
+    del missing_control["runtime"]["control_head_sha"]
+    require_rejected(
+        missing_control,
+        "release-run-missing-control-head",
+        "exact control installation head",
+        _FixtureTrustedVerifier(matching),
+        allow_test_verifier=True,
+    )
+
     wrong_head_run = replace(
         matching.workflow_runs[0],
         head_sha="c" * 40,
@@ -508,7 +521,7 @@ def validate_fixtures():
     require_rejected(
         promoted,
         "trusted-mismatched-run-head",
-        "candidate head mismatch",
+        "control installation head mismatch",
         _FixtureTrustedVerifier(replace(matching, workflow_runs=(wrong_head_run,))),
         allow_test_verifier=True,
     )
