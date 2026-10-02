@@ -1,0 +1,21 @@
+{
+  "schema_version": "ai-sdlc.decision-policy/v1",
+  "repository": "dream-xin/ai-sdlc",
+  "state_ref": "refs/heads/ai-sdlc-operator-state",
+  "operation_profile": "vertical-implementation-review-qa/v1",
+  "feature_id": "F-OPERATOR-V03-DOGFOOD-SESSION-0001",
+  "target_ref": "dogfood/v0.3-session-recovery-0001",
+  "decision_types": {
+    "NEEDS_AUTHORIZATION": {
+      "choices": {
+        "approve": "resume-exact-operation",
+        "deny": "remain-blocked"
+      },
+      "allowed_responders": [
+        "DREAM-XIN"
+      ],
+      "ttl_seconds": 3600,
+      "warning_seconds": 600
+    }
+  }
+}

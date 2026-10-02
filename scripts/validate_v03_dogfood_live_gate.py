@@ -33,10 +33,11 @@ def ready_env():
     }
     for identity in credential_identities(registry):
         env[f"HAS_{identity}"] = "false"
-    # Reproduce the current production fallback shape: Developer/Reviewer use
-    # Copilot, while QA uses the first-choice Gemini profile.
+    # Reproduce the current production fallback shape: Developer uses
+    # Copilot, Reviewer uses DeepSeek, and QA uses first-choice Gemini.
     env["HAS_COPILOT_GITHUB_TOKEN"] = "true"
     env["HAS_GEMINI_API_KEY"] = "true"
+    env["HAS_DEEPSEEK_API_KEY"] = "true"
     return env
 
 
@@ -77,7 +78,7 @@ def main():
         require(len(gate.issue221.workflow_run_ids) == 11, "#221 closure lost 11 source runs")
         bindings = {row.role: row for row in gate.bindings}
         require(bindings["developer"].selected_profile == "copilot", "Developer fallback drifted")
-        require(bindings["reviewer"].selected_profile == "copilot", "Reviewer fallback drifted")
+        require(bindings["reviewer"].selected_profile == "deepseek", "Reviewer fallback drifted")
         require(bindings["qa"].selected_profile == "gemini", "QA binding drifted")
         rendered = public_gate(gate)
         require(rendered["status"] == "READY", "public gate did not render READY")

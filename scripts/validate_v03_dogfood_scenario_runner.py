@@ -86,12 +86,21 @@ def run_case(scenario, statuses, roles, *, recovery=True):
     old_collect = runner._collect_next
     old_receipts = runner._launch_receipts
     old_events = runner._events
+    old_wait = runner._wait_current_dispatch
     state = {"index": 0, "consumed": 0}
+    def request_decision(**kwargs):
+        expect(scenario == "session_recovery", "non-session requested Decision")
+        expect(kwargs["decision_type"] == "NEEDS_AUTHORIZATION", "wrong Decision type")
+        state["index"] = 1
+        return {"decision_id": "decision-1", "status": "PENDING"}
+    preflight.composition.bundle = SimpleNamespace(
+        decision_notification_coordinator=SimpleNamespace(request_decision=request_decision))
     rows = [
         {"_dogfood_role": role, "payload": {"external_dispatch_key": f"key-{index}"}}
         for index, role in enumerate(roles, start=1)
     ]
     try:
+        runner._wait_current_dispatch = lambda *args: None
         runner._projection = lambda p, op: {"status": statuses[state["index"]]}
         def collect(p, op, consumed):
             expect(consumed == state["consumed"], "runner consumed cursor drifted")
@@ -110,6 +119,7 @@ def run_case(scenario, statuses, roles, *, recovery=True):
         runner._collect_next = old_collect
         runner._launch_receipts = old_receipts
         runner._events = old_events
+        runner._wait_current_dispatch = old_wait
     expect(result.release_eligible is False, "raw runner observation must not self-authorize release PASS")
     expect(result.dispatch_roles == tuple(roles), "runner role sequence")
     expect("Start exactly one Operation" in host.instructions[0], "runner instruction must bound operation.start")
@@ -136,6 +146,7 @@ def main():
         ["WAITING_EXTERNAL", "NEEDS_USER"],
         ["developer"],
     )
+    expect(session.worker_results_consumed == 0, "session recovery must preserve unfinished callback/lifecycle work")
     expect(session.final_status == "NEEDS_USER", "session recovery final state")
     expect(session.new_session_discovery_observed is True, "fresh session discovery must be observed")
     expect(session.recovery_response_ids == ("resp_recovery",), "fresh session must use distinct Responses trace")
@@ -182,6 +193,36 @@ def main():
         expect(runner._dispatch_role(rows[0]) == "reviewer", "role reconstruction from selected step")
     finally:
         runner._events = old_events
+
+
+    good = dict(id=1001, event="workflow_dispatch", head_branch="main", head_sha="a"*40,
+                path=".github/workflows/worker.yml", display_title="AI-SDLC gh-aw key",
+                run_attempt=1, status="completed", conclusion="success")
+    states = [{**good, "status": "queued", "conclusion": None},
+              {**good, "status": "in_progress", "conclusion": None}, good]
+    waits = []
+    result = runner.wait_for_worker_run(read_run=lambda receipt: states.pop(0), receipt="1001",
+                                       workflow="worker.yml", installation_sha="a"*40,
+                                       external_dispatch_key="key", sleeper=waits.append)
+    expect(result == good and waits == [5.0, 5.0], "pending Worker was not observed to completion")
+    for changed in ({"id": 1002}, {"head_sha": "b"*40}, {"run_attempt": 2},
+                    {"conclusion": "failure"}, {"path": ".github/workflows/other.yml"}):
+        try:
+            runner.wait_for_worker_run(read_run=lambda receipt: {**good, **changed}, receipt="1001",
+                                      workflow="worker.yml", installation_sha="a"*40,
+                                      external_dispatch_key="key", sleeper=lambda _: None)
+        except runner.V03DogfoodScenarioRunnerError:
+            pass
+        else:
+            raise AssertionError("invalid Worker accepted before callback")
+    try:
+        runner.wait_for_worker_run(read_run=lambda receipt: {**good, "status": "in_progress", "conclusion": None},
+                                  receipt="1001", workflow="worker.yml", installation_sha="a"*40,
+                                  external_dispatch_key="key", max_attempts=2, sleeper=lambda _: None)
+    except runner.V03DogfoodScenarioRunnerError:
+        pass
+    else:
+        raise AssertionError("unbounded pending Worker accepted")
 
     print("v0.3 dogfood scenario runner validation passed")
     print("- roles derive from durable selected-step sequence, not dispatch-claim fields")

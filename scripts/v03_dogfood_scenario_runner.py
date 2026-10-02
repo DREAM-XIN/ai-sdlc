@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
+
+from operator_vertical_gh_aw_github_source import _current_launch_binding
 from typing import Any
 
 from operator_store_model import operation_events
@@ -52,6 +55,7 @@ class DogfoodScenarioObservation:
     new_session_discovery_observed: bool = False
     repeated_continue_messages: int = 0
     release_eligible: bool = False
+    worker_results_consumed: int = 0
 
 
 def _decode_output(item: dict[str, Any]) -> dict[str, Any]:
@@ -154,12 +158,51 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
     return tuple(run_ids), receipts[-1]
 
 
+def wait_for_worker_run(*, read_run, receipt, workflow, installation_sha, external_dispatch_key,
+                        max_attempts=180, poll_seconds=5.0, sleeper=time.sleep):
+    if not str(receipt).isdigit() or int(receipt) < 1 or not 1 <= max_attempts <= 240:
+        raise V03DogfoodScenarioRunnerError("invalid bounded Worker receipt/wait")
+    for attempt in range(max_attempts):
+        run = read_run(int(receipt))
+        if not isinstance(run, dict) or (
+            run.get("id"), run.get("event"), run.get("head_branch"), run.get("head_sha"),
+            str(run.get("path") or "").removeprefix(".github/workflows/"), run.get("display_title")
+        ) != (int(receipt), "workflow_dispatch", "main", installation_sha, workflow,
+              "AI-SDLC gh-aw " + external_dispatch_key) or run.get("run_attempt") != 1:
+            raise V03DogfoodScenarioRunnerError("Worker identity drifted during read-only wait")
+        if run.get("status") == "completed":
+            if run.get("conclusion") != "success":
+                raise V03DogfoodScenarioRunnerError("exact Worker completed unsuccessfully")
+            return run
+        if run.get("status") not in {"queued", "in_progress", "waiting", "requested", "pending"}:
+            raise V03DogfoodScenarioRunnerError("Worker entered unsupported pending state")
+        if attempt + 1 < max_attempts:
+            sleeper(poll_seconds)
+    raise V03DogfoodScenarioRunnerError("exact Worker completion wait exhausted")
+
+
+def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
+    source = preflight.composition.result_source
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    _projection, launch, receipt = _current_launch_binding(
+        snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
+    )
+    return wait_for_worker_run(
+        read_run=lambda run_id: source._json(source.config.control_repository,
+                                            f"/actions/runs/{run_id}", source.config.control_token),
+        receipt=receipt, workflow=preflight.workflows.workflow_for(str(launch["role"])),
+        installation_sha=preflight.execution.installation_commit_sha,
+        external_dispatch_key=external_dispatch_key,
+    )
+
+
 def _collect_next(preflight: Any, operation_id: str, consumed: int) -> int:
     claims = _dispatch_rows(preflight, operation_id)
     if len(claims) <= consumed:
         raise V03DogfoodScenarioRunnerError("WAITING_EXTERNAL has no fresh durable dispatch claim")
     if len(claims) != consumed + 1:
         raise V03DogfoodScenarioRunnerError("multiple unconsumed dispatch claims appeared concurrently")
+    _wait_current_dispatch(preflight, operation_id, _external_key(claims[-1]))
     preflight.composition.collector.handle(
         operation_id=operation_id,
         external_dispatch_key=_external_key(claims[-1]),
@@ -243,7 +286,18 @@ def run_scenario(
             raise V03DogfoodScenarioRunnerError("session recovery must first stop durably at WAITING_EXTERNAL")
         if recovery_host is None or recovery_host is host:
             raise V03DogfoodScenarioRunnerError("session recovery requires a distinct fresh Responses host session")
-        consumed = _collect_next(preflight, operation_id, consumed)
+        claims = _dispatch_rows(preflight, operation_id)
+        if len(claims) != 1:
+            raise V03DogfoodScenarioRunnerError("session recovery must retain one pending external dispatch")
+        preflight.composition.bundle.decision_notification_coordinator.request_decision(
+            operation_id=operation_id, decision_type="NEEDS_AUTHORIZATION",
+            request_key="v03-session-recovery:" + operation_id,
+            requested_by="trusted-v03-release-dogfood-controller",
+            summary="Await the owner choice for this exact durable session-recovery Operation.",
+        )
+        # This scenario demonstrates unfinished work, so observe the exact real
+        # Worker completion without accepting a callback or progressing lifecycle.
+        _wait_current_dispatch(preflight, operation_id, _external_key(claims[0]))
         status = str(_projection(preflight, operation_id).get("status") or "")
         if status != "NEEDS_USER":
             raise V03DogfoodScenarioRunnerError("session recovery must converge to NEEDS_USER after original session ends")
@@ -273,7 +327,7 @@ def run_scenario(
         raise V03DogfoodScenarioRunnerError(
             f"{scenario} dispatch role sequence drifted: expected {expected_roles}, got {roles}"
         )
-    if consumed != len(claims):
+    if scenario != "session_recovery" and consumed != len(claims):
         raise V03DogfoodScenarioRunnerError("not every durable dispatch was consumed exactly once")
     run_ids, receipt = _launch_receipts(preflight, operation_id)
     if len(run_ids) != len(expected_roles):
@@ -282,6 +336,7 @@ def run_scenario(
     return DogfoodScenarioObservation(
         scenario=scenario,
         operation_id=operation_id,
+        worker_results_consumed=consumed,
         start_status=start_status,
         final_status=status,
         dispatch_roles=roles,

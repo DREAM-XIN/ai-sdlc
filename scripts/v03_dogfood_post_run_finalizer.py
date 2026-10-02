@@ -163,7 +163,8 @@ def _reconstruct_release_authority(
         if row.get("event_type") == "dispatch.launch.lookup-recorded"
         and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"
     ]
-    if len(validated) != len(expected_roles) or len(launched) != len(expected_roles):
+    expected_validated = 0 if scenario == "session_recovery" else len(expected_roles)
+    if len(validated) != expected_validated or len(launched) != len(expected_roles):
         raise V03DogfoodPostRunFinalizerError("durable worker validation/launch count differs from frozen role sequence")
     if any(not _stable_stop_after(events, seq, "WAITING_EXTERNAL") for seq in validated[:-1]):
         raise V03DogfoodPostRunFinalizerError("durable intermediate worker result lacks WAITING_EXTERNAL stable stop")

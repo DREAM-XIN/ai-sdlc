@@ -5,6 +5,9 @@ on:
     paths:
       - 'scripts/v03_dogfood_issue221_compatibility.py'
       - 'scripts/validate_v03_dogfood_issue221_compatibility.py'
+      - 'release/v0.3-dogfood-session-policy.json'
+      - 'scripts/v03_dogfood_session_policy.py'
+      - 'scripts/validate_v03_dogfood_session_policy.py'
       - 'scripts/v03_dogfood_live_gate.py'
       - 'scripts/validate_v03_dogfood_live_gate.py'
       - 'scripts/v03_dogfood_fixture_pool.py'
@@ -54,6 +57,8 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_issue221_compatibility.py
       - name: Validate closed real-dogfood upstream gate
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_live_gate.py
+      - name: Validate exact default-branch session Decision policy
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_session_policy.py
       - name: Validate independent real-dogfood fixture pool
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_fixture_pool.py
       - name: Validate Responses-only real-dogfood production composition

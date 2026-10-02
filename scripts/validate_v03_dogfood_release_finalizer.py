@@ -149,7 +149,8 @@ def durable_history(scenario: str):
         seq += 1; rows.append(event(seq, "loop.step.selected", {"step": step}))
         seq += 1; rows.append(event(seq, "dispatch.claimed"))
         seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
-        seq += 1; rows.append(event(seq, "worker.result.validated"))
+        if scenario != "session_recovery":
+            seq += 1; rows.append(event(seq, "worker.result.validated"))
         if index < len(steps) - 1:
             seq += 1; rows.append(event(seq, "loop.stable-stop", {"status": "WAITING_EXTERNAL"}))
     if scenario == "session_recovery":

@@ -29,6 +29,7 @@ from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwT
 from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
 from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector
 from v03_dogfood_fixture_pool import DogfoodSlot
+from v03_dogfood_session_policy import DogfoodSessionDecisionPolicyVerifier
 from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -228,6 +229,14 @@ def build_v03_dogfood_full_composition(
     )
     dispatch_gateway = GhAwVerticalRoleDispatchGateway(transport=actions_transport, workflows=workflows)
 
+    decision_verifier = policy_authority.decision_policy_verifier
+    if slot.scenario == "session_recovery":
+        decision_verifier = DogfoodSessionDecisionPolicyVerifier(
+            repository=config.store_repository,
+            installation_sha=policy_authority.installation_commit_sha,
+            token=target_read_token,
+            api_base=github_api_base,
+        )
     responses = build_openai_responses_production_bundle(
         config=config,
         feature_id=slot.feature_id,
@@ -241,7 +250,7 @@ def build_v03_dogfood_full_composition(
         feature_event_gateway=feature_event_gateway,
         dispatch_gateway=dispatch_gateway,
         collector_content_loader=result_source.load_content,
-        policy_verifier=policy_authority.decision_policy_verifier,
+        policy_verifier=decision_verifier,
         trusted_context_digest=trusted_context_digest,
         collector_namespace_policy=collector_namespace_policy,
         trusted_role_policy=trusted_role_policy,
