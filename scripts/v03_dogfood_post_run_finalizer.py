@@ -375,6 +375,52 @@ def _stable_stop_after(events: list[dict[str, Any]], sequence: int, expected_sta
     )
 
 
+def _persist_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reconstruct exact Feature Persist triplets after accepted Worker results."""
+    cycles: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in events:
+        event_type = str(row.get("event_type") or "")
+        if event_type not in {"persist.requested", "persist.linearized", "persist.confirmed"}:
+            continue
+        payload = row.get("payload") or {}
+        feature_event_id = str(payload.get("feature_event_id") or "")
+        if not feature_event_id:
+            raise V03DogfoodPostRunFinalizerError("Persist fact lacks Feature Event identity")
+        bucket = by_id.setdefault(feature_event_id, {})
+        if event_type in bucket:
+            raise V03DogfoodPostRunFinalizerError("duplicate Persist phase for one Feature Event")
+        bucket[event_type] = row
+    for feature_event_id, phases in by_id.items():
+        if set(phases) != {"persist.requested", "persist.linearized", "persist.confirmed"}:
+            raise V03DogfoodPostRunFinalizerError("Feature Event lacks complete Persist triplet")
+        requested, linearized, confirmed = (
+            phases["persist.requested"], phases["persist.linearized"], phases["persist.confirmed"]
+        )
+        sequences = tuple(int(row.get("sequence") or 0) for row in (requested, linearized, confirmed))
+        if not (sequences[0] < sequences[1] < sequences[2]):
+            raise V03DogfoodPostRunFinalizerError("Feature Persist phases are out of order")
+        rp, lp, cp = (row.get("payload") or {} for row in (requested, linearized, confirmed))
+        stable = ("feature_event_id", "expected_revision", "target_ref", "candidate_head_sha")
+        if any(rp.get(name) != lp.get(name) or rp.get(name) != cp.get(name) for name in stable):
+            raise V03DogfoodPostRunFinalizerError("Feature Persist identity drifted across phases")
+        expected_revision = rp.get("expected_revision")
+        result_revision = cp.get("result_revision")
+        if not isinstance(expected_revision, int) or not isinstance(result_revision, int) or result_revision <= expected_revision:
+            raise V03DogfoodPostRunFinalizerError("Feature Persist confirmation lacks advancing revision")
+        cycles.append({
+            "feature_event_id": feature_event_id,
+            "expected_revision": expected_revision,
+            "result_revision": result_revision,
+            "target_ref": rp.get("target_ref"),
+            "candidate_head_sha": rp.get("candidate_head_sha"),
+            "requested_sequence": sequences[0],
+            "linearized_sequence": sequences[1],
+            "confirmed_sequence": sequences[2],
+        })
+    return sorted(cycles, key=lambda row: row["requested_sequence"])
+
+
 def _reconstruct_release_authority(
     scenario: str,
     events: list[dict[str, Any]],
@@ -409,7 +455,8 @@ def _reconstruct_release_authority(
     if steps != expected_steps:
         raise V03DogfoodPostRunFinalizerError("durable selected-step sequence differs from frozen scenario")
 
-    validated = _event_sequences(events, "worker.result.validated")
+    validated_rows = [row for row in events if row.get("event_type") == "worker.result.validated"]
+    validated = [int(row.get("sequence") or 0) for row in validated_rows]
     launched = [
         int(row.get("sequence") or 0)
         for row in events
@@ -419,8 +466,38 @@ def _reconstruct_release_authority(
     expected_validated = 0 if scenario == "session_recovery" else len(expected_roles)
     if len(validated) != expected_validated or len(launched) != len(expected_roles):
         raise V03DogfoodPostRunFinalizerError("durable worker validation/launch count differs from frozen role sequence")
-    if any(not _stable_stop_after(events, seq, "WAITING_EXTERNAL") for seq in validated[:-1]):
-        raise V03DogfoodPostRunFinalizerError("durable intermediate worker result lacks WAITING_EXTERNAL stable stop")
+    persist_cycles = _persist_cycles(events)
+    if scenario == "session_recovery":
+        if persist_cycles:
+            raise V03DogfoodPostRunFinalizerError("session recovery unexpectedly persisted an unconsumed Worker result")
+    else:
+        if len(persist_cycles) != len(validated_rows):
+            raise V03DogfoodPostRunFinalizerError("accepted Worker results do not each have one complete Feature Persist")
+        previous_revision = None
+        for index, (accepted, cycle) in enumerate(zip(validated_rows, persist_cycles)):
+            accepted_sequence = int(accepted.get("sequence") or 0)
+            next_claim = int(dispatches[index + 1]["claim_sequence"]) if index + 1 < len(dispatches) else None
+            if cycle["requested_sequence"] <= accepted_sequence:
+                raise V03DogfoodPostRunFinalizerError("Feature Persist began before exact Worker acceptance")
+            if next_claim is not None and cycle["confirmed_sequence"] >= next_claim:
+                raise V03DogfoodPostRunFinalizerError("next dispatch began before prior Feature Persist confirmation")
+            if previous_revision is not None and cycle["expected_revision"] != previous_revision:
+                raise V03DogfoodPostRunFinalizerError("Feature revision chain is discontinuous across milestones")
+            previous_revision = cycle["result_revision"]
+            if cycle["target_ref"] != observation.get("target_ref"):
+                raise V03DogfoodPostRunFinalizerError("Feature Persist escaped frozen target ref")
+        done_rows = [row for row in events if row.get("event_type") == "operation.done"]
+        if len(done_rows) != 1 or (done_rows[0].get("payload") or {}).get("feature_revision") != persist_cycles[-1]["result_revision"]:
+            raise V03DogfoodPostRunFinalizerError("terminal DONE is not bound to final confirmed Feature revision")
+    for index, seq in enumerate(validated[:-1]):
+        next_claim = int(dispatches[index + 1]["claim_sequence"])
+        if not any(
+            seq < int(row.get("sequence") or 0) < next_claim
+            and row.get("event_type") == "loop.stable-stop"
+            and str((row.get("payload") or {}).get("status") or "") == "WAITING_EXTERNAL"
+            for row in events
+        ):
+            raise V03DogfoodPostRunFinalizerError("durable intermediate result lacks bounded WAITING_EXTERNAL stable stop")
 
     types = {str(row.get("event_type") or "") for row in events}
     if "operation.started" not in types:
@@ -449,8 +526,23 @@ def _reconstruct_release_authority(
             raise V03DogfoodPostRunFinalizerError(
                 "session recovery lacks durable pending Decision/Notification facts"
             )
-        if observation.get("new_session_discovery_observed") is not True:
-            raise V03DogfoodPostRunFinalizerError("session recovery lacks raw fresh-session discovery observation")
+        recovery_responses = tuple(str(value) for value in (observation.get("recovery_response_ids") or []))
+        recovery_calls = tuple(str(value) for value in (observation.get("recovery_function_call_ids") or []))
+        original_responses = set(str(value) for value in (observation.get("response_ids") or []))
+        original_calls = set(str(value) for value in (observation.get("function_call_ids") or []))
+        discovered_decisions = tuple(sorted(str(value) for value in (observation.get("recovery_discovery_decision_ids") or [])))
+        discovered_notifications = tuple(sorted(str(value) for value in (observation.get("recovery_discovery_notification_ids") or [])))
+        if (
+            observation.get("new_session_discovery_observed") is not True
+            or not recovery_responses or not recovery_calls
+            or original_responses.intersection(recovery_responses)
+            or original_calls.intersection(recovery_calls)
+            or discovered_decisions != tuple(sorted(pending))
+            or discovered_notifications != tuple(sorted(unread))
+        ):
+            raise V03DogfoodPostRunFinalizerError(
+                "session recovery trace is not bound to exact durable Decision/Notification identities"
+            )
         new_session_discovery = True
 
     assertions = {
