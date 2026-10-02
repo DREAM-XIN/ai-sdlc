@@ -15,7 +15,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
-from operator_store_model import digest_json, normalize_repository, operation_events
+from operator_store_model import (
+    StoreSnapshot,
+    decision_path,
+    digest_json,
+    event_path,
+    normalize_repository,
+    notification_path,
+    operation_events,
+    rebuild_projection,
+)
 from operator_vertical import (
     FeatureSnapshot, TrustedDispatchContext, validate_collected_outputs, validate_worker_result,
 )
@@ -27,7 +36,13 @@ from v03_dogfood_production_provenance import (
 )
 from v03_dogfood_release_finalizer import build_release_record
 from v03_dogfood_runtime_driver import assemble_preflight, _head
-from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
+from v03_dogfood_full_composition import candidate_handoff_records
+from v03_dogfood_scenario_runner import (
+    SCENARIO_ROLE_SEQUENCES,
+    SESSION_TRACE_SCHEMA,
+    STEP_ROLE,
+    session_trace_path,
+)
 from validate_v03_dogfood_evidence import SCENARIO_PROFILES
 
 VERIFIER_IDENTITY = "ai-sdlc/v0.3-production-dogfood-post-run-verifier/v1"
@@ -58,7 +73,7 @@ def _run_uri(repository: str, run_id: int) -> str:
     return f"https://github.com/{repository}/actions/runs/{run_id}"
 
 
-def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> tuple[Any, list[dict[str, Any]], dict[str, Any]]:
     operation_id = _required(observation.get("operation_id"), "operation id")
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     events = operation_events(snapshot, operation_id)
@@ -73,7 +88,7 @@ def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> 
         raise V03DogfoodPostRunFinalizerError("Operation/source installation escaped fixed dogfood scope")
     if str(projection.get("status") or "") != str(observation.get("final_status") or ""):
         raise V03DogfoodPostRunFinalizerError("raw final state differs from protected Store projection")
-    return events, projection
+    return snapshot, events, projection
 
 
 def _durable_receipt(events: list[dict[str, Any]], observation: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -210,6 +225,7 @@ def _durable_run_bindings(preflight, observation, events):
     """Re-establish launches plus every trusted Developer-output candidate handoff."""
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     projection = vertical_projection(snapshot, observation["operation_id"])
+    durable_handoffs = candidate_handoff_records(snapshot, observation["operation_id"])
     bindings = {}
     ordered: list[dict[str, Any]] = []
     for row in events:
@@ -276,26 +292,22 @@ def _durable_run_bindings(preflight, observation, events):
             callback = callbacks[0]
             callback_id = str((callback.get("payload") or {}).get("callback_id") or "")
             handoffs = [
-                event for event in events
-                if event.get("event_type") == "candidate.handoff.adopted"
-                and event.get("operation_generation") == row.get("operation_generation")
-                and (event.get("payload") or {}).get("callback_id") == callback_id
+                handoff for handoff in durable_handoffs
+                if int(handoff.get("operation_generation") or -1) == int(row.get("operation_generation") or -2)
+                and str(handoff.get("callback_id") or "") == callback_id
             ]
             if len(handoffs) != 1:
                 raise V03DogfoodPostRunFinalizerError("Developer output lacks one durable trusted candidate handoff")
-            handoff = handoffs[0]
-            handoff_payload = handoff.get("payload") or {}
+            handoff_payload = handoffs[0]
             if (
                 int(handoff_payload.get("source_candidate_pr_number") or 0) != int(output_pr or 0)
                 or handoff_payload.get("source_candidate_head_sha") != output_head
                 or handoff_payload.get("prior_candidate_head_sha") != launch.get("candidate_head_sha")
                 or handoff_payload.get("dispatch_id") != launch.get("dispatch_id")
                 or int(handoff_payload.get("fixture_candidate_pr_number") or 0) != preflight.candidate_pr_number
-                or not (
-                    int(row.get("sequence") or 0)
-                    < int(callback.get("sequence") or 0)
-                    < int(handoff.get("sequence") or 0)
-                )
+                or int(handoff_payload.get("callback_sequence") or 0) != int(callback.get("sequence") or 0)
+                or str(handoff_payload.get("callback_event_id") or "") != str(callback.get("event_id") or "")
+                or not (int(row.get("sequence") or 0) < int(callback.get("sequence") or 0))
             ):
                 raise V03DogfoodPostRunFinalizerError("Developer candidate handoff identity/order differs")
         binding = {
@@ -366,108 +378,323 @@ def _event_sequences(events: list[dict[str, Any]], event_type: str) -> list[int]
     return [int(row.get("sequence") or 0) for row in events if row.get("event_type") == event_type]
 
 
-def _stable_stop_after(events: list[dict[str, Any]], sequence: int, expected_status: str) -> bool:
-    return any(
-        int(row.get("sequence") or 0) > sequence
-        and row.get("event_type") == "loop.stable-stop"
-        and str((row.get("payload") or {}).get("status") or "") == expected_status
-        for row in events
+def _store_event_uri(repository: str, snapshot: Any, row: Mapping[str, Any]) -> str:
+    ref_sha = str(getattr(snapshot, "ref_sha", "") or "")
+    if len(ref_sha) != 40:
+        raise V03DogfoodPostRunFinalizerError("protected Store snapshot lacks exact ref SHA")
+    path = event_path(
+        str(row.get("operation_id") or ""),
+        int(row.get("sequence") or 0),
+        str(row.get("event_id") or ""),
     )
+    return f"https://github.com/{repository}/blob/{ref_sha}/{path}"
 
 
-def _accepted_callback_facts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    callbacks: dict[str, dict[str, Any]] = {}
-    accepted: list[dict[str, Any]] = []
+def _store_object_uri(repository: str, snapshot: Any, path: str) -> str:
+    ref_sha = str(getattr(snapshot, "ref_sha", "") or "")
+    if len(ref_sha) != 40:
+        raise V03DogfoodPostRunFinalizerError("protected Store snapshot lacks exact ref SHA")
+    return f"https://github.com/{repository}/blob/{ref_sha}/{path}"
+
+
+def _status_at(events: list[dict[str, Any]], sequence: int) -> str:
+    if not events:
+        raise V03DogfoodPostRunFinalizerError("cannot reconstruct state from empty Operation history")
+    operation_id = str(events[0].get("operation_id") or "")
+    files = {}
     for row in events:
-        payload = row.get("payload") or {}
-        if row.get("event_type") == "worker.callback.recorded":
-            callback_id = str(payload.get("callback_id") or "")
-            envelope = payload.get("trusted_callback_envelope")
-            if callback_id and isinstance(envelope, dict):
-                if callback_id in callbacks:
-                    raise V03DogfoodPostRunFinalizerError("duplicate durable callback identity")
-                callbacks[callback_id] = row
-        elif row.get("event_type") == "worker.result.validated":
-            callback_id = str(payload.get("callback_id") or "")
-            callback = callbacks.get(callback_id)
-            envelope = (callback.get("payload") or {}).get("trusted_callback_envelope") if callback else None
-            if not callback_id or not isinstance(envelope, dict):
-                raise V03DogfoodPostRunFinalizerError("accepted result lacks its original protected callback")
-            context = envelope.get("trusted_context")
-            worker_payload = envelope.get("worker_payload")
-            if not isinstance(context, dict) or not isinstance(worker_payload, dict):
-                raise V03DogfoodPostRunFinalizerError("accepted callback lacks protected role/result facts")
-            role = str(context.get("role") or "")
-            if role != str(payload.get("role") or role):
-                raise V03DogfoodPostRunFinalizerError("accepted result role differs from protected callback")
-            accepted.append({
-                "callback_id": callback_id,
-                "role": role,
-                "worker_payload": worker_payload,
-                "callback_sequence": int(callback.get("sequence") or 0),
-                "accepted_sequence": int(row.get("sequence") or 0),
-            })
-    return accepted
+        if int(row.get("sequence") or 0) > sequence:
+            break
+        path = event_path(
+            operation_id,
+            int(row.get("sequence") or 0),
+            str(row.get("event_id") or ""),
+        )
+        files[path] = row
+    try:
+        return str(rebuild_projection(StoreSnapshot(ref_sha=None, files=files), operation_id)["status"])
+    except Exception as exc:
+        raise V03DogfoodPostRunFinalizerError("durable milestone state cannot be independently reconstructed") from exc
 
 
 def _persist_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Reconstruct exact Feature Persist triplets after accepted Worker results."""
-    cycles: list[dict[str, Any]] = []
-    by_id: dict[str, dict[str, dict[str, Any]]] = {}
+    """Bind every Persist triplet to its exact translated Feature Event."""
+    translated: dict[str, dict[str, Any]] = {}
+    for row in events:
+        if row.get("event_type") != "feature.event.translated":
+            continue
+        payload = row.get("payload") or {}
+        feature_event_id = str(payload.get("feature_event_id") or "")
+        feature_event = payload.get("feature_event")
+        if (
+            not feature_event_id
+            or feature_event_id in translated
+            or not isinstance(feature_event, dict)
+            or feature_event.get("id") != feature_event_id
+            or digest_json(feature_event) != payload.get("feature_event_digest")
+            or feature_event.get("expected_revision") != payload.get("feature_revision")
+        ):
+            raise V03DogfoodPostRunFinalizerError("translated Feature Event identity/digest is not exact")
+        translated[feature_event_id] = row
+
+    phases: dict[str, dict[str, dict[str, Any]]] = {}
     for row in events:
         event_type = str(row.get("event_type") or "")
         if event_type not in {"persist.requested", "persist.linearized", "persist.confirmed"}:
             continue
         payload = row.get("payload") or {}
         feature_event_id = str(payload.get("feature_event_id") or "")
-        if not feature_event_id:
-            raise V03DogfoodPostRunFinalizerError("Persist fact lacks Feature Event identity")
-        bucket = by_id.setdefault(feature_event_id, {})
-        if event_type in bucket:
-            raise V03DogfoodPostRunFinalizerError("duplicate Persist phase for one Feature Event")
+        bucket = phases.setdefault(feature_event_id, {})
+        if not feature_event_id or event_type in bucket:
+            raise V03DogfoodPostRunFinalizerError("Persist phase identity is missing or duplicated")
         bucket[event_type] = row
-    for feature_event_id, phases in by_id.items():
-        if set(phases) != {"persist.requested", "persist.linearized", "persist.confirmed"}:
+
+    if set(phases) != set(translated):
+        raise V03DogfoodPostRunFinalizerError("translated Feature Event set differs from Persisted Event set")
+    cycles: list[dict[str, Any]] = []
+    for feature_event_id, translated_row in translated.items():
+        bucket = phases.get(feature_event_id) or {}
+        if set(bucket) != {"persist.requested", "persist.linearized", "persist.confirmed"}:
             raise V03DogfoodPostRunFinalizerError("Feature Event lacks complete Persist triplet")
         requested, linearized, confirmed = (
-            phases["persist.requested"], phases["persist.linearized"], phases["persist.confirmed"]
+            bucket["persist.requested"], bucket["persist.linearized"], bucket["persist.confirmed"]
         )
-        sequences = tuple(int(row.get("sequence") or 0) for row in (requested, linearized, confirmed))
-        if not (sequences[0] < sequences[1] < sequences[2]):
-            raise V03DogfoodPostRunFinalizerError("Feature Persist phases are out of order")
+        sequences = (
+            int(translated_row.get("sequence") or 0),
+            int(requested.get("sequence") or 0),
+            int(linearized.get("sequence") or 0),
+            int(confirmed.get("sequence") or 0),
+        )
+        if not (sequences[0] < sequences[1] < sequences[2] < sequences[3]):
+            raise V03DogfoodPostRunFinalizerError("translated/Persist phases are out of order")
+        tp = translated_row.get("payload") or {}
         rp, lp, cp = (row.get("payload") or {} for row in (requested, linearized, confirmed))
         stable = ("feature_event_id", "expected_revision", "target_ref", "candidate_head_sha")
         if any(rp.get(name) != lp.get(name) or rp.get(name) != cp.get(name) for name in stable):
             raise V03DogfoodPostRunFinalizerError("Feature Persist identity drifted across phases")
+        if (
+            rp.get("expected_revision") != tp.get("feature_revision")
+            or rp.get("target_ref") != tp.get("target_ref")
+            or rp.get("candidate_head_sha") != tp.get("candidate_head_sha")
+        ):
+            raise V03DogfoodPostRunFinalizerError("Persist is not bound to exact translated Feature truth")
         expected_revision = rp.get("expected_revision")
         result_revision = cp.get("result_revision")
-        if not isinstance(expected_revision, int) or not isinstance(result_revision, int) or result_revision <= expected_revision:
-            raise V03DogfoodPostRunFinalizerError("Feature Persist confirmation lacks advancing revision")
+        if not isinstance(expected_revision, int) or result_revision != expected_revision + 1:
+            raise V03DogfoodPostRunFinalizerError("Feature Persist confirmation is not exact next revision")
         cycles.append({
             "feature_event_id": feature_event_id,
+            "callback_id": str(tp.get("callback_id") or ""),
             "expected_revision": expected_revision,
             "result_revision": result_revision,
             "target_ref": rp.get("target_ref"),
             "candidate_head_sha": rp.get("candidate_head_sha"),
-            "requested_sequence": sequences[0],
-            "linearized_sequence": sequences[1],
-            "confirmed_sequence": sequences[2],
+            "translated": translated_row,
+            "requested": requested,
+            "linearized": linearized,
+            "confirmed": confirmed,
+            "confirmed_sequence": sequences[3],
         })
-    return sorted(cycles, key=lambda row: row["requested_sequence"])
+    return sorted(cycles, key=lambda row: int(row["translated"].get("sequence") or 0))
+
+
+def _has_change(translations: list[dict[str, Any]], kind: str, **expected: Any) -> bool:
+    for translated in translations:
+        feature_event = (translated.get("payload") or {}).get("feature_event") or {}
+        for change in feature_event.get("changes") or []:
+            if not isinstance(change, dict) or change.get("kind") != kind:
+                continue
+            record = change.get("record") if isinstance(change.get("record"), dict) else {}
+            if all(record.get(key, change.get(key)) == value for key, value in expected.items()):
+                return True
+    return False
+
+
+def _verify_result_semantics(
+    scenario: str,
+    step: str,
+    role: str,
+    worker_payload: Mapping[str, Any],
+    translations: list[dict[str, Any]],
+) -> None:
+    if role == "developer":
+        if worker_payload.get("status") != "COMPLETED":
+            raise V03DogfoodPostRunFinalizerError("Developer milestone is not an exact completed Worker result")
+        if step == "IMPLEMENTATION_WORK":
+            if len(translations) != 1 or not _has_change(translations, "artifact-record", type="implementation") or not _has_change(
+                translations, "stage", id="code-review", status="READY"
+            ):
+                raise V03DogfoodPostRunFinalizerError("Developer implementation milestone lacks exact Feature transition")
+        elif step == "CODE_REMEDIATION":
+            if (
+                len(translations) != 2
+                or not _has_change(translations, "artifact-record", type="implementation")
+                or not _has_change(translations, "task", status="DONE")
+                or not _has_change(translations, "artifact", status="superseded")
+            ):
+                raise V03DogfoodPostRunFinalizerError("remediation milestone lacks exact replacement/supersession lifecycle")
+        else:
+            raise V03DogfoodPostRunFinalizerError("Developer result occurred at unsupported frozen step")
+        return
+    if role == "reviewer":
+        expected_verdict = "REWORK" if scenario == "review_remediation" and step == "CODE_REVIEW" else "PASS"
+        if worker_payload.get("verdict") != expected_verdict or len(translations) != 1:
+            raise V03DogfoodPostRunFinalizerError("Reviewer verdict differs from frozen milestone")
+        if expected_verdict == "REWORK":
+            if not _has_change(translations, "task-record", kind="remediation"):
+                raise V03DogfoodPostRunFinalizerError("Reviewer REWORK lacks durable remediation task decision")
+        elif not _has_change(translations, "gate", id="code-gate", status="PASS"):
+            raise V03DogfoodPostRunFinalizerError("Reviewer PASS lacks durable code Gate PASS")
+        return
+    if role == "qa":
+        if worker_payload.get("verdict") != "PASS" or len(translations) != 1 or not _has_change(
+            translations, "gate", id="verification-gate", status="PASS"
+        ):
+            raise V03DogfoodPostRunFinalizerError("QA milestone lacks durable verification Gate PASS")
+        return
+    raise V03DogfoodPostRunFinalizerError("unexpected Worker role in release milestone")
+
+
+def _dispatch_chains(
+    scenario: str,
+    events: list[dict[str, Any]],
+    dispatches: list[dict[str, Any]],
+    cycles: list[dict[str, Any]],
+    generation: int,
+) -> list[dict[str, Any]]:
+    chains: list[dict[str, Any]] = []
+    cycle_by_callback: dict[str, list[dict[str, Any]]] = {}
+    for cycle in cycles:
+        cycle_by_callback.setdefault(str(cycle.get("callback_id") or ""), []).append(cycle)
+
+    for index, dispatch in enumerate(dispatches):
+        start = int(dispatch["claim_sequence"])
+        end = int(dispatches[index + 1]["selected_sequence"]) if index + 1 < len(dispatches) else 10**18
+        in_segment = lambda row: start < int(row.get("sequence") or 0) < end
+        claim = next(
+            (row for row in events if int(row.get("sequence") or 0) == start and row.get("event_type") == "dispatch.claimed"),
+            None,
+        )
+        if claim is None:
+            raise V03DogfoodPostRunFinalizerError("selected dispatch lost exact protected claim")
+        claim_payload = claim.get("payload") or {}
+        key = str(claim_payload.get("external_dispatch_key") or "")
+        auths = [
+            row for row in events
+            if in_segment(row)
+            and row.get("event_type") == "dispatch.launch.authorized"
+            and (row.get("payload") or {}).get("external_dispatch_key") == key
+        ]
+        if len(auths) != 1:
+            raise V03DogfoodPostRunFinalizerError("dispatch lacks one exact launch authorization")
+        auth = auths[0]
+        auth_payload = auth.get("payload") or {}
+        if auth.get("operation_generation") != generation or auth_payload.get("role") != dispatch["role"]:
+            raise V03DogfoodPostRunFinalizerError("dispatch launch role/generation binding drifted")
+        lookups = [
+            row for row in events
+            if in_segment(row)
+            and row.get("event_type") == "dispatch.launch.lookup-recorded"
+            and (row.get("payload") or {}).get("external_dispatch_key") == key
+            and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"
+        ]
+        if len(lookups) != 1 or not str((lookups[0].get("payload") or {}).get("receipt_id") or "").isdigit():
+            raise V03DogfoodPostRunFinalizerError("dispatch lacks one exact LAUNCHED runtime receipt")
+        lookup = lookups[0]
+        chain = {
+            "step": dispatch["step"],
+            "role": dispatch["role"],
+            "selected": next(row for row in events if int(row.get("sequence") or 0) == int(dispatch["selected_sequence"])),
+            "claim": claim,
+            "authorization": auth,
+            "lookup": lookup,
+            "run_id": int((lookup.get("payload") or {})["receipt_id"]),
+            "events": [auth, lookup],
+        }
+        if scenario == "session_recovery":
+            chains.append(chain)
+            continue
+        callbacks = [
+            row for row in events
+            if in_segment(row)
+            and row.get("event_type") == "worker.callback.recorded"
+            and (row.get("payload") or {}).get("external_dispatch_key") == key
+        ]
+        if len(callbacks) != 1:
+            raise V03DogfoodPostRunFinalizerError("consumed dispatch lacks one exact protected callback")
+        callback = callbacks[0]
+        callback_id = str((callback.get("payload") or {}).get("callback_id") or "")
+        accepted = [
+            row for row in events
+            if in_segment(row)
+            and row.get("event_type") == "worker.result.validated"
+            and (row.get("payload") or {}).get("callback_id") == callback_id
+        ]
+        rejected = [
+            row for row in events
+            if in_segment(row)
+            and row.get("event_type") == "worker.result.rejected"
+            and (row.get("payload") or {}).get("callback_id") == callback_id
+        ]
+        if len(accepted) != 1 or rejected:
+            raise V03DogfoodPostRunFinalizerError("callback lacks one accepted role result")
+        accepted_payload = accepted[0].get("payload") or {}
+        if accepted_payload.get("role") != dispatch["role"] or accepted_payload.get("dispatch_id") != auth_payload.get("dispatch_id"):
+            raise V03DogfoodPostRunFinalizerError("accepted Worker result is not bound to exact launch")
+        envelope = (callback.get("payload") or {}).get("trusted_callback_envelope")
+        worker_payload = (envelope or {}).get("worker_payload") if isinstance(envelope, dict) else None
+        if not isinstance(worker_payload, dict):
+            raise V03DogfoodPostRunFinalizerError("accepted callback lacks original sealed Worker payload")
+        translations = [
+            cycle["translated"] for cycle in cycle_by_callback.get(callback_id, [])
+            if in_segment(cycle["translated"])
+        ]
+        owned_cycles = [
+            cycle for cycle in cycle_by_callback.get(callback_id, [])
+            if in_segment(cycle["translated"])
+        ]
+        if not owned_cycles or any(cycle["confirmed_sequence"] >= end for cycle in owned_cycles):
+            raise V03DogfoodPostRunFinalizerError("accepted Worker result lacks bounded exact Persist authority")
+        _verify_result_semantics(scenario, dispatch["step"], dispatch["role"], worker_payload, translations)
+        chain.update(
+            callback=callback,
+            accepted=accepted[0],
+            cycles=owned_cycles,
+            events=[auth, lookup, callback, accepted[0], *[
+                phase
+                for cycle in owned_cycles
+                for phase in (cycle["translated"], cycle["requested"], cycle["linearized"], cycle["confirmed"])
+            ]],
+        )
+        chains.append(chain)
+    return chains
 
 
 def _reconstruct_release_authority(
     scenario: str,
+    snapshot: Any,
     events: list[dict[str, Any]],
     projection: Mapping[str, Any],
     observation: Mapping[str, Any],
-) -> tuple[Mapping[str, set[str]], Mapping[str, bool]]:
+    *,
+    repository: str,
+    source_run_id: int,
+) -> tuple[list[dict[str, Any]], Mapping[str, bool], str, str]:
     profile = SCENARIO_PROFILES.get(scenario)
     expected_roles = SCENARIO_ROLE_SEQUENCES.get(scenario)
     if profile is None or expected_roles is None:
         raise V03DogfoodPostRunFinalizerError("scenario escaped frozen evidence inventory")
-    if str(projection.get("status") or "") != profile["end_state"]:
+    end_state = str(projection.get("status") or "")
+    if end_state != profile["end_state"]:
         raise V03DogfoodPostRunFinalizerError("durable final state differs from frozen profile")
+    generation = int(projection.get("generation") if projection.get("generation") is not None else -1)
+    if generation < 0:
+        raise V03DogfoodPostRunFinalizerError("protected Store lacks valid Operation generation")
+    if any(
+        int(row.get("operation_generation") if row.get("operation_generation") is not None else -1) != generation
+        for row in events
+    ):
+        raise V03DogfoodPostRunFinalizerError("dogfood Operation history crossed an unexpected generation")
 
     dispatches = _selected_dispatches(events)
     roles = tuple(str(row.get("role") or "") for row in dispatches)
@@ -475,117 +702,222 @@ def _reconstruct_release_authority(
         raise V03DogfoodPostRunFinalizerError(
             f"durable role sequence differs from frozen scenario: expected {expected_roles}, got {roles}"
         )
-    steps = tuple(str(row.get("step") or "") for row in dispatches)
     expected_steps = {
         "happy_path": ("IMPLEMENTATION_WORK", "CODE_REVIEW", "VERIFICATION_QA"),
         "review_remediation": (
-            "IMPLEMENTATION_WORK",
-            "CODE_REVIEW",
-            "CODE_REMEDIATION",
-            "CODE_REREVIEW",
-            "VERIFICATION_QA",
+            "IMPLEMENTATION_WORK", "CODE_REVIEW", "CODE_REMEDIATION", "CODE_REREVIEW", "VERIFICATION_QA"
         ),
         "session_recovery": ("IMPLEMENTATION_WORK",),
     }[scenario]
+    steps = tuple(str(row.get("step") or "") for row in dispatches)
     if steps != expected_steps:
         raise V03DogfoodPostRunFinalizerError("durable selected-step sequence differs from frozen scenario")
 
-    validated_rows = [row for row in events if row.get("event_type") == "worker.result.validated"]
-    accepted_callbacks = _accepted_callback_facts(events)
-    validated = [int(row.get("sequence") or 0) for row in validated_rows]
-    launched = [
-        int(row.get("sequence") or 0)
-        for row in events
-        if row.get("event_type") == "dispatch.launch.lookup-recorded"
-        and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"
-    ]
-    expected_validated = 0 if scenario == "session_recovery" else len(expected_roles)
-    if (
-        len(validated) != expected_validated
-        or len(accepted_callbacks) != expected_validated
-        or len(launched) != len(expected_roles)
-    ):
-        raise V03DogfoodPostRunFinalizerError("durable worker validation/launch count differs from frozen role sequence")
-    if tuple(row["role"] for row in accepted_callbacks) != expected_roles[:expected_validated]:
-        raise V03DogfoodPostRunFinalizerError("accepted callback role sequence differs from frozen scenario")
-    persist_cycles = _persist_cycles(events)
-    if scenario == "session_recovery":
-        if persist_cycles:
-            raise V03DogfoodPostRunFinalizerError("session recovery unexpectedly persisted an unconsumed Worker result")
-    else:
-        if len(persist_cycles) != len(validated_rows):
-            raise V03DogfoodPostRunFinalizerError("accepted Worker results do not each have one complete Feature Persist")
+    starts = [row for row in events if row.get("event_type") == "operation.started"]
+    if len(starts) != 1:
+        raise V03DogfoodPostRunFinalizerError("dogfood history must contain exactly one operation.started")
+    cycles = _persist_cycles(events)
+    if scenario == "session_recovery" and cycles:
+        raise V03DogfoodPostRunFinalizerError("session recovery unexpectedly persisted unconsumed Worker output")
+    chains = _dispatch_chains(scenario, events, dispatches, cycles, generation)
+    if scenario != "session_recovery":
+        all_cycles = [cycle for chain in chains for cycle in chain.get("cycles", [])]
+        if len(all_cycles) != len(cycles):
+            raise V03DogfoodPostRunFinalizerError("Persisted Feature Event is not owned by one accepted callback")
         previous_revision = None
-        for index, (accepted, cycle) in enumerate(zip(validated_rows, persist_cycles)):
-            accepted_sequence = int(accepted.get("sequence") or 0)
-            next_claim = int(dispatches[index + 1]["claim_sequence"]) if index + 1 < len(dispatches) else None
-            if cycle["requested_sequence"] <= accepted_sequence:
-                raise V03DogfoodPostRunFinalizerError("Feature Persist began before exact Worker acceptance")
-            if next_claim is not None and cycle["confirmed_sequence"] >= next_claim:
-                raise V03DogfoodPostRunFinalizerError("next dispatch began before prior Feature Persist confirmation")
-            if previous_revision is not None and cycle["expected_revision"] != previous_revision:
-                raise V03DogfoodPostRunFinalizerError("Feature revision chain is discontinuous across milestones")
-            previous_revision = cycle["result_revision"]
+        for cycle in cycles:
             if cycle["target_ref"] != observation.get("target_ref"):
                 raise V03DogfoodPostRunFinalizerError("Feature Persist escaped frozen target ref")
+            if previous_revision is not None and cycle["expected_revision"] != previous_revision:
+                raise V03DogfoodPostRunFinalizerError("Feature revision chain is discontinuous")
+            previous_revision = cycle["result_revision"]
         done_rows = [row for row in events if row.get("event_type") == "operation.done"]
-        if len(done_rows) != 1 or (done_rows[0].get("payload") or {}).get("feature_revision") != persist_cycles[-1]["result_revision"]:
-            raise V03DogfoodPostRunFinalizerError("terminal DONE is not bound to final confirmed Feature revision")
-    for index, seq in enumerate(validated[:-1]):
-        next_claim = int(dispatches[index + 1]["claim_sequence"])
-        if not any(
-            seq < int(row.get("sequence") or 0) < next_claim
-            and row.get("event_type") == "loop.stable-stop"
-            and str((row.get("payload") or {}).get("status") or "") == "WAITING_EXTERNAL"
-            for row in events
-        ):
-            raise V03DogfoodPostRunFinalizerError("durable intermediate result lacks bounded WAITING_EXTERNAL stable stop")
-
-    types = {str(row.get("event_type") or "") for row in events}
-    if "operation.started" not in types:
-        raise V03DogfoodPostRunFinalizerError("protected Store lacks durable operation.started")
-
-    independent_review = False
-    remediation_round_trip = False
-    new_session_discovery = False
-    if scenario == "happy_path":
-        if "operation.done" not in types or "notification.created" not in types:
-            raise V03DogfoodPostRunFinalizerError("happy path lacks durable DONE/Notification facts")
-        independent_review = steps[1] == "CODE_REVIEW" and steps[2] == "VERIFICATION_QA"
-    elif scenario == "review_remediation":
-        if "operation.done" not in types or "notification.created" not in types:
-            raise V03DogfoodPostRunFinalizerError("review remediation lacks durable DONE/Notification facts")
-        # The transition from a validated CODE_REVIEW result to a subsequently
-        # selected CODE_REMEDIATION step is the durable lifecycle decision that
-        # proves REWORK. CODE_REREVIEW followed by VERIFICATION_QA proves the
-        # independent re-review PASS, without trusting the scenario label.
-        independent_review = steps[1] == "CODE_REVIEW" and steps[3] == "CODE_REREVIEW"
-        remediation_round_trip = steps[2] == "CODE_REMEDIATION" and steps[4] == "VERIFICATION_QA"
-    else:
-        pending = tuple(str(value) for value in (projection.get("pending_decisions") or []))
-        unread = tuple(str(value) for value in (projection.get("unread_notifications") or []))
-        if not pending or not unread or "decision.requested" not in types or "notification.created" not in types:
-            raise V03DogfoodPostRunFinalizerError(
-                "session recovery lacks durable pending Decision/Notification facts"
-            )
-        recovery_responses = tuple(str(value) for value in (observation.get("recovery_response_ids") or []))
-        recovery_calls = tuple(str(value) for value in (observation.get("recovery_function_call_ids") or []))
-        original_responses = set(str(value) for value in (observation.get("response_ids") or []))
-        original_calls = set(str(value) for value in (observation.get("function_call_ids") or []))
-        discovered_decisions = tuple(sorted(str(value) for value in (observation.get("recovery_discovery_decision_ids") or [])))
-        discovered_notifications = tuple(sorted(str(value) for value in (observation.get("recovery_discovery_notification_ids") or [])))
+        completion_notifications = [
+            row for row in events
+            if row.get("event_type") == "notification.created"
+            and (row.get("payload") or {}).get("notification_type") == "operation.completed"
+        ]
         if (
-            observation.get("new_session_discovery_observed") is not True
-            or not recovery_responses or not recovery_calls
-            or original_responses.intersection(recovery_responses)
-            or original_calls.intersection(recovery_calls)
-            or discovered_decisions != tuple(sorted(pending))
-            or discovered_notifications != tuple(sorted(unread))
+            len(done_rows) != 1
+            or len(completion_notifications) != 1
+            or (done_rows[0].get("payload") or {}).get("feature_revision") != cycles[-1]["result_revision"]
+            or int(completion_notifications[0].get("sequence") or 0) <= int(done_rows[0].get("sequence") or 0)
         ):
+            raise V03DogfoodPostRunFinalizerError("terminal DONE/completion Notification is not bound to final Feature revision")
+        notification_id = str((completion_notifications[0].get("payload") or {}).get("notification_id") or "")
+        notification = snapshot.get(notification_path(notification_id))
+        if (
+            not isinstance(notification, dict)
+            or notification.get("notification_type") != "operation.completed"
+            or notification.get("operation_id") != observation.get("operation_id")
+            or int(notification.get("operation_generation") or -1) != generation
+        ):
+            raise V03DogfoodPostRunFinalizerError("completion Notification immutable record binding differs")
+    else:
+        done_rows, completion_notifications = [], []
+
+    def event_uris(rows: list[dict[str, Any]]) -> list[str]:
+        return [_store_event_uri(repository, snapshot, row) for row in rows]
+
+    expected_profile = {name: (state, set(categories)) for name, state, categories in profile["milestones"]}
+    milestones: list[dict[str, Any]] = []
+    def add_milestone(name: str, state: str, rows: list[dict[str, Any]], run_ids=(), extra_uris=()):
+        expected_state, categories = expected_profile[name]
+        if state != expected_state:
             raise V03DogfoodPostRunFinalizerError(
-                "session recovery trace is not bound to exact durable Decision/Notification identities"
+                f"durable milestone {name} state differs: expected {expected_state}, got {state}"
             )
-        new_session_discovery = True
+        uris = [_run_uri(repository, source_run_id)]
+        uris.extend(_run_uri(repository, int(run_id)) for run_id in run_ids)
+        uris.extend(event_uris(rows))
+        uris.extend(str(uri) for uri in extra_uris)
+        milestones.append({
+            "name": name,
+            "state_after": state,
+            "evidence_categories": sorted(categories),
+            "evidence_uris": list(dict.fromkeys(uris)),
+        })
+
+    if scenario == "happy_path":
+        start_state = _status_at(events, int(starts[0]["sequence"]))
+        add_milestone("operation-started", start_state, [starts[0]])
+        add_milestone(
+            "developer-completed",
+            _status_at(events, int(chains[1]["authorization"]["sequence"])),
+            chains[0]["events"] + [chains[1]["authorization"]],
+            (chains[0]["run_id"],),
+        )
+        add_milestone(
+            "independent-review-passed",
+            _status_at(events, int(chains[2]["authorization"]["sequence"])),
+            chains[1]["events"] + [chains[2]["authorization"]],
+            (chains[1]["run_id"],),
+        )
+        add_milestone(
+            "qa-passed-and-done",
+            _status_at(events, int(completion_notifications[0]["sequence"])),
+            chains[2]["events"] + [done_rows[0], completion_notifications[0]],
+            (chains[2]["run_id"],),
+            (_store_object_uri(repository, snapshot, notification_path(notification_id)),),
+        )
+        independent_review, remediation_round_trip, new_session_discovery = True, False, False
+    elif scenario == "review_remediation":
+        start_state = _status_at(events, int(starts[0]["sequence"]))
+        add_milestone(
+            "developer-completed",
+            _status_at(events, int(chains[1]["authorization"]["sequence"])),
+            chains[0]["events"] + [chains[1]["authorization"]],
+            (chains[0]["run_id"],),
+        )
+        reviewer_confirm = max(int(cycle["confirmed_sequence"]) for cycle in chains[1]["cycles"])
+        add_milestone(
+            "reviewer-requested-changes",
+            _status_at(events, reviewer_confirm),
+            chains[1]["events"],
+            (chains[1]["run_id"],),
+        )
+        add_milestone(
+            "remediation-completed",
+            _status_at(events, int(chains[3]["authorization"]["sequence"])),
+            chains[2]["events"] + [chains[3]["authorization"]],
+            (chains[2]["run_id"],),
+        )
+        add_milestone(
+            "independent-re-review-passed",
+            _status_at(events, int(chains[4]["authorization"]["sequence"])),
+            chains[3]["events"] + [chains[4]["authorization"]],
+            (chains[3]["run_id"],),
+        )
+        add_milestone(
+            "qa-passed",
+            _status_at(events, int(completion_notifications[0]["sequence"])),
+            chains[4]["events"] + [done_rows[0], completion_notifications[0]],
+            (chains[4]["run_id"],),
+            (_store_object_uri(repository, snapshot, notification_path(notification_id)),),
+        )
+        independent_review, remediation_round_trip, new_session_discovery = True, True, False
+    else:
+        lookup = chains[0]["lookup"]
+        start_state = _status_at(events, int(lookup["sequence"]))
+        trace_path = session_trace_path(str(observation.get("operation_id") or ""))
+        trace = snapshot.get(trace_path)
+        pending = tuple(sorted(str(value) for value in (projection.get("pending_decisions") or [])))
+        unread = tuple(sorted(str(value) for value in (projection.get("unread_notifications") or [])))
+        if (
+            not isinstance(trace, dict)
+            or trace.get("schema_version") != SESSION_TRACE_SCHEMA
+            or trace.get("scenario") != "session_recovery"
+            or trace.get("operation_id") != observation.get("operation_id")
+            or int(trace.get("operation_generation") if trace.get("operation_generation") is not None else -1) != generation
+            or str(trace.get("repository") or "").lower() != repository.lower()
+            or trace.get("feature_id") != observation.get("feature_id")
+            or trace.get("target_ref") != observation.get("target_ref")
+            or trace.get("original_end_status") != "WAITING_EXTERNAL"
+            or trace.get("final_status") != "NEEDS_USER"
+            or tuple((trace.get("original_session") or {}).get("response_ids") or ()) != tuple(observation.get("response_ids") or ())
+            or tuple((trace.get("original_session") or {}).get("function_call_ids") or ()) != tuple(observation.get("function_call_ids") or ())
+            or tuple((trace.get("recovery_session") or {}).get("response_ids") or ()) != tuple(observation.get("recovery_response_ids") or ())
+            or tuple((trace.get("recovery_session") or {}).get("function_call_ids") or ()) != tuple(observation.get("recovery_function_call_ids") or ())
+            or str(trace.get("decision_id") or "") not in pending
+            or str(trace.get("notification_id") or "") not in unread
+            or (trace.get("inbox_discovery") or {}).get("decision_id") != trace.get("decision_id")
+            or (trace.get("inbox_discovery") or {}).get("notification_id") != trace.get("notification_id")
+            or (trace.get("inbox_discovery") or {}).get("call_id") not in tuple(observation.get("recovery_function_call_ids") or ())
+        ):
+            raise V03DogfoodPostRunFinalizerError("protected session recovery trace does not match exact durable/raw identities")
+        decision_id = str(trace["decision_id"])
+        notification_id = str(trace["notification_id"])
+        decision = snapshot.get(decision_path(decision_id))
+        notification = snapshot.get(notification_path(notification_id))
+        if (
+            not isinstance(decision, dict)
+            or not isinstance(notification, dict)
+            or decision.get("operation_id") != observation.get("operation_id")
+            or notification.get("operation_id") != observation.get("operation_id")
+            or int(decision.get("operation_generation") or -1) != generation
+            or int(notification.get("operation_generation") or -1) != generation
+            or notification.get("decision_id") != decision_id
+        ):
+            raise V03DogfoodPostRunFinalizerError("session Decision/Notification immutable records differ from recovery trace")
+        decision_events = [
+            row for row in events
+            if row.get("event_type") == "decision.requested"
+            and (row.get("payload") or {}).get("decision_id") == decision_id
+        ]
+        notification_events = [
+            row for row in events
+            if row.get("event_type") == "notification.created"
+            and (row.get("payload") or {}).get("notification_id") == notification_id
+        ]
+        if len(decision_events) != 1 or len(notification_events) != 1:
+            raise V03DogfoodPostRunFinalizerError("session user-item events are not exact")
+        trace_uri = _store_object_uri(repository, snapshot, trace_path)
+        add_milestone(
+            "durable-state-created",
+            start_state,
+            [chains[0]["selected"], chains[0]["claim"], chains[0]["authorization"], lookup],
+            (chains[0]["run_id"],),
+        )
+        add_milestone(
+            "original-session-ended",
+            str(trace["original_end_status"]),
+            [],
+            (),
+            (trace_uri,),
+        )
+        final_sequence = max(int(decision_events[0]["sequence"]), int(notification_events[0]["sequence"]))
+        add_milestone(
+            "new-session-discovered-operation-and-user-items",
+            _status_at(events, final_sequence),
+            [decision_events[0], notification_events[0]],
+            (),
+            (
+                trace_uri,
+                _store_object_uri(repository, snapshot, decision_path(decision_id)),
+                _store_object_uri(repository, snapshot, notification_path(notification_id)),
+            ),
+        )
+        independent_review, remediation_round_trip, new_session_discovery = False, False, True
 
     assertions = {
         "durable_operation_state": True,
@@ -593,68 +925,10 @@ def _reconstruct_release_authority(
         "remediation_round_trip_observed": remediation_round_trip,
         "new_session_discovery_observed": new_session_discovery,
     }
-    required_assertions = {
-        "happy_path": (True, False, False),
-        "review_remediation": (True, True, False),
-        "session_recovery": (False, False, True),
-    }[scenario]
-    actual_assertions = (
-        assertions["independent_review_observed"],
-        assertions["remediation_round_trip_observed"],
-        assertions["new_session_discovery_observed"],
-    )
-    if actual_assertions != required_assertions:
-        raise V03DogfoodPostRunFinalizerError("durable assertion reconstruction differs from frozen scenario")
-
-    categories: dict[str, set[str]] = {}
-    if scenario == "happy_path":
-        payloads = [row["worker_payload"] for row in accepted_callbacks]
-        if payloads[0].get("status") != "COMPLETED":
-            raise V03DogfoodPostRunFinalizerError("Developer milestone lacks exact COMPLETED result")
-        if payloads[1].get("verdict") != "PASS":
-            raise V03DogfoodPostRunFinalizerError("independent review milestone lacks exact PASS verdict")
-        if payloads[2].get("verdict") != "PASS":
-            raise V03DogfoodPostRunFinalizerError("QA milestone lacks exact PASS verdict")
-        categories = {
-            "operation-started": {"operation", "persisted_state"},
-            "developer-completed": {"candidate", "runtime_receipt", "persisted_state"},
-            "independent-review-passed": {"candidate", "independent_review", "persisted_state"},
-            "qa-passed-and-done": {"verification", "notification", "persisted_state"},
-        }
-    elif scenario == "review_remediation":
-        payloads = [row["worker_payload"] for row in accepted_callbacks]
-        if (
-            payloads[0].get("status") != "COMPLETED"
-            or payloads[1].get("verdict") != "REWORK"
-            or payloads[2].get("status") != "COMPLETED"
-            or payloads[3].get("verdict") != "PASS"
-            or payloads[4].get("verdict") != "PASS"
-        ):
-            raise V03DogfoodPostRunFinalizerError("review/remediation milestone verdict sequence differs from durable callbacks")
-        categories = {
-            "developer-completed": {"candidate", "runtime_receipt", "persisted_state"},
-            "reviewer-requested-changes": {"independent_review", "decision", "persisted_state"},
-            "remediation-completed": {"remediation", "candidate", "runtime_receipt", "persisted_state"},
-            "independent-re-review-passed": {"candidate", "independent_review", "persisted_state"},
-            "qa-passed": {"verification", "notification", "persisted_state"},
-        }
-    else:
-        original_responses = tuple(str(value) for value in (observation.get("response_ids") or []))
-        original_calls = tuple(str(value) for value in (observation.get("function_call_ids") or []))
-        if not original_responses or not original_calls:
-            raise V03DogfoodPostRunFinalizerError("original session lacks durable client trace identity")
-        categories = {
-            "durable-state-created": {"operation", "persisted_state"},
-            "original-session-ended": {"persisted_state"},
-            "new-session-discovered-operation-and-user-items": {
-                "operation", "decision", "notification", "persisted_state", "session_recovery"
-            },
-        }
-
-    required_categories = {name: set(required) for name, _state, required in profile["milestones"]}
-    if categories != required_categories:
-        raise V03DogfoodPostRunFinalizerError("fact-derived milestone evidence categories differ from frozen requirements")
-    return categories, assertions
+    expected_names = [name for name, _state, _categories in profile["milestones"]]
+    if [row["name"] for row in milestones] != expected_names:
+        raise V03DogfoodPostRunFinalizerError("reconstructed milestone set/order differs from frozen profile")
+    return milestones, assertions, start_state, end_state
 
 
 def _milestone_facts(
@@ -721,15 +995,21 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     if int(observation.get("candidate_pr_number") or 0) != preflight.candidate_pr_number:
         raise V03DogfoodPostRunFinalizerError("candidate PR differs from independently resolved fixture authority")
 
-    events, projection = _durable_operation_facts(preflight, observation)
+    snapshot, events, projection = _durable_operation_facts(preflight, observation)
     receipt = _durable_receipt(events, observation)
-    categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation)
-    generation = int(projection.get("generation") or 0)
-    if generation < 1:
-        generations = [int(row.get("operation_generation") or 0) for row in events]
-        generation = max(generations or [0])
-    if generation < 1:
-        raise V03DogfoodPostRunFinalizerError("protected Store lacks positive Operation generation")
+    milestones, assertions, start_state, end_state = _reconstruct_release_authority(
+        scenario,
+        snapshot,
+        events,
+        projection,
+        observation,
+        repository=repository,
+        source_run_id=source_run_id,
+    )
+    generation = int(projection.get("generation") if projection.get("generation") is not None else -1)
+    if generation < 0:
+        raise V03DogfoodPostRunFinalizerError("protected Store lacks valid Operation generation")
+    categories = {row["name"]: set(row["evidence_categories"]) for row in milestones}
 
     worker_run_ids = list(receipt["workflow_run_ids"])
     attestation_uri = _run_uri(repository, finalizer_run_id)
@@ -758,9 +1038,9 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,
         "human_interventions": 0,
-        "milestones": _milestone_facts(
-            scenario, repository, source_run_id, finalizer_run_id, worker_run_ids, categories
-        ),
+        "start_state": start_state,
+        "end_state": end_state,
+        "milestones": milestones,
         "assertions": assertions,
         "evidence_uris": evidence_uris,
         "provenance_verifier": verifier,
