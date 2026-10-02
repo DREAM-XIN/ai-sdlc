@@ -131,6 +131,42 @@ def main() -> None:
         response("resp_t2", call("call_t2")),
     ], "exceeded bounded tool turns", max_turns=1)
 
+    # DeepSeek implements Responses function tools but its endpoint is stateless:
+    # previous_response_id is ignored, so the host must replay the complete
+    # supported history on every continuation.
+    deepseek_rows = [
+        response("ds-response-1", call("call_ds")),
+        response("ds-response-2", message()),
+    ]
+    deepseek_requests = []
+
+    def deepseek_post(url, headers, body):
+        assert url == "https://api.deepseek.com/responses"
+        assert headers["Authorization"] == "Bearer deepseek-key"
+        assert body["parallel_tool_calls"] is False
+        deepseek_requests.append(dict(body))
+        return 200, deepseek_rows.pop(0)
+
+    deepseek_adapter = FakeAdapter()
+    deepseek_host = V03DogfoodOpenAIResponsesHost(
+        config=V03DogfoodOpenAIHostConfig(
+            api_key="deepseek-key",
+            model="deepseek-flash",
+            api_base="https://api.deepseek.com",
+            stateless_history=True,
+        ),
+        adapter=deepseek_adapter,
+        http_post=deepseek_post,
+    )
+    deepseek_trace = deepseek_host.run(scenario_instruction="trusted DeepSeek dogfood")
+    assert deepseek_trace.response_ids == ("ds-response-1", "ds-response-2")
+    assert len(deepseek_requests) == 2
+    assert "previous_response_id" not in deepseek_requests[1]
+    replay = deepseek_requests[1]["input"]
+    assert replay[0] == {"role": "user", "content": "trusted DeepSeek dogfood"}
+    assert replay[1]["type"] == "function_call" and replay[1]["call_id"] == "call_ds"
+    assert replay[2]["type"] == "function_call_output" and replay[2]["call_id"] == "call_ds"
+
     print("v0.3 dogfood OpenAI Responses host validation: PASS")
 
 
