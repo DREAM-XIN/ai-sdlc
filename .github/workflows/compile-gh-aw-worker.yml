@@ -47,6 +47,13 @@ jobs:
               items.append({'id':'profile-' + profile.profile_id,'kind':'profile','profile':profile.profile_id,'source':profile.worker_source,'lock':profile.worker_workflow})
           for worker in load_role_workers():
               items.append({'id':'role-' + worker.id,'kind':'role','profile':worker.profile,'source':worker.worker_source,'lock':worker.worker_workflow})
+          items.append({
+              'id':'local-reviewer-deepseek-v03',
+              'kind':'local',
+              'profile':'deepseek',
+              'source':'.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-local.md',
+              'lock':'ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml',
+          })
           print('workers=' + json.dumps(items,separators=(',',':')))
           PY
 
@@ -73,8 +80,10 @@ jobs:
         run: |
           if [[ "$KIND" == "profile" ]]; then
             python scripts/render_gh_aw_workers.py --profile "$PROFILE" --check
-          else
+          elif [[ "$KIND" == "role" ]]; then
             PYTHONPATH=scripts python scripts/render_gh_aw_role_workers.py --check
+          else
+            test -f "$SOURCE"
           fi
       - name: Install pinned gh-aw compiler
         env:
