@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import io
+import json
+import zipfile
 
 from gh_aw_provider_registry import load_registry
 from v03_dogfood_execution_bindings import credential_identities
 from v03_dogfood_live_gate import (
+    ISSUE221_FINAL_LEDGER_ARTIFACT_DIGEST,
+    ISSUE221_FINAL_LEDGER_ARTIFACT_ID,
+    ISSUE221_FINAL_LEDGER_ARTIFACT_NAME,
+    ISSUE221_FINAL_LEDGER_RUN_ID,
+    ISSUE221_FINAL_LEDGER_WORKFLOW,
     Issue221Closure,
     V03DogfoodLiveGateError,
     assemble_dogfood_live_gate,
     public_gate,
     select_review_anchor,
+    validate_pinned_issue_221_final_ledger,
 )
+from v03_dogfood_issue221_compatibility import SOURCE_MAIN
 
 SHA = "a" * 40
 
@@ -66,7 +76,91 @@ def expect_failure(*, scenario="happy_path", env=None, verifier=closure, label):
     raise AssertionError(f"{label} unexpectedly passed dogfood gate")
 
 
+
+def pinned_ledger_fixture():
+    selection = {
+        "schema_version": "ai-sdlc.v03-effect-safety-final-selection/v1",
+        "issue": 221,
+        "trusted_main_head_sha": SOURCE_MAIN,
+        "record_count": 11,
+        "scenario_count": 13,
+        "workflow_run_ids": list(range(1001, 1012)),
+        "records": [],
+        "authority_set_sha256": "a" * 64,
+        "release_eligible": True,
+    }
+    ledger = {
+        "status": "PASS",
+        "overall_issue_221_pass": True,
+        "accepted_record_count": 11,
+        "accepted_workflow_run_count": 11,
+        "satisfied_scenarios": [f"scenario-{i}" for i in range(13)],
+        "unresolved_scenarios": [],
+        "deterministic_evidence_accepted": False,
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("nested/v03-effect-safety-final-selection.json", json.dumps(selection))
+        bundle.writestr("nested/v03-effect-safety-final-ledger.json", json.dumps(ledger))
+    run = {
+        "id": ISSUE221_FINAL_LEDGER_RUN_ID,
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "head_branch": "main",
+        "head_sha": SOURCE_MAIN,
+        "path": ISSUE221_FINAL_LEDGER_WORKFLOW,
+    }
+    artifact = {
+        "id": ISSUE221_FINAL_LEDGER_ARTIFACT_ID,
+        "name": ISSUE221_FINAL_LEDGER_ARTIFACT_NAME,
+        "expired": False,
+        "digest": ISSUE221_FINAL_LEDGER_ARTIFACT_DIGEST,
+        "workflow_run": {
+            "id": ISSUE221_FINAL_LEDGER_RUN_ID,
+            "head_branch": "main",
+            "head_sha": SOURCE_MAIN,
+        },
+    }
+    return run, artifact, buffer.getvalue()
+
+
 def main():
+    run, artifact, archive = pinned_ledger_fixture()
+    selection, ledger = validate_pinned_issue_221_final_ledger(
+        run=run, artifact=artifact, archive=archive,
+    )
+    require(selection["scenario_count"] == 13 and ledger["overall_issue_221_pass"] is True,
+            "pinned Issue #221 final ledger fixture did not validate")
+    for bad_run in (
+        dict(run, id=ISSUE221_FINAL_LEDGER_RUN_ID + 1),
+        dict(run, head_sha="0" * 40),
+        dict(run, conclusion="failure"),
+    ):
+        try:
+            validate_pinned_issue_221_final_ledger(run=bad_run, artifact=artifact, archive=archive)
+        except V03DogfoodLiveGateError:
+            pass
+        else:
+            raise AssertionError("drifted pinned Issue #221 run unexpectedly passed")
+    for bad_artifact in (
+        dict(artifact, id=ISSUE221_FINAL_LEDGER_ARTIFACT_ID + 1),
+        dict(artifact, expired=True),
+        dict(artifact, digest="sha256:" + "0" * 64),
+    ):
+        try:
+            validate_pinned_issue_221_final_ledger(run=run, artifact=bad_artifact, archive=archive)
+        except V03DogfoodLiveGateError:
+            pass
+        else:
+            raise AssertionError("drifted pinned Issue #221 artifact unexpectedly passed")
+    try:
+        validate_pinned_issue_221_final_ledger(run=run, artifact=artifact, archive=b"not-a-zip")
+    except V03DogfoodLiveGateError:
+        pass
+    else:
+        raise AssertionError("malformed pinned Issue #221 archive unexpectedly passed")
+
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         gate = assemble_dogfood_live_gate(
             scenario=scenario,
