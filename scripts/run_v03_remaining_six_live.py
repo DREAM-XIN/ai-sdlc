@@ -14,7 +14,7 @@ import v03_dispatch_recovery_live_runner as shared
 
 
 REMAINING_SIX_IDEMPOTENCY = {
-    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization",
+    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization-r2",
     "persist-linearized-before-cancel": "v03-release-fi-persist-linearized-before-cancel",
     "duplicate-callback": "v03-release-fi-duplicate-callback",
     "out-of-order-callback": "v03-release-fi-out-of-order-callback",
