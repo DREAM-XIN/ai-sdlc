@@ -1,0 +1,28 @@
+changes:
+- kind: evidence
+  record:
+    id: vertical-evidence-b658615099599dd1273f
+    status: pass
+    type: review
+    uri: docs/features/F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0003/worker-runs/vertical-c71b8740f4183bd5160d0498296e8487/reviewer-comment-5955447166-binding-3d5b43bda844db22fac5982a8bb561d180eb2dd687d938dc2939b9baea354926--first-attempt--key-dispatch-16faec10de1b89a9a8b73970829b7f3c8baafef1--run-37025291971--head-85b73b76c6fdb96e66a5b70a92b9be30a37e8c68--lease-f28863739d59fdf55073e5f41940fccdad6d69da46926e3ce678105c516031cb.json
+- evidence:
+  - vertical-evidence-b658615099599dd1273f
+  id: implementation-v1
+  kind: artifact
+  status: approved
+- evidence:
+  - vertical-evidence-b658615099599dd1273f
+  id: code-gate
+  kind: gate
+  status: PASS
+- id: code-review
+  kind: stage
+  status: DONE
+- id: verification
+  kind: stage
+  status: READY
+expected_revision: 1
+feature_id: F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0003
+id: EVT-F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0003-VERTICAL-CODE-REVIEW-PASS-BD288EFC5129
+occurred_at: '2026-10-02T15:17:54Z'
+version: 0.1.0
