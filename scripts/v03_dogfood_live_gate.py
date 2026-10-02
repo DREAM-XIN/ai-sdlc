@@ -152,6 +152,10 @@ class Issue221Closure:
     ledger_digest: str
     evidence_head_sha: str = ""
     compatibility_digest: str = ""
+    reviewed_delta_digest: str = ""
+    review_anchor_pr_number: int = 0
+    review_anchor_review_id: int = 0
+    review_anchor_commit_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -246,6 +250,10 @@ def verify_issue_221_closed(
         ledger_digest=_digest(ledger),
         evidence_head_sha=evidence_sha,
         compatibility_digest=compatibility["compatibility_digest"],
+        reviewed_delta_digest=str(compatibility["reviewed_delta_digest"]),
+        review_anchor_pr_number=int(review_anchor.get("pull_number") or 0),
+        review_anchor_review_id=int(review_anchor.get("review_id") or 0),
+        review_anchor_commit_id=str(review_anchor.get("review_commit_id") or ""),
     )
 
 
