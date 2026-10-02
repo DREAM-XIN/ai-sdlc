@@ -354,8 +354,11 @@ def validate_historical_runtime_bindings():
     old_projection = post.vertical_projection
     try:
         post.vertical_projection = lambda snapshot, op: dict(operation_profile="vertical-implementation-review-qa/v1")
-        bound = post._durable_run_bindings(preflight, dict(operation_id="op-1"), events)
-        assert bound[7001]["candidate_input_head_sha"] == "a"*40 and len(calls) == 1
+        require_rejected(
+            "Gate without trusted Developer candidate handoff",
+            lambda: post._durable_run_bindings(preflight, dict(operation_id="op-1"), events),
+        )
+        assert len(calls) == 1
         require_rejected("duplicate protected authorization",
                          lambda: post._durable_run_bindings(preflight, dict(operation_id="op-1"), events + [events[0]]))
         files[reservation_path(semantic)]["feature_id"] = "F-OTHER"
