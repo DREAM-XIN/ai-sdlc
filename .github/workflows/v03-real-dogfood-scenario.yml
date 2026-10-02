@@ -130,13 +130,13 @@ jobs:
             final_status=$(jq -r '.final_status // ""' "$path")
           fi
           gh issue comment 239 --repo "$GITHUB_REPOSITORY" --body "<!-- ai-sdlc-v03-real-dogfood -->
-v0.3 real dogfood scenario \`$SCENARIO\`: **$JOB_STATUS**
-Run: \`$RUN_ID\`
-Trusted-main head: \`$HEAD_SHA\`
-Operation: \`${operation_id:-unavailable}\`
-Observed final state: \`${final_status:-unavailable}\`
+          v0.3 real dogfood scenario \`$SCENARIO\`: **$JOB_STATUS**
+          Run: \`$RUN_ID\`
+          Trusted-main head: \`$HEAD_SHA\`
+          Operation: \`${operation_id:-unavailable}\`
+          Observed final state: \`${final_status:-unavailable}\`
 
-This is a raw trusted-main execution receipt only. It is **not release evidence and not release-eligible** until the existing dogfood evidence contract plus independent production provenance verifier reconstruct and validate the exact candidate, workflow runs, runtime receipt, milestones, Decisions/Notifications, and persisted state."
+          This is a raw trusted-main execution receipt only. It is **not release evidence and not release-eligible** until the existing dogfood evidence contract plus independent production provenance verifier reconstruct and validate the exact candidate, workflow runs, runtime receipt, milestones, Decisions/Notifications, and persisted state."
 
       - name: Dispatch closed post-run finalizer after successful raw observation
         if: success()
