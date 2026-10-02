@@ -297,7 +297,10 @@ def run_scenario(
     if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != 1:
         raise V03DogfoodScenarioRunnerError("dogfood fixture is not the exact active revision-1 slot")
 
-    trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=1))
+    trace = host.run(
+        scenario_instruction=scenario_instruction(preflight.slot, expected_revision=1),
+        initial_tool_name="aisdlc_v1_operation_start",
+    )
     operation_id, start_status = _operation_start(trace)
     projection = _projection(preflight, operation_id)
     status = str(projection.get("status") or "")
@@ -330,7 +333,8 @@ def run_scenario(
             raise V03DogfoodScenarioRunnerError("session recovery must converge to NEEDS_USER after original session ends")
         starts_before = len([row for row in _events(preflight, operation_id) if row.get("event_type") == "operation.started"])
         recovery_trace = recovery_host.run(
-            scenario_instruction=recovery_instruction(preflight.slot, operation_id=operation_id)
+            scenario_instruction=recovery_instruction(preflight.slot, operation_id=operation_id),
+            initial_tool_name="aisdlc_v1_operator_inbox",
         )
         starts_after = len([row for row in _events(preflight, operation_id) if row.get("event_type") == "operation.started"])
         if starts_before != 1 or starts_after != 1:
