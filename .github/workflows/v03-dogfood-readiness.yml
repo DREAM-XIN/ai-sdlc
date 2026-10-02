@@ -1,0 +1,94 @@
+name: v0.3 Real Dogfood Readiness
+on:
+  workflow_dispatch:
+
+env:
+    HAS_COPILOT_GITHUB_TOKEN: ${{ github.token != '' }}
+    HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+    HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
+    HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+    HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+    HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+    HAS_ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY != '' }}
+    HAS_MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY != '' }}
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  reject-non-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+
+      - name: Inspect presence and reverify immutable upstream evidence without effects
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+          HAS_AI_SDLC_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_AI_SDLC_OPENAI_MODEL: ${{ vars.AI_SDLC_OPENAI_MODEL != '' }}
+          HAS_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN != '' }}
+          HAS_RUNTIME_APP_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID != '' }}
+          HAS_RUNTIME_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
+          HAS_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID != '' }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p evidence
+          PYTHONPATH=scripts python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from v03_dogfood_live_gate import assemble_dogfood_live_gate, public_gate
+          required = {
+              "OPENAI_API_KEY": "HAS_AI_SDLC_OPENAI_API_KEY",
+              "AI_SDLC_OPENAI_MODEL": "HAS_AI_SDLC_OPENAI_MODEL",
+              "AI_SDLC_OPERATOR_ADMIN_TOKEN": "HAS_OPERATOR_ADMIN_TOKEN",
+              "AI_SDLC_RUNTIME_APP_CLIENT_ID": "HAS_RUNTIME_APP_CLIENT_ID",
+              "AI_SDLC_RUNTIME_APP_PRIVATE_KEY": "HAS_RUNTIME_APP_PRIVATE_KEY",
+              "AI_SDLC_OPERATOR_APP_INTEGRATION_ID": "HAS_OPERATOR_APP_INTEGRATION_ID",
+          }
+          missing = [name for name, signal in required.items() if os.environ.get(signal) != "true"]
+          result = dict(schema_version="ai-sdlc.v03-dogfood-readiness/v1", missing_configuration=missing,
+                        installation_commit_sha=os.environ["GITHUB_SHA"], model_called=False,
+                        worker_dispatched=False, operator_store_mutated=False, release_eligible=False)
+          try:
+              gate = assemble_dogfood_live_gate(scenario="happy_path", env=os.environ,
+                                                checkout_sha=os.environ["GITHUB_SHA"])
+              result["upstream_gate"] = public_gate(gate)
+              result["status"] = "READY" if not missing else "BLOCKED_CONFIGURATION"
+          except Exception as exc:
+              result["status"] = "BLOCKED_UPSTREAM"
+              result["upstream_error"] = str(exc)
+          Path("evidence/readiness.json").write_text(json.dumps(result, indent=2, sort_keys=True)+"\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-dogfood-readiness
+          path: evidence/readiness.json
+          if-no-files-found: error
+      - name: Publish readiness receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -r '"<!-- ai-sdlc-v03-dogfood-readiness -->\nDogfood readiness: **" + .status + "**\nMain: `" + .installation_commit_sha + "`\nMissing configuration: " + (.missing_configuration | join(", ")) + "\nUpstream error: " + (.upstream_error // "none") + "\nNo model, Worker, Store or lifecycle effects were executed."' evidence/readiness.json > evidence/receipt.md
+          gh issue comment 239 --repo "$GITHUB_REPOSITORY" --body-file evidence/receipt.md
+          jq -e '.status == "READY"' evidence/readiness.json >/dev/null
