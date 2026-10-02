@@ -10,10 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any, Callable
 from urllib import error, request
 
 from operator_openai_responses import responses_request_profile
+
+_RESPONSE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
 
 class V03DogfoodOpenAIHostError(RuntimeError):
@@ -89,7 +92,7 @@ class V03DogfoodOpenAIResponsesHost:
         if not isinstance(payload, dict):
             raise V03DogfoodOpenAIHostError("Responses provider returned non-object payload")
         response_id = payload.get("id")
-        if not isinstance(response_id, str) or not response_id.startswith("resp_") or len(response_id) > 256:
+        if not isinstance(response_id, str) or not _RESPONSE_ID_RE.fullmatch(response_id):
             raise V03DogfoodOpenAIHostError("Responses provider returned invalid response id")
         if payload.get("status") != "completed":
             raise V03DogfoodOpenAIHostError("dogfood host executes tools only from completed Responses objects")
@@ -124,7 +127,7 @@ class V03DogfoodOpenAIResponsesHost:
             body,
         )
         if status != 200 or not isinstance(payload, dict):
-            raise V03DogfoodOpenAIHostError("OpenAI Responses request failed closed")
+            raise V03DogfoodOpenAIHostError("Responses provider request failed closed")
         self._response_id(payload)
         return payload
 
