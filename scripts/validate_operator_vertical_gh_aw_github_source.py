@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+from urllib import request
 from urllib.parse import urlparse
 
 from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
@@ -12,6 +13,7 @@ from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
 from operator_vertical_gh_aw_github_source import (
     GitHubActionsGhAwResultSourceConfig,
     TargetScopedGitHubActionsGhAwResultSource,
+    _GitHubSafeRedirectHandler,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +289,39 @@ def validate_adversarial():
     expect_closed(FakeHttp(role="qa", comment_payload=qa_nonpassing), "QA PASS with failed evidence accepted")
 
 
+def validate_secure_redirect_boundary():
+    handler = _GitHubSafeRedirectHandler()
+    original = request.Request(
+        "https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/jobs/12/logs",
+        headers={"Authorization": "Bearer secret", "User-Agent": "test"},
+        method="GET",
+    )
+    cross_host = handler.redirect_request(
+        original, None, 302, "Found", {},
+        "https://results-receiver.actions.githubusercontent.com/example/logs",
+    )
+    headers = {key.lower(): value for key, value in cross_host.header_items()}
+    assert "authorization" not in headers, "cross-host redirect leaked GitHub bearer token"
+    assert headers.get("user-agent") == "test"
+
+    same_host = handler.redirect_request(
+        original, None, 302, "Found", {},
+        "https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/jobs/12/logs?attempt=1",
+    )
+    same_headers = {key.lower(): value for key, value in same_host.header_items()}
+    assert same_headers.get("authorization") == "Bearer secret", "same-host redirect lost GitHub auth"
+
+    try:
+        handler.redirect_request(
+            original, None, 302, "Found", {},
+            "http://results-receiver.actions.githubusercontent.com/example/logs",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("insecure Actions log redirect accepted")
+
+
 def validate_vertical_legacy_fences():
     developer = (ROOT / ".github/workflows/ai-sdlc-gh-aw-result.yml").read_text(encoding="utf-8")
     gate = (ROOT / ".github/workflows/ai-sdlc-gh-aw-gate-result.yml").read_text(encoding="utf-8")
@@ -301,12 +336,14 @@ def validate_vertical_legacy_fences():
 def main():
     validate_roles()
     validate_adversarial()
+    validate_secure_redirect_boundary()
     validate_vertical_legacy_fences()
     print("trusted GitHub Actions gh-aw Vertical result source validation passed")
     print("- durable Store receipt selects exact stable-key Actions run")
     print("- trusted conclusion-log inputs bind exact Safe Output PR/comment")
     print("- Developer/Reviewer/QA results normalize through closed role schemas")
     print("- forged receipt/run/candidate/revision and PASS-with-failed-evidence fail closed")
+    print("- cross-host GitHub download redirects strip Authorization and require HTTPS")
     print("- Operation-bound Vertical runs cannot use legacy direct Feature/Gate persistence")
 
 

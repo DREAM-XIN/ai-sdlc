@@ -24,6 +24,9 @@ STATE_REF = f"refs/heads/{OPERATOR_STATE_REF}"
 VERTICAL_PROFILE = "vertical-implementation-review-qa/v1"
 REVIEWER_WORKFLOWS = (
     "ai-sdlc-gh-aw-reviewer-claude.lock.yml",
+    "ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+    "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+    "ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
     "ai-sdlc-gh-aw-reviewer-copilot.lock.yml",
 )
 # Compatibility for the legacy partial transport-smoke path only. The current
@@ -282,7 +285,7 @@ def collect_trusted_main_prerequisites(
         ),
         "real_runtime_fixture_provisioner_on_main": bool(
             fixture_runtime
-            and "F-OPERATOR-V03-REAL-RUNTIME-FI-0001" in fixture_runtime
+            and "F-OPERATOR-V03-REAL-RUNTIME-FI-0051" in fixture_runtime
             and "def verify_active_files" in fixture_runtime
         ),
         "canonical_repository_feature_event_gateway_on_main": bool(

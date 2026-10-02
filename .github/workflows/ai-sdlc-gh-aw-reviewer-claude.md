@@ -42,7 +42,10 @@ on:
         required: true
         type: string
 engine: claude
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 tools:
   github:
     toolsets: [repos, issues, pull_requests]

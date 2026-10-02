@@ -30,6 +30,7 @@ class ReviewerWorkerOption:
     stage: str
     profile: str
     workflow_file: str
+    registry_workflow_file: str
     credential_env: str
 
 
@@ -52,18 +53,47 @@ V03_REVIEWER_OPTIONS = (
         stage="code-review",
         profile="claude",
         workflow_file="ai-sdlc-gh-aw-reviewer-claude.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-claude.lock.yml",
         credential_env="ANTHROPIC_API_KEY",
+    ),
+    ReviewerWorkerOption(
+        worker_id="code-review-reviewer-qwen",
+        role="reviewer",
+        stage="code-review",
+        profile="qwen",
+        workflow_file="ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+        credential_env="DASHSCOPE_API_KEY",
+    ),
+    ReviewerWorkerOption(
+        worker_id="code-review-reviewer-deepseek",
+        role="reviewer",
+        stage="code-review",
+        profile="deepseek",
+        workflow_file="ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        credential_env="DEEPSEEK_API_KEY",
+    ),
+    ReviewerWorkerOption(
+        worker_id="code-review-reviewer-gemini",
+        role="reviewer",
+        stage="code-review",
+        profile="gemini",
+        workflow_file="ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
+        credential_env="GEMINI_API_KEY",
     ),
     ReviewerWorkerOption(
         worker_id="code-review-reviewer-copilot",
         role="reviewer",
         stage="code-review",
         profile="copilot",
-        workflow_file="ai-sdlc-gh-aw-reviewer-copilot.lock.yml",
+        workflow_file="ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-copilot.lock.yml",
         credential_env="COPILOT_GITHUB_TOKEN",
     ),
 )
-SELECTION_POLICY = "v03-frozen-reviewer-provider-order/v1"
+SELECTION_POLICY = "v03-frozen-reviewer-provider-order/v2"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -88,7 +118,7 @@ def _registry_reviewers(path: Path) -> tuple[dict, ...]:
     if len(rows) != len(V03_REVIEWER_OPTIONS):
         raise ReviewerWorkerReadinessError(
             "WORKER_REGISTRY_DRIFT",
-            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Copilot options",
+            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Qwen/DeepSeek/Gemini/Copilot options",
         )
     return rows
 
@@ -134,7 +164,7 @@ def validate_v03_reviewer_registry(*, registry_path: Path, workflow_dir: Path) -
             "role": option.role,
             "stage": option.stage,
             "profile": option.profile,
-            "worker_workflow": option.workflow_file,
+            "worker_workflow": option.registry_workflow_file,
         }
         if row is None or any(row.get(key) != value for key, value in expected.items()):
             raise ReviewerWorkerReadinessError(
@@ -142,7 +172,7 @@ def validate_v03_reviewer_registry(*, registry_path: Path, workflow_dir: Path) -
                 f"Reviewer worker {option.worker_id} differs from the frozen v0.3 binding",
             )
         source = str(row.get("worker_source") or "")
-        if source != f".github/workflows/{option.workflow_file.removesuffix('.lock.yml')}.md":
+        if source != f".github/workflows/{option.registry_workflow_file.removesuffix('.lock.yml')}.md":
             raise ReviewerWorkerReadinessError(
                 "WORKER_REGISTRY_DRIFT",
                 f"Reviewer worker {option.worker_id} source/workflow binding drifted",

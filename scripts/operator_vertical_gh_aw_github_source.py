@@ -10,6 +10,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Any, Callable
 from urllib import error, request
+from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator
 
@@ -35,6 +36,33 @@ _PR_URI_RE = re.compile(
 _COMMENT_URI_RE = re.compile(
     r"^docs/features/(?P<feature>[A-Za-z0-9._:-]+)/worker-runs/(?P<dispatch>[A-Za-z0-9._:-]+)/(?P<role>reviewer|qa)-comment-(?P<comment>[1-9][0-9]*)\.json$"
 )
+
+
+class _GitHubSafeRedirectHandler(request.HTTPRedirectHandler):
+    """Follow GitHub download redirects without forwarding bearer credentials cross-host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        source = urlparse(req.full_url)
+        target = urlparse(redirected.full_url)
+        if target.scheme != "https" or not target.hostname or target.username or target.password:
+            raise ValueError("trusted GitHub redirect must use credential-free HTTPS")
+        if source.hostname != target.hostname:
+            safe_headers = {
+                key: value
+                for key, value in redirected.header_items()
+                if key.lower() != "authorization"
+            }
+            redirected = request.Request(
+                redirected.full_url,
+                method=redirected.get_method(),
+                headers=safe_headers,
+                origin_req_host=redirected.origin_req_host,
+                unverifiable=True,
+            )
+        return redirected
 
 
 @dataclass(frozen=True)
@@ -86,7 +114,8 @@ class TargetScopedGitHubActionsGhAwResultSource:
         req.add_header("X-GitHub-Api-Version", self.config.api_version)
         req.add_header("User-Agent", self.config.user_agent)
         try:
-            with request.urlopen(req, timeout=30) as response:
+            opener = request.build_opener(_GitHubSafeRedirectHandler())
+            with opener.open(req, timeout=30) as response:
                 return int(response.status), dict(response.headers.items()), response.read()
         except error.HTTPError as exc:
             return int(exc.code), dict(exc.headers.items()) if exc.headers else {}, exc.read()

@@ -14,8 +14,9 @@ from typing import Protocol
 from operator_github_feature_event_gateway import FeatureEventGatewayError
 from operator_production_feature_event_gateway import ProductionConfiguredFeatureEventGateway
 from operator_store_backends import OperatorStoreRuntime
-from operator_store_model import StoreInvariantError, normalize_repository, rebuild_projection
+from operator_store_model import StoreInvariantError, normalize_repository
 from operator_vertical import FeatureSnapshot
+from operator_vertical_store import vertical_projection
 
 _SHA40 = re.compile(r"^[0-9a-fA-F]{40}$")
 
@@ -75,7 +76,7 @@ class DurableDecisionFeatureTruthGateway:
         if not operation_id:
             raise FeatureEventGatewayError("INVALID_REQUEST", "Decision Operation id is required")
         try:
-            projection = rebuild_projection(self.runtime.backend.read_snapshot(), operation_id)
+            projection = vertical_projection(self.runtime.backend.read_snapshot(), operation_id)
         except StoreInvariantError as exc:
             raise FeatureEventGatewayError("INVALID_REQUEST", "Decision Operation was not found") from exc
 

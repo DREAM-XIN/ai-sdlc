@@ -45,7 +45,10 @@ engine:
   id: gemini
   version: "0.52.0"
   model: gemini-3.5-flash-lite
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 tools:
   github:
     toolsets: [repos, issues, pull_requests]

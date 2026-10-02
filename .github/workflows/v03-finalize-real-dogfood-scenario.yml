@@ -1,7 +1,10 @@
 name: v0.3 Finalize Real Release Dogfood Scenario
-run-name: v0.3 finalize dogfood ${{ inputs.scenario }} source ${{ inputs.source_run_id }} @ ${{ github.sha }}
+run-name: v0.3 finalize dogfood source ${{ inputs.source_run_id || github.event.workflow_run.id }} @ ${{ github.sha }}
 
 on:
+  workflow_run:
+    workflows: [v0.3 Real Release Dogfood Scenario]
+    types: [completed]
   workflow_dispatch:
     inputs:
       scenario:
@@ -14,6 +17,17 @@ on:
         required: true
         type: string
 
+env:
+    HAS_COPILOT_GITHUB_TOKEN: ${{ github.token != '' }}
+    HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+    HAS_CODEX_API_KEY: ${{ secrets.CODEX_API_KEY != '' }}
+    HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    HAS_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+    HAS_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+    HAS_DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY != '' }}
+    HAS_ZHIPUAI_API_KEY: ${{ secrets.ZHIPUAI_API_KEY != '' }}
+    HAS_MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY != '' }}
+
 permissions:
   actions: read
   contents: read
@@ -22,7 +36,7 @@ permissions:
 
 jobs:
   finalize:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -30,15 +44,17 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
 
       - name: Prove exact trusted-main source run
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
           SCENARIO: ${{ inputs.scenario }}
         run: |
           set -euo pipefail
@@ -51,18 +67,39 @@ jobs:
           test "$(jq -r .head_branch <<<"$run")" = main
           test "$(jq -r .head_sha <<<"$run")" = "$GITHUB_SHA"
           test "$(jq -r .path <<<"$run")" = '.github/workflows/v03-real-dogfood-scenario.yml'
+          if [[ -z "$SCENARIO" ]]; then
+            artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts")
+            names=$(jq -c '[.artifacts[] | select(.expired == false) | .name | select(. == "v03-real-dogfood-happy_path" or . == "v03-real-dogfood-review_remediation" or . == "v03-real-dogfood-session_recovery")]' <<<"$artifacts")
+            test "$(jq length <<<"$names")" = 1
+            name=$(jq -r '.[0]' <<<"$names")
+            SCENARIO="${name#v03-real-dogfood-}"
+          fi
+          case "$SCENARIO" in happy_path|review_remediation|session_recovery) ;; *) exit 1 ;; esac
+          echo "scenario=$SCENARIO" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
           mkdir -p evidence/raw
           gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "v03-real-dogfood-$SCENARIO" --dir evidence/raw
           test -s "evidence/raw/$SCENARIO-observation.json"
           jq -e --arg s "$SCENARIO" '.scenario == $s and .release_eligible == false and .provenance_verified == false' "evidence/raw/$SCENARIO-observation.json" >/dev/null
 
+      - name: Create bounded Runtime App Feature read token
+        id: event-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-metadata: read
+
       - name: Re-read protected runtime truth and finalize canonical release-run
         env:
           AI_SDLC_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN }}
           AI_SDLC_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
-          AI_SDLC_OPERATOR_APP_SLUG: ${{ vars.AI_SDLC_OPERATOR_APP_SLUG }}
+          AI_SDLC_OPERATOR_APP_SLUG: ${{ steps.event-token.outputs.app-slug }}
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
-          AI_SDLC_EVENT_WRITE_TOKEN: ${{ secrets.AI_SDLC_DOGFOOD_FINALIZER_DISTINCT_EVENT_TOKEN }}
+          AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           GITHUB_API_URL: ${{ github.api_url }}
         run: |
           set -euo pipefail
@@ -71,24 +108,24 @@ jobs:
           test -n "${AI_SDLC_OPERATOR_APP_SLUG:-}"
           test -n "${AI_SDLC_EVENT_WRITE_TOKEN:-}"
           PYTHONPATH=scripts python scripts/v03_dogfood_post_run_finalizer.py \
-            --scenario '${{ inputs.scenario }}' \
-            --observation 'evidence/raw/${{ inputs.scenario }}-observation.json' \
-            --source-run-id '${{ inputs.source_run_id }}' \
+            --scenario '${{ steps.source.outputs.scenario }}' \
+            --observation 'evidence/raw/${{ steps.source.outputs.scenario }}-observation.json' \
+            --source-run-id '${{ steps.source.outputs.source_run_id }}' \
             --finalizer-run-id "$GITHUB_RUN_ID" \
-            --output 'evidence/final/${{ inputs.scenario }}-release-run.json'
-          jq -e '.evidence_kind == "release-run" and .verdict == "PASS" and .release_eligible == true' 'evidence/final/${{ inputs.scenario }}-release-run.json' >/dev/null
+            --output 'evidence/final/${{ steps.source.outputs.scenario }}-release-run.json'
+          jq -e '.evidence_kind == "release-run" and .verdict == "PASS" and .release_eligible == true' 'evidence/final/${{ steps.source.outputs.scenario }}-release-run.json' >/dev/null
 
       - name: Upload verified canonical release-run
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: v03-verified-dogfood-${{ inputs.scenario }}
-          path: evidence/final/${{ inputs.scenario }}-release-run.json
+          name: v03-verified-dogfood-${{ steps.source.outputs.scenario }}
+          path: evidence/final/${{ steps.source.outputs.scenario }}-release-run.json
           if-no-files-found: error
 
       - name: Publish verified receipt to Issue 239
         env:
           GH_TOKEN: ${{ github.token }}
-          SCENARIO: ${{ inputs.scenario }}
+          SCENARIO: ${{ steps.source.outputs.scenario }}
         run: |
           set -euo pipefail
           path="evidence/final/$SCENARIO-release-run.json"
@@ -97,7 +134,7 @@ jobs:
           v0.3 real dogfood \`$SCENARIO\`: **verified canonical release-run produced**
           Finalizer run: \`$GITHUB_RUN_ID\`
           Exact trusted-main head: \`$GITHUB_SHA\`
-          Source scenario run: \`${{ inputs.source_run_id }}\`
+          Source scenario run: \`${{ steps.source.outputs.source_run_id }}\`
           Artifact: \`v03-verified-dogfood-$SCENARIO\`
           SHA-256: \`$digest\`
 
@@ -108,3 +145,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
+
+  dispatch-finalizer:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Resolve exact successful source and dispatch closed main finalizer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_RUN_ID" in *[!0-9]*|'') exit 1 ;; esac
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
+          test "$(jq -r .path <<<"$run")" = '.github/workflows/v03-real-dogfood-scenario.yml'
+          test "$(jq -r .event <<<"$run")" = workflow_dispatch
+          test "$(jq -r .head_branch <<<"$run")" = main
+          test "$(jq -r .head_sha <<<"$run")" = "$EXPECTED_SHA"
+          test "$(jq -r .conclusion <<<"$run")" = success
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$current" = "$EXPECTED_SHA"
+          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts")
+          names=$(jq -c '[.artifacts[] | select(.expired == false) | .name | select(. == "v03-real-dogfood-happy_path" or . == "v03-real-dogfood-review_remediation" or . == "v03-real-dogfood-session_recovery")]' <<<"$artifacts")
+          test "$(jq length <<<"$names")" = 1
+          name=$(jq -r '.[0]' <<<"$names")
+          scenario="${name#v03-real-dogfood-}"
+          gh workflow run v03-finalize-real-dogfood-scenario.yml --repo "$GITHUB_REPOSITORY" --ref main --field "scenario=$scenario" --field "source_run_id=$SOURCE_RUN_ID"
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$current" = "$EXPECTED_SHA"

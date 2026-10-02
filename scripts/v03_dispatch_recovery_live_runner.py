@@ -19,6 +19,10 @@ import time
 from typing import Any
 
 from operator_external_create_attempt import find_external_create_attempt
+from operator_store import plan_cancel
+from operator_store_github_protection_v03_trusted import (
+    refresh_process_attested_ruleset_verifiers,
+)
 from operator_store_model import operation_events, operation_id_for, reservation_path
 from operator_vertical_controller import select_vertical_action
 from operator_vertical_recovery import plan_vertical_takeover
@@ -36,10 +40,11 @@ from v03_scenario_runtime_driver import ADAPTER_ID, assemble_scenario_live_prefl
 UNKNOWN = "unknown-takeover"
 CONCURRENT = "concurrent-resume"
 PREAUTH = "reservation-committed-pre-authorization-crash-recovery"
+LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"
 IDEMPOTENCY = {
-    UNKNOWN: "v03-release-fi-unknown-takeover",
-    CONCURRENT: "v03-release-fi-concurrent-resume",
-    PREAUTH: "v03-release-fi-preauth-crash",
+    UNKNOWN: "v03-release-fi-unknown-takeover-r10",
+    CONCURRENT: "v03-release-fi-concurrent-resume-r9",
+    PREAUTH: "v03-release-fi-preauth-crash-r4",
 }
 PHASE_SCENARIO = {
     "unknown-inject": UNKNOWN,
@@ -139,10 +144,11 @@ def _trusted_context(preflight):
 
 
 def _manifest(preflight) -> dict[str, Any]:
+    # The production configured gateway already binds the trusted repository and
+    # exact Feature -> target-ref mapping.  The live runner must not reintroduce
+    # caller-selectable repository/ref authority at this boundary.
     manifest = preflight.composition.feature_event_gateway.read_feature(
-        repository=preflight.execution.repository,
         feature_id=preflight.slot.feature_id,
-        target_ref=preflight.slot.target_ref,
     )
     if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) < 0:
         raise V03DispatchRecoveryLiveError("scenario fixture Manifest is invalid")
@@ -183,6 +189,85 @@ def _start_request(preflight, scenario: str, revision: int) -> dict[str, Any]:
         },
         "context": {"expected_feature_revision": revision},
     }
+
+
+def _retire_prelaunch_unknown_contamination(preflight) -> None:
+    """Cancel only the known prelaunch-UNKNOWN harness Operation from the prior bug.
+
+    The old scenario attempt is safe to retire only when durable Store truth proves
+    the external-create boundary was never crossed. Any shape drift fails closed.
+    """
+    legacy_operation_id = operation_id_for(
+        preflight.execution.repository,
+        preflight.slot.feature_id,
+        LEGACY_UNKNOWN_IDEMPOTENCY,
+    )
+    events = _events(preflight, legacy_operation_id)
+    if not events:
+        return
+    projection = vertical_projection(
+        preflight.composition.bundle.runtime.backend.read_snapshot(),
+        legacy_operation_id,
+    )
+    if projection.get("status") == "CANCELLED":
+        return
+    if int(projection.get("generation", -1)) != 0:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination has unexpected Operation generation"
+        )
+    claims = _events(preflight, legacy_operation_id, "dispatch.claimed", 0)
+    auth = _authorization_rows(preflight, legacy_operation_id, 0)
+    lookup = _lookup_rows(preflight, legacy_operation_id, 0)
+    callbacks = _events(preflight, legacy_operation_id, "worker.callback.recorded", 0)
+    persists = _persist_rows(preflight, legacy_operation_id)
+    if len(claims) != 1 or len(auth) != 1 or len(lookup) > 1 or callbacks or persists:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination does not match an exact prelaunch-only shape"
+        )
+    status = str(projection.get("status") or "")
+    if (not lookup and status != "WAITING_EXTERNAL") or (lookup and status != "BLOCKED"):
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination status does not match its durable prelaunch shape"
+        )
+    claim_payload = claims[0].get("payload") or {}
+    auth_payload = auth[0].get("payload") or {}
+    external_key = str(claim_payload.get("external_dispatch_key") or "")
+    if not external_key or auth_payload.get("external_dispatch_key") != external_key:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination claim/authorization identity is not exact"
+        )
+    if lookup:
+        lookup_payload = lookup[0].get("payload") or {}
+        if (
+            lookup_payload.get("external_dispatch_key") != external_key
+            or lookup_payload.get("lookup_state") != "UNKNOWN"
+            or lookup_payload.get("receipt_id") is not None
+        ):
+            raise V03DispatchRecoveryLiveError(
+                "legacy UNKNOWN contamination lookup identity is not exact"
+            )
+    snapshot = preflight.composition.bundle.runtime.backend.read_snapshot()
+    if find_external_create_attempt(snapshot, external_dispatch_key=external_key) is not None:
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination crossed the external-create attempt boundary"
+        )
+    preflight.composition.bundle.runtime.commit_replanned(
+        lambda state: plan_cancel(
+            state,
+            operation_id=legacy_operation_id,
+            reason="harness remediation: preflight UNKNOWN before external-create attempt",
+            occurred_at=preflight.composition.bundle.runtime.clock(),
+            trusted_context_digest=_base(preflight).config.trusted_context_digest,
+        )
+    )
+    retired = vertical_projection(
+        preflight.composition.bundle.runtime.backend.read_snapshot(),
+        legacy_operation_id,
+    )
+    if retired.get("status") != "CANCELLED":
+        raise V03DispatchRecoveryLiveError(
+            "legacy UNKNOWN contamination did not converge to CANCELLED"
+        )
 
 
 def _start_only(preflight, scenario: str) -> tuple[str, int]:
@@ -402,6 +487,7 @@ class CrashAfterDurableReservationRuntime:
 
 def run_unknown_inject() -> None:
     preflight = _preflight(UNKNOWN)
+    _retire_prelaunch_unknown_contamination(preflight)
     operation_id, revision = _start_only(preflight, UNKNOWN)
     feature, action = _select_dispatch(preflight, operation_id)
     base = _base(preflight)
@@ -678,7 +764,30 @@ def run_concurrent_racer(racer: str) -> None:
     _wait(_path(CONCURRENT, "ready-a"))
     _wait(_path(CONCURRENT, "ready-b"))
     _wait(_path(CONCURRENT, f"go-{racer}"))
-    result = _base(preflight).advance_action(operation_id=operation_id, action=action)
+
+    # Each racer establishes a fresh trusted protection attestation immediately
+    # before its actual commit.  The trusted verifier caches its causal ruleset
+    # proof per process; another racer's ready-phase preflight can refresh the
+    # global ruleset while this process waits at the barrier, so merely calling
+    # _preflight() again would reuse stale process-local authority.  Drop only
+    # the process-local verifier lease, then rebuild exact trusted authority.
+    # Keep using the exact stale action selected before either racer was released.
+    refresh_process_attested_ruleset_verifiers()
+    fresh = _preflight(CONCURRENT)
+    require(
+        fresh.execution.installation_commit_sha == preflight.execution.installation_commit_sha,
+        "concurrent racer fresh preflight crossed trusted-main head",
+    )
+    require(
+        fresh.slot.feature_id == preflight.slot.feature_id
+        and fresh.slot.target_ref == preflight.slot.target_ref,
+        "concurrent racer fresh preflight changed fixed scenario identity",
+    )
+    require(
+        fresh.fixture_candidate.candidate_head_sha == feature.candidate_head_sha,
+        "concurrent racer fresh preflight changed candidate head",
+    )
+    result = _base(fresh).advance_action(operation_id=operation_id, action=action)
     if result.get("status") != "WAITING_EXTERNAL":
         raise V03DispatchRecoveryLiveError(f"concurrent racer {racer} did not converge to WAITING_EXTERNAL")
     _write_json(_path(CONCURRENT, f"result-{racer}"), {

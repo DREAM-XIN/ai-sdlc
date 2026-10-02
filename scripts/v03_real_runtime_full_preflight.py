@@ -19,7 +19,7 @@ WORKFLOW_DIR = ROOT / ".github" / "workflows"
 # Developer uses the reviewed generic Codex Registry Worker. Reviewer/QA use the
 # specialized Gate workers because their result contracts are Gate-specific.
 DEVELOPER_WORKFLOW = "ai-sdlc-gh-aw-worker-codex.lock.yml"
-QA_WORKFLOW = "ai-sdlc-gh-aw-qa-gemini.lock.yml"
+QA_WORKFLOW = "ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml"
 
 
 class V03FullRuntimePreflightError(RuntimeError):

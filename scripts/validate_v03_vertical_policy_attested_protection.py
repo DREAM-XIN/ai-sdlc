@@ -5,6 +5,7 @@ from __future__ import annotations
 from operator_store_github_protection_v03_trusted import (
     GitHubRepositoryProtectionVerifier,
     _PROCESS_ATTESTED_RULESET_VERIFIERS,
+    refresh_process_attested_ruleset_verifiers,
 )
 from operator_store_protection import PROTECTED, UNPROTECTED, ProtectionReceipt
 from validate_operator_store_ruleset_history_semantic_normalization import (
@@ -109,6 +110,32 @@ def validate_process_local_attestation_reuse():
     )
 
 
+
+def validate_explicit_process_local_refresh_rebuilds_attestation():
+    _PROCESS_ATTESTED_RULESET_VERIFIERS.clear()
+    FakeProvisioner.instances.clear()
+
+    first = verifier().verify(REPOSITORY, STATE_REF)
+    require(first.status == PROTECTED, "initial trusted causal proof failed")
+    require(len(FakeProvisioner.instances) == 1, "initial proof did not create one provisioner")
+
+    refresh_process_attested_ruleset_verifiers()
+    require(
+        _PROCESS_ATTESTED_RULESET_VERIFIERS == {},
+        "explicit refresh did not clear process-local attested verifier leases",
+    )
+
+    second = verifier().verify(REPOSITORY, STATE_REF)
+    require(second.status == PROTECTED, "refreshed trusted causal proof failed")
+    require(
+        len(FakeProvisioner.instances) == 2,
+        "explicit refresh reused stale process-local causal attestation",
+    )
+    require(
+        FakeProvisioner.instances[1].ensure_calls == [(REPOSITORY, STATE_REF)],
+        "refreshed proof did not rebuild exact repository/ref causal attestation",
+    )
+
 def validate_no_generic_normalization_widening():
     # Re-run the #262 semantic boundary directly. These checks prove that exact
     # omission normalization is scoped to the stabilized trusted write and that
@@ -119,6 +146,7 @@ def validate_no_generic_normalization_widening():
 
 def main():
     validate_process_local_attestation_reuse()
+    validate_explicit_process_local_refresh_rebuilds_attestation()
     validate_no_generic_normalization_widening()
     print("PASS: trusted v0.3 causal protection is process-local, reusable, and fail-closed")
 

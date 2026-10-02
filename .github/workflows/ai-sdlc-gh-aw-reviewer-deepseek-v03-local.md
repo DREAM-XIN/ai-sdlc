@@ -1,0 +1,204 @@
+---
+name: AI-SDLC gh-aw Code Reviewer (deepseek v0.3 local)
+run-name: "AI-SDLC gh-aw ${{ inputs.dispatch_key != '' && inputs.dispatch_key || github.run_id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      feature_id:
+        required: true
+        type: string
+      expected_revision:
+        required: true
+        type: string
+      dispatch_key:
+        required: false
+        default: ''
+        type: string
+      target_repository:
+        required: true
+        type: string
+      target_owner:
+        required: true
+        type: string
+      target_repo_name:
+        required: true
+        type: string
+      target_ref:
+        required: true
+        type: string
+      stage:
+        required: true
+        type: string
+      role:
+        required: true
+        type: string
+      candidate_pr_number:
+        required: true
+        type: string
+      candidate_head_sha:
+        required: true
+        type: string
+      task_payload:
+        required: true
+        type: string
+# Same-repository v0.3 release evidence uses GITHUB_TOKEN; the model call uses the configured DeepSeek API directly.
+engine:
+  id: copilot
+  model: "deepseek-chat"
+  env:
+    COPILOT_PROVIDER_BASE_URL: https://api.deepseek.com
+    COPILOT_MODEL: deepseek-chat
+    COPILOT_PROVIDER_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    COPILOT_PROVIDER_TYPE: openai
+    COPILOT_PROVIDER_WIRE_API: completions
+  harness:
+    max-retries: 6
+    initial-delay-ms: 10000
+    backoff-multiplier: 2
+    max-delay-ms: 120000
+network:
+  allowed:
+    - defaults
+    - api.deepseek.com
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+tools:
+  bash: false
+  cli-proxy: false
+  github:
+    toolsets: [repos, issues, pull_requests]
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    allowed-repos: ["dream-xin/ai-sdlc"]
+    min-integrity: none
+max-turn-cache-misses: 20
+checkout:
+  repository: dream-xin/ai-sdlc
+  ref: ${{ inputs.candidate_head_sha }}
+  fetch-depth: 0
+  current: true
+  github-token: ${{ secrets.GITHUB_TOKEN }}
+safe-outputs:
+  github-token: ${{ secrets.GITHUB_TOKEN }}
+  add-comment:
+    max: 1
+    target: ${{ inputs.candidate_pr_number }}
+    target-repo: dream-xin/ai-sdlc
+    footer: false
+jobs:
+  conclusion:
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    pre-steps:
+      - name: Normalize local Reviewer Safe Output into trusted Gate envelope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          FEATURE_ID: ${{ inputs.feature_id }}
+          TRUSTED_TASK_ID: ${{ fromJSON(inputs.task_payload).task.id }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
+          CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
+          COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
+          COMMENT_URL: ${{ needs.safe_outputs.outputs.comment_url }}
+        run: |
+          set -euo pipefail
+          test -n "$GITHUB_TOKEN"
+          test -n "$TRUSTED_TASK_ID"
+          [[ "$COMMENT_ID" =~ ^[1-9][0-9]*$ ]]
+          GH_TOKEN="$GITHUB_TOKEN" gh api "repos/$TARGET_REPOSITORY/issues/comments/$COMMENT_ID" > /tmp/reviewer-comment.json
+          test "$(jq -r '.id' /tmp/reviewer-comment.json)" = "$COMMENT_ID"
+          test "$(jq -r '.html_url' /tmp/reviewer-comment.json)" = "$COMMENT_URL"
+          test "$(jq -r '.user.type' /tmp/reviewer-comment.json)" = "Bot"
+          actual_issue_url="$(jq -r '.issue_url' /tmp/reviewer-comment.json)"
+          expected_issue_url="https://api.github.com/repos/$TARGET_REPOSITORY/issues/$CANDIDATE_PR_NUMBER"
+          test "${actual_issue_url,,}" = "${expected_issue_url,,}"
+          jq -r '.body' /tmp/reviewer-comment.json > /tmp/reviewer-comment.raw
+          GH_TOKEN="$GITHUB_TOKEN" gh api "repos/$GITHUB_REPOSITORY/contents/scripts/v03_normalize_reviewer_comment.py?ref=$SOURCE_SHA" --jq '.content' | base64 --decode > /tmp/v03_normalize_reviewer_comment.py
+          python /tmp/v03_normalize_reviewer_comment.py \
+            --raw-comment /tmp/reviewer-comment.raw \
+            --feature-id "$FEATURE_ID" \
+            --task-id "$TRUSTED_TASK_ID" \
+            --expected-revision "$EXPECTED_REVISION" \
+            --target-repository "$TARGET_REPOSITORY" \
+            --target-ref "$TARGET_REF" \
+            --candidate-pr-number "$CANDIDATE_PR_NUMBER" \
+            --candidate-head-sha "$CANDIDATE_HEAD_SHA" \
+            --comment-url "$COMMENT_URL" \
+            --output /tmp/reviewer-comment.normalized
+          jq -Rs '{body:.}' /tmp/reviewer-comment.normalized > /tmp/reviewer-comment.patch.json
+          GH_TOKEN="$GITHUB_TOKEN" gh api --method PATCH "repos/$TARGET_REPOSITORY/issues/comments/$COMMENT_ID" --input /tmp/reviewer-comment.patch.json > /tmp/reviewer-comment.patched.json
+          # Preserve the exact GitHub comment body bytes; jq -r would synthesize a trailing newline.
+          jq -j '.body' /tmp/reviewer-comment.patched.json > /tmp/reviewer-comment.actual
+          cmp /tmp/reviewer-comment.normalized /tmp/reviewer-comment.actual
+
+      - name: Dispatch non-authoritative Gate-role recommendation to trusted collector
+        env:
+          TRIGGER_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          FEATURE_ID: ${{ inputs.feature_id }}
+          TRUSTED_TASK_ID: ${{ fromJSON(inputs.task_payload).task.id }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          STAGE: ${{ inputs.stage }}
+          ROLE: ${{ inputs.role }}
+          CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
+          CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}
+          COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
+          COMMENT_URL: ${{ needs.safe_outputs.outputs.comment_url }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          test -n "${TRIGGER_TOKEN:-}"
+          test -n "$TRUSTED_TASK_ID"
+          test -n "$SOURCE_RUN_ID"
+          test -n "$SOURCE_WORKFLOW_REF"
+          test -n "$COMMENT_ID"
+          test -n "$COMMENT_URL"
+          GH_TOKEN="$TRIGGER_TOKEN" gh workflow run ai-sdlc-gh-aw-gate-result.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            --field target_repository="$TARGET_REPOSITORY" \
+            --field target_ref="$TARGET_REF" \
+            --field feature_id="$FEATURE_ID" \
+            --field task_id="$TRUSTED_TASK_ID" \
+            --field expected_revision="$EXPECTED_REVISION" \
+            --field stage="$STAGE" \
+            --field role="$ROLE" \
+            --field candidate_pr_number="$CANDIDATE_PR_NUMBER" \
+            --field candidate_head_sha="$CANDIDATE_HEAD_SHA" \
+            --field source_run_id="$SOURCE_RUN_ID" \
+            --field source_workflow_ref="$SOURCE_WORKFLOW_REF" \
+            --field comment_id="$COMMENT_ID" \
+            --field comment_url="$COMMENT_URL" \
+            --field persist=true
+---
+# AI-SDLC bounded autonomous Code Reviewer worker
+
+You are the independent AI-SDLC Code Reviewer for the fixed v0.3 release-only real-runtime fixture. You are a read-only recommendation worker, never lifecycle authority.
+
+This worker is intentionally bounded to avoid broad repository discovery. The trusted runtime and downstream collector independently bind the exact Feature, task, revision, repository, ref, PR, head SHA, workflow run, and current Manifest. Do not re-discover those identities.
+
+1. Decode `${{ inputs.task_payload }}` and require its feature/task/stage/role/repository identity to agree with the immutable trusted inputs. The stage must be `code-review` and role `reviewer`. If not, emit BLOCKED.
+2. Perform exactly one evidence-read operation before the verdict: use the read-only GitHub pull-request tool with method `get_files` for repository `dream-xin/ai-sdlc` and PR `${{ inputs.candidate_pr_number }}`. Do not query PR metadata, commits, Issues/comments, search, CI, or local files. Do not invoke shell. If that one `get_files` read cannot establish the exact diff, emit BLOCKED rather than trying alternate discovery.
+3. The changed-file set must be exactly these three paths for the trusted `feature_id`:
+   - `docs/features/<feature_id>/implementation.md`
+   - `state/events/<feature_id>/EVT-<feature_id>-CODE-REVIEW-START.yaml`
+   - `state/features/<feature_id>.yaml`
+   No extra path, rename, or deletion is allowed.
+4. Review only the returned patches against the frozen fixture contract:
+   - implementation: release-only fixture; no product implementation; must not be merged as product work; Worker output is evidence/recommendation only and lifecycle mutation remains protected Store + Feature Persist authority;
+   - start Event: version `0.1.0`, exact feature id, `expected_revision: 0`, exactly one draft implementation artifact at the implementation path, and one `code-review -> WORKING` stage change;
+   - Manifest: protocol `0.1.0`, revision `1`, exact feature id, profile `v03-real-runtime-fixture`, workflow ACTIVE at `code-review`; code-review WORKING with code-gate, verification/acceptance TODO, all three gates PENDING, exactly one draft implementation artifact, and exactly the start Event in `applied_events`.
+   A semantic mismatch is REWORK. Unreadable/incomplete evidence is BLOCKED. PASS is allowed only when every frozen condition above is established from the single exact PR-files result and there is no BLOCKER/MAJOR finding.
+5. Call `add_comment` Safe Output exactly once for PASS, REWORK, or BLOCKED. Never use `noop`, `missing_data`, or `missing_tool`. Do not make any further evidence-read call after the single `get_files` operation.
+6. In the `add_comment` body, include exactly one standalone verdict field on its own line using one of these forms: `verdict: PASS`, `verdict: REWORK`, or `verdict: BLOCKED`. Do not include a second verdict field or YAML/JSON transport envelope. Add a concise human explanation after or before that line. The trusted conclusion job—not the model—constructs the closed machine envelope from immutable workflow inputs and this one non-authoritative verdict. If your evidence is unreadable or incomplete, use `verdict: BLOCKED`; if the fixture semantically mismatches the frozen contract, use `verdict: REWORK`.
+
+7. Do not edit files, create branches/commits/PRs, write Feature state, pass/waive Gates, merge, release, or implement remediation. The posted comment is non-authoritative; the trusted collector re-fetches and validates it and alone decides whether a Feature Event can be constructed.

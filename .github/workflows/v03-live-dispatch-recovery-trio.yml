@@ -13,7 +13,7 @@ on:
           - reservation-committed-pre-authorization-crash-recovery
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: write
   pull-requests: read
@@ -30,6 +30,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      GIT_AUTHOR_NAME: AI-SDLC Operator Store
+      GIT_AUTHOR_EMAIL: operator-store@ai-sdlc.invalid
+      GIT_COMMITTER_NAME: AI-SDLC Operator Store
+      GIT_COMMITTER_EMAIL: operator-store@ai-sdlc.invalid
     steps:
       - name: Validate trusted installation and Reviewer provider configuration
         env:
@@ -38,6 +43,9 @@ jobs:
           APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
           APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -84,6 +92,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -101,6 +112,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -120,6 +134,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -137,6 +154,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -154,6 +174,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -173,6 +196,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -190,6 +216,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |
@@ -204,36 +233,83 @@ jobs:
           cp -a "$GITHUB_WORKSPACE/." "$race_b/"
           test "$(git -C "$race_a" rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C "$race_b" rev-parse HEAD)" = "$GITHUB_SHA"
+
+          # actions/checkout scopes its credential include to the original gitdir.
+          # The independent racer copies intentionally have different gitdirs, so
+          # pass the already-configured auth header to each process without
+          # persisting credentials into either copied repository.
+          racer_auth_header="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"
+          test -n "$racer_auth_header"
+
           (
             cd "$race_a"
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="$racer_auth_header" \
             AI_SDLC_STORE_CHECKOUT="$race_a" PYTHONPATH=scripts \
               python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer a
           ) >"$shared/concurrent-resume-racer-a.log" 2>&1 &
           pid_a=$!
+
+          for _ in $(seq 1 900); do
+            if test -s "$shared/concurrent-resume-ready-a.json"; then
+              break
+            fi
+            if ! kill -0 "$pid_a" 2>/dev/null; then
+              wait "$pid_a" || true
+              cat "$shared/concurrent-resume-racer-a.log"
+              exit 1
+            fi
+            sleep 0.2
+          done
+          test -s "$shared/concurrent-resume-ready-a.json"
+
           (
             cd "$race_b"
+            GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="$racer_auth_header" \
             AI_SDLC_STORE_CHECKOUT="$race_b" PYTHONPATH=scripts \
               python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer b
           ) >"$shared/concurrent-resume-racer-b.log" 2>&1 &
           pid_b=$!
 
           for _ in $(seq 1 900); do
-            test -s "$shared/concurrent-resume-ready-a.json" && test -s "$shared/concurrent-resume-ready-b.json" && break
+            if test -s "$shared/concurrent-resume-ready-b.json"; then
+              break
+            fi
+            if ! kill -0 "$pid_b" 2>/dev/null; then
+              wait "$pid_b" || true
+              cat "$shared/concurrent-resume-racer-b.log"
+              exit 1
+            fi
             sleep 0.2
           done
-          test -s "$shared/concurrent-resume-ready-a.json"
           test -s "$shared/concurrent-resume-ready-b.json"
 
           printf '{}\n' > "$shared/concurrent-resume-go-a.json"
           for _ in $(seq 1 900); do
-            test -s "$shared/concurrent-resume-result-a.json" && break
+            if test -s "$shared/concurrent-resume-result-a.json"; then
+              break
+            fi
+            if ! kill -0 "$pid_a" 2>/dev/null; then
+              wait "$pid_a" || true
+              cat "$shared/concurrent-resume-racer-a.log"
+              exit 1
+            fi
             sleep 0.2
           done
           test -s "$shared/concurrent-resume-result-a.json"
 
           printf '{}\n' > "$shared/concurrent-resume-go-b.json"
-          wait "$pid_a"
-          wait "$pid_b"
+          if ! wait "$pid_a"; then
+            cat "$shared/concurrent-resume-racer-a.log"
+            exit 1
+          fi
+          if ! wait "$pid_b"; then
+            cat "$shared/concurrent-resume-racer-b.log"
+            exit 1
+          fi
           test -s "$shared/concurrent-resume-result-b.json"
           cat "$shared/concurrent-resume-racer-a.log"
           cat "$shared/concurrent-resume-racer-b.log"
@@ -247,6 +323,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           AI_SDLC_SHARED_EVIDENCE_DIR: ${{ github.workspace }}/evidence/v03-dispatch-recovery
         run: |

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
 from operator_store_model import operation_events
 from v03_real_runtime_driver import assemble_live_preflight
 from v03_real_runtime_fault_injection import (
@@ -22,7 +23,8 @@ from v03_real_runtime_lost_ack_orchestration import (
 )
 
 PHASE1_EXIT = 86
-IDEMPOTENCY_KEY = "v03-release-fi-lost-ack"
+BASE_IDEMPOTENCY_KEY = "v03-release-fi-lost-ack"
+IDEMPOTENCY_KEY = BASE_IDEMPOTENCY_KEY
 ADAPTER_ID = "v03-real-runtime-release-verifier"
 PHASE1_EVIDENCE = Path("evidence/v03-live-lost-ack-phase1.json")
 FINAL_EVIDENCE = Path("evidence/v03-live-lost-ack.json")
@@ -32,16 +34,48 @@ class V03LostAckLiveError(RuntimeError):
     pass
 
 
+def installation_scoped_idempotency_key(preflight, base_key: str = BASE_IDEMPOTENCY_KEY) -> str:
+    """Bind a frozen live-scenario identity to one exact trusted-main installation."""
+    installation_sha = str(
+        getattr(preflight.execution, "installation_commit_sha", "") or ""
+    ).lower()
+    if len(installation_sha) != 40 or any(
+        char not in "0123456789abcdef" for char in installation_sha
+    ):
+        raise V03LostAckLiveError(
+            "live idempotency scope lacks exact trusted-main installation SHA"
+        )
+    return f"{base_key}-{installation_sha}"
+
+
+def _exported_idempotency_key() -> str:
+    """Keep companion live runners on the same exact-main Operation identity."""
+    if str(os.environ.get("GITHUB_REF") or "") != "refs/heads/main":
+        return BASE_IDEMPOTENCY_KEY
+    github_sha = str(os.environ.get("GITHUB_SHA") or "").lower()
+    if len(github_sha) != 40 or any(
+        char not in "0123456789abcdef" for char in github_sha
+    ):
+        raise V03LostAckLiveError(
+            "trusted-main live idempotency export lacks exact GITHUB_SHA"
+        )
+    return f"{BASE_IDEMPOTENCY_KEY}-{github_sha}"
+
+
+IDEMPOTENCY_KEY = _exported_idempotency_key()
+
+
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _binding(preflight) -> LostAckDispatchBinding:
+    # Repository and exact Feature -> ref authority are already bound by the
+    # configured production gateway.  The live runner may select only the fixed
+    # Feature identity; it must not reintroduce caller-selectable repo/ref input.
     manifest = preflight.composition.feature_event_gateway.read_feature(
-        repository=preflight.execution.repository,
         feature_id=preflight.composition.feature_id,
-        target_ref=preflight.composition.target_ref,
     )
     return derive_lost_ack_dispatch_binding(
         repository=preflight.execution.repository,
@@ -50,7 +84,7 @@ def _binding(preflight) -> LostAckDispatchBinding:
         manifest=manifest,
         candidate_pr_number=preflight.fixture_candidate.candidate_pr_number,
         candidate_head_sha=preflight.fixture_candidate.candidate_head_sha,
-        idempotency_key=IDEMPOTENCY_KEY,
+        idempotency_key=installation_scoped_idempotency_key(preflight),
         occurred_at=preflight.composition.bundle.runtime.clock(),
     )
 
@@ -77,6 +111,26 @@ def _scenario_events(preflight, binding: LostAckDispatchBinding) -> list[dict[st
     )
 
 
+def _production_one_shot_dispatch(preflight):
+    """Return the executor's exact production one-shot create gateway.
+
+    Fault injection must wrap this gateway, not its raw gh-aw delegate, so the
+    durable external-create election/fence remains in force.
+    """
+    bundle = preflight.composition.bundle
+    base = getattr(bundle.executor, "base", bundle.executor)
+    gateway = getattr(base, "dispatch_gateway", None)
+    if not isinstance(gateway, StoreBackedOneShotExternalCreateGateway):
+        raise V03LostAckLiveError("phase1 executor lacks production one-shot dispatch gateway")
+    if gateway.runtime is not bundle.runtime:
+        raise V03LostAckLiveError("production one-shot dispatch gateway escaped the exact Store runtime")
+    if gateway.delegate is not preflight.composition.dispatch_gateway:
+        raise V03LostAckLiveError("production one-shot dispatch delegate differs from exact gh-aw gateway")
+    if gateway.trusted_context_digest != base.config.trusted_context_digest:
+        raise V03LostAckLiveError("production one-shot dispatch trusted context differs from executor")
+    return base, gateway
+
+
 def run_phase1(
     *,
     preflight,
@@ -91,12 +145,27 @@ def run_phase1(
             "lost-ACK live scenario requires a clean idempotency key; durable Operation already exists"
         )
     bundle = preflight.composition.bundle
-    base = getattr(bundle.executor, "base", bundle.executor)
-    normal_gateway = getattr(base, "dispatch_gateway", None)
-    if normal_gateway is not preflight.composition.dispatch_gateway:
-        raise V03LostAckLiveError("phase1 executor does not use exact production dispatch gateway")
+    base, one_shot_gateway = _production_one_shot_dispatch(preflight)
+    prelaunch_lookup = one_shot_gateway.lookup(external_dispatch_key=binding.external_dispatch_key)
+    if str((prelaunch_lookup or {}).get("lookup_state") or "UNKNOWN") != "NOT_LAUNCHED":
+        _write_json(
+            evidence_path,
+            {
+                "schema_version": "ai-sdlc.v03-live-lost-ack-phase1-diagnostic/v2",
+                "installation_commit_sha": preflight.execution.installation_commit_sha,
+                "external_dispatch_key": binding.external_dispatch_key,
+                "prelaunch_lookup": prelaunch_lookup,
+                "durable_event_types": [
+                    str(row.get("event_type") or "") for row in _scenario_events(preflight, binding)
+                ],
+            },
+        )
+        raise V03LostAckLiveError(
+            "phase1 prelaunch lookup is not exact NOT_LAUNCHED; "
+            f"prelaunch_lookup={json.dumps(prelaunch_lookup, sort_keys=True, separators=(',', ':'))}"
+        )
     base.dispatch_gateway = LostAckCrashAfterLaunchDispatchGateway(
-        delegate=normal_gateway,
+        delegate=one_shot_gateway,
         expected_external_dispatch_key=binding.external_dispatch_key,
     )
     start = bundle.backends.get("operation.start")
@@ -141,7 +210,23 @@ def run_phase1(
         )
         hard_exit(PHASE1_EXIT)
         raise V03LostAckLiveError("hard-exit hook returned instead of terminating phase1")
-    raise V03LostAckLiveError("phase1 returned without exact injected process crash")
+    fault_gateway = base.dispatch_gateway
+    receipt = getattr(fault_gateway, "last_launch_receipt", None)
+    events = _scenario_events(preflight, binding)
+    diagnostic = {
+        "schema_version": "ai-sdlc.v03-live-lost-ack-phase1-diagnostic/v1",
+        "installation_commit_sha": preflight.execution.installation_commit_sha,
+        "external_dispatch_key": binding.external_dispatch_key,
+        "launch_receipt": receipt,
+        "durable_event_types": [str(row.get("event_type") or "") for row in events],
+        "fault_injected": bool(getattr(fault_gateway, "injected", False)),
+    }
+    _write_json(evidence_path, diagnostic)
+    raise V03LostAckLiveError(
+        "phase1 returned without exact injected process crash; "
+        f"launch_receipt={json.dumps(receipt, sort_keys=True, separators=(',', ':'))}; "
+        f"durable_event_types={json.dumps(diagnostic['durable_event_types'], separators=(',', ':'))}"
+    )
 
 
 def _load_phase1(path: Path) -> dict[str, Any]:

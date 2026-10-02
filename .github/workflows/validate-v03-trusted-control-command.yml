@@ -4,8 +4,11 @@ on:
   pull_request:
     paths:
       - '.github/workflows/v03-trusted-control-command.yml'
-      - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
       - '.github/workflows/v03-real-dogfood-scenario.yml'
+      - '.github/workflows/v03-ruleset-source-identity-diagnostic.yml'
+      - '.github/workflows/provision-v03-real-runtime-fixture.yml'
+      - '.github/workflows/provision-v03-scenario-fixture-pool.yml'
+      - '.github/workflows/v03-issue-221-auto-continue.yml'
       - '.github/workflows/validate-v03-trusted-control-command.yml'
 
 permissions:
@@ -23,8 +26,9 @@ jobs:
 
           path = Path('.github/workflows/v03-trusted-control-command.yml')
           text = path.read_text(encoding='utf-8')
-          diagnostic = Path('.github/workflows/v03-ruleset-source-identity-diagnostic.yml').read_text(encoding='utf-8')
           dogfood = Path('.github/workflows/v03-real-dogfood-scenario.yml').read_text(encoding='utf-8')
+          diagnostic = Path('.github/workflows/v03-ruleset-source-identity-diagnostic.yml').read_text(encoding='utf-8')
+          auto_continue = Path('.github/workflows/v03-issue-221-auto-continue.yml').read_text(encoding='utf-8')
 
           required_literals = [
               'issue_comment:',
@@ -46,6 +50,10 @@ jobs:
               "('materialize-v03-vertical-policy-state.yml', '')",
               "'/ai-sdlc v03-trusted-control diagnose-ruleset-source'",
               "('v03-ruleset-source-identity-diagnostic.yml', '')",
+              "'/ai-sdlc v03-trusted-control provision-primary-fixture'",
+              "('provision-v03-real-runtime-fixture.yml', '')",
+              "'/ai-sdlc v03-trusted-control provision-scenario-fixtures'",
+              "('provision-v03-scenario-fixture-pool.yml', '')",
               "'/ai-sdlc v03-trusted-control preflight'",
               "('v03-real-runtime-preflight-live.yml', '')",
               "'/ai-sdlc v03-trusted-control lost-ack-persist'",
@@ -63,8 +71,16 @@ jobs:
               "('v03-live-remaining-six.yml', 'stale-candidate-result')",
               "'/ai-sdlc v03-trusted-control final-ledger'",
               "('v03-final-live-ledger.yml', '')",
+              "'/ai-sdlc v03-trusted-control auto-continue'",
+              "'/ai-sdlc v03-trusted-control auto-continue stale-candidate-result'",
+              'args+=(--field "mode=scenario-first")',
+              "('v03-issue-221-auto-continue.yml', '')",
               "'/ai-sdlc v03-trusted-control dogfood-bindings'",
               "('v03-dogfood-execution-bindings-preflight.yml', '')",
+              "'/ai-sdlc v03-trusted-control dogfood-readiness'",
+              "('v03-dogfood-readiness.yml', '')",
+              "'/ai-sdlc v03-trusted-control dogfood-fixtures'",
+              "('provision-v03-dogfood-fixtures.yml', '')",
               "'/ai-sdlc v03-trusted-control dogfood happy_path'",
               "('v03-real-dogfood-scenario.yml', 'happy_path')",
               "'/ai-sdlc v03-trusted-control dogfood review_remediation'",
@@ -76,7 +92,7 @@ jobs:
               if literal not in text:
                   raise SystemExit(f'missing trusted-control invariant: {literal}')
 
-          if text.count('/ai-sdlc v03-trusted-control ') != 20:
+          if text.count('/ai-sdlc v03-trusted-control ') != 26:
               raise SystemExit('trusted-control command surface changed unexpectedly')
 
           contents_write = 'contents:' + ' write'
@@ -97,13 +113,18 @@ jobs:
           workflows = [
               'materialize-v03-vertical-policy-state.yml',
               'v03-ruleset-source-identity-diagnostic.yml',
+              'provision-v03-real-runtime-fixture.yml',
+              'provision-v03-scenario-fixture-pool.yml',
               'v03-real-runtime-preflight-live.yml',
               'v03-live-lost-ack-persist-sequence.yml',
               'v03-live-launch-cancel-pair.yml',
               'v03-live-dispatch-recovery-trio.yml',
               'v03-live-remaining-six.yml',
               'v03-final-live-ledger.yml',
+              'v03-issue-221-auto-continue.yml',
               'v03-dogfood-execution-bindings-preflight.yml',
+              'v03-dogfood-readiness.yml',
+              'provision-v03-dogfood-fixtures.yml',
               'v03-real-dogfood-scenario.yml',
           ]
           for workflow in workflows:
@@ -112,6 +133,11 @@ jobs:
                   raise SystemExit(f'allowlisted workflow is not installed: {workflow}')
 
           scenario_contracts = {
+              'v03-real-dogfood-scenario.yml': [
+                  'happy_path',
+                  'review_remediation',
+                  'session_recovery',
+              ],
               'v03-live-dispatch-recovery-trio.yml': [
                   'unknown-takeover',
                   'concurrent-resume',
@@ -125,17 +151,33 @@ jobs:
                   'duplicate-worker-completion',
                   'stale-candidate-result',
               ],
-              'v03-real-dogfood-scenario.yml': [
-                  'happy_path',
-                  'review_remediation',
-                  'session_recovery',
-              ],
           }
           for workflow, scenarios in scenario_contracts.items():
               target_text = (Path('.github/workflows') / workflow).read_text(encoding='utf-8')
               for scenario in scenarios:
                   if scenario not in target_text:
                       raise SystemExit(f'allowlisted scenario missing from {workflow}: {scenario}')
+
+          driver = Path('scripts/v03_issue_221_continue.py').read_text(encoding='utf-8')
+          if 'Step("provision-v03-real-runtime-fixture.yml")' not in driver:
+              raise SystemExit('continuation driver must retain trusted primary fixture bootstrap')
+          auto_required = [
+              'guard_recent_reviewer_429()',
+              'ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml',
+              "grep -Fq '429 Too Many Requests'",
+              'age_seconds < 900',
+              'cooldown active before any release fixture is provisioned',
+              'guard_recent_reviewer_429',
+              'PYTHONPATH=scripts python scripts/v03_issue_221_continue.py',
+          ]
+          for literal in auto_required:
+              if literal not in auto_continue:
+                  raise SystemExit(f'missing auto-continue 429 cooldown invariant: {literal}')
+
+          guard_pos = auto_continue.find('guard_recent_reviewer_429\n')
+          provision_pos = auto_continue.find('PYTHONPATH=scripts python scripts/v03_issue_221_continue.py')
+          if guard_pos < 0 or provision_pos < 0 or guard_pos >= provision_pos:
+              raise SystemExit('429 cooldown must execute before primary fixture provisioning')
 
           dogfood_required = [
               'workflow_dispatch:',

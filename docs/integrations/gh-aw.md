@@ -95,7 +95,7 @@ AI-SDLC keeps one canonical bounded worker definition and deterministically rend
 | `claude` | `claude` | `ai-sdlc-gh-aw-worker-claude.lock.yml` | `ANTHROPIC_API_KEY` or supported keyless auth |
 | `gemini` | `gemini` | `ai-sdlc-gh-aw-worker-gemini.lock.yml` | `GEMINI_API_KEY` or supported keyless auth |
 
-All four profiles are compiled with pinned `github/gh-aw` v0.83.4 and `--strict`. The generated lock files are committed through a dedicated `gh-aw/compile-*` materialization branch using `GH_AW_GITHUB_TOKEN`, because GitHub applies stronger authorization to changes under `.github/workflows/`.
+All four profiles are compiled with pinned `github/gh-aw` v0.89.21 and `--strict`. The generated lock files are committed through a dedicated `gh-aw/compile-*` materialization branch using `GH_AW_GITHUB_TOKEN`, because GitHub applies stronger authorization to changes under `.github/workflows/`.
 
 Provider availability is therefore a deployment/runtime concern, not an AI-SDLC protocol dependency. A repository can switch providers by choosing another trusted profile without changing Feature lifecycle semantics.
 

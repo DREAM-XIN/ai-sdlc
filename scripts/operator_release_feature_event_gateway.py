@@ -285,6 +285,43 @@ class RepositoryReceiptSafeCanonicalFeatureEventGateway(ReceiptSafeCanonicalFeat
             raise FeatureEventGatewayError("STALE_REVISION", "Feature advanced without applying the exact repository Event")
         return receipt
 
+    def _converge_pending_receipt(
+        self,
+        *,
+        repository: str,
+        feature_id: str,
+        target_ref: str,
+        event_id: str,
+        expected_revision: int,
+        expected_event_digest: str,
+        receipt: FeatureEventReceipt,
+    ) -> FeatureEventReceipt:
+        """Wait only by exact lookup for a submitted repository Event to apply.
+
+        PENDING means the immutable Event exists but the repository Persist path
+        has not yet made the matching Manifest revision visible. This helper
+        performs no PUT and therefore cannot create a duplicate external effect.
+        UNKNOWN, ABSENT, APPLIED, conflicts, and unrelated revision advances
+        remain fail-closed through ``lookup_receipt``.
+        """
+        current = receipt
+        if current.state != PENDING:
+            return current
+        for attempt in range(self.poll_attempts):
+            current = self.lookup_receipt(
+                repository=repository,
+                feature_id=feature_id,
+                target_ref=target_ref,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                expected_event_digest=expected_event_digest,
+            )
+            if current.state != PENDING:
+                return current
+            if attempt + 1 < self.poll_attempts:
+                self.sleeper(self.poll_seconds)
+        return current
+
     def persist_exact_event(
         self,
         *,
@@ -316,20 +353,39 @@ class RepositoryReceiptSafeCanonicalFeatureEventGateway(ReceiptSafeCanonicalFeat
             expected_revision=expected_revision,
             expected_event_digest=digest,
         )
-        if existing.state in {APPLIED, PENDING, UNKNOWN}:
+        if existing.state in {APPLIED, UNKNOWN}:
             return existing
+        if existing.state == PENDING:
+            return self._converge_pending_receipt(
+                repository=repository,
+                feature_id=feature_id,
+                target_ref=target_ref,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                expected_event_digest=digest,
+                receipt=existing,
+            )
         self._require_revision(
             repository=repository,
             feature_id=feature_id,
             target_ref=target_ref,
             expected_revision=expected_revision,
         )
-        return self.submit_event(
+        submitted = self.submit_event(
             repository=repository,
             feature_id=feature_id,
             target_ref=target_ref,
             expected_revision=expected_revision,
             event=event,
+        )
+        return self._converge_pending_receipt(
+            repository=repository,
+            feature_id=feature_id,
+            target_ref=target_ref,
+            event_id=event_id,
+            expected_revision=expected_revision,
+            expected_event_digest=digest,
+            receipt=submitted,
         )
 
     def submit_event(

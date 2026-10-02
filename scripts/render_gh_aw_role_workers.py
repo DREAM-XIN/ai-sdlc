@@ -10,6 +10,7 @@ from gh_aw_provider_registry import load_registry
 from gh_aw_role_workers import AUTHORING_ROLE_STAGES, GATE_ROLE_STAGES, load_role_workers
 
 ROOT = Path(__file__).resolve().parents[1]
+# Gate/authoring agents intentionally mint only the reviewed minimal GitHub read scopes.
 
 GATE_TEMPLATE = r'''---
 name: __NAME__
@@ -55,7 +56,10 @@ on:
         required: true
         type: string
 __ENGINE__
-permissions: read-all
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 tools:
   github:
     toolsets: [repos, issues, pull_requests]
@@ -297,6 +301,23 @@ After posting the Safe Output comment, stop.
 
 
 def engine_block(profile):
+    if profile.is_openai_compatible:
+        lines = [
+            "engine:",
+            "  id: copilot",
+            f'  model: "{profile.model}"',
+            "  env:",
+            f"    COPILOT_PROVIDER_BASE_URL: {profile.base_url}",
+            f"    COPILOT_MODEL: {profile.model}",
+            f"    COPILOT_PROVIDER_API_KEY: ${{{{ secrets.{profile.credential} }}}}",
+            f"    COPILOT_PROVIDER_TYPE: {profile.provider_type}",
+            f"    COPILOT_PROVIDER_WIRE_API: {profile.wire_api}",
+            "network:",
+            "  allowed:",
+            "    - defaults",
+            f"    - {profile.network_host}",
+        ]
+        return "\n".join(lines)
     if profile.engine == "gemini":
         lines = ["engine:", "  id: gemini"]
         if profile.engine_version:

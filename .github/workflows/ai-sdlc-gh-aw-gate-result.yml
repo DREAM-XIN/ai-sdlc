@@ -72,7 +72,9 @@ jobs:
           repo_name="${TARGET_REPOSITORY#*/}"
           echo "owner=$owner" >> "$GITHUB_OUTPUT"
           echo "repo_name=$repo_name" >> "$GITHUB_OUTPUT"
-          if [[ "$TARGET_REPOSITORY" == "$GITHUB_REPOSITORY" ]]; then
+          target_repository_lc="${TARGET_REPOSITORY,,}"
+          current_repository_lc="${GITHUB_REPOSITORY,,}"
+          if [[ "$target_repository_lc" == "$current_repository_lc" ]]; then
             echo "cross_repo=false" >> "$GITHUB_OUTPUT"
           else
             echo "cross_repo=true" >> "$GITHUB_OUTPUT"
@@ -126,6 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CONTROL_REPOSITORY: ${{ github.repository }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           FEATURE_ID: ${{ inputs.feature_id }}
           TASK_ID: ${{ inputs.task_id }}
@@ -143,6 +146,7 @@ jobs:
             --source-run-id "$SOURCE_RUN_ID" \
             --source-workflow-ref "$SOURCE_WORKFLOW_REF" \
             --control-repository "$CONTROL_REPOSITORY" \
+            --target-repository "$TARGET_REPOSITORY" \
             --default-branch "$DEFAULT_BRANCH" \
             --role "$ROLE" \
             --stage "$STAGE" \

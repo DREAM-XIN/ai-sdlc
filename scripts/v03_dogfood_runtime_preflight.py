@@ -97,6 +97,8 @@ def build_v03_dogfood_runtime_preflight(
         "protected_state_ref_sha": live_authority.protected_state_ref_sha,
         "policy_bundle_digest": live_authority.policy.bundle_digest,
         "issue_221_ledger_digest": live_gate.issue221.ledger_digest,
+        "issue_221_evidence_head_sha": live_gate.issue221.evidence_head_sha,
+        "issue_221_compatibility_digest": live_gate.issue221.compatibility_digest,
         "issue_221_workflow_run_ids": list(live_gate.issue221.workflow_run_ids),
         "scenario": slot.scenario,
         "feature_id": slot.feature_id,

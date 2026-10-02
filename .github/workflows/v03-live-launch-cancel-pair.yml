@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: write
   pull-requests: read
@@ -21,6 +21,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      GIT_AUTHOR_NAME: AI-SDLC Operator Store
+      GIT_AUTHOR_EMAIL: operator-store@ai-sdlc.invalid
+      GIT_COMMITTER_NAME: AI-SDLC Operator Store
+      GIT_COMMITTER_EMAIL: operator-store@ai-sdlc.invalid
     steps:
       - name: Validate trusted installation and QA provider configuration
         env:
@@ -67,6 +72,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -83,8 +91,10 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

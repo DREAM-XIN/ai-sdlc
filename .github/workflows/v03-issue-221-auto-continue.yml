@@ -1,0 +1,101 @@
+name: v0.3 Issue 221 Auto Continue
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Resume exact-version producers or validate one scenario first
+        type: choice
+        default: resume
+        options: [resume, scenario, scenario-first]
+      scenario:
+        description: Required only for scenario mode; one closed singleton scenario
+        type: string
+        default: ''
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: v03-issue-221-auto-continue-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  continue-live-matrix:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Run exact-main live matrix sequentially
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+          CONTINUE_MODE: ${{ inputs.mode || 'resume' }}
+          CONTINUE_SCENARIO: ${{ inputs.scenario || '' }}
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REF" = refs/heads/main
+          current_main() {
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+          }
+          test "$(current_main)" = "$EXPECTED_SHA"
+
+          guard_recent_reviewer_429() {
+            local workflow="ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml"
+            local run_json run_id status conclusion updated_at updated_epoch now_epoch age_seconds
+            run_json=$(gh run list               --repo "$GITHUB_REPOSITORY"               --workflow "$workflow"               --event workflow_dispatch               --branch main               --limit 1               --json databaseId,status,conclusion,updatedAt,url | jq -c '.[0] // empty')
+            [[ -n "$run_json" ]] || return 0
+
+            run_id=$(jq -r '.databaseId' <<<"$run_json")
+            status=$(jq -r '.status' <<<"$run_json")
+            conclusion=$(jq -r '.conclusion // ""' <<<"$run_json")
+            updated_at=$(jq -r '.updatedAt' <<<"$run_json")
+            [[ "$status" == "completed" && "$conclusion" == "failure" ]] || return 0
+
+            if ! gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log 2>/dev/null | grep -Fq '429 Too Many Requests'; then
+              return 0
+            fi
+
+            updated_epoch=$(date -u -d "$updated_at" +%s)
+            now_epoch=$(date -u +%s)
+            age_seconds=$((now_epoch - updated_epoch))
+            if (( age_seconds < 900 )); then
+              echo "::error::Recent v0.3 Reviewer run $run_id failed with Copilot 429; cooldown active before any release fixture is provisioned."
+              echo "Reviewer 429 cooldown remaining: $((900 - age_seconds)) seconds"
+              exit 75
+            fi
+          }
+
+          guard_recent_reviewer_429
+
+          PYTHONPATH=scripts python scripts/v03_issue_221_continue.py
+
+      - name: Publish auto-continue result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          HEAD_SHA: ${{ github.sha }}
+          CONTINUE_MODE: ${{ inputs.mode || 'resume' }}
+        run: |
+          set -euo pipefail
+          body=$(printf '%s\n\n%s\n%s\n%s\n\n%s\n%s' \
+            "v0.3 Issue #221 continuation: **$JOB_STATUS**" \
+            "Mode: $CONTINUE_MODE" \
+            "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "Exact trusted-main head: $HEAD_SHA" \
+            "Successful same-version runs are scheduling candidates only; the unchanged final verifier remains authoritative." \
+            "Scenario mode does not claim overall #221 PASS. Active/failed/expired records require recovery inspection before redispatch.")
+          gh issue comment 221 --repo "$GITHUB_REPOSITORY" --body "$body"

@@ -11,7 +11,7 @@ from gh_aw_provider_registry import EngineProfile
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKFLOW_DIR = ROOT / ".github/workflows"
 METADATA_PREFIX = "# gh-aw-metadata: "
-PINNED_COMPILER = "v0.83.4"
+PINNED_COMPILER = "v0.89.21"
 METADATA_SCHEMA = "v4"
 
 

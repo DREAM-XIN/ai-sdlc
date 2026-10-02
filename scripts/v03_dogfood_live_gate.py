@@ -3,7 +3,8 @@
 
 The release dogfood runner must not start an Operation, call a model, dispatch a
 Worker, or mutate the protected Store until both upstream live authorities are
-proved on the exact same trusted-main SHA:
+proved on the exact trusted-main SHA or the pinned source with a verified
+existing-runtime-identical dogfood-only tree delta:
 
 * Issue #221 final live ledger is exact 13/13 PASS from 11 distinct immutable
   successful workflow artifacts on this installation SHA;
@@ -24,6 +25,7 @@ import subprocess
 from typing import Any, Callable, Mapping
 
 from gh_aw_provider_registry import load_registry
+from v03_dogfood_issue221_compatibility import SOURCE_MAIN, verify_installation
 from v03_dogfood_execution_bindings import (
     DogfoodExecutionBinding,
     presence_from_environment,
@@ -57,6 +59,8 @@ class Issue221Closure:
     satisfied_scenario_count: int
     workflow_run_ids: tuple[int, ...]
     ledger_digest: str
+    evidence_head_sha: str = ""
+    compatibility_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,10 +97,12 @@ def verify_issue_221_closed(
     api_base: str,
     api_factory: Callable[..., Any] = GitHubReadApi,
 ) -> Issue221Closure:
-    """Re-run the closed #221 authority-set aggregator before dogfood mutation."""
+    """Re-verify original immutable #221 artifacts; never rewrite their SHA."""
 
     if not actions_read_token:
         raise V03DogfoodLiveGateError("dogfood gate lacks Actions read authority")
+    compatibility = verify_installation(installation_sha)
+    evidence_sha = SOURCE_MAIN
     plan = validate_closed_plan(producer_plan())
     api = api_factory(
         repository=repository,
@@ -105,7 +111,7 @@ def verify_issue_221_closed(
     )
     selections = select_exact_artifacts(
         plan=plan,
-        installation_sha=installation_sha,
+        installation_sha=evidence_sha,
         list_runs=api.list_runs,
         list_artifacts=api.list_artifacts,
     )
@@ -113,7 +119,7 @@ def verify_issue_221_closed(
         plan=plan,
         selections=selections,
         download_artifact=api.download_artifact,
-        installation_sha=installation_sha,
+        installation_sha=evidence_sha,
     )
     if (
         ledger.get("status") != "PASS"
@@ -121,7 +127,7 @@ def verify_issue_221_closed(
         or ledger.get("accepted_record_count") != 11
         or ledger.get("accepted_workflow_run_count") != 11
         or selection_doc.get("scenario_count") != 13
-        or selection_doc.get("trusted_main_head_sha") != installation_sha
+        or selection_doc.get("trusted_main_head_sha") != evidence_sha
         or selection_doc.get("release_eligible") is not True
     ):
         raise V03DogfoodLiveGateError("Issue #221 is not exact-main 13/13 release PASS")
@@ -140,6 +146,8 @@ def verify_issue_221_closed(
         satisfied_scenario_count=13,
         workflow_run_ids=tuple(run_ids),
         ledger_digest=_digest(ledger),
+        evidence_head_sha=evidence_sha,
+        compatibility_digest=compatibility["compatibility_digest"],
     )
 
 

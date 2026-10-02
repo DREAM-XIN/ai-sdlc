@@ -6,7 +6,7 @@ import base64
 import hashlib
 from urllib.parse import parse_qs, unquote, urlparse
 
-from operator_github_feature_event_gateway import APPLIED, UNKNOWN, FeatureEventGatewayError
+from operator_github_feature_event_gateway import APPLIED, PENDING, UNKNOWN, FeatureEventGatewayError
 from operator_release_feature_event_gateway import (
     ReceiptSafeCanonicalFeatureEventGateway,
     RepositoryReceiptSafeCanonicalFeatureEventGateway,
@@ -236,6 +236,59 @@ def validate_absent_event_after_unrelated_advance_is_stale():
     require(fake.put_count == 0, "stale missing Event caused a write")
 
 
+def validate_repository_pending_converges_without_duplicate_write():
+    fake = HistoryFakeGitHub()
+    fake.apply_after_event_lookups = 4
+    sleeps = []
+    gateway = RepositoryReceiptSafeCanonicalFeatureEventGateway(
+        token="trusted-event-writer",
+        api_base="https://api.github.test",
+        http_request=fake,
+        sleeper=lambda seconds: sleeps.append(seconds),
+        poll_attempts=6,
+        poll_seconds=0.25,
+    )
+    event_doc = {
+        "version": "0.1.0",
+        "id": EVENT_ID,
+        "feature_id": FEATURE,
+        "expected_revision": REV,
+        "occurred_at": "2026-08-11T05:30:00Z",
+        "changes": [{"kind": "stage", "id": "acceptance", "status": "DONE"}],
+    }
+    receipt = gateway.persist_exact_event(
+        repository=REPO,
+        feature_id=FEATURE,
+        target_ref=REF,
+        expected_revision=REV,
+        event=event_doc,
+    )
+    require(receipt.state == APPLIED, receipt)
+    require(receipt.result_revision == REV + 1, receipt)
+    require(fake.put_count == 1, "PENDING convergence repeated the repository Event write")
+    require(fake.event_lookup_count >= 4, "PENDING convergence did not wait for exact applied receipt")
+    require(len(sleeps) <= 5, "PENDING convergence exceeded its bounded wait budget")
+
+    fake = HistoryFakeGitHub()
+    gateway = RepositoryReceiptSafeCanonicalFeatureEventGateway(
+        token="trusted-event-writer",
+        api_base="https://api.github.test",
+        http_request=fake,
+        sleeper=lambda _seconds: None,
+        poll_attempts=2,
+        poll_seconds=0,
+    )
+    receipt = gateway.persist_exact_event(
+        repository=REPO,
+        feature_id=FEATURE,
+        target_ref=REF,
+        expected_revision=REV,
+        event=event_doc,
+    )
+    require(receipt.state == PENDING, receipt)
+    require(fake.put_count == 1, "bounded PENDING timeout repeated the repository Event write")
+
+
 def validate_release_factory_uses_repository_receipt_safe_transport():
     gateway = build_release_decision_event_gateway(
         token="trusted-event-writer",
@@ -259,6 +312,7 @@ def main():
     validate_multiple_historical_contents_fail_closed()
     validate_unprovable_cleanup_receipt_is_unknown()
     validate_absent_event_after_unrelated_advance_is_stale()
+    validate_repository_pending_converges_without_duplicate_write()
     validate_release_factory_uses_repository_receipt_safe_transport()
     print("Release-safe Feature Event receipt validation passed")
     print("- compatibility history remains exact-content bound after cleanup")
@@ -267,6 +321,7 @@ def main():
     print("- missing digest/unavailable history => UNKNOWN with zero speculative write")
     print("- late restart after later Events still returns expected_revision + 1")
     print("- unrelated Feature advance + missing Event => STALE_REVISION")
+    print("- repository PENDING converges by bounded exact lookup with one Event write")
     print("- release factory fixes repository receipt-safe production transport")
 
 

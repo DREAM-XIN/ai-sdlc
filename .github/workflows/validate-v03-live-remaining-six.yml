@@ -10,6 +10,7 @@ on:
       - 'scripts/run_v03_remaining_six_live.py'
       - 'scripts/v03_remaining_six_live_runner.py'
       - 'scripts/validate_v03_remaining_six_live_runner.py'
+      - 'scripts/validate_v03_stale_candidate_transition.py'
       - 'scripts/v03_dispatch_recovery_live_runner.py'
       - 'scripts/v03_scenario_runtime_driver.py'
       - 'scripts/v03_scenario_runtime_preflight.py'
@@ -43,3 +44,6 @@ jobs:
             scripts/v03_remaining_six_live_runner.py \
             scripts/validate_v03_remaining_six_live_runner.py
           python scripts/validate_v03_remaining_six_live_runner.py
+
+      - name: Verify bounded exact candidate transition visibility
+        run: PYTHONPATH=scripts python scripts/validate_v03_stale_candidate_transition.py

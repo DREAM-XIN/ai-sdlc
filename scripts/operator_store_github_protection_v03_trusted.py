@@ -60,6 +60,18 @@ def _token_binding(token: str) -> bytes:
     return hashlib.sha256(token.encode("utf-8")).digest()
 
 
+def refresh_process_attested_ruleset_verifiers() -> None:
+    """Drop process-local causal ruleset verifier leases.
+
+    This is a trusted-only strengthening hook for workflows that intentionally
+    cross a concurrency barrier and must re-attest current GitHub ruleset
+    generation before the next protected Store mutation.  It does not weaken
+    verification or preserve stale authority; the next proof must rebuild a
+    fresh causal attestation.
+    """
+    _PROCESS_ATTESTED_RULESET_VERIFIERS.clear()
+
+
 class GitHubRepositoryProtectionVerifier(GenericGitHubRepositoryProtectionVerifier):
     """Trusted v0.3 composite that establishes causal ruleset proof per process."""
 

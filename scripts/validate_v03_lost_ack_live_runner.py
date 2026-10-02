@@ -14,6 +14,7 @@ from v03_real_runtime_lost_ack_orchestration import LostAckDispatchBinding
 REPOSITORY = "dream-xin/ai-sdlc"
 EXTERNAL_KEY = "ext-" + "a" * 32
 OPERATION_ID = "op-" + "b" * 32
+INSTALLATION_SHA = "1" * 40
 
 
 def require(value, message):
@@ -24,8 +25,8 @@ def require(value, message):
 def binding():
     return LostAckDispatchBinding(
         repository=REPOSITORY,
-        feature_id="F-OPERATOR-V03-REAL-RUNTIME-FI-0001",
-        target_ref="verification/v0.3-real-runtime-fixture-221",
+        feature_id="F-OPERATOR-V03-REAL-RUNTIME-FI-0051",
+        target_ref="verification/v0.3-real-runtime-fixture-221-r51",
         feature_revision=11,
         current_stage="implementation",
         candidate_pr_number=901,
@@ -50,7 +51,8 @@ class DelegateGateway:
         return {"lookup_state": "LAUNCHED", "receipt_id": "run-101"}
 
     def lookup(self, *, external_dispatch_key):
-        raise AssertionError("phase1 must not perform local lookup after injected launch")
+        require(external_dispatch_key == EXTERNAL_KEY, "phase1 lookup key drifted")
+        return {"lookup_state": "NOT_LAUNCHED", "receipt_id": None}
 
 
 class StartBackend:
@@ -67,8 +69,23 @@ class StartBackend:
 class Bundle:
     def __init__(self):
         self.runtime = SimpleNamespace(backend=object())
-        self.executor = SimpleNamespace(base=SimpleNamespace(dispatch_gateway=DelegateGateway()))
-        self.backends = {"operation.start": StartBackend(self.executor.base)}
+        self.raw_dispatch_gateway = DelegateGateway()
+        self.one_shot_dispatch_gateway = subject.StoreBackedOneShotExternalCreateGateway(
+            runtime=self.runtime,
+            delegate=self.raw_dispatch_gateway,
+            trusted_context_digest="trusted-context",
+            effect_lineage_required=True,
+        )
+        # The focused runner test does not re-test the one-shot implementation;
+        # keep the exact topology while making its calls zero-effect/in-memory.
+        self.one_shot_dispatch_gateway.launch = self.raw_dispatch_gateway.launch
+        self.one_shot_dispatch_gateway.lookup = self.raw_dispatch_gateway.lookup
+        base = SimpleNamespace(
+            dispatch_gateway=self.one_shot_dispatch_gateway,
+            config=SimpleNamespace(trusted_context_digest="trusted-context"),
+        )
+        self.executor = SimpleNamespace(base=base)
+        self.backends = {"operation.start": StartBackend(base)}
         provider = SimpleNamespace(for_request=lambda request: {"trusted": request})
         self.write_bundle = SimpleNamespace(read_bundle=SimpleNamespace(trusted_context_provider=provider))
 
@@ -77,7 +94,7 @@ class Preflight:
     def __init__(self):
         self.execution = SimpleNamespace(
             repository=REPOSITORY,
-            installation_commit_sha="1" * 40,
+            installation_commit_sha=INSTALLATION_SHA,
         )
         self.live_authority = SimpleNamespace(
             materialization_commit_sha="2" * 40,
@@ -88,13 +105,76 @@ class Preflight:
             candidate_pr_number=901,
             candidate_head_sha="c" * 40,
         )
-        self.composition = SimpleNamespace(bundle=Bundle(), dispatch_gateway=None)
-        self.composition.dispatch_gateway = self.composition.bundle.executor.base.dispatch_gateway
+        bundle = Bundle()
+        self.composition = SimpleNamespace(
+            bundle=bundle,
+            dispatch_gateway=bundle.raw_dispatch_gateway,
+        )
 
 
 class ExitSignal(BaseException):
     def __init__(self, code):
         self.code = code
+
+
+class FakeConfiguredFeatureEventGateway:
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def read_feature(self, *, feature_id):
+        self.calls.append(feature_id)
+        return self.manifest
+
+
+def validate_binding_uses_configured_feature_authority_only():
+    expected = binding()
+    gateway = FakeConfiguredFeatureEventGateway({"revision": expected.feature_revision})
+    captured = {}
+    original = subject.derive_lost_ack_dispatch_binding
+    subject.derive_lost_ack_dispatch_binding = lambda **kwargs: captured.update(kwargs) or expected
+    preflight = SimpleNamespace(
+        execution=SimpleNamespace(
+            repository=expected.repository,
+            installation_commit_sha=INSTALLATION_SHA,
+        ),
+        fixture_candidate=SimpleNamespace(
+            candidate_pr_number=expected.candidate_pr_number,
+            candidate_head_sha=expected.candidate_head_sha,
+        ),
+        composition=SimpleNamespace(
+            feature_event_gateway=gateway,
+            feature_id=expected.feature_id,
+            target_ref=expected.target_ref,
+            bundle=SimpleNamespace(runtime=SimpleNamespace(clock=lambda: "2026-08-18T00:00:00Z")),
+        ),
+    )
+    try:
+        actual = subject._binding(preflight)
+        require(actual == expected, "configured Manifest read changed lost-ACK binding")
+        require(gateway.calls == [expected.feature_id], "lost-ACK Manifest read escaped configured Feature authority")
+        require(captured["repository"] == expected.repository, "derived binding lost trusted repository")
+        require(captured["target_ref"] == expected.target_ref, "derived binding lost trusted target ref")
+        require(
+            captured["idempotency_key"] == f"{subject.BASE_IDEMPOTENCY_KEY}-{INSTALLATION_SHA}",
+            "derived binding was not scoped to exact trusted-main installation",
+        )
+    finally:
+        subject.derive_lost_ack_dispatch_binding = original
+
+
+def validate_phase1_requires_exact_one_shot_production_topology():
+    preflight = Preflight()
+    base, gateway = subject._production_one_shot_dispatch(preflight)
+    require(gateway is preflight.composition.bundle.one_shot_dispatch_gateway, "lost-ACK runner did not retain production one-shot fence")
+    require(gateway.delegate is preflight.composition.dispatch_gateway, "one-shot fence lost exact raw gh-aw delegate")
+    base.dispatch_gateway = preflight.composition.dispatch_gateway
+    try:
+        subject._production_one_shot_dispatch(preflight)
+    except subject.V03LostAckLiveError:
+        pass
+    else:
+        raise AssertionError("lost-ACK runner accepted raw dispatch bypass around one-shot fence")
 
 
 def validate_phase1_uses_real_fault_wrapper_and_hard_exit():
@@ -216,6 +296,8 @@ def validate_phase2_is_fresh_binding_checked_and_remains_pending_until_result_pe
 
 
 def main():
+    validate_binding_uses_configured_feature_authority_only()
+    validate_phase1_requires_exact_one_shot_production_topology()
     validate_phase1_uses_real_fault_wrapper_and_hard_exit()
     validate_phase2_is_fresh_binding_checked_and_remains_pending_until_result_persist()
     print("PASS: lost-ACK runner proves hard-crash + same-key takeover while full scenario remains PENDING until exact result/Persist")

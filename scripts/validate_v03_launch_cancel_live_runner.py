@@ -15,8 +15,8 @@ from v03_effect_safety_live_ledger_launch_cancel import (
 import v03_launch_cancel_live_runner as subject
 
 REPOSITORY = "dream-xin/ai-sdlc"
-FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0001"
-REF = "verification/v0.3-real-runtime-fixture-221"
+FEATURE = "F-OPERATOR-V03-REAL-RUNTIME-FI-0051"
+REF = "verification/v0.3-real-runtime-fixture-221-r51"
 MAIN = "1" * 40
 MATERIALIZATION = "2" * 40
 POLICY = "3" * 64
@@ -148,6 +148,86 @@ def expect_ledger_error(document, contains):
         require(contains in str(exc), f"wrong pair failure: {exc}")
     else:
         raise AssertionError(f"expected launch/cancel ledger failure containing {contains!r}")
+
+
+class FakeConfiguredFeatureEventGateway:
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def read_feature(self, *, feature_id):
+        self.calls.append(feature_id)
+        return self.manifest
+
+
+def validate_feature_read_uses_configured_authority_only():
+    manifest = {"revision": 13}
+    gateway = FakeConfiguredFeatureEventGateway(manifest)
+    candidate = SimpleNamespace(candidate_pr_number=901, candidate_head_sha=CANDIDATE)
+    candidate_calls = []
+    def current_candidate(**kwargs):
+        candidate_calls.append(dict(kwargs))
+        return candidate
+    preflight = SimpleNamespace(
+        execution=SimpleNamespace(repository=REPOSITORY),
+        composition=SimpleNamespace(
+            feature_event_gateway=gateway,
+            feature_id=FEATURE,
+            target_ref=REF,
+            candidate_provider=SimpleNamespace(current_candidate=current_candidate),
+        ),
+    )
+    captured = {}
+    original = subject.FeatureSnapshot
+    subject.FeatureSnapshot = SimpleNamespace(
+        from_manifest=lambda **kwargs: captured.update(kwargs) or "snapshot"
+    )
+    try:
+        snapshot, actual_manifest = subject._feature(preflight, operation_id="op-feature-read")
+        require(snapshot == "snapshot", "configured Manifest read changed Feature snapshot")
+        require(actual_manifest is manifest, "configured Manifest truth was replaced")
+        require(gateway.calls == [FEATURE], "launch/cancel Manifest read escaped configured Feature authority")
+        require(candidate_calls == [{
+            "operation_id": "op-feature-read",
+            "repository": REPOSITORY,
+            "feature_id": FEATURE,
+            "target_ref": REF,
+        }], "launch/cancel candidate read escaped Operation-bound authority")
+        require(captured["repository"] == REPOSITORY, "Feature snapshot lost trusted repository")
+        require(captured["target_ref"] == REF, "Feature snapshot lost trusted target ref")
+        require(captured["candidate_head_sha"] == CANDIDATE, "Feature snapshot lost exact candidate")
+    finally:
+        subject.FeatureSnapshot = original
+
+
+def validate_production_one_shot_dispatch_topology():
+    runtime = object()
+    raw_gateway = object()
+    one_shot = subject.StoreBackedOneShotExternalCreateGateway(
+        runtime=runtime,
+        delegate=raw_gateway,
+        trusted_context_digest="trusted-context",
+        effect_lineage_required=True,
+    )
+    base = SimpleNamespace(
+        dispatch_gateway=one_shot,
+        config=SimpleNamespace(trusted_context_digest="trusted-context"),
+    )
+    preflight = SimpleNamespace(
+        composition=SimpleNamespace(
+            bundle=SimpleNamespace(runtime=runtime, executor=SimpleNamespace(base=base)),
+            dispatch_gateway=raw_gateway,
+        )
+    )
+    actual_base, actual_gateway = subject._production_one_shot_dispatch(preflight)
+    require(actual_base is base and actual_gateway is one_shot, "launch/cancel did not preserve exact one-shot gateway")
+    base.dispatch_gateway = raw_gateway
+    try:
+        subject._production_one_shot_dispatch(preflight)
+    except subject.V03LaunchCancelLiveError:
+        pass
+    else:
+        raise AssertionError("launch/cancel accepted raw dispatch bypass around one-shot fence")
 
 
 def validate_pair_ledger_is_strict_and_partial():
@@ -305,6 +385,8 @@ def validate_authorized_gateway_launches_once_then_cancels_before_return():
 
 
 def main():
+    validate_feature_read_uses_configured_authority_only()
+    validate_production_one_shot_dispatch_topology()
     validate_pair_ledger_is_strict_and_partial()
     validate_no_external_gateway_is_fail_closed()
     validate_cancel_after_new_claim_injects_once()

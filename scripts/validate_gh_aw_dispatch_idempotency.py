@@ -84,7 +84,7 @@ def main():
 
     require('run-name: "AI-SDLC gh-aw ${{ inputs.dispatch_key' in worker, "worker lacks deterministic run-name")
     require("dispatch_key:" in worker and "required: false" in worker, "same-repository compatibility fallback for dispatch key missing")
-    require("permissions: read-all" in worker, "agent permission boundary changed")
+    require("permissions:\n  contents: read\n  issues: read\n  pull-requests: read" in worker, "agent permission boundary changed")
 
     require('run-name: "AI-SDLC gh-aw profile ${{ inputs.request_id' in profile, "profile gateway lacks request-id run-name")
     require('--field request_id="$REQUEST_ID"' in profile, "profile gateway does not forward request correlation")

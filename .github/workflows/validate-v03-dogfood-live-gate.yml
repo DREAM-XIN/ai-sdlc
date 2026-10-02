@@ -3,6 +3,8 @@ name: Validate v0.3 Dogfood Live Gate
 on:
   pull_request:
     paths:
+      - 'scripts/v03_dogfood_issue221_compatibility.py'
+      - 'scripts/validate_v03_dogfood_issue221_compatibility.py'
       - 'scripts/v03_dogfood_live_gate.py'
       - 'scripts/validate_v03_dogfood_live_gate.py'
       - 'scripts/v03_dogfood_fixture_pool.py'
@@ -45,6 +47,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
+      - name: Validate immutable Issue 221 evidence compatibility
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_issue221_compatibility.py
       - name: Validate closed real-dogfood upstream gate
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_live_gate.py
       - name: Validate independent real-dogfood fixture pool

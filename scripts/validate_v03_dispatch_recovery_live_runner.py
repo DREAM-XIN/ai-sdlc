@@ -46,12 +46,57 @@ class FakeRuntime:
         return SimpleNamespace(result=self.results.pop(0))
 
 
+class FakeConfiguredFeatureEventGateway:
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def read_feature(self, *, feature_id):
+        self.calls.append(feature_id)
+        return self.manifest
+
+
+def validate_manifest_uses_configured_authority_only():
+    gateway = FakeConfiguredFeatureEventGateway({"revision": 1})
+    preflight = SimpleNamespace(
+        composition=SimpleNamespace(feature_event_gateway=gateway),
+        slot=SimpleNamespace(feature_id="F-OPERATOR-V03-FI-TEST-0001"),
+    )
+    manifest = subject._manifest(preflight)
+    require(manifest == {"revision": 1}, "scenario Manifest read changed returned truth")
+    require(
+        gateway.calls == ["F-OPERATOR-V03-FI-TEST-0001"],
+        "scenario Manifest read escaped configured Feature authority",
+    )
+
+    invalid = SimpleNamespace(
+        composition=SimpleNamespace(
+            feature_event_gateway=FakeConfiguredFeatureEventGateway({"revision": -1})
+        ),
+        slot=SimpleNamespace(feature_id="F-OPERATOR-V03-FI-TEST-0001"),
+    )
+    try:
+        subject._manifest(invalid)
+    except subject.V03DispatchRecoveryLiveError:
+        pass
+    else:
+        raise AssertionError("invalid configured Feature Manifest was accepted")
+
+
 def validate_closed_phase_map():
     require(set(subject.PHASE_SCENARIO.values()) == {subject.UNKNOWN, subject.CONCURRENT, subject.PREAUTH}, "#314 live phase map escaped closed trio")
     require(subject.IDEMPOTENCY.keys() == {subject.UNKNOWN, subject.CONCURRENT, subject.PREAUTH}, "#314 idempotency map escaped closed trio")
     require(len(set(subject.IDEMPOTENCY.values())) == 3, "#314 scenarios reuse one idempotency key")
     require(subject.UNKNOWN == "unknown-takeover", "UNKNOWN row identity drifted")
+    require(
+        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r10",
+        "UNKNOWN recovery reused the consumed fail-closed Operation identity",
+    )
     require(subject.CONCURRENT == "concurrent-resume", "concurrent row identity drifted")
+    require(
+        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r9",
+        "concurrent recovery reused the consumed partial Operation identity",
+    )
     require(subject.PREAUTH == "reservation-committed-pre-authorization-crash-recovery", "preauth row identity drifted")
 
 
@@ -153,6 +198,135 @@ def validate_preauthorization_crash_boundary():
     require(result.result == blocked and wrapper3.injected is False, "crash wrapper injected on blocked lineage proposal")
 
 
+def validate_legacy_unknown_cleanup_is_strictly_prelaunch_only():
+    source = open(subject.__file__, encoding="utf-8").read()
+    require(
+        'LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"' in source,
+        "legacy UNKNOWN cleanup lost exact consumed identity",
+    )
+    require(
+        'find_external_create_attempt(snapshot, external_dispatch_key=external_key) is not None' in source,
+        "legacy UNKNOWN cleanup does not fail closed after external-create attempt",
+    )
+    require(
+        'len(lookup) > 1' in source
+        and 'not lookup and status != "WAITING_EXTERNAL"' in source
+        and 'lookup and status != "BLOCKED"' in source,
+        "legacy UNKNOWN cleanup does not distinguish exact authorized-prelookup and BLOCKED-UNKNOWN shapes",
+    )
+    require(
+        'lookup_payload.get("lookup_state") != "UNKNOWN"' in source,
+        "legacy UNKNOWN cleanup does not validate UNKNOWN when a durable lookup exists",
+    )
+    require(
+        'callbacks or persists' in source,
+        "legacy UNKNOWN cleanup does not reject callback/Persist contamination",
+    )
+    require(
+        '_retire_prelaunch_unknown_contamination(preflight)' in source,
+        "UNKNOWN inject does not retire the exact old prelaunch contamination first",
+    )
+
+
+
+def validate_concurrent_racer_preflight_is_sequenced():
+    from pathlib import Path
+    workflow = (
+        Path(subject.__file__).resolve().parents[1]
+        / ".github/workflows/v03-live-dispatch-recovery-trio.yml"
+    ).read_text(encoding="utf-8")
+    markers = [
+        'pid_a=$!',
+        'if test -s "$shared/concurrent-resume-ready-a.json"; then',
+        'python scripts/v03_dispatch_recovery_live_runner.py --phase concurrent-racer --racer b',
+        'if test -s "$shared/concurrent-resume-ready-b.json"; then',
+        'printf \'{}\\n\' > "$shared/concurrent-resume-go-a.json"',
+    ]
+    positions = [workflow.find(marker) for marker in markers]
+    require(all(pos >= 0 for pos in positions), "concurrent racer sequencing markers are incomplete")
+    require(positions == sorted(positions), "concurrent racer authority preflight is no longer sequenced before action release")
+    require('kill -0 "$pid_a" 2>/dev/null' in workflow, "racer A preflight failure is not detected before racer B starts")
+    require('kill -0 "$pid_b" 2>/dev/null' in workflow, "racer B preflight failure is not detected before action release")
+
+
+
+
+
+def validate_concurrent_racer_copies_inherit_ephemeral_git_auth_and_fail_fast():
+    from pathlib import Path
+    workflow = (
+        Path(subject.__file__).resolve().parents[1]
+        / ".github/workflows/v03-live-dispatch-recovery-trio.yml"
+    ).read_text(encoding="utf-8")
+    require(
+        'racer_auth_header="$(git -C "$GITHUB_WORKSPACE" config --get http.https://github.com/.extraheader)"' in workflow,
+        "independent racer copies do not recover the original actions/checkout Git auth header",
+    )
+    require(
+        workflow.count("GIT_CONFIG_COUNT=1") == 2
+        and workflow.count("GIT_CONFIG_KEY_0=http.https://github.com/.extraheader") == 2
+        and workflow.count('GIT_CONFIG_VALUE_0="$racer_auth_header"') == 2,
+        "ephemeral Git auth is not injected into both independent racer processes",
+    )
+    require(
+        'git config --local http.https://github.com/.extraheader' not in workflow,
+        "racer Git auth must not be persisted into copied repository config",
+    )
+    require(
+        'cp -a "$GITHUB_WORKSPACE/." "$race_a/"' in workflow
+        and 'cp -a "$GITHUB_WORKSPACE/." "$race_b/"' in workflow,
+        "concurrent racers no longer use independent repository copies",
+    )
+
+    go_a = workflow.find('printf \'{}\\n\' > "$shared/concurrent-resume-go-a.json"')
+    result_a = workflow.find('if test -s "$shared/concurrent-resume-result-a.json"; then', go_a)
+    dead_a = workflow.find('if ! kill -0 "$pid_a" 2>/dev/null; then', go_a)
+    go_b = workflow.find('printf \'{}\\n\' > "$shared/concurrent-resume-go-b.json"')
+    require(
+        -1 not in (go_a, result_a, dead_a, go_b)
+        and go_a < result_a < dead_a < go_b,
+        "post-release racer A failure is not detected before the old 180-second result timeout",
+    )
+
+
+def validate_concurrent_racer_refreshes_protection_before_commit():
+    source = open(subject.__file__, encoding="utf-8").read()
+    require(
+        'refresh_process_attested_ruleset_verifiers()' in source,
+        "concurrent racer does not drop stale process-local protection authority",
+    )
+    require(
+        'fresh = _preflight(CONCURRENT)' in source,
+        "concurrent racer does not refresh trusted protection after the release barrier",
+    )
+    require(
+        'fresh.execution.installation_commit_sha == preflight.execution.installation_commit_sha' in source,
+        "fresh concurrent preflight is not pinned to the same trusted-main head",
+    )
+    require(
+        'fresh.slot.feature_id == preflight.slot.feature_id' in source
+        and 'fresh.slot.target_ref == preflight.slot.target_ref' in source,
+        "fresh concurrent preflight is not pinned to the same frozen scenario slot",
+    )
+    require(
+        'fresh.fixture_candidate.candidate_head_sha == feature.candidate_head_sha' in source,
+        "fresh concurrent preflight is not pinned to the preselected candidate head",
+    )
+    require(
+        'result = _base(fresh).advance_action(operation_id=operation_id, action=action)' in source,
+        "concurrent racer does not execute the exact preselected stale action with fresh protection authority",
+    )
+    ready_pos = source.find('_write_json(ready, {')
+    go_pos = source.find('_wait(_path(CONCURRENT, f"go-{racer}"))')
+    refresh_pos = source.find('refresh_process_attested_ruleset_verifiers()')
+    fresh_pos = source.find('fresh = _preflight(CONCURRENT)')
+    execute_pos = source.find('result = _base(fresh).advance_action(operation_id=operation_id, action=action)')
+    require(
+        -1 not in (ready_pos, go_pos, refresh_pos, fresh_pos, execute_pos)
+        and ready_pos < go_pos < refresh_pos < fresh_pos < execute_pos,
+        "fresh protection proof is not sequenced after stale-action selection and immediately before commit",
+    )
+
 def validate_generic_record_is_anti_overclaim():
     record = subject._generic_record(
         scenario=subject.UNKNOWN,
@@ -179,10 +353,15 @@ def validate_generic_record_is_anti_overclaim():
 
 
 def main():
+    validate_manifest_uses_configured_authority_only()
     validate_closed_phase_map()
     validate_unknown_wrapper()
     validate_no_external_access_fence()
     validate_preauthorization_crash_boundary()
+    validate_legacy_unknown_cleanup_is_strictly_prelaunch_only()
+    validate_concurrent_racer_preflight_is_sequenced()
+    validate_concurrent_racer_copies_inherit_ephemeral_git_auth_and_fail_fast()
+    validate_concurrent_racer_refreshes_protection_before_commit()
     validate_generic_record_is_anti_overclaim()
     print("PASS: #314 dispatch/recovery live wrappers are closed, zero-effect in PR validation, and fail-closed")
     print("- UNKNOWN permits one exact delegated launch then suppresses certainty without fallback lookup")

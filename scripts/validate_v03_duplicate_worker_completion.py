@@ -112,6 +112,10 @@ class SameCompletionSource:
     def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
         require(external_dispatch_key == self.binding.external_dispatch_key, "source received wrong dispatch key")
         require(expected_receipt_identity == self.receipt_identity, "source received wrong durable receipt")
+        require(
+            "launch_candidate_head_sha" in trusted_context,
+            "source lost the production launch-candidate resolver binding",
+        )
         self.resolve_count += 1
         self.trusted_contexts.append(dict(trusted_context))
         return self.result
@@ -228,6 +232,11 @@ def main():
     event_count_after = len(operation_events(backend.read_snapshot(), binding.operation_id))
 
     require(source.resolve_count == 2, "duplicate completion was not independently re-read twice")
+    require(
+        source.trusted_contexts[1].get("launch_candidate_head_sha")
+        == source.trusted_contexts[1].get("candidate_head_sha"),
+        "duplicate replay did not reconstruct production launch candidate binding from durable callback",
+    )
     require(collector.replay_callback_ids == [callback_id], "duplicate completion did not derive exact same callback id")
     require(event_count_after == event_count_before, "duplicate completion mutated durable Store")
     require(count_events(backend, binding.operation_id, "worker.callback.recorded") == 1, "duplicate completion created second callback")
