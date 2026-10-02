@@ -223,7 +223,7 @@ def handoff_and_supersession_tests() -> None:
                 "payload": {"callback_id": "callback-1", "feature_event_id": "EVT-1"},
             },
             {
-                "event_type": "feature.persist.confirmed",
+                "event_type": "persist.confirmed",
                 "payload": {"feature_event_id": "EVT-1"},
             },
         ])

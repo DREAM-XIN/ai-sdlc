@@ -265,9 +265,7 @@ def run_scenario(
     if expected_roles is None:
         raise V03DogfoodScenarioRunnerError("scenario escaped frozen dogfood inventory")
     manifest = preflight.composition.feature_event_gateway.read_feature(
-        repository=preflight.execution.repository,
         feature_id=preflight.slot.feature_id,
-        target_ref=preflight.slot.target_ref,
     )
     if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != 1:
         raise V03DogfoodScenarioRunnerError("dogfood fixture is not the exact active revision-1 slot")

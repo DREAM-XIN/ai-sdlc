@@ -130,7 +130,7 @@ class DogfoodGitHubCandidateProvider:
                 event_id = str(payload.get("feature_event_id") or "")
                 if callback_id and event_id:
                     translated[callback_id] = event_id
-            elif event_type == "feature.persist.confirmed":
+            elif event_type == "persist.confirmed":
                 event_id = str(payload.get("feature_event_id") or "")
                 if event_id:
                     confirmed.add(event_id)
