@@ -267,6 +267,17 @@ def validate_durable_authority_reconstruction():
         lambda: _reconstruct_release_authority("happy_path", rows, projection, observation("happy_path")),
     )
 
+    rows, projection = durable_history("happy_path")
+    categories, _ = _reconstruct_release_authority("happy_path", rows, projection, observation("happy_path"))
+    milestone_rows = _milestone_facts(
+        "happy_path", REPO, 8001, 8002, [9001, 9002, 9003], categories
+    )
+    by_name = {row["name"]: row["evidence_uris"] for row in milestone_rows}
+    assert "/actions/runs/9001" in " ".join(by_name["developer-completed"])
+    assert "/actions/runs/9002" not in " ".join(by_name["developer-completed"])
+    assert "/actions/runs/9002" in " ".join(by_name["independent-review-passed"])
+    assert "/actions/runs/9003" in " ".join(by_name["qa-passed-and-done"])
+
 
 def consumed_result_fixture(role="reviewer"):
     """A consumed production receipt, then mutable GitHub source truth."""
