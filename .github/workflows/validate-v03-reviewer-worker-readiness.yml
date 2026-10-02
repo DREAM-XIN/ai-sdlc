@@ -7,6 +7,8 @@ on:
       - 'scripts/validate_operator_v03_reviewer_worker_readiness.py'
       - 'runtimes/gh-aw/role-workers.yaml'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-claude.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.md'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.lock.yml'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-copilot.lock.yml'
       - '.github/workflows/validate-v03-reviewer-worker-readiness.yml'
   workflow_dispatch:
