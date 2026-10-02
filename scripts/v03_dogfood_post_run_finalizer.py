@@ -661,15 +661,48 @@ def _milestone_facts(
     scenario: str,
     repository: str,
     source_run_id: int,
+    finalizer_run_id: int,
     worker_run_ids: list[int],
     categories: Mapping[str, set[str]],
 ) -> list[dict[str, Any]]:
-    durable = [_run_uri(repository, source_run_id)] + [_run_uri(repository, value) for value in worker_run_ids]
     expected_names = [name for name, _state, _categories in SCENARIO_PROFILES[scenario]["milestones"]]
     if set(categories) != set(expected_names):
         raise V03DogfoodPostRunFinalizerError("reconstructed milestone set differs from frozen profile")
+    expected_workers = len(SCENARIO_ROLE_SEQUENCES[scenario])
+    if len(worker_run_ids) != expected_workers:
+        raise V03DogfoodPostRunFinalizerError("milestone evidence lacks exact Worker run sequence")
+    source_uri = _run_uri(repository, source_run_id)
+    finalizer_uri = _run_uri(repository, finalizer_run_id)
+    worker_uris = [_run_uri(repository, value) for value in worker_run_ids]
+    if scenario == "happy_path":
+        evidence = {
+            "operation-started": [source_uri, finalizer_uri],
+            "developer-completed": [source_uri, worker_uris[0], finalizer_uri],
+            "independent-review-passed": [source_uri, worker_uris[1], finalizer_uri],
+            "qa-passed-and-done": [source_uri, worker_uris[2], finalizer_uri],
+        }
+    elif scenario == "review_remediation":
+        evidence = {
+            "developer-completed": [source_uri, worker_uris[0], finalizer_uri],
+            "reviewer-requested-changes": [source_uri, worker_uris[1], finalizer_uri],
+            "remediation-completed": [source_uri, worker_uris[2], finalizer_uri],
+            "independent-re-review-passed": [source_uri, worker_uris[3], finalizer_uri],
+            "qa-passed": [source_uri, worker_uris[4], finalizer_uri],
+        }
+    else:
+        evidence = {
+            "durable-state-created": [source_uri, finalizer_uri],
+            "original-session-ended": [source_uri, finalizer_uri],
+            "new-session-discovered-operation-and-user-items": [
+                source_uri, worker_uris[0], finalizer_uri
+            ],
+        }
     return [
-        {"name": name, "evidence_categories": sorted(categories[name]), "evidence_uris": durable}
+        {
+            "name": name,
+            "evidence_categories": sorted(categories[name]),
+            "evidence_uris": evidence[name],
+        }
         for name in expected_names
     ]
 
@@ -725,7 +758,9 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,
         "human_interventions": 0,
-        "milestones": _milestone_facts(scenario, repository, source_run_id, worker_run_ids, categories),
+        "milestones": _milestone_facts(
+            scenario, repository, source_run_id, finalizer_run_id, worker_run_ids, categories
+        ),
         "assertions": assertions,
         "evidence_uris": evidence_uris,
         "provenance_verifier": verifier,
