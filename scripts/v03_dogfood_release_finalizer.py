@@ -53,10 +53,13 @@ def _milestones(scenario: str, facts: Mapping[str, Any]) -> list[dict[str, Any]]
         supplied_categories = frozenset(str(value) for value in (row.get("evidence_categories") or []))
         if supplied_categories != frozenset(categories):
             raise V03DogfoodReleaseFinalizerError(f"milestone {name} evidence categories drifted")
+        supplied_state = str(row.get("state_after") or "")
+        if supplied_state != state_after:
+            raise V03DogfoodReleaseFinalizerError(f"milestone {name} durable state differs from frozen profile")
         result.append({
             "sequence": sequence,
             "name": name,
-            "state_after": state_after,
+            "state_after": supplied_state,
             "evidence_categories": sorted(categories),
             "evidence_uris": list(dict.fromkeys(uris)),
         })
@@ -110,6 +113,10 @@ def build_release_record(
     candidate_head = str(_required(observation, "candidate_head_sha"))
     milestones = _milestones(scenario, trusted_facts)
     assertions = _trusted_assertions(scenario, trusted_facts, observation)
+    trusted_start_state = str(_required(trusted_facts, "start_state"))
+    trusted_end_state = str(_required(trusted_facts, "end_state"))
+    if trusted_start_state != profile["start_state"] or trusted_end_state != profile["end_state"]:
+        raise V03DogfoodReleaseFinalizerError("trusted durable boundary states differ from frozen profile")
     evidence_uris = list(dict.fromkeys(str(uri) for uri in _required(trusted_facts, "evidence_uris")))
     for run_id in run_ids:
         expected = f"https://github.com/{repository}/actions/runs/{run_id}"
@@ -149,8 +156,8 @@ def build_release_record(
             "verifier_identity": verifier_identity,
             "attestation_uri": attestation_uri,
         },
-        "start_state": profile["start_state"],
-        "end_state": profile["end_state"],
+        "start_state": trusted_start_state,
+        "end_state": trusted_end_state,
         "milestones": milestones,
         "counts": {
             "human_interventions": int(trusted_facts.get("human_interventions", 0)),

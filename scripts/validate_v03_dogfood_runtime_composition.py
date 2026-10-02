@@ -12,7 +12,9 @@ from operator_openai_responses import ADAPTER_ID
 from operator_production_runtime import TrustedFeatureBinding, TrustedOperatorRuntimeConfig
 from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
 from v03_dogfood_fixture_pool import require_slot
+from operator_store_model import StoreSnapshot, StoreMutationPlan, apply_plan_to_snapshot, event_path, make_event
 from v03_dogfood_full_composition import (
+    candidate_handoff_records,
     DogfoodCandidateHandoff,
     DogfoodGitHubCandidateProvider,
     DogfoodTrustedCallbackCoordinator,
@@ -171,17 +173,39 @@ def handoff_and_supersession_tests() -> None:
         f"docs/features/{slot.feature_id}/worker-runs/dispatch-1/"
         f"developer-pr-900-{developer}.json"
     )
-    executor = SimpleNamespace(_record_fact=lambda op, typ, payload: state["facts"].append((op, typ, payload)))
+    callback_event = make_event(
+        operation_id="op-handoff", generation=0, sequence=1, event_id="callback-1-event",
+        event_type="worker.callback.recorded", occurred_at="2026-10-03T00:00:00Z",
+        payload={"callback_id": "callback-1"}, trusted_context_digest="trusted",
+    )
+    class FakeRuntime:
+        def __init__(self):
+            self.snapshot = StoreSnapshot(
+                ref_sha="f" * 40,
+                files={event_path("op-handoff", 1, "callback-1-event"): callback_event},
+            )
+            self.backend = SimpleNamespace(read_snapshot=lambda: self.snapshot)
+        def commit_replanned(self, planner):
+            plan = planner(self.snapshot)
+            self.snapshot = apply_plan_to_snapshot(self.snapshot, plan, new_ref_sha=self.snapshot.ref_sha)
+            return SimpleNamespace(result=plan.result)
+    runtime = FakeRuntime()
+    context.operation_generation = 0
+    executor = SimpleNamespace(
+        runtime=runtime,
+        _record_fact=lambda op, typ, payload: state["facts"].append((op, typ, payload)),
+    )
     handoff.adopt(
         executor=executor, context=context, callback_id="callback-1",
         receipts=[{"kind": "artifact", "trusted_uri": uri}],
     )
     require(state["ref"] == developer, "Developer output was not adopted onto fixed fixture ref")
+    durable_handoffs = candidate_handoff_records(runtime.snapshot, "op-handoff")
     require(
-        len(state["facts"]) == 1
-        and state["facts"][0][1] == "candidate.handoff.adopted"
-        and state["facts"][0][2]["source_candidate_head_sha"] == developer,
-        "handoff did not retain exact Developer output identity",
+        len(durable_handoffs) == 1
+        and durable_handoffs[0]["source_candidate_head_sha"] == developer
+        and durable_handoffs[0]["callback_sequence"] == 1,
+        "handoff did not retain exact Developer output identity in protected immutable Store evidence",
     )
 
     envelope = {
@@ -195,18 +219,9 @@ def handoff_and_supersession_tests() -> None:
             "event_type": "worker.callback.recorded",
             "payload": {"callback_id": "callback-1", "trusted_callback_envelope": envelope},
         },
-        {
-            "event_type": "candidate.handoff.adopted",
-            "payload": state["facts"][0][2],
-        },
+
     ]
-    provider.bind_runtime(
-        SimpleNamespace(
-            backend=SimpleNamespace(
-                read_snapshot=lambda: SimpleNamespace(),
-            )
-        )
-    )
+    provider.bind_runtime(runtime)
     import v03_dogfood_full_composition as composition
     original_events = composition.operation_events
     try:
@@ -309,7 +324,10 @@ def source_contract_tests() -> None:
     require("responses: OpenAIResponsesProductionBundle" in source, "composition does not retain Responses authority")
     require("return self.responses.adapter" in source, "composition does not expose exact production adapter")
     require("operation.resume" in source, "composition lost server-only capability leak assertion")
-    require("candidate.handoff.adopted" in source, "Developer output handoff lost durable authority fact")
+    require("candidate-handoffs" in source and "CANDIDATE_HANDOFF_SCHEMA" in source,
+            "Developer output handoff lost protected immutable authority record")
+    require("candidate.handoff.adopted" not in source,
+            "dogfood handoff illegally uses an unsupported base-runtime Operation event type")
     require("remediation_artifact_supersession" in source, "remediation lifecycle lost explicit supersession")
 
 
