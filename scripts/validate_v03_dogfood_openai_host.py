@@ -99,6 +99,17 @@ def main() -> None:
         response("resp_cycle", message()),
     ], "repeated a response id")
 
+    # Duplicate call identity is rejected before crossing the effect boundary.
+    duplicate_adapter = FakeAdapter()
+    try:
+        host([response("resp_dup1", call("call_dup")), response("resp_dup2", call("call_dup"))],
+             adapter=duplicate_adapter).run(scenario_instruction="trusted scenario")
+    except V03DogfoodOpenAIHostError as exc:
+        assert "same Responses call_id" in str(exc)
+    else:
+        raise AssertionError("duplicate call identity was accepted")
+    assert len(duplicate_adapter.calls) == 1, "duplicate call reached adapter effects"
+
     # Exact adapter call_id correlation is mandatory.
     class WrongCorrelation(FakeAdapter):
         def invoke_function_call(self, item):

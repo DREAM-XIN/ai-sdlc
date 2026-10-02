@@ -161,6 +161,9 @@ def main():
     from validate_v03_dogfood_evidence import _trusted_provenance_errors
     control = "b" * 40
     bound_record = {**record(), "feature_id": "F-DOGFOOD", "target_ref": "dogfood/v0.3-happy"}
+    attestation_uri = f"https://github.com/{REPOSITORY}/actions/runs/{RUN_ID}#attestation"
+    bound_record["provenance"] = dict(verifier_identity=VERIFIER, verification_status="VERIFIED", attestation_uri=attestation_uri)
+    bound_record["evidence_uris"] = [attestation_uri]
     binding = dict(repository=REPOSITORY, feature_id="F-DOGFOOD", target_ref=bound_record["target_ref"],
                    candidate_pr_number=401, candidate_input_head_sha=HEAD, role="reviewer",
                    workflow="reviewer.yml", external_dispatch_key="key-1")
@@ -184,7 +187,8 @@ def main():
     proof = bound_verifier().verify(bound_record)
     require(proof.workflow_runs[0].head_sha == control, "actual Actions source SHA was relabeled")
     require(proof.workflow_runs[0].candidate_head_sha == HEAD, "terminal target SHA was not separately bound")
-    require(not _trusted_provenance_errors(bound_record, bound_verifier()), "shared validator rejected a verified split-source run")
+    errors = _trusted_provenance_errors(bound_record, bound_verifier())
+    require(not errors, f"shared validator rejected a verified split-source run: {errors}")
     for changed in ({"head_sha": "d"*40}, {"run_attempt": 2}, {"head_branch": "feature"},
                     {"path": ".github/workflows/untrusted.yml"}, {"display_title": "unrelated"}):
         expect_failure(bound_record, subject=bound_verifier(changed_run=changed), label="control source drift")

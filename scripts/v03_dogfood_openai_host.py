@@ -162,14 +162,16 @@ class V03DogfoodOpenAIResponsesHost:
                 )
             if len(call_ids) >= self.config.max_tool_turns:
                 raise V03DogfoodOpenAIHostError("dogfood Responses host exceeded bounded tool turns")
+            call_id = call.get("call_id")
+            if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
+                raise V03DogfoodOpenAIHostError("provider function call_id is invalid")
+            if call_id in call_ids:
+                raise V03DogfoodOpenAIHostError("same Responses call_id appeared in multiple provider turns")
             result = self.adapter.invoke_function_call(call)
             if not isinstance(result, dict) or result.get("type") != "function_call_output":
                 raise V03DogfoodOpenAIHostError("reviewed adapter returned invalid function_call_output")
-            call_id = call.get("call_id")
-            if not isinstance(call_id, str) or result.get("call_id") != call_id:
+            if result.get("call_id") != call_id:
                 raise V03DogfoodOpenAIHostError("adapter output correlation differs from exact provider call_id")
-            if call_id in call_ids:
-                raise V03DogfoodOpenAIHostError("same Responses call_id appeared in multiple provider turns")
             call_ids.append(call_id)
             outputs.append(dict(result))
             payload = self._create({
