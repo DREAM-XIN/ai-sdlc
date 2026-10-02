@@ -38,7 +38,7 @@ from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _DEVELOPER_PR_URI = re.compile(
     r"^docs/features/(?P<feature>[^/]+)/worker-runs/(?P<dispatch>[^/]+)/"
-    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})\\.json$"
+    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})\.json$"
 )
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
