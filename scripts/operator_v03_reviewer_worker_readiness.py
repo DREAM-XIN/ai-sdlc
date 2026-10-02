@@ -70,7 +70,7 @@ V03_REVIEWER_OPTIONS = (
         role="reviewer",
         stage="code-review",
         profile="deepseek",
-        workflow_file="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        workflow_file="ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml",
         registry_workflow_file="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
         credential_env="DEEPSEEK_API_KEY",
     ),
