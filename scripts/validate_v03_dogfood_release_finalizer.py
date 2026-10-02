@@ -68,6 +68,8 @@ def observation(scenario: str):
         "function_call_ids": [f"call-{scenario}"],
         "recovery_response_ids": ["resp-recovery"] if scenario == "session_recovery" else [],
         "recovery_function_call_ids": ["call-recovery"] if scenario == "session_recovery" else [],
+        "recovery_discovery_decision_ids": ["decision-1"] if scenario == "session_recovery" else [],
+        "recovery_discovery_notification_ids": ["notification-1"] if scenario == "session_recovery" else [],
         "new_session_discovery_observed": scenario == "session_recovery",
         "repeated_continue_messages": 0,
         "repository": REPO,
@@ -152,6 +154,19 @@ def durable_history(scenario: str):
         seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
         if scenario != "session_recovery":
             seq += 1; rows.append(event(seq, "worker.result.validated"))
+            feature_event_id = f"EVT-{scenario}-{index}"
+            expected_revision = 1 + index
+            persist_payload = {
+                "feature_event_id": feature_event_id,
+                "expected_revision": expected_revision,
+                "target_ref": "refs/heads/v03-dogfood-target",
+                "candidate_head_sha": HEAD,
+            }
+            seq += 1; rows.append(event(seq, "persist.requested", persist_payload))
+            seq += 1; rows.append(event(seq, "persist.linearized", persist_payload))
+            seq += 1; rows.append(event(seq, "persist.confirmed", {
+                **persist_payload, "result_revision": expected_revision + 1,
+            }))
         if index < len(steps) - 1:
             seq += 1; rows.append(event(seq, "loop.stable-stop", {"status": "WAITING_EXTERNAL"}))
     if scenario == "session_recovery":
@@ -162,7 +177,7 @@ def durable_history(scenario: str):
         projection = {"status": "NEEDS_USER", "pending_decisions": ["decision-1"], "unread_notifications": ["notification-1"]}
     else:
         seq += 1; rows.append(event(seq, "notification.created", {"notification_id": "notification-1"}))
-        seq += 1; rows.append(event(seq, "operation.done"))
+        seq += 1; rows.append(event(seq, "operation.done", {"feature_revision": 1 + len(steps)}))
         projection = {"status": "DONE", "pending_decisions": [], "unread_notifications": ["notification-1"]}
     return rows, projection
 
@@ -187,6 +202,21 @@ def validate_durable_authority_reconstruction():
     require_rejected(
         "missing durable pending Decision",
         lambda: _reconstruct_release_authority("session_recovery", rows, projection, observation("session_recovery")),
+    )
+
+    rows, projection = durable_history("happy_path")
+    rows = [row for row in rows if row["event_type"] != "persist.confirmed"]
+    require_rejected(
+        "missing durable Persist confirmation",
+        lambda: _reconstruct_release_authority("happy_path", rows, projection, observation("happy_path")),
+    )
+
+    rows, projection = durable_history("session_recovery")
+    drift = observation("session_recovery")
+    drift["recovery_discovery_decision_ids"] = ["decision-other"]
+    require_rejected(
+        "fresh session wrong Decision identity",
+        lambda: _reconstruct_release_authority("session_recovery", rows, projection, drift),
     )
 
     rows, projection = durable_history("happy_path")
