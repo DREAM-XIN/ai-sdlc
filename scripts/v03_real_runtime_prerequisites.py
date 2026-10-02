@@ -25,6 +25,7 @@ VERTICAL_PROFILE = "vertical-implementation-review-qa/v1"
 REVIEWER_WORKFLOWS = (
     "ai-sdlc-gh-aw-reviewer-claude.lock.yml",
     "ai-sdlc-gh-aw-reviewer-qwen.lock.yml",
+    "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
     "ai-sdlc-gh-aw-reviewer-gemini.lock.yml",
     "ai-sdlc-gh-aw-reviewer-copilot.lock.yml",
 )
