@@ -14,7 +14,7 @@ import re
 from typing import Any, Callable
 from urllib import error, request
 
-from operator_openai_responses import responses_request_profile
+from operator_openai_responses import TOOL_CAPABILITIES, WRITE_CAPABILITIES, responses_request_profile
 
 _RESPONSE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
@@ -102,7 +102,7 @@ class V03DogfoodOpenAIResponsesHost:
         return response_id
 
     @staticmethod
-    def _function_call(payload: dict[str, Any]) -> dict[str, Any] | None:
+    def _function_calls(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
         calls: list[dict[str, Any]] = []
         for item in payload["output"]:
             if not isinstance(item, dict):
@@ -111,14 +111,37 @@ class V03DogfoodOpenAIResponsesHost:
             if item_type == "function_call":
                 calls.append(item)
                 continue
-            # The host registers only fixed function tools.  Any executable-like
+            # The host registers only fixed function tools. Any executable-like
             # provider item outside that profile is a protocol expansion and is
             # rejected rather than silently becoming an alternate authority.
             if isinstance(item_type, str) and (item_type.endswith("_call") or item_type.endswith("_tool_call")):
                 raise V03DogfoodOpenAIHostError("unsupported executable provider item in dogfood response")
+
+        # DeepSeek Responses currently ignores parallel_tool_calls=false and may
+        # return multiple calls in one completed response. Permit that transport
+        # behavior only for an entirely read-only batch. Validate the complete
+        # batch before any adapter invocation so a mixed/read-write batch cannot
+        # partially execute.
         if len(calls) > 1:
-            raise V03DogfoodOpenAIHostError("parallel/multiple function calls are forbidden in dogfood profile")
-        return calls[0] if calls else None
+            capabilities: list[str] = []
+            seen_call_ids: set[str] = set()
+            for call in calls:
+                call_id = call.get("call_id")
+                name = call.get("name")
+                if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
+                    raise V03DogfoodOpenAIHostError("provider function call_id is invalid")
+                if call_id in seen_call_ids:
+                    raise V03DogfoodOpenAIHostError("duplicate call_id inside parallel read batch")
+                seen_call_ids.add(call_id)
+                capability = TOOL_CAPABILITIES.get(name) if isinstance(name, str) else None
+                if capability is None:
+                    raise V03DogfoodOpenAIHostError("parallel batch contains unknown function tool")
+                capabilities.append(capability)
+            if any(capability in WRITE_CAPABILITIES for capability in capabilities):
+                raise V03DogfoodOpenAIHostError(
+                    "parallel batch containing write capability is forbidden in dogfood profile"
+                )
+        return tuple(calls)
 
     def _create(self, body: dict[str, Any]) -> dict[str, Any]:
         status, payload = self.http_post(
@@ -159,31 +182,40 @@ class V03DogfoodOpenAIResponsesHost:
             if response_id in response_ids:
                 raise V03DogfoodOpenAIHostError("Responses provider repeated a response id")
             response_ids.append(response_id)
-            call = self._function_call(payload)
-            if call is None:
+            calls = self._function_calls(payload)
+            if not calls:
                 return V03DogfoodResponsesTrace(
                     response_ids=tuple(response_ids),
                     function_call_ids=tuple(call_ids),
                     function_outputs=tuple(outputs),
                     terminal_response=dict(payload),
                 )
-            if len(call_ids) >= self.config.max_tool_turns:
+            if len(call_ids) + len(calls) > self.config.max_tool_turns:
                 raise V03DogfoodOpenAIHostError("dogfood Responses host exceeded bounded tool turns")
-            call_id = call.get("call_id")
-            if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
-                raise V03DogfoodOpenAIHostError("provider function call_id is invalid")
-            if call_id in call_ids:
-                raise V03DogfoodOpenAIHostError("same Responses call_id appeared in multiple provider turns")
-            result = self.adapter.invoke_function_call(call)
-            if not isinstance(result, dict) or result.get("type") != "function_call_output":
-                raise V03DogfoodOpenAIHostError("reviewed adapter returned invalid function_call_output")
-            if result.get("call_id") != call_id:
-                raise V03DogfoodOpenAIHostError("adapter output correlation differs from exact provider call_id")
-            call_ids.append(call_id)
-            outputs.append(dict(result))
+
+            batch_ids: list[str] = []
+            for call in calls:
+                call_id = call.get("call_id")
+                if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
+                    raise V03DogfoodOpenAIHostError("provider function call_id is invalid")
+                if call_id in call_ids or call_id in batch_ids:
+                    raise V03DogfoodOpenAIHostError("same Responses call_id appeared in multiple provider turns")
+                batch_ids.append(call_id)
+
+            batch_outputs: list[dict[str, Any]] = []
+            for call, call_id in zip(calls, batch_ids):
+                result = self.adapter.invoke_function_call(call)
+                if not isinstance(result, dict) or result.get("type") != "function_call_output":
+                    raise V03DogfoodOpenAIHostError("reviewed adapter returned invalid function_call_output")
+                if result.get("call_id") != call_id:
+                    raise V03DogfoodOpenAIHostError("adapter output correlation differs from exact provider call_id")
+                call_ids.append(call_id)
+                outputs.append(dict(result))
+                batch_outputs.append(dict(result))
+
             if self.config.continuation_mode == "full_history":
                 history.extend(dict(item) for item in payload["output"])
-                history.append(dict(result))
+                history.extend(batch_outputs)
                 payload = self._create({
                     "model": self.config.model,
                     "input": history,
@@ -194,7 +226,7 @@ class V03DogfoodOpenAIResponsesHost:
                 payload = self._create({
                     "model": self.config.model,
                     "previous_response_id": response_id,
-                    "input": [result],
+                    "input": batch_outputs,
                     "tools": tools,
                     "parallel_tool_calls": False,
                 })

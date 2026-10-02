@@ -220,6 +220,10 @@ def scenario_instruction(slot: DogfoodSlot, *, expected_revision: int) -> str:
         + "\n\nTrusted release-controller instruction:\n"
         + "Use the exposed AI-SDLC function tools. Start exactly one Operation for "
         + f"feature `{slot.feature_id}` at expected revision {expected_revision} in ASSISTED mode. "
+        + "Your first tool response must contain exactly one function call: operation.start. "
+        + "Do not call system.capabilities, feature.status, operator.inbox, operation.status, "
+        + "decision.list, or notification.list before operation.start, and do not place any other "
+        + "tool call beside operation.start in the same response. "
         + "Do not invent ids, do not retry operation.start, and do not claim lifecycle or Gate authority. "
         + "After the first durable external stop, return control to the trusted server runner."
     )

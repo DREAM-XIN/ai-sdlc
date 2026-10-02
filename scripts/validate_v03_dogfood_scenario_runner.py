@@ -123,6 +123,10 @@ def run_case(scenario, statuses, roles, *, recovery=True):
     expect(result.release_eligible is False, "raw runner observation must not self-authorize release PASS")
     expect(result.dispatch_roles == tuple(roles), "runner role sequence")
     expect("Start exactly one Operation" in host.instructions[0], "runner instruction must bound operation.start")
+    expect("first tool response must contain exactly one function call: operation.start" in host.instructions[0],
+           "runner instruction must prevent DeepSeek from batching reads with operation.start")
+    expect("do not place any other tool call beside operation.start" in host.instructions[0],
+           "runner instruction must forbid parallel write batches")
     return result
 
 
