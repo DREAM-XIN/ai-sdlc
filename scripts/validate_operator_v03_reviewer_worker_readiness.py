@@ -61,7 +61,7 @@ def validate_selection_semantics():
 
     deepseek = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, DEEPSEEK_API_KEY=True, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
     require(deepseek.worker_id == "code-review-reviewer-deepseek", deepseek)
-    require(deepseek.workflow_file == "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml", deepseek)
+    require(deepseek.workflow_file == "ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml", deepseek)
     require(deepseek.credential_env == "DEEPSEEK_API_KEY", deepseek)
 
     gemini = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, DEEPSEEK_API_KEY=False, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
