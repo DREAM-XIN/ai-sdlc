@@ -52,6 +52,8 @@ class DogfoodScenarioObservation:
     function_call_ids: tuple[str, ...]
     recovery_response_ids: tuple[str, ...] = ()
     recovery_function_call_ids: tuple[str, ...] = ()
+    recovery_discovery_decision_ids: tuple[str, ...] = ()
+    recovery_discovery_notification_ids: tuple[str, ...] = ()
     new_session_discovery_observed: bool = False
     repeated_continue_messages: int = 0
     release_eligible: bool = False
@@ -233,8 +235,10 @@ def recovery_instruction(slot: DogfoodSlot, *, operation_id: str) -> str:
     )
 
 
-def _verify_fresh_session_discovery(trace: V03DogfoodResponsesTrace, *, operation_id: str) -> None:
-    matched = False
+def _verify_fresh_session_discovery(
+    trace: V03DogfoodResponsesTrace, *, operation_id: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    matches: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     for item in trace.function_outputs:
         payload = _decode_output(item)
         result = payload.get("result") if payload.get("ok") is True else None
@@ -249,9 +253,28 @@ def _verify_fresh_session_discovery(trace: V03DogfoodResponsesTrace, *, operatio
         same_decision = any(isinstance(row, dict) and str(row.get("operation_id") or "") == operation_id and row.get("status") == "PENDING" for row in decisions)
         same_notification = any(isinstance(row, dict) and str(row.get("operation_id") or "") == operation_id for row in notifications)
         if same_operation and same_decision and same_notification:
-            matched = True
-    if not matched:
-        raise V03DogfoodScenarioRunnerError("fresh session did not rediscover same Operation plus pending Decision/Notification")
+            decision_ids = tuple(sorted(
+                str(row.get("decision_id") or row.get("id") or "")
+                for row in decisions
+                if isinstance(row, dict)
+                and str(row.get("operation_id") or "") == operation_id
+                and row.get("status") == "PENDING"
+                and str(row.get("decision_id") or row.get("id") or "")
+            ))
+            notification_ids = tuple(sorted(
+                str(row.get("notification_id") or row.get("id") or "")
+                for row in notifications
+                if isinstance(row, dict)
+                and str(row.get("operation_id") or "") == operation_id
+                and str(row.get("notification_id") or row.get("id") or "")
+            ))
+            if decision_ids and notification_ids:
+                matches.append((decision_ids, notification_ids))
+    if len(matches) != 1:
+        raise V03DogfoodScenarioRunnerError(
+            "fresh session must contain exactly one inbox result for the same Operation plus pending Decision/Notification"
+        )
+    return matches[0]
 
 
 def run_scenario(
@@ -279,6 +302,8 @@ def run_scenario(
 
     consumed = 0
     recovery_trace: V03DogfoodResponsesTrace | None = None
+    recovery_decision_ids: tuple[str, ...] = ()
+    recovery_notification_ids: tuple[str, ...] = ()
     if scenario == "session_recovery":
         if status != "WAITING_EXTERNAL":
             raise V03DogfoodScenarioRunnerError("session recovery must first stop durably at WAITING_EXTERNAL")
@@ -306,7 +331,9 @@ def run_scenario(
         starts_after = len([row for row in _events(preflight, operation_id) if row.get("event_type") == "operation.started"])
         if starts_before != 1 or starts_after != 1:
             raise V03DogfoodScenarioRunnerError("fresh session replayed or altered operation.start authority")
-        _verify_fresh_session_discovery(recovery_trace, operation_id=operation_id)
+        recovery_decision_ids, recovery_notification_ids = _verify_fresh_session_discovery(
+            recovery_trace, operation_id=operation_id
+        )
     else:
         for _ in range(8):
             status = str(_projection(preflight, operation_id).get("status") or "")
@@ -344,5 +371,7 @@ def run_scenario(
         function_call_ids=trace.function_call_ids,
         recovery_response_ids=recovery_trace.response_ids if recovery_trace else (),
         recovery_function_call_ids=recovery_trace.function_call_ids if recovery_trace else (),
+        recovery_discovery_decision_ids=recovery_decision_ids,
+        recovery_discovery_notification_ids=recovery_notification_ids,
         new_session_discovery_observed=recovery_trace is not None,
     )
