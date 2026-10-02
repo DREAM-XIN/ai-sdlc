@@ -14,12 +14,12 @@ import v03_dispatch_recovery_live_runner as shared
 
 
 REMAINING_SIX_IDEMPOTENCY = {
-    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization-r3",
-    "persist-linearized-before-cancel": "v03-release-fi-persist-linearized-before-cancel-r2",
-    "duplicate-callback": "v03-release-fi-duplicate-callback-r2",
-    "out-of-order-callback": "v03-release-fi-out-of-order-callback-r2",
-    "duplicate-worker-completion": "v03-release-fi-duplicate-worker-completion-r2",
-    "stale-candidate-result": "v03-release-fi-stale-candidate-result",
+    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization-r4",
+    "persist-linearized-before-cancel": "v03-release-fi-persist-linearized-before-cancel-r3",
+    "duplicate-callback": "v03-release-fi-duplicate-callback-r3",
+    "out-of-order-callback": "v03-release-fi-out-of-order-callback-r3",
+    "duplicate-worker-completion": "v03-release-fi-duplicate-worker-completion-r3",
+    "stale-candidate-result": "v03-release-fi-stale-candidate-result-r2",
 }
 
 

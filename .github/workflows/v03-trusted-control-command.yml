@@ -71,6 +71,8 @@ jobs:
                       ('v03-live-remaining-six.yml', 'stale-candidate-result'),
                   '/ai-sdlc v03-trusted-control final-ledger':
                       ('v03-final-live-ledger.yml', ''),
+                  '/ai-sdlc v03-trusted-control auto-continue stale-candidate-result':
+                      ('v03-issue-221-auto-continue.yml', 'stale-candidate-result'),
                   '/ai-sdlc v03-trusted-control auto-continue':
                       ('v03-issue-221-auto-continue.yml', ''),
               },
@@ -112,6 +114,9 @@ jobs:
           args=(workflow run "$WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH")
           if [[ -n "$SCENARIO" ]]; then
             args+=(--field "scenario=$SCENARIO")
+            if [[ "$WORKFLOW" = v03-issue-221-auto-continue.yml ]]; then
+              args+=(--field "mode=scenario-first")
+            fi
           fi
           gh "${args[@]}"
 

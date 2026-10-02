@@ -68,12 +68,12 @@ SCENARIOS = (
 )
 
 IDEMPOTENCY = {
-    CANCEL_BEFORE: "v03-release-fi-cancel-before-persist-linearization-r3",
-    PERSIST_BEFORE_CANCEL: "v03-release-fi-persist-linearized-before-cancel-r2",
-    DUPLICATE_CALLBACK: "v03-release-fi-duplicate-callback-r2",
-    OUT_OF_ORDER: "v03-release-fi-out-of-order-callback-r2",
-    DUPLICATE_WORKER: "v03-release-fi-duplicate-worker-completion-r2",
-    STALE_CANDIDATE: "v03-release-fi-stale-candidate-result",
+    CANCEL_BEFORE: "v03-release-fi-cancel-before-persist-linearization-r4",
+    PERSIST_BEFORE_CANCEL: "v03-release-fi-persist-linearized-before-cancel-r3",
+    DUPLICATE_CALLBACK: "v03-release-fi-duplicate-callback-r3",
+    OUT_OF_ORDER: "v03-release-fi-out-of-order-callback-r3",
+    DUPLICATE_WORKER: "v03-release-fi-duplicate-worker-completion-r3",
+    STALE_CANDIDATE: "v03-release-fi-stale-candidate-result-r2",
 }
 
 SENTINEL_PATH = ".ai-sdlc/v03-stale-candidate-transition.json"
@@ -677,6 +677,27 @@ def _api_json(*, method: str, url: str, token: str, payload: dict[str, Any] | No
         return int(exc.code), parsed
 
 
+def _wait_for_candidate_transition(preflight, *, old_head: str, new_head: str,
+                                   attempts: int = 30, pause: Callable[[float], None] = time.sleep) -> None:
+    """Wait only for PR indexing of the already-created exact B commit; never repeat a write."""
+    require(attempts > 0, "candidate transition wait requires a positive bound")
+    expected_pr = preflight.fixture_candidate.candidate_pr_number
+    for attempt in range(attempts):
+        current = preflight.composition.candidate_provider.current_candidate(
+            operation_id="v03-stale-candidate-transition",
+            repository=preflight.execution.repository,
+            feature_id=preflight.slot.feature_id,
+            target_ref=preflight.slot.target_ref,
+        )
+        require(current.candidate_pr_number == expected_pr, "fixture PR identity changed during transition")
+        if current.candidate_head_sha == new_head:
+            return
+        require(current.candidate_head_sha == old_head, "fixture PR advanced to an unexpected transition head")
+        if attempt + 1 < attempts:
+            pause(2.0)
+    require(False, "fixture PR current head does not equal transition B after bounded visibility wait")
+
+
 def _advance_candidate(preflight, *, old_head: str) -> str:
     token = str(os.environ.get("AI_SDLC_EVENT_WRITE_TOKEN") or "")
     api = str(os.environ.get("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
@@ -712,13 +733,7 @@ def _advance_candidate(preflight, *, old_head: str) -> str:
     commit = created.get("commit") or {}
     new_head = str(commit.get("sha") or "").lower()
     require(len(new_head) == 40 and new_head != old_head, "stale-candidate transition lacks distinct exact B head")
-    current = preflight.composition.candidate_provider.current_candidate(
-        operation_id="v03-stale-candidate-transition",
-        repository=repository,
-        feature_id=slot.feature_id,
-        target_ref=slot.target_ref,
-    )
-    require(current.candidate_head_sha == new_head, "fixture PR current head does not equal transition B")
+    _wait_for_candidate_transition(preflight, old_head=old_head, new_head=new_head)
     return new_head
 
 

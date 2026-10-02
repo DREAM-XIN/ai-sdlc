@@ -39,10 +39,12 @@ def selected_steps(mode, scenario):
         if scenario:
             raise ContinueError("resume mode does not accept a scenario filter")
         return BOOTSTRAP + steps + (Step("v03-final-live-ledger.yml"),)
-    if mode == "scenario":
+    if mode in {"scenario", "scenario-first"}:
         matches = tuple(step for step in steps if step.scenario == scenario)
         if len(matches) != 1:
             raise ContinueError("scenario mode requires one allowlisted singleton scenario")
+        if mode == "scenario-first":
+            return BOOTSTRAP + matches + tuple(s for s in steps if s != matches[0]) + (Step("v03-final-live-ledger.yml"),)
         return BOOTSTRAP + matches
     raise ContinueError("unknown continuation mode")
 

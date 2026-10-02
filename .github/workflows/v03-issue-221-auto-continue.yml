@@ -7,7 +7,7 @@ on:
         description: Resume exact-version producers or validate one scenario first
         type: choice
         default: resume
-        options: [resume, scenario]
+        options: [resume, scenario, scenario-first]
       scenario:
         description: Required only for scenario mode; one closed singleton scenario
         type: string

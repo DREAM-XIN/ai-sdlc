@@ -89,12 +89,12 @@ def validate_closed_phase_map():
     require(len(set(subject.IDEMPOTENCY.values())) == 3, "#314 scenarios reuse one idempotency key")
     require(subject.UNKNOWN == "unknown-takeover", "UNKNOWN row identity drifted")
     require(
-        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r9",
+        subject.IDEMPOTENCY[subject.UNKNOWN] == "v03-release-fi-unknown-takeover-r10",
         "UNKNOWN recovery reused the consumed fail-closed Operation identity",
     )
     require(subject.CONCURRENT == "concurrent-resume", "concurrent row identity drifted")
     require(
-        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r8",
+        subject.IDEMPOTENCY[subject.CONCURRENT] == "v03-release-fi-concurrent-resume-r9",
         "concurrent recovery reused the consumed partial Operation identity",
     )
     require(subject.PREAUTH == "reservation-committed-pre-authorization-crash-recovery", "preauth row identity drifted")

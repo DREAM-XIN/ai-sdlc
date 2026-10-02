@@ -42,9 +42,9 @@ CONCURRENT = "concurrent-resume"
 PREAUTH = "reservation-committed-pre-authorization-crash-recovery"
 LEGACY_UNKNOWN_IDEMPOTENCY = "v03-release-fi-unknown-takeover"
 IDEMPOTENCY = {
-    UNKNOWN: "v03-release-fi-unknown-takeover-r9",
-    CONCURRENT: "v03-release-fi-concurrent-resume-r8",
-    PREAUTH: "v03-release-fi-preauth-crash-r3",
+    UNKNOWN: "v03-release-fi-unknown-takeover-r10",
+    CONCURRENT: "v03-release-fi-concurrent-resume-r9",
+    PREAUTH: "v03-release-fi-preauth-crash-r4",
 }
 PHASE_SCENARIO = {
     "unknown-inject": UNKNOWN,

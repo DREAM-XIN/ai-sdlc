@@ -74,6 +74,13 @@ class ContinueTests(unittest.TestCase):
         self.assertEqual(steps[-1], STEP)
         self.assertFalse(any(s.workflow == "v03-final-live-ledger.yml" for s in steps))
 
+    def test_scenario_first_then_full_resume_on_same_version(self):
+        steps = selected_steps("scenario-first", STEP.scenario)
+        self.assertEqual(steps[4], STEP)
+        self.assertEqual(len(steps), 16)
+        self.assertEqual(set(steps[4:-1]), set(live_steps()))
+        self.assertEqual(steps[-1].workflow, "v03-final-live-ledger.yml")
+
     def test_invalid_modes_and_scenarios_rejected(self):
         for mode, scenario in (("all", ""), ("resume", STEP.scenario),
                                ("scenario", ""), ("scenario", "invented")):
