@@ -63,7 +63,7 @@ def reviewer_binding(workflow):
         "role": "reviewer",
         "profile": "claude" if workflow == CLAUDE else "copilot",
         "workflow_file": workflow,
-        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "default_branch": "main",
         "credential_name": "ANTHROPIC_API_KEY" if workflow == CLAUDE else "COPILOT_GITHUB_TOKEN",
     }
