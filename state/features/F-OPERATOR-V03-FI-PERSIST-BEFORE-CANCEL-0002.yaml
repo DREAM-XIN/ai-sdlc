@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 1
+revision: 2
 feature:
   id: F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0002
   title: 'v0.3 real-runtime fixture: persist-linearized-before-cancel'
@@ -8,13 +8,13 @@ feature:
 workflow:
   profile: v03-real-runtime-fixture
   status: ACTIVE
-  current_stage: code-review
+  current_stage: verification
   stages:
   - id: code-review
-    status: WORKING
+    status: DONE
     gate: code-gate
   - id: verification
-    status: TODO
+    status: READY
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -24,15 +24,22 @@ artifacts:
 - id: implementation-v1
   type: implementation
   uri: docs/features/F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0002/implementation.md
-  status: draft
+  status: approved
 gates:
 - id: code-gate
-  status: PENDING
+  status: PASS
+  evidence:
+  - vertical-evidence-ea8116b178743a84e649
 - id: verification-gate
   status: PENDING
 - id: release-gate
   status: PENDING
-evidence: []
+evidence:
+- id: vertical-evidence-ea8116b178743a84e649
+  status: pass
+  type: review
+  uri: docs/features/F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0002/worker-runs/vertical-2249b77a55e8c973f9cb2a885077f527/reviewer-comment-5952302175-binding-1f6b7db89711ec79eca92b9d9d64192e63baadee902c12b5ea8a3930fd2c03c8--first-attempt--key-dispatch-c4dcb21acae8af50b6a75809c834a22b07c2b640--run-37006346877--head-c2a5661953820c53e344c4e7bb0214e53d6df4eb--lease-57ac186b2fd59da12e15b7f83b20e88a69cac942f4885238f9acb1af60b37198.json
 applied_events:
 - EVT-F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0002-CODE-REVIEW-START
-updated_at: '2026-08-18T05:11:02Z'
+- EVT-F-OPERATOR-V03-FI-PERSIST-BEFORE-CANCEL-0002-VERTICAL-CODE-REVIEW-PASS-F08D7EB623BC
+updated_at: '2026-10-02T12:27:11Z'
