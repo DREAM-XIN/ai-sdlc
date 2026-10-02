@@ -1,0 +1,45 @@
+protocol_version: 0.1.0
+revision: 2
+feature:
+  id: F-OPERATOR-V03-FI-DUPLICATE-CALLBACK-0003
+  title: 'v0.3 real-runtime fixture: duplicate-callback'
+  risk: low
+  issue: '#310'
+workflow:
+  profile: v03-real-runtime-fixture
+  status: ACTIVE
+  current_stage: verification
+  stages:
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: READY
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts:
+- id: implementation-v1
+  type: implementation
+  uri: docs/features/F-OPERATOR-V03-FI-DUPLICATE-CALLBACK-0003/implementation.md
+  status: approved
+gates:
+- id: code-gate
+  status: PASS
+  evidence:
+  - vertical-evidence-52e5dd989347e057be0c
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence:
+- id: vertical-evidence-52e5dd989347e057be0c
+  status: pass
+  type: review
+  uri: docs/features/F-OPERATOR-V03-FI-DUPLICATE-CALLBACK-0003/worker-runs/vertical-5b14ee1d04d570b8d769a09903d5bbc7/reviewer-comment-5955674703-binding-57d0ce529e1a9e5319c65a41b394f3d35a177ebd5471801cce9f9d610b70ffb7--first-attempt--key-dispatch-3cc540e61cf4684550744498142acf9f701d60ac--run-37026903048--head-85b73b76c6fdb96e66a5b70a92b9be30a37e8c68--lease-5e4b78f7d55979c9ecf33b9dc766e09dd718c1f5f4eda9f5c77ee4c0168f92ce.json
+applied_events:
+- EVT-F-OPERATOR-V03-FI-DUPLICATE-CALLBACK-0003-CODE-REVIEW-START
+- EVT-F-OPERATOR-V03-FI-DUPLICATE-CALLBACK-0003-VERTICAL-CODE-REVIEW-PASS-F369BAC376CC
+updated_at: '2026-10-02T15:31:35Z'
