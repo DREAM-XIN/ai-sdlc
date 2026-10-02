@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any, Callable
 from urllib import error, request
 
@@ -20,11 +21,15 @@ class V03DogfoodOpenAIHostError(RuntimeError):
     pass
 
 
+_RESPONSE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+
+
 @dataclass(frozen=True)
 class V03DogfoodOpenAIHostConfig:
     api_key: str
     model: str
     api_base: str = "https://api.openai.com/v1"
+    stateless_history: bool = False
     max_tool_turns: int = 12
 
     def __post_init__(self) -> None:
@@ -32,6 +37,8 @@ class V03DogfoodOpenAIHostConfig:
             raise ValueError("dogfood Responses host requires server-owned API key/model")
         if not self.api_base.startswith("https://"):
             raise ValueError("dogfood Responses host requires HTTPS provider endpoint")
+        if not isinstance(self.stateless_history, bool):
+            raise ValueError("dogfood Responses host stateless-history flag must be boolean")
         if self.max_tool_turns < 1 or self.max_tool_turns > 32:
             raise ValueError("dogfood Responses host tool-turn bound is invalid")
 
@@ -86,7 +93,7 @@ class V03DogfoodOpenAIResponsesHost:
         if not isinstance(payload, dict):
             raise V03DogfoodOpenAIHostError("Responses provider returned non-object payload")
         response_id = payload.get("id")
-        if not isinstance(response_id, str) or not response_id.startswith("resp_") or len(response_id) > 256:
+        if not isinstance(response_id, str) or not _RESPONSE_ID_RE.fullmatch(response_id):
             raise V03DogfoodOpenAIHostError("Responses provider returned invalid response id")
         if payload.get("status") != "completed":
             raise V03DogfoodOpenAIHostError("dogfood host executes tools only from completed Responses objects")
@@ -121,7 +128,7 @@ class V03DogfoodOpenAIResponsesHost:
             body,
         )
         if status != 200 or not isinstance(payload, dict):
-            raise V03DogfoodOpenAIHostError("OpenAI Responses request failed closed")
+            raise V03DogfoodOpenAIHostError("Responses provider request failed closed")
         self._response_id(payload)
         return payload
 
@@ -140,9 +147,10 @@ class V03DogfoodOpenAIResponsesHost:
         response_ids: list[str] = []
         call_ids: list[str] = []
         outputs: list[dict[str, Any]] = []
+        stateless_input: list[dict[str, Any]] = [{"role": "user", "content": instruction}]
         payload = self._create({
             "model": self.config.model,
-            "input": instruction,
+            "input": stateless_input if self.config.stateless_history else instruction,
             "tools": tools,
             "parallel_tool_calls": False,
         })
@@ -174,12 +182,24 @@ class V03DogfoodOpenAIResponsesHost:
                 raise V03DogfoodOpenAIHostError("adapter output correlation differs from exact provider call_id")
             call_ids.append(call_id)
             outputs.append(dict(result))
-            payload = self._create({
+            next_body = {
                 "model": self.config.model,
-                "previous_response_id": response_id,
-                "input": [result],
                 "tools": tools,
                 "parallel_tool_calls": False,
-            })
+            }
+            if self.config.stateless_history:
+                # DeepSeek's Responses endpoint is deliberately stateless and
+                # ignores previous_response_id. Replay the complete supported
+                # Responses history so each tool round remains causally bound.
+                for item in payload["output"]:
+                    item_type = item.get("type")
+                    if item_type in {"message", "reasoning", "function_call"}:
+                        stateless_input.append(dict(item))
+                stateless_input.append(dict(result))
+                next_body["input"] = list(stateless_input)
+            else:
+                next_body["previous_response_id"] = response_id
+                next_body["input"] = [result]
+            payload = self._create(next_body)
 
         raise V03DogfoodOpenAIHostError("dogfood Responses host failed to reach bounded terminal response")
