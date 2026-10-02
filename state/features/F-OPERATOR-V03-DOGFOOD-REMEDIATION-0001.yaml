@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 0
+revision: 1
 feature:
   id: F-OPERATOR-V03-DOGFOOD-REMEDIATION-0001
   title: 'v0.3 release dogfood: review_remediation'
@@ -11,7 +11,7 @@ workflow:
   current_stage: implementation
   stages:
   - id: implementation
-    status: READY
+    status: WORKING
   - id: code-review
     status: TODO
     gate: code-gate
@@ -22,7 +22,11 @@ workflow:
     status: TODO
     gate: release-gate
 tasks: []
-artifacts: []
+artifacts:
+- id: dogfood-scenario-task
+  type: dogfood-task
+  uri: docs/features/F-OPERATOR-V03-DOGFOOD-REMEDIATION-0001/dogfood-task.md
+  status: draft
 gates:
 - id: code-gate
   status: PENDING
@@ -31,5 +35,6 @@ gates:
 - id: release-gate
   status: PENDING
 evidence: []
-applied_events: []
-updated_at: '2026-08-25T07:20:02Z'
+applied_events:
+- EVT-F-OPERATOR-V03-DOGFOOD-REMEDIATION-0001-IMPLEMENTATION-START
+updated_at: '2026-08-25T07:21:02Z'
