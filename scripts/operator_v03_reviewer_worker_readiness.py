@@ -66,6 +66,15 @@ V03_REVIEWER_OPTIONS = (
         credential_env="DASHSCOPE_API_KEY",
     ),
     ReviewerWorkerOption(
+        worker_id="code-review-reviewer-deepseek",
+        role="reviewer",
+        stage="code-review",
+        profile="deepseek",
+        workflow_file="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        registry_workflow_file="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        credential_env="DEEPSEEK_API_KEY",
+    ),
+    ReviewerWorkerOption(
         worker_id="code-review-reviewer-gemini",
         role="reviewer",
         stage="code-review",
@@ -84,7 +93,7 @@ V03_REVIEWER_OPTIONS = (
         credential_env="COPILOT_GITHUB_TOKEN",
     ),
 )
-SELECTION_POLICY = "v03-frozen-reviewer-provider-order/v1"
+SELECTION_POLICY = "v03-frozen-reviewer-provider-order/v2"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -109,7 +118,7 @@ def _registry_reviewers(path: Path) -> tuple[dict, ...]:
     if len(rows) != len(V03_REVIEWER_OPTIONS):
         raise ReviewerWorkerReadinessError(
             "WORKER_REGISTRY_DRIFT",
-            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Qwen/Gemini/Copilot options",
+            "v0.3 Reviewer registry must contain exactly the reviewed Claude/Qwen/DeepSeek/Gemini/Copilot options",
         )
     return rows
 

@@ -59,7 +59,12 @@ def validate_selection_semantics():
     require(qwen.workflow_file == "ai-sdlc-gh-aw-reviewer-qwen.lock.yml", qwen)
     require(qwen.credential_env == "DASHSCOPE_API_KEY", qwen)
 
-    gemini = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
+    deepseek = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, DEEPSEEK_API_KEY=True, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
+    require(deepseek.worker_id == "code-review-reviewer-deepseek", deepseek)
+    require(deepseek.workflow_file == "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml", deepseek)
+    require(deepseek.credential_env == "DEEPSEEK_API_KEY", deepseek)
+
+    gemini = select(ANTHROPIC_API_KEY=False, DASHSCOPE_API_KEY=False, DEEPSEEK_API_KEY=False, GEMINI_API_KEY=True, COPILOT_GITHUB_TOKEN=False)
     require(gemini.worker_id == "code-review-reviewer-gemini", gemini)
     require(gemini.workflow_file == "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml", gemini)
     require(gemini.credential_env == "GEMINI_API_KEY", gemini)
@@ -94,11 +99,12 @@ def validate_selection_semantics():
 
 
 def validate_secret_non_disclosure():
-    old = {name: os.environ.get(name) for name in ("ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY", "GEMINI_API_KEY", "COPILOT_GITHUB_TOKEN")}
+    old = {name: os.environ.get(name) for name in ("ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "COPILOT_GITHUB_TOKEN")}
     secret_value = "super-secret-provider-value-that-must-not-leak"
     try:
         os.environ["ANTHROPIC_API_KEY"] = secret_value
         os.environ.pop("DASHSCOPE_API_KEY", None)
+        os.environ.pop("DEEPSEEK_API_KEY", None)
         os.environ.pop("GEMINI_API_KEY", None)
         os.environ.pop("COPILOT_GITHUB_TOKEN", None)
         selected = selection_from_environment(registry_path=REGISTRY, workflow_dir=WORKFLOWS)
@@ -168,7 +174,7 @@ def main():
     validate_secret_non_disclosure()
     validate_registry_drift_fails_closed()
     print("v0.3 Reviewer Worker readiness validation passed")
-    print("- frozen Claude/Qwen/Gemini/Copilot Reviewer registry + locked workflow secret contract")
+    print("- frozen Claude/Qwen/DeepSeek/Gemini/Copilot Reviewer registry + locked workflow secret contract")
     print("- deterministic configured-provider selection; no caller-selected provider")
     print("- zero configured providers => WORKER_PROVIDER_UNAVAILABLE before external authority")
     print("- credential values never enter public selection/evidence")

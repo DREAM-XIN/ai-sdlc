@@ -160,7 +160,7 @@ def binding(workflow="ai-sdlc-gh-aw-reviewer-claude.lock.yml"):
         "role": "reviewer",
         "profile": "claude" if "claude" in workflow else "copilot",
         "workflow_file": workflow,
-        "selection_policy_id": "v03-frozen-reviewer-provider-order/v1",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "default_branch": "main",
         "credential_name": "ANTHROPIC_API_KEY" if "claude" in workflow else "COPILOT_GITHUB_TOKEN",
     }
@@ -472,6 +472,12 @@ def validate_registered_reviewer_provider_bindings_cross_post_boundary():
             "DASHSCOPE_API_KEY",
         ),
         (
+            "deepseek",
+            "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+            "code-review-reviewer-deepseek",
+            "DEEPSEEK_API_KEY",
+        ),
+        (
             "gemini",
             "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml",
             "code-review-reviewer-gemini",
@@ -508,7 +514,7 @@ def validate_registered_reviewer_provider_bindings_cross_post_boundary():
         require(execution["workflow_file"] == workflow, f"{profile} Reviewer workflow binding drifted")
         require(execution["credential_name"] == credential, f"{profile} Reviewer credential binding drifted")
         require(
-            execution["selection_policy_id"] == "v03-frozen-reviewer-provider-order/v1",
+            execution["selection_policy_id"] == "v03-frozen-reviewer-provider-order/v2",
             f"{profile} Reviewer selection policy binding drifted",
         )
 
@@ -520,7 +526,7 @@ def main():
     validate_raw_writer_is_fenced()
     validate_lost_ack_fresh_process_provider_drift_and_cancel()
     print("Operator one-shot external-create fence validation passed")
-    print("- Qwen/Gemini Reviewer frozen workflow bindings cross the one-shot POST boundary")
+    print("- Qwen/DeepSeek/Gemini Reviewer frozen workflow bindings cross the one-shot POST boundary")
     print("- real Git CAS elects one durable attempt creator; loser replans lookup-only")
     print("- replay, forged authorization, takeover and projection rebuild preserve immutable authority")
     print("- raw attempt writer is fenced and capability inventory includes raw-external-create-attempt")

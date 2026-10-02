@@ -68,7 +68,7 @@ def reviewer(*, workflow="ai-sdlc-gh-aw-reviewer-claude.lock.yml", present=True)
         workflow_file=workflow,
         credential_env="ANTHROPIC_API_KEY" if "claude" in workflow else "COPILOT_GITHUB_TOKEN",
         credential_present=present,
-        selection_policy="v03-frozen-reviewer-provider-order/v1",
+        selection_policy="v03-frozen-reviewer-provider-order/v2",
     )
 
 

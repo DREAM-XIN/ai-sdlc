@@ -165,7 +165,7 @@ def main():
     validate_main_only_gate()
     print("v0.3 dogfood execution binding validation passed")
     print("- Developer: codex -> copilot; generic trusted Registry Worker")
-    print("- Reviewer: claude -> qwen -> gemini -> copilot; specialized read-only Gate Worker")
+    print("- Reviewer: claude -> qwen -> deepseek -> gemini -> copilot; specialized read-only Gate Worker")
     print("- QA: gemini -> copilot; specialized read-only Gate Worker")
     print("- exact credential presence + Worker identity are bound before cloud spend")
     print("- no model call, Worker dispatch, Store/Event mutation, or dogfood/release evidence")
