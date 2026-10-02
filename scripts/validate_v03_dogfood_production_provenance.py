@@ -154,6 +154,52 @@ def main():
     wrong_identity["provenance"]["verifier_identity"] = "self-attested"
     expect_failure(wrong_identity, label="self-selected verifier identity")
 
+
+    # Production control workflows execute trusted main, while their input and
+    # terminal candidate heads are independently established in the target ref.
+    from dataclasses import replace
+    from validate_v03_dogfood_evidence import _trusted_provenance_errors
+    control = "b" * 40
+    bound_record = {**record(), "feature_id": "F-DOGFOOD", "target_ref": "dogfood/v0.3-happy"}
+    binding = dict(repository=REPOSITORY, feature_id="F-DOGFOOD", target_ref=bound_record["target_ref"],
+                   candidate_pr_number=401, candidate_input_head_sha=HEAD, role="reviewer",
+                   workflow="reviewer.yml", external_dispatch_key="key-1")
+    run = dict(id=RUN_ID, event="workflow_dispatch", status="completed", conclusion="success",
+               head_branch="main", head_sha=control, path=".github/workflows/reviewer.yml",
+               run_attempt=1, display_title="AI-SDLC gh-aw key-1", repository={"full_name": REPOSITORY})
+    def bound_verifier(*, changed_run=None, changed_binding=None, ancestor=True):
+        def get(url, headers):
+            if "/actions/runs/" in url: return 200, {**run, **(changed_run or {})}
+            if "/compare/" in url:
+                return 200, dict(status="ahead" if ancestor else "diverged", behind_by=0 if ancestor else 1,
+                                 merge_base_commit={"sha": "c"*40})
+            return github_get(url, headers)
+        return ProductionDogfoodProvenanceVerifier(
+            config=ProductionDogfoodProvenanceConfig(repository=REPOSITORY, verifier_identity=VERIFIER,
+                supported_adapter_id=ADAPTER_ID, runtime_kind=RUNTIME_KIND, github_token="test",
+                github_api_base="https://api.github.test", installation_commit_sha=control),
+            runtime_receipt_resolver=runtime_resolver, milestone_resolver=milestone_resolver, http_get=get,
+            runtime_binding_resolver=lambda record: {RUN_ID: {**binding, **(changed_binding or {})}},
+        )
+    proof = bound_verifier().verify(bound_record)
+    require(proof.workflow_runs[0].head_sha == control, "actual Actions source SHA was relabeled")
+    require(proof.workflow_runs[0].candidate_head_sha == HEAD, "terminal target SHA was not separately bound")
+    require(not _trusted_provenance_errors(bound_record, bound_verifier()), "shared validator rejected a verified split-source run")
+    for changed in ({"head_sha": "d"*40}, {"run_attempt": 2}, {"head_branch": "feature"},
+                    {"path": ".github/workflows/untrusted.yml"}, {"display_title": "unrelated"}):
+        expect_failure(bound_record, subject=bound_verifier(changed_run=changed), label="control source drift")
+    for changed in ({"target_ref": "main"}, {"candidate_pr_number": 402},
+                    {"candidate_input_head_sha": None}, {"feature_id": "F-OTHER"}):
+        expect_failure(bound_record, subject=bound_verifier(changed_binding=changed), label="target binding drift")
+    bound_verifier(changed_binding={"candidate_input_head_sha": "c"*40}).verify(bound_record)
+    expect_failure(bound_record, subject=bound_verifier(changed_binding={"candidate_input_head_sha": "c"*40}, ancestor=False),
+                   label="diverged historical input")
+    class BadProof:
+        test_only = False
+        def verify(self, record):
+            return replace(proof, workflow_runs=(replace(proof.workflow_runs[0], target_ref="main"),))
+    require(_trusted_provenance_errors(bound_record, BadProof()), "shared validator accepted target-ref drift")
+
     print("v0.3 production dogfood provenance verifier: PASS")
 
 

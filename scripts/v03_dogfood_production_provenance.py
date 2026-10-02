@@ -69,6 +69,7 @@ class ProductionDogfoodProvenanceConfig:
     runtime_kind: str
     github_token: str
     github_api_base: str = "https://api.github.com"
+    installation_commit_sha: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repository", normalize_repository(self.repository))
@@ -90,6 +91,7 @@ class ProductionDogfoodProvenanceVerifier:
         runtime_receipt_resolver: RuntimeReceiptResolver,
         milestone_resolver: MilestoneResolver,
         http_get: HttpGet = _default_get,
+        runtime_binding_resolver=None,
     ) -> None:
         if not callable(runtime_receipt_resolver) or not callable(milestone_resolver) or not callable(http_get):
             raise ValueError("production dogfood provenance resolvers must be callable")
@@ -97,6 +99,7 @@ class ProductionDogfoodProvenanceVerifier:
         self._runtime_receipt_resolver = runtime_receipt_resolver
         self._milestone_resolver = milestone_resolver
         self._http_get = http_get
+        self._runtime_binding_resolver = runtime_binding_resolver
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -146,6 +149,14 @@ class ProductionDogfoodProvenanceVerifier:
         if not run_ids or len(set(run_ids)) != len(run_ids):
             raise DogfoodProvenanceVerificationError("release dogfood requires a non-empty unique workflow run set")
         verified: list[VerifiedWorkflowRun] = []
+        bindings = None
+        if self.config.installation_commit_sha is not None:
+            _sha40(self.config.installation_commit_sha, "trusted installation source")
+            if not callable(self._runtime_binding_resolver):
+                raise DogfoodProvenanceVerificationError("control-source runs lack protected candidate binding resolver")
+            bindings = self._runtime_binding_resolver(record)
+            if not isinstance(bindings, Mapping) or set(bindings) != set(run_ids):
+                raise DogfoodProvenanceVerificationError("protected launch binding set differs from real runs")
         for run_id in sorted(run_ids):
             payload = self._get(f"/repos/{self.config.repository}/actions/runs/{run_id}")
             if not isinstance(payload, dict):
@@ -156,9 +167,44 @@ class ProductionDogfoodProvenanceVerifier:
             if payload.get("event") != "workflow_dispatch" or str(payload.get("conclusion") or "").lower() != "success":
                 raise DogfoodProvenanceVerificationError(f"workflow run {run_id} is not a successful trusted dispatch")
             head_sha = _sha40(payload.get("head_sha"), f"workflow run {run_id} head")
-            if candidate_head is not None and head_sha != candidate_head:
-                raise DogfoodProvenanceVerificationError(f"workflow run {run_id} candidate head mismatch")
-            verified.append(VerifiedWorkflowRun(run_id, str(record.get("repository")), "success", head_sha))
+            if bindings is None:
+                if candidate_head is not None and head_sha != candidate_head:
+                    raise DogfoodProvenanceVerificationError(f"workflow run {run_id} candidate head mismatch")
+                verified.append(VerifiedWorkflowRun(run_id, str(record.get("repository")), "success", head_sha))
+                continue
+            binding = bindings[run_id]
+            if not isinstance(binding, Mapping) or (
+                binding.get("repository"), binding.get("feature_id"), binding.get("target_ref"),
+                binding.get("candidate_pr_number")
+            ) != (record.get("repository"), record.get("feature_id"), record.get("target_ref"),
+                  (record.get("candidate") or {}).get("pr_number")):
+                raise DogfoodProvenanceVerificationError("protected launch escaped exact target/candidate scope")
+            role = binding.get("role")
+            key = str(binding.get("external_dispatch_key") or "")
+            workflow = str(payload.get("path") or "").removeprefix(".github/workflows/")
+            if (head_sha != self.config.installation_commit_sha
+                or payload.get("id") != run_id or payload.get("status") != "completed"
+                or payload.get("head_branch") != "main" or payload.get("run_attempt") != 1
+                or role not in {"developer", "reviewer", "qa"} or not key
+                or payload.get("display_title") != "AI-SDLC gh-aw " + key
+                or workflow != binding.get("workflow")):
+                raise DogfoodProvenanceVerificationError("real run differs from protected exact-main launch binding")
+            stage_head = binding.get("candidate_input_head_sha")
+            if stage_head is None:
+                if role != "developer":
+                    raise DogfoodProvenanceVerificationError("candidate-bound Gate launch lacks input SHA")
+            else:
+                stage_head = _sha40(stage_head, "protected launch candidate input")
+                if stage_head != candidate_head:
+                    comparison = self._get(f"/repos/{self.config.repository}/compare/{stage_head}...{candidate_head}")
+                    if not isinstance(comparison, Mapping) or comparison.get("status") != "ahead" or comparison.get("behind_by") != 0 or (comparison.get("merge_base_commit") or {}).get("sha") != stage_head:
+                        raise DogfoodProvenanceVerificationError("launch candidate is not final target ancestry")
+            verified.append(VerifiedWorkflowRun(
+                run_id, str(record.get("repository")), "success", head_sha,
+                control_head_sha=self.config.installation_commit_sha,
+                candidate_pr_number=binding["candidate_pr_number"], candidate_head_sha=candidate_head,
+                candidate_input_head_sha=stage_head, target_ref=binding["target_ref"], role=role,
+            ))
         return tuple(verified)
 
     def _verify_runtime_receipt(self, record: Mapping[str, Any], run_ids: tuple[int, ...]) -> str:

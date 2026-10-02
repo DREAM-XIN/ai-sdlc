@@ -170,6 +170,12 @@ def main() -> int:
         else None
     )
     observation = run_scenario(preflight=preflight, host=host, recovery_host=recovery_host)
+    final_candidate = preflight.composition.candidate_provider.current_candidate(
+        operation_id=observation.operation_id, repository=preflight.execution.repository,
+        feature_id=preflight.slot.feature_id, target_ref=preflight.slot.target_ref,
+    )
+    if final_candidate.candidate_pr_number != preflight.candidate_pr_number:
+        raise V03DogfoodRuntimeDriverError("dogfood terminal target PR changed")
     doc = {
         "schema_version": "ai-sdlc.v03-dogfood-runtime-observation/v1",
         **asdict(observation),
@@ -178,7 +184,8 @@ def main() -> int:
         "feature_id": preflight.slot.feature_id,
         "target_ref": preflight.slot.target_ref,
         "candidate_pr_number": preflight.candidate_pr_number,
-        "candidate_head_sha": preflight.candidate_head_sha,
+        "candidate_head_sha": final_candidate.candidate_head_sha,
+        "initial_candidate_head_sha": preflight.candidate_head_sha,
         "trusted_context_digest": preflight.trusted_context_digest,
         "release_eligible": False,
         "provenance_verified": False,

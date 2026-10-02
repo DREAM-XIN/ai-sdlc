@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
 from operator_store_model import operation_events
 from operator_vertical_store import vertical_projection
+from operator_store_model import reservation_path
 from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceConfig,
     ProductionDogfoodProvenanceVerifier,
@@ -63,6 +64,10 @@ def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> 
     projection = vertical_projection(snapshot, operation_id)
     if not isinstance(projection, dict):
         raise V03DogfoodPostRunFinalizerError("protected Store Operation projection is malformed")
+    if (projection.get("target_repository"), projection.get("feature_id")) != (
+        preflight.execution.repository, preflight.slot.feature_id
+    ) or observation.get("installation_commit_sha") != preflight.execution.installation_commit_sha:
+        raise V03DogfoodPostRunFinalizerError("Operation/source installation escaped fixed dogfood scope")
     if str(projection.get("status") or "") != str(observation.get("final_status") or ""):
         raise V03DogfoodPostRunFinalizerError("raw final state differs from protected Store projection")
     return events, projection
@@ -87,6 +92,59 @@ def _durable_receipt(events: list[dict[str, Any]], observation: Mapping[str, Any
     if receipt_identity != str(run_ids[-1]):
         raise V03DogfoodPostRunFinalizerError("runtime receipt identity is not the final durable launch receipt")
     return {"receipt_identity": receipt_identity, "workflow_run_ids": run_ids}
+
+
+def _durable_run_bindings(preflight, observation, events):
+    """Re-establish each historical launch through the production result source."""
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    projection = vertical_projection(snapshot, observation["operation_id"])
+    bindings = {}
+    for row in events:
+        if row.get("event_type") != "dispatch.launch.lookup-recorded" or (row.get("payload") or {}).get("lookup_state") != "LAUNCHED":
+            continue
+        lookup = row["payload"]
+        key = str(lookup.get("external_dispatch_key") or "")
+        run_id = int(lookup["receipt_id"])
+        authorizations = [event for event in events if event.get("event_type") == "dispatch.launch.authorized"
+                          and (event.get("payload") or {}).get("external_dispatch_key") == key
+                          and event.get("operation_generation") == row.get("operation_generation")]
+        if not key or len(authorizations) != 1 or run_id in bindings:
+            raise V03DogfoodPostRunFinalizerError("run lacks one exact protected launch authorization")
+        launch = authorizations[0]["payload"]
+        reservation = snapshot.get(reservation_path(str(launch.get("semantic_effect_key") or "")))
+        if not isinstance(reservation, dict) or (
+            reservation.get("external_dispatch_key"), reservation.get("feature_id"), reservation.get("role")
+        ) != (key, preflight.slot.feature_id, launch.get("role")):
+            raise V03DogfoodPostRunFinalizerError("run launch/reservation target binding differs")
+        trusted = {
+            "operation_id": observation["operation_id"],
+            "operation_generation": int(row["operation_generation"]),
+            "operation_profile": str(projection["operation_profile"]),
+            "semantic_effect_key": str(launch["semantic_effect_key"]),
+            "external_dispatch_key": key, "dispatch_id": str(launch["dispatch_id"]),
+            "target_repository": preflight.execution.repository, "target_ref": preflight.slot.target_ref,
+            "feature_id": preflight.slot.feature_id, "expected_revision": int(reservation["expected_revision"]),
+            "feature_stage": str(launch["stage"]), "role": str(launch["role"]),
+            "launch_candidate_head_sha": launch.get("candidate_head_sha"),
+        }
+        resolved = preflight.composition.result_source.resolve(
+            external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=trusted
+        )
+        if resolved.run.run_id != run_id or resolved.run.role != trusted["role"]:
+            raise V03DogfoodPostRunFinalizerError("production result source differs from durable launch")
+        if trusted["role"] in {"reviewer", "qa"} and (
+            resolved.run.candidate_pr_number != preflight.candidate_pr_number
+            or resolved.run.candidate_head_sha != launch.get("candidate_head_sha")
+        ):
+            raise V03DogfoodPostRunFinalizerError("Gate result differs from historical exact candidate")
+        bindings[run_id] = {
+            "repository": preflight.execution.repository, "feature_id": preflight.slot.feature_id,
+            "target_ref": preflight.slot.target_ref, "candidate_pr_number": preflight.candidate_pr_number,
+            "candidate_input_head_sha": launch.get("candidate_head_sha"),
+            "role": trusted["role"], "workflow": preflight.workflows.workflow_for(trusted["role"]),
+            "external_dispatch_key": key,
+        }
+    return bindings
 
 
 def _selected_dispatches(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -249,6 +307,8 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         raise V03DogfoodPostRunFinalizerError("observation repository differs from trusted execution")
     if observation.get("feature_id") != preflight.slot.feature_id or observation.get("target_ref") != preflight.slot.target_ref:
         raise V03DogfoodPostRunFinalizerError("observation escaped the frozen scenario fixture")
+    if observation.get("candidate_head_sha") != preflight.candidate_head_sha:
+        raise V03DogfoodPostRunFinalizerError("candidate head changed after raw execution")
     if int(observation.get("candidate_pr_number") or 0) != preflight.candidate_pr_number:
         raise V03DogfoodPostRunFinalizerError("candidate PR differs from independently resolved fixture authority")
 
@@ -278,9 +338,11 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
             supported_adapter_id=OPENAI_RESPONSES_ADAPTER_ID,
             runtime_kind=RUNTIME_KIND,
             github_token=github_token,
+            installation_commit_sha=preflight.execution.installation_commit_sha,
             github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         ),
         runtime_receipt_resolver=lambda record: _durable_receipt(events, observation),
+        runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
     )
     trusted_facts = {

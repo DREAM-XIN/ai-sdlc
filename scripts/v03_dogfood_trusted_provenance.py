@@ -35,6 +35,12 @@ class VerifiedWorkflowRun:
     repository: str
     conclusion: str
     head_sha: str | None
+    control_head_sha: str | None = None
+    candidate_pr_number: int | None = None
+    candidate_head_sha: str | None = None
+    candidate_input_head_sha: str | None = None
+    target_ref: str | None = None
+    role: str | None = None
 
 
 @dataclass(frozen=True)

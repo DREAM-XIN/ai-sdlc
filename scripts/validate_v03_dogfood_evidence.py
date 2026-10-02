@@ -228,7 +228,22 @@ def _trusted_provenance_errors(record, verifier, *, allow_test_verifier=False):
             if str(run.conclusion).lower() != "success":
                 errors.append(f"trusted workflow run {run.run_id} did not conclude success")
             head_sha = candidate.get("head_sha")
-            if head_sha is not None and run.head_sha != head_sha:
+            if run.control_head_sha is not None:
+                # A trusted control workflow executes main's runtime code while
+                # its target/candidate is independently established from the
+                # protected launch plus the production result source. Preserve
+                # the actual Actions source SHA; never relabel it as target code.
+                source = run.control_head_sha
+                stage_head = run.candidate_input_head_sha
+                valid_source = isinstance(source, str) and len(source) == 40 and all(c in "0123456789abcdef" for c in source)
+                valid_stage = (isinstance(stage_head, str) and len(stage_head) == 40 and all(c in "0123456789abcdef" for c in stage_head)) or (stage_head is None and run.role == "developer")
+                if not (valid_source and valid_stage and run.head_sha == source
+                        and run.candidate_pr_number == candidate.get("pr_number")
+                        and run.candidate_head_sha == head_sha
+                        and run.target_ref == record.get("target_ref")
+                        and run.role in {"developer", "reviewer", "qa"}):
+                    errors.append(f"trusted workflow run {run.run_id} control/candidate binding mismatch")
+            elif head_sha is not None and run.head_sha != head_sha:
                 errors.append(f"trusted workflow run {run.run_id} candidate head mismatch")
 
     declared_categories = {
