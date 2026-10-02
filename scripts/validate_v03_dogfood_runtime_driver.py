@@ -7,6 +7,9 @@ from v03_dogfood_runtime_driver import (
     RUN,
     VALIDATE_ONLY,
     V03DogfoodRuntimeDriverError,
+    DOGFOOD_RESPONSES_API_BASE,
+    DOGFOOD_RESPONSES_MODEL,
+    dogfood_responses_host_config,
     require_mode,
 )
 
@@ -199,12 +202,36 @@ def main():
     rejected(mode=RUN, scenario="unknown", event_name="workflow_dispatch", ref="refs/heads/main")
     rejected(mode="unsafe", scenario="happy_path", event_name="pull_request", ref="refs/pull/348/merge")
 
+    provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
+    expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
+           "dogfood Responses provider endpoint drifted")
+    expect(provider.model == DOGFOOD_RESPONSES_MODEL == "deepseek-flash",
+           "dogfood Responses model is not fixed before effects")
+    expect(provider.continuation_mode == "full_history",
+           "DeepSeek Responses transport must remain stateless/full-history")
+    try:
+        dogfood_responses_host_config({})
+    except V03DogfoodRuntimeDriverError:
+        pass
+    else:
+        raise AssertionError("dogfood Responses transport accepted missing DeepSeek credential")
+
     from pathlib import Path
     import yaml
     from gh_aw_provider_registry import load_registry
     from v03_dogfood_execution_bindings import credential_identities
     root = Path(__file__).resolve().parents[1]
-    live = yaml.safe_load((root / ".github/workflows/v03-real-dogfood-scenario.yml").read_text())
+    live_path = root / ".github/workflows/v03-real-dogfood-scenario.yml"
+    live_text = live_path.read_text()
+    live = yaml.safe_load(live_text)
+    readiness_text = (root / ".github/workflows/v03-dogfood-readiness.yml").read_text()
+    expect("secrets.DEEPSEEK_API_KEY" in live_text and "AI_SDLC_DEEPSEEK_API_KEY" in live_text,
+           "real dogfood workflow lacks DeepSeek Responses credential binding")
+    expect("AI_SDLC_OPENAI_API_KEY" not in live_text and "AI_SDLC_OPENAI_MODEL" not in live_text,
+           "real dogfood workflow still requires unconfigured OpenAI client transport")
+    expect("HAS_AI_SDLC_DEEPSEEK_API_KEY" in readiness_text
+           and '"DEEPSEEK_API_KEY": "HAS_AI_SDLC_DEEPSEEK_API_KEY"' in readiness_text,
+           "readiness does not test the actual DeepSeek client transport credential")
     git_store_transport_tests(live)
     finalizer_text = (root / ".github/workflows/v03-finalize-real-dogfood-scenario.yml").read_text()
     finalizer = yaml.safe_load(finalizer_text)
