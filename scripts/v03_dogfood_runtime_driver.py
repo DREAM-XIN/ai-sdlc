@@ -26,6 +26,9 @@ VALIDATE_ONLY = "validate-only"
 PREFLIGHT_ONLY = "preflight-only"
 RUN = "run"
 MODES = frozenset({VALIDATE_ONLY, PREFLIGHT_ONLY, RUN})
+DOGFOOD_RESPONSES_PROVIDER = "deepseek"
+DOGFOOD_RESPONSES_API_BASE = "https://api.deepseek.com"
+DOGFOOD_RESPONSES_MODEL = "deepseek-flash"
 
 
 class V03DogfoodRuntimeDriverError(RuntimeError):
@@ -37,6 +40,16 @@ def _required(env: Mapping[str, str], name: str) -> str:
     if not value:
         raise V03DogfoodRuntimeDriverError(f"missing trusted dogfood configuration: {name}")
     return value
+
+
+def dogfood_responses_host_config(env: Mapping[str, str]) -> V03DogfoodOpenAIHostConfig:
+    """Resolve the fixed pre-effect provider transport for v0.3 dogfood."""
+    return V03DogfoodOpenAIHostConfig(
+        api_key=_required(env, "AI_SDLC_DEEPSEEK_API_KEY"),
+        model=DOGFOOD_RESPONSES_MODEL,
+        api_base=DOGFOOD_RESPONSES_API_BASE,
+        continuation_mode="full_history",
+    )
 
 
 def _head() -> str:
@@ -205,10 +218,7 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))
         return 0
 
-    host_config = V03DogfoodOpenAIHostConfig(
-        api_key=_required(os.environ, "AI_SDLC_OPENAI_API_KEY"),
-        model=_required(os.environ, "AI_SDLC_OPENAI_MODEL"),
-    )
+    host_config = dogfood_responses_host_config(os.environ)
     host = V03DogfoodOpenAIResponsesHost(config=host_config, adapter=preflight.composition.adapter)
     recovery_host = (
         V03DogfoodOpenAIResponsesHost(config=host_config, adapter=preflight.composition.adapter)
