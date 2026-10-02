@@ -120,10 +120,17 @@ class ReplaySafeProductionGhAwCollector:
             raise DuplicateWorkerCompletionReplayError(
                 "durable callback envelope does not bind the requested Operation/dispatch"
             )
+        resolve_trusted = dict(trusted)
+        # The durable callback envelope stores the canonical callback field name
+        # `candidate_head_sha`, while the production gh-aw result source expects
+        # the launch-time alias `launch_candidate_head_sha`.  Reconstruct that
+        # read-only resolver view from the sealed durable callback instead of
+        # weakening Gate/candidate validation.
+        resolve_trusted["launch_candidate_head_sha"] = trusted.get("candidate_head_sha")
         resolved = self.result_source.resolve(
             external_dispatch_key=external_dispatch_key,
             expected_receipt_identity=str(trusted["runtime_receipt_identity"]),
-            trusted_context=dict(trusted),
+            trusted_context=resolve_trusted,
         )
         worker_payload = validate_worker_result(str(trusted.get("role") or ""), resolved.role_payload)
         if canonical_json(worker_payload) != canonical_json(envelope.get("worker_payload") or {}):
