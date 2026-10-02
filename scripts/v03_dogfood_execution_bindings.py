@@ -55,7 +55,7 @@ class DogfoodExecutionBinding:
 # These are the frozen production contexts required by the three release dogfoods.
 _CONTEXTS = (
     ("developer", "implementation", "implementation-developer", ("codex", "copilot"), False),
-    ("reviewer", "code-review", "code-review-reviewer", ("claude", "qwen", "gemini", "copilot"), True),
+    ("reviewer", "code-review", "code-review-reviewer", ("claude", "qwen", "deepseek", "gemini", "copilot"), True),
     ("qa", "verification", "verification-qa", ("gemini", "copilot"), True),
 )
 
