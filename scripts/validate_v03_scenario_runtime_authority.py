@@ -91,12 +91,12 @@ def policy(*, installation=INSTALLATION):
     )
 
 
-def live(*, exec_obj=None, policy_obj=None):
+def live(*, exec_obj=None, policy_obj=None, state_sha=STATE_SHA):
     exec_obj = exec_obj or execution()
     return V03LiveAuthority(
         execution=exec_obj,
         materialization_commit_sha=MATERIALIZATION,
-        protected_state_ref_sha=STATE_SHA,
+        protected_state_ref_sha=state_sha,
         protection_receipt=SimpleNamespace(status="PROTECTED"),
         policy=policy_obj or policy(),
     )
@@ -237,6 +237,44 @@ def _expect_preflight_rejected(
         preflight_subject.build_v03_scenario_runtime_composition = original
 
 
+
+def validate_trusted_context_digest_is_stable_across_store_tip_refresh():
+    original = preflight_subject.build_v03_scenario_runtime_composition
+    slot = SLOTS[0]
+
+    def fake_builder(**kwargs):
+        requested = composition_subject.slot_for_scenario(kwargs["scenario"])
+        return FakeComposition(requested, FakeCandidateProvider(requested))
+
+    preflight_subject.build_v03_scenario_runtime_composition = fake_builder
+    try:
+        common = dict(
+            scenario=slot.scenario,
+            execution=execution(),
+            reviewer_selection=reviewer(),
+            protection_verifier=FakeProtectionVerifier(),
+            adapter_id="v03-scenario-release-verifier",
+            target_read_token="bounded-read-token",
+            actions_token="bounded-actions-token",
+            event_write_token="bounded-event-write-token",
+            clock=lambda: "2026-08-20T00:00:00Z",
+        )
+        first = preflight_subject.build_v03_scenario_runtime_preflight(
+            live_authority=live(state_sha="3" * 40),
+            **common,
+        )
+        refreshed = preflight_subject.build_v03_scenario_runtime_preflight(
+            live_authority=live(state_sha="5" * 40),
+            **common,
+        )
+        require(
+            first.trusted_context_digest == refreshed.trusted_context_digest,
+            "mutable protected Store tip leaked into semantic trusted context digest",
+        )
+    finally:
+        preflight_subject.build_v03_scenario_runtime_composition = original
+
+
 def validate_preflight_authority_fences():
     other_exec = execution(installation="9" * 40)
     _expect_preflight_rejected(live_obj=live(exec_obj=other_exec))
@@ -371,6 +409,7 @@ def validate_malformed_candidate_fails_before_any_runner():
 def main():
     validate_closed_inventory_and_api_surface()
     validate_all_nine_preflights_are_exact_and_zero_effect()
+    validate_trusted_context_digest_is_stable_across_store_tip_refresh()
     validate_preflight_authority_fences()
     validate_candidate_truth_is_exact_and_fail_closed()
     validate_malformed_candidate_fails_before_any_runner()
