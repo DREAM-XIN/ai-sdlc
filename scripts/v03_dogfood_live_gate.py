@@ -19,11 +19,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import argparse
 import hashlib
+import io
 import json
 import os
+from pathlib import PurePosixPath
 import subprocess
 from typing import Any, Callable, Mapping
 from urllib import request
+import zipfile
 
 from gh_aw_provider_registry import load_registry
 from v03_dogfood_issue221_compatibility import SOURCE_MAIN, verify_installation
@@ -33,13 +36,7 @@ from v03_dogfood_execution_bindings import (
     require_trusted_main_context,
     resolve_dogfood_execution_bindings,
 )
-from v03_effect_safety_final_live_ledger import (
-    GitHubReadApi,
-    aggregate_selected_artifacts,
-    producer_plan,
-    select_exact_artifacts,
-    validate_closed_plan,
-)
+from v03_effect_safety_final_live_ledger import GitHubReadApi
 
 ALLOWED_SCENARIOS = frozenset({
     "happy_path",
@@ -54,6 +51,17 @@ class V03DogfoodLiveGateError(RuntimeError):
 
 REVIEW_PASS_MARKER = "Independent Runtime / Dogfood Release-Evidence Review — PASS"
 REVIEW_ANCHOR_PREFIX = "Issue221-Compatibility-Anchor: "
+
+# Immutable Issue #221 closure authority. Dogfood reuses this already-accepted
+# final ledger instead of rediscovering historical producer runs through a
+# mutable workflow-run listing on every session.
+ISSUE221_FINAL_LEDGER_RUN_ID = 37030167082
+ISSUE221_FINAL_LEDGER_ARTIFACT_ID = 11237356212
+ISSUE221_FINAL_LEDGER_ARTIFACT_NAME = "v03-effect-safety-final-live-ledger"
+ISSUE221_FINAL_LEDGER_ARTIFACT_DIGEST = "sha256:539e2d8fdd3694b328517a2c12a655c202d8753822a5622541292e0595386399"
+ISSUE221_FINAL_LEDGER_WORKFLOW = ".github/workflows/v03-final-live-ledger.yml"
+ISSUE221_SELECTION_NAME = "v03-effect-safety-final-selection.json"
+ISSUE221_LEDGER_NAME = "v03-effect-safety-final-ledger.json"
 
 
 def _github_json_any(*, url: str, token: str) -> Any:
@@ -184,6 +192,70 @@ def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _artifact_json_member(archive: bytes, basename: str) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive), "r") as bundle:
+            matches = [
+                name for name in bundle.namelist()
+                if not name.endswith("/") and PurePosixPath(name).name == basename
+            ]
+            if len(matches) != 1:
+                raise V03DogfoodLiveGateError(
+                    f"pinned Issue #221 ledger artifact must contain exactly one {basename}"
+                )
+            raw = bundle.read(matches[0])
+        value = json.loads(raw.decode("utf-8"))
+    except V03DogfoodLiveGateError:
+        raise
+    except Exception as exc:
+        raise V03DogfoodLiveGateError("pinned Issue #221 final ledger artifact is invalid") from exc
+    if not isinstance(value, dict):
+        raise V03DogfoodLiveGateError(f"pinned Issue #221 {basename} is not a JSON object")
+    return value
+
+
+def validate_pinned_issue_221_final_ledger(
+    *,
+    run: Mapping[str, Any],
+    artifact: Mapping[str, Any],
+    archive: bytes,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if (
+        run.get("id") != ISSUE221_FINAL_LEDGER_RUN_ID
+        or run.get("event") != "workflow_dispatch"
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or str(run.get("head_branch") or "") != "main"
+        or str(run.get("head_sha") or "").lower() != SOURCE_MAIN
+        or str(run.get("path") or "") != ISSUE221_FINAL_LEDGER_WORKFLOW
+    ):
+        raise V03DogfoodLiveGateError("pinned Issue #221 final ledger run identity drifted")
+    workflow_run = artifact.get("workflow_run") or {}
+    if (
+        artifact.get("id") != ISSUE221_FINAL_LEDGER_ARTIFACT_ID
+        or artifact.get("name") != ISSUE221_FINAL_LEDGER_ARTIFACT_NAME
+        or artifact.get("expired") is not False
+        or artifact.get("digest") != ISSUE221_FINAL_LEDGER_ARTIFACT_DIGEST
+        or not isinstance(workflow_run, Mapping)
+        or workflow_run.get("id") != ISSUE221_FINAL_LEDGER_RUN_ID
+        or str(workflow_run.get("head_branch") or "") != "main"
+        or str(workflow_run.get("head_sha") or "").lower() != SOURCE_MAIN
+    ):
+        raise V03DogfoodLiveGateError("pinned Issue #221 final ledger artifact identity drifted")
+    selection_doc = _artifact_json_member(archive, ISSUE221_SELECTION_NAME)
+    ledger = _artifact_json_member(archive, ISSUE221_LEDGER_NAME)
+    if (
+        selection_doc.get("schema_version") != "ai-sdlc.v03-effect-safety-final-selection/v1"
+        or selection_doc.get("issue") != 221
+        or selection_doc.get("trusted_main_head_sha") != SOURCE_MAIN
+        or selection_doc.get("record_count") != 11
+        or selection_doc.get("scenario_count") != 13
+        or selection_doc.get("release_eligible") is not True
+    ):
+        raise V03DogfoodLiveGateError("pinned Issue #221 final selection is not the accepted closure")
+    return selection_doc, ledger
+
+
 def verify_issue_221_closed(
     *,
     repository: str,
@@ -192,7 +264,7 @@ def verify_issue_221_closed(
     api_base: str,
     api_factory: Callable[..., Any] = GitHubReadApi,
 ) -> Issue221Closure:
-    """Re-verify original immutable #221 artifacts; never rewrite their SHA."""
+    """Re-verify the pinned immutable #221 closure; never rescan mutable run listings."""
 
     if not actions_read_token:
         raise V03DogfoodLiveGateError("dogfood gate lacks Actions read authority")
@@ -205,23 +277,23 @@ def verify_issue_221_closed(
         api_base=api_base,
     )
     evidence_sha = SOURCE_MAIN
-    plan = validate_closed_plan(producer_plan())
+    run = _github_json_any(
+        url=f"{api_base.rstrip('/')}/repos/{repository}/actions/runs/{ISSUE221_FINAL_LEDGER_RUN_ID}",
+        token=actions_read_token,
+    )
+    artifact = _github_json_any(
+        url=f"{api_base.rstrip('/')}/repos/{repository}/actions/artifacts/{ISSUE221_FINAL_LEDGER_ARTIFACT_ID}",
+        token=actions_read_token,
+    )
     api = api_factory(
         repository=repository,
         token=actions_read_token,
         api_base=api_base,
     )
-    selections = select_exact_artifacts(
-        plan=plan,
-        installation_sha=evidence_sha,
-        list_runs=api.list_runs,
-        list_artifacts=api.list_artifacts,
-    )
-    selection_doc, ledger = aggregate_selected_artifacts(
-        plan=plan,
-        selections=selections,
-        download_artifact=api.download_artifact,
-        installation_sha=evidence_sha,
+    selection_doc, ledger = validate_pinned_issue_221_final_ledger(
+        run=run,
+        artifact=artifact,
+        archive=api.download_artifact(ISSUE221_FINAL_LEDGER_ARTIFACT_ID),
     )
     if (
         ledger.get("status") != "PASS"
