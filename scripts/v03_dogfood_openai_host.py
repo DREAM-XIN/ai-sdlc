@@ -154,7 +154,7 @@ class V03DogfoodOpenAIResponsesHost:
         self._response_id(payload)
         return payload
 
-    def run(self, *, scenario_instruction: str) -> V03DogfoodResponsesTrace:
+    def run(self, *, scenario_instruction: str, initial_tool_name: str | None = None) -> V03DogfoodResponsesTrace:
         instruction = str(scenario_instruction or "").strip()
         if not instruction or len(instruction.encode("utf-8")) > 16384:
             raise ValueError("dogfood scenario instruction is missing or unbounded")
@@ -165,17 +165,22 @@ class V03DogfoodOpenAIResponsesHost:
         tools = profile.get("tools")
         if not isinstance(tools, list) or not tools:
             raise V03DogfoodOpenAIHostError("reviewed Responses tool profile is missing")
+        if initial_tool_name is not None and initial_tool_name not in TOOL_CAPABILITIES:
+            raise V03DogfoodOpenAIHostError("trusted initial tool choice is not registered")
 
         response_ids: list[str] = []
         call_ids: list[str] = []
         outputs: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = [{"role": "user", "content": instruction}]
-        payload = self._create({
+        initial_request = {
             "model": self.config.model,
             "input": instruction,
             "tools": tools,
             "parallel_tool_calls": False,
-        })
+        }
+        if initial_tool_name is not None:
+            initial_request["tool_choice"] = {"type": "function", "name": initial_tool_name}
+        payload = self._create(initial_request)
 
         for _ in range(self.config.max_tool_turns + 1):
             response_id = self._response_id(payload)

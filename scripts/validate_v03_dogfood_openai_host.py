@@ -95,6 +95,34 @@ def main() -> None:
     assert len(adapter.calls) == 1
     assert trace.function_outputs[0]["call_id"] == "call_1"
 
+    # The trusted controller may force only a registered initial function tool.
+    choice_requests = []
+    choice_host = host(
+        [
+            response("resp_choice", call("call_choice", "aisdlc_v1_operation_start")),
+            response("resp_choice_done", message()),
+        ],
+        requests=choice_requests,
+    )
+    choice_host.run(
+        scenario_instruction="trusted named-choice dogfood",
+        initial_tool_name="aisdlc_v1_operation_start",
+    )
+    assert choice_requests[0]["tool_choice"] == {
+        "type": "function",
+        "name": "aisdlc_v1_operation_start",
+    }
+    assert "tool_choice" not in choice_requests[1], "named tool choice leaked into continuation"
+    try:
+        host([response("resp_unused", message())]).run(
+            scenario_instruction="trusted invalid choice",
+            initial_tool_name="aisdlc_v1_unknown",
+        )
+    except V03DogfoodOpenAIHostError as exc:
+        assert "initial tool choice" in str(exc)
+    else:
+        raise AssertionError("unregistered trusted initial tool choice unexpectedly passed")
+
     # Stateless Responses providers must receive the complete prior user/model/tool
     # transcript instead of an unsupported previous_response_id.
     stateless_requests = []
