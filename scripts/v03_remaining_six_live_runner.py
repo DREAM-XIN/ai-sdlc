@@ -13,8 +13,9 @@ import argparse
 import base64
 import json
 import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib import error, request
 
 from operator_store import plan_cancel
@@ -67,7 +68,7 @@ SCENARIOS = (
 )
 
 IDEMPOTENCY = {
-    CANCEL_BEFORE: "v03-release-fi-cancel-before-persist-linearization",
+    CANCEL_BEFORE: "v03-release-fi-cancel-before-persist-linearization-r2",
     PERSIST_BEFORE_CANCEL: "v03-release-fi-persist-linearized-before-cancel",
     DUPLICATE_CALLBACK: "v03-release-fi-duplicate-callback",
     OUT_OF_ORDER: "v03-release-fi-out-of-order-callback",
@@ -76,6 +77,8 @@ IDEMPOTENCY = {
 }
 
 SENTINEL_PATH = ".ai-sdlc/v03-stale-candidate-transition.json"
+WORKER_COMPLETION_WAIT_ATTEMPTS = 120
+WORKER_COMPLETION_WAIT_SECONDS = 5.0
 
 
 class V03RemainingSixLiveError(RuntimeError):
@@ -234,6 +237,48 @@ def _launch(preflight, scenario: str):
     return operation_id, revision, action, binding, receipt
 
 
+def _retryable_worker_completion_wait(exc: VerticalInvariantError) -> bool:
+    return (
+        exc.code == "BLOCKED"
+        and "first-attempt gh-aw run is not completed" in str(exc)
+    )
+
+
+def _handle_when_worker_completed(
+    collector,
+    *,
+    operation_id: str,
+    external_dispatch_key: str,
+    wait_attempts: int = WORKER_COMPLETION_WAIT_ATTEMPTS,
+    wait_seconds: float = WORKER_COMPLETION_WAIT_SECONDS,
+    sleeper: Callable[[float], None] = time.sleep,
+):
+    """Wait only for an exact first-attempt run that is still pending.
+
+    Terminal failure, identity drift, rerun/attempt drift, or any other fail-closed
+    collector error is surfaced immediately.
+    """
+    if wait_attempts < 1 or wait_attempts > 240 or wait_seconds < 0 or wait_seconds > 30:
+        raise V03RemainingSixLiveError("invalid bounded Worker completion wait policy")
+    last_error: VerticalInvariantError | None = None
+    for attempt in range(wait_attempts):
+        try:
+            return collector.handle(
+                operation_id=operation_id,
+                external_dispatch_key=external_dispatch_key,
+            )
+        except VerticalInvariantError as exc:
+            last_error = exc
+            if not _retryable_worker_completion_wait(exc):
+                raise
+            if attempt + 1 == wait_attempts:
+                break
+            sleeper(wait_seconds)
+    raise V03RemainingSixLiveError(
+        f"exact first-attempt Worker did not complete within bounded wait: {last_error}"
+    ) from last_error
+
+
 def _production_capture(preflight, *, operation_id: str, external_dispatch_key: str) -> dict[str, Any]:
     capture = CaptureCoordinator(
         preflight.composition.bundle.executor,
@@ -246,7 +291,11 @@ def _production_capture(preflight, *, operation_id: str, external_dispatch_key: 
         control_repository=preflight.execution.repository,
         clock=preflight.composition.bundle.runtime.clock,
     )
-    collector.handle(operation_id=operation_id, external_dispatch_key=external_dispatch_key)
+    _handle_when_worker_completed(
+        collector,
+        operation_id=operation_id,
+        external_dispatch_key=external_dispatch_key,
+    )
     if not isinstance(capture.captured, dict):
         raise V03RemainingSixLiveError("production collector did not materialize exact callback")
     return capture.captured
@@ -310,7 +359,8 @@ def run_cancel_before() -> None:
     base.persist_gateway = counter
     try:
         try:
-            preflight.composition.collector.handle(
+            _handle_when_worker_completed(
+                preflight.composition.collector,
                 operation_id=operation_id,
                 external_dispatch_key=binding["external_dispatch_key"],
             )
@@ -364,7 +414,8 @@ def run_persist_before_cancel() -> None:
     )
     base.persist_gateway = wrapper
     try:
-        result = preflight.composition.collector.handle(
+        result = _handle_when_worker_completed(
+            preflight.composition.collector,
             operation_id=operation_id,
             external_dispatch_key=binding["external_dispatch_key"],
         )
@@ -562,7 +613,11 @@ def run_duplicate_worker() -> None:
         clock=preflight.composition.bundle.runtime.clock,
     )
     collector = ReplaySafeProductionGhAwCollector(delegate=production)
-    first = collector.handle(operation_id=operation_id, external_dispatch_key=binding["external_dispatch_key"])
+    first = _handle_when_worker_completed(
+        collector,
+        operation_id=operation_id,
+        external_dispatch_key=binding["external_dispatch_key"],
+    )
     before = list(operation_events(preflight.composition.bundle.runtime.backend.read_snapshot(), operation_id))
     second = collector.handle(operation_id=operation_id, external_dispatch_key=binding["external_dispatch_key"])
     after = list(operation_events(preflight.composition.bundle.runtime.backend.read_snapshot(), operation_id))
