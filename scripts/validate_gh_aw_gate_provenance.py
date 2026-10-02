@@ -108,6 +108,31 @@ def main():
         source_workflow_ref=f"{CONTROL}/.github/workflows/ai-sdlc-gh-aw-reviewer-copilot.lock.yml@refs/heads/{BRANCH}",
     )
 
+    local_deepseek_reviewer_workflow = "ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml"
+    local_deepseek_reviewer_path = f".github/workflows/{local_deepseek_reviewer_workflow}"
+    local_deepseek_reviewer_ref = f"{CONTROL}/{local_deepseek_reviewer_path}@refs/heads/{BRANCH}"
+    local_deepseek_reviewer_run = deepcopy(run)
+    local_deepseek_reviewer_run["path"] = local_deepseek_reviewer_path
+    local_deepseek_reviewer_worker = validate_run(
+        local_deepseek_reviewer_run,
+        source_run_id=RUN_ID,
+        source_workflow_ref=local_deepseek_reviewer_ref,
+        control_repository=CONTROL,
+        target_repository=TARGET,
+        default_branch=BRANCH,
+        role=ROLE,
+        stage=STAGE,
+        feature_id=FEATURE,
+        task_id=TASK,
+        expected_revision=REVISION,
+        candidate_head_sha=HEAD,
+    )
+    require(
+        local_deepseek_reviewer_worker.worker_workflow == "ai-sdlc-gh-aw-reviewer-deepseek.lock.yml"
+        and local_deepseek_reviewer_worker.profile == "deepseek",
+        "reviewed local Reviewer alias did not resolve to canonical DeepSeek worker identity",
+    )
+
     local_gemini_reviewer_workflow = "ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml"
     local_gemini_reviewer_path = f".github/workflows/{local_gemini_reviewer_workflow}"
     local_gemini_reviewer_ref = f"{CONTROL}/{local_gemini_reviewer_path}@refs/heads/{BRANCH}"
