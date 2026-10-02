@@ -59,7 +59,10 @@ def main():
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     actual = verify_installation(head)
     assert actual["source_main_sha"] == SOURCE_MAIN
-    print(f"v0.3 #221 dogfood tree compatibility: PASS ({count} unsafe deltas rejected)")
+    print(
+        "v0.3 #221 dogfood tree compatibility: PASS "
+        f"({count} unsafe deltas rejected; reviewed_delta_digest={actual['reviewed_delta_digest']})"
+    )
 
 
 if __name__ == "__main__":
