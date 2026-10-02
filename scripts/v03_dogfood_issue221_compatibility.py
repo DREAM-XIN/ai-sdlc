@@ -50,6 +50,17 @@ def validate_delta(rows, *, source_sha, installation_sha, ancestor):
                 raise Issue221CompatibilityError("existing file differs from reviewed exact blobs")
         else:
             raise Issue221CompatibilityError("existing tested code changed: " + str(path))
+    expected_paths = set(ADDED_PATHS) | set(SOURCE_CONTROL_BLOBS)
+    if installation_sha == source_sha:
+        if paths:
+            raise Issue221CompatibilityError("source #221 installation unexpectedly has a dogfood delta")
+    elif paths != expected_paths:
+        missing = sorted(expected_paths - paths)
+        extra = sorted(paths - expected_paths)
+        raise Issue221CompatibilityError(
+            "dogfood compatibility delta is not the complete reviewed path set"
+            + f"; missing={missing}; extra={extra}"
+        )
     proof = {
         "source_main_sha": source_sha,
         "installation_commit_sha": installation_sha,
