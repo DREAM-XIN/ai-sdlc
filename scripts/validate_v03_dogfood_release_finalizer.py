@@ -153,7 +153,35 @@ def durable_history(scenario: str):
         seq += 1; rows.append(event(seq, "dispatch.claimed"))
         seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
         if scenario != "session_recovery":
-            seq += 1; rows.append(event(seq, "worker.result.validated"))
+            role = {
+                "IMPLEMENTATION_WORK": "developer",
+                "CODE_REVIEW": "reviewer",
+                "CODE_REMEDIATION": "developer",
+                "CODE_REREVIEW": "reviewer",
+                "VERIFICATION_QA": "qa",
+            }[step]
+            if role == "developer":
+                worker_payload = {"status": "COMPLETED"}
+            elif role == "reviewer":
+                worker_payload = {
+                    "verdict": "REWORK"
+                    if scenario == "review_remediation" and step == "CODE_REVIEW"
+                    else "PASS"
+                }
+            else:
+                worker_payload = {"verdict": "PASS"}
+            callback_id = f"callback-{scenario}-{index}"
+            seq += 1; rows.append(event(seq, "worker.callback.recorded", {
+                "callback_id": callback_id,
+                "trusted_callback_envelope": {
+                    "trusted_context": {"role": role},
+                    "worker_payload": worker_payload,
+                },
+            }))
+            seq += 1; rows.append(event(seq, "worker.result.validated", {
+                "callback_id": callback_id,
+                "role": role,
+            }))
             feature_event_id = f"EVT-{scenario}-{index}"
             expected_revision = 1 + index
             persist_payload = {
@@ -202,6 +230,19 @@ def validate_durable_authority_reconstruction():
     require_rejected(
         "missing durable pending Decision",
         lambda: _reconstruct_release_authority("session_recovery", rows, projection, observation("session_recovery")),
+    )
+
+    rows, projection = durable_history("review_remediation")
+    drift = deepcopy(rows)
+    first_review = next(
+        row for row in drift
+        if row["event_type"] == "worker.callback.recorded"
+        and ((row.get("payload") or {}).get("trusted_callback_envelope") or {}).get("trusted_context", {}).get("role") == "reviewer"
+    )
+    first_review["payload"]["trusted_callback_envelope"]["worker_payload"]["verdict"] = "PASS"
+    require_rejected(
+        "review remediation without durable REWORK verdict",
+        lambda: _reconstruct_release_authority("review_remediation", drift, projection, observation("review_remediation")),
     )
 
     rows, projection = durable_history("happy_path")
