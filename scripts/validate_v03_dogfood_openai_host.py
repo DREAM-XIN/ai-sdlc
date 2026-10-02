@@ -41,20 +41,28 @@ def message():
     return {"type": "message", "id": "msg_1", "role": "assistant", "content": []}
 
 
-def host(rows, adapter=None, *, max_turns=4):
+def host(
+    rows, adapter=None, *, max_turns=4, continuation_mode="previous_response_id",
+    api_base="https://api.openai.com/v1", requests=None,
+):
     queue = list(rows)
 
     def post(url, headers, body):
-        assert url == "https://api.openai.com/v1/responses"
+        assert url == api_base.rstrip("/") + "/responses"
         assert headers["Authorization"] == "Bearer test-key"
         assert body["parallel_tool_calls"] is False
         assert body["tools"]
+        if requests is not None:
+            requests.append(dict(body))
         if not queue:
             raise AssertionError("unexpected provider request")
         return 200, queue.pop(0)
 
     return V03DogfoodOpenAIResponsesHost(
-        config=V03DogfoodOpenAIHostConfig(api_key="test-key", model="gpt-test", max_tool_turns=max_turns),
+        config=V03DogfoodOpenAIHostConfig(
+            api_key="test-key", model="gpt-test", api_base=api_base,
+            continuation_mode=continuation_mode, max_tool_turns=max_turns,
+        ),
         adapter=adapter or FakeAdapter(),
         http_post=post,
     )
@@ -80,6 +88,27 @@ def main() -> None:
     assert trace.function_call_ids == ("call_1",)
     assert len(adapter.calls) == 1
     assert trace.function_outputs[0]["call_id"] == "call_1"
+
+    # Stateless Responses providers must receive the complete prior user/model/tool
+    # transcript instead of an unsupported previous_response_id.
+    stateless_requests = []
+    stateless = host(
+        [response("resp_s1", call("call_s1")), response("resp_s2", message())],
+        continuation_mode="full_history",
+        api_base="https://api.deepseek.com",
+        requests=stateless_requests,
+    )
+    stateless_trace = stateless.run(scenario_instruction="trusted stateless dogfood")
+    assert stateless_trace.response_ids == ("resp_s1", "resp_s2")
+    assert len(stateless_requests) == 2
+    assert stateless_requests[0]["input"] == "trusted stateless dogfood"
+    continuation = stateless_requests[1]
+    assert "previous_response_id" not in continuation
+    assert continuation["input"][0] == {"role": "user", "content": "trusted stateless dogfood"}
+    assert any(item.get("type") == "function_call" and item.get("call_id") == "call_s1"
+               for item in continuation["input"] if isinstance(item, dict))
+    assert continuation["input"][-1]["type"] == "function_call_output"
+    assert continuation["input"][-1]["call_id"] == "call_s1"
 
     # Completed provider output is mandatory before any executable call crosses
     # the adapter boundary.
