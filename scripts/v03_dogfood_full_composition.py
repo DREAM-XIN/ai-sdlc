@@ -304,7 +304,8 @@ class DogfoodCandidateHandoff:
         source_pr, source_head = self.candidate_provider._developer_receipt(envelope)
         fixture = self.candidate_provider._candidate()
         prior_head = str(context.candidate_head_sha or "").lower()
-        if int(fixture["number"]) < 1 or str(fixture["head"]["sha"]).lower() != prior_head:
+        fixture_head = str(fixture["head"]["sha"]).lower()
+        if int(fixture["number"]) < 1 or fixture_head not in {prior_head, source_head}:
             raise V03DogfoodCompositionError("fixture candidate changed before Developer handoff")
         status, pr = self._api("GET", f"/pulls/{source_pr}")
         if (
