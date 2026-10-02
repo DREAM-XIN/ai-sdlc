@@ -136,6 +136,9 @@ jobs:
                   if scenario not in target_text:
                       raise SystemExit(f'allowlisted scenario missing from {workflow}: {scenario}')
 
+          driver = Path('scripts/v03_issue_221_continue.py').read_text(encoding='utf-8')
+          if 'Step("provision-v03-real-runtime-fixture.yml")' not in driver:
+              raise SystemExit('continuation driver must retain trusted primary fixture bootstrap')
           auto_required = [
               'guard_recent_reviewer_429()',
               'ai-sdlc-gh-aw-reviewer-copilot-v03-local.lock.yml',
@@ -143,14 +146,14 @@ jobs:
               'age_seconds < 900',
               'cooldown active before any release fixture is provisioned',
               'guard_recent_reviewer_429',
-              'run_one provision-v03-real-runtime-fixture.yml',
+              'PYTHONPATH=scripts python scripts/v03_issue_221_continue.py',
           ]
           for literal in auto_required:
               if literal not in auto_continue:
                   raise SystemExit(f'missing auto-continue 429 cooldown invariant: {literal}')
 
           guard_pos = auto_continue.find('guard_recent_reviewer_429\n')
-          provision_pos = auto_continue.find('run_one provision-v03-real-runtime-fixture.yml')
+          provision_pos = auto_continue.find('PYTHONPATH=scripts python scripts/v03_issue_221_continue.py')
           if guard_pos < 0 or provision_pos < 0 or guard_pos >= provision_pos:
               raise SystemExit('429 cooldown must execute before primary fixture provisioning')
 
