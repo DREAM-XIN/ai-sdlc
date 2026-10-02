@@ -137,3 +137,17 @@ Operation: \`${operation_id:-unavailable}\`
 Observed final state: \`${final_status:-unavailable}\`
 
 This is a raw trusted-main execution receipt only. It is **not release evidence and not release-eligible** until the existing dogfood evidence contract plus independent production provenance verifier reconstruct and validate the exact candidate, workflow runs, runtime receipt, milestones, Decisions/Notifications, and persisted state."
+
+      - name: Dispatch closed post-run finalizer after successful raw observation
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCENARIO: ${{ inputs.scenario }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$current" = "$EXPECTED_SHA"
+          gh workflow run v03-finalize-real-dogfood-scenario.yml --repo "$GITHUB_REPOSITORY" --ref main --field "scenario=$SCENARIO" --field "source_run_id=$GITHUB_RUN_ID"
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$current" = "$EXPECTED_SHA"

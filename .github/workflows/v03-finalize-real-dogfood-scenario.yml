@@ -1,10 +1,7 @@
 name: v0.3 Finalize Real Release Dogfood Scenario
-run-name: v0.3 finalize dogfood source ${{ inputs.source_run_id || github.event.workflow_run.id }} @ ${{ github.sha }}
+run-name: v0.3 finalize dogfood source ${{ inputs.source_run_id }} @ ${{ github.sha }}
 
 on:
-  workflow_run:
-    workflows: [v0.3 Real Release Dogfood Scenario]
-    types: [completed]
   workflow_dispatch:
     inputs:
       scenario:
@@ -54,13 +51,17 @@ jobs:
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id || github.event.workflow_run.id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           SCENARIO: ${{ inputs.scenario }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           case "$SOURCE_RUN_ID" in *[!0-9]*|'') exit 1 ;; esac
-          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
+          for attempt in $(seq 1 30); do
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
+            if [[ "$(jq -r .status <<<"$run")" = completed ]]; then break; fi
+            sleep 2
+          done
           test "$(jq -r .event <<<"$run")" = workflow_dispatch
           test "$(jq -r .status <<<"$run")" = completed
           test "$(jq -r .conclusion <<<"$run")" = success
@@ -146,34 +147,3 @@ jobs:
     steps:
       - run: exit 1
 
-  dispatch-finalizer:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - name: Resolve exact successful source and dispatch closed main finalizer
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          case "$SOURCE_RUN_ID" in *[!0-9]*|'') exit 1 ;; esac
-          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
-          test "$(jq -r .path <<<"$run")" = '.github/workflows/v03-real-dogfood-scenario.yml'
-          test "$(jq -r .event <<<"$run")" = workflow_dispatch
-          test "$(jq -r .head_branch <<<"$run")" = main
-          test "$(jq -r .head_sha <<<"$run")" = "$EXPECTED_SHA"
-          test "$(jq -r .conclusion <<<"$run")" = success
-          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
-          test "$current" = "$EXPECTED_SHA"
-          artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts")
-          names=$(jq -c '[.artifacts[] | select(.expired == false) | .name | select(. == "v03-real-dogfood-happy_path" or . == "v03-real-dogfood-review_remediation" or . == "v03-real-dogfood-session_recovery")]' <<<"$artifacts")
-          test "$(jq length <<<"$names")" = 1
-          name=$(jq -r '.[0]' <<<"$names")
-          scenario="${name#v03-real-dogfood-}"
-          gh workflow run v03-finalize-real-dogfood-scenario.yml --repo "$GITHUB_REPOSITORY" --ref main --field "scenario=$scenario" --field "source_run_id=$SOURCE_RUN_ID"
-          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
-          test "$current" = "$EXPECTED_SHA"
