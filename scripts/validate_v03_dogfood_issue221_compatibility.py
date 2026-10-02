@@ -3,7 +3,7 @@
 from __future__ import annotations
 from copy import deepcopy
 from v03_dogfood_issue221_compatibility import (
-    ADDED_PATHS, SOURCE_MAIN, SOURCE_CONTROL_BLOBS, DOGFOOD_CONTROL_BLOBS,
+    ADDED_PATHS, SOURCE_MAIN, SOURCE_CONTROL_BLOBS, DOGFOOD_CONTROL_BLOBS, SOURCE_CONTROL_MODES,
     Issue221CompatibilityError, validate_delta,
 )
 
@@ -14,7 +14,7 @@ def main():
         for path in sorted(ADDED_PATHS)
     ] + [
         dict(path=path, status="M", old_sha=old, new_sha=DOGFOOD_CONTROL_BLOBS[path],
-             old_mode="100644", new_mode="100644")
+             old_mode=SOURCE_CONTROL_MODES[path], new_mode=SOURCE_CONTROL_MODES[path])
         for path, old in SOURCE_CONTROL_BLOBS.items()
     ]
     def check(candidate, **overrides):

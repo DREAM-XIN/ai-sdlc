@@ -18,6 +18,7 @@ SOURCE_MAIN = "85b73b76c6fdb96e66a5b70a92b9be30a37e8c68"
 SOURCE_FINAL_LEDGER_RUN = 37030167082
 SOURCE_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"5e76daa9d342d2a488644f7cbed5eed150a28c3c",".github/workflows/validate-v03-trusted-control-command.yml":"5d0e2e5c19f3dcb252fba724aa577955747232a0","scripts/v03_dogfood_trusted_provenance.py":"4087562e9651b9846d05f25ee8a13727daa56d48","scripts/validate_v03_dogfood_evidence.py":"044e76d7d547d67f4fc66aa639b83ac7ba534ba5"}
 DOGFOOD_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"498cf324a12b8257fa7dbb53003f4ff3fa240fc3",".github/workflows/validate-v03-trusted-control-command.yml":"f43fe229679c6fb463b3c3f051c638e4eaee9e31","scripts/v03_dogfood_trusted_provenance.py":"7c2ae9301c5a14324ca180f133246e5a4040832b","scripts/validate_v03_dogfood_evidence.py":"691441edef3d6fb18f4804413805c1d867b74500"}
+SOURCE_CONTROL_MODES = {path: ("100755" if path == "scripts/validate_v03_dogfood_evidence.py" else "100644") for path in SOURCE_CONTROL_BLOBS}
 ADDED_PATHS = frozenset([".github/workflows/v03-finalize-real-dogfood-scenario.yml",".github/workflows/v03-real-dogfood-scenario.yml",".github/workflows/validate-v03-dogfood-live-gate.yml","scripts/provision_v03_dogfood_fixture.py","scripts/v03_dogfood_fixture_pool.py","scripts/v03_dogfood_fixture_pr_authority.py","scripts/v03_dogfood_full_composition.py","scripts/v03_dogfood_live_gate.py","scripts/v03_dogfood_openai_host.py","scripts/v03_dogfood_post_run_finalizer.py","scripts/v03_dogfood_production_provenance.py","scripts/v03_dogfood_release_finalizer.py","scripts/v03_dogfood_runtime_driver.py","scripts/v03_dogfood_runtime_preflight.py","scripts/v03_dogfood_scenario_runner.py","scripts/validate_v03_dogfood_fixture_pool.py","scripts/validate_v03_dogfood_live_gate.py","scripts/validate_v03_dogfood_openai_host.py","scripts/validate_v03_dogfood_production_provenance.py","scripts/validate_v03_dogfood_release_finalizer.py","scripts/validate_v03_dogfood_runtime_composition.py","scripts/validate_v03_dogfood_runtime_driver.py","scripts/validate_v03_dogfood_scenario_runner.py","scripts/v03_dogfood_issue221_compatibility.py","scripts/validate_v03_dogfood_issue221_compatibility.py",".github/workflows/v03-dogfood-readiness.yml",".github/workflows/provision-v03-dogfood-fixtures.yml","release/v0.3-dogfood-session-policy.json","scripts/v03_dogfood_session_policy.py","scripts/validate_v03_dogfood_session_policy.py"])
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -44,7 +45,7 @@ def validate_delta(rows, *, source_sha, installation_sha, ancestor):
                 raise Issue221CompatibilityError("invalid added dogfood blob")
         elif row["status"] == "M" and path in SOURCE_CONTROL_BLOBS:
             if (row["old_sha"], row["new_sha"], row["old_mode"], row["new_mode"]) != (
-                SOURCE_CONTROL_BLOBS[path], DOGFOOD_CONTROL_BLOBS[path], "100644", "100644"
+                SOURCE_CONTROL_BLOBS[path], DOGFOOD_CONTROL_BLOBS[path], SOURCE_CONTROL_MODES[path], SOURCE_CONTROL_MODES[path]
             ):
                 raise Issue221CompatibilityError("existing file differs from reviewed exact blobs")
         else:

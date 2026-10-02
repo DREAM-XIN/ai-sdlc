@@ -196,8 +196,53 @@ def validate_durable_authority_reconstruction():
     )
 
 
+def validate_historical_runtime_bindings():
+
+    # Post-run binding reconstruction uses historical protected revisions and
+    # the production source without replaying a callback or Feature Persist.
+    import v03_dogfood_post_run_finalizer as post
+    from types import SimpleNamespace
+    from operator_store_model import reservation_path
+    semantic = "1"*64
+    key = "dispatch-" + "a"*40
+    slot = SimpleNamespace(feature_id="F-DOGFOOD", target_ref="dogfood/ref")
+    files = {reservation_path(semantic): dict(external_dispatch_key=key, feature_id=slot.feature_id,
+                                              role="reviewer", expected_revision=4)}
+    calls = []
+    def resolve(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["trusted_context"]["expected_revision"] == 4
+        return SimpleNamespace(run=SimpleNamespace(run_id=7001, role="reviewer",
+                               candidate_pr_number=401, candidate_head_sha="a"*40))
+    preflight = SimpleNamespace(slot=slot, execution=SimpleNamespace(repository=REPO),
+        candidate_pr_number=401, workflows=SimpleNamespace(workflow_for=lambda role: "reviewer.yml"),
+        composition=SimpleNamespace(runtime=SimpleNamespace(backend=SimpleNamespace(
+            read_snapshot=lambda: SimpleNamespace(get=lambda path: files.get(path)))),
+            result_source=SimpleNamespace(resolve=resolve)))
+    events = [
+        dict(event_type="dispatch.launch.authorized", operation_generation=1,
+             payload=dict(external_dispatch_key=key, semantic_effect_key=semantic,
+                          dispatch_id="dispatch-id", role="reviewer", stage="code-review", candidate_head_sha="a"*40)),
+        dict(event_type="dispatch.launch.lookup-recorded", operation_generation=1,
+             payload=dict(external_dispatch_key=key, lookup_state="LAUNCHED", receipt_id="7001")),
+    ]
+    old_projection = post.vertical_projection
+    try:
+        post.vertical_projection = lambda snapshot, op: dict(operation_profile="vertical-implementation-review-qa/v1")
+        bound = post._durable_run_bindings(preflight, dict(operation_id="op-1"), events)
+        assert bound[7001]["candidate_input_head_sha"] == "a"*40 and len(calls) == 1
+        require_rejected("duplicate protected authorization",
+                         lambda: post._durable_run_bindings(preflight, dict(operation_id="op-1"), events + [events[0]]))
+        files[reservation_path(semantic)]["feature_id"] = "F-OTHER"
+        require_rejected("wrong reservation Feature",
+                         lambda: post._durable_run_bindings(preflight, dict(operation_id="op-1"), events))
+    finally:
+        post.vertical_projection = old_projection
+
+
 def main() -> int:
     validate_durable_authority_reconstruction()
+    validate_historical_runtime_bindings()
     for scenario in SCENARIO_PROFILES:
         record = finalize(scenario)
         assert record["evidence_kind"] == "release-run"
