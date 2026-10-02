@@ -28,6 +28,12 @@ _WORKFLOW_BINDINGS = {
         "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
         "credential_name": "DEEPSEEK_API_KEY",
     },
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-local.lock.yml": {
+        "worker_id": "code-review-reviewer-deepseek",
+        "profile": "deepseek",
+        "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
+        "credential_name": "DEEPSEEK_API_KEY",
+    },
     "ai-sdlc-gh-aw-reviewer-gemini.lock.yml": {
         "worker_id": "code-review-reviewer-gemini",
         "profile": "gemini",
