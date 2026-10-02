@@ -293,7 +293,7 @@ def _durable_run_bindings(preflight, observation, events):
             callback_id = str((callback.get("payload") or {}).get("callback_id") or "")
             handoffs = [
                 handoff for handoff in durable_handoffs
-                if int(handoff.get("operation_generation") or -1) == int(row.get("operation_generation") or -2)
+                if int(handoff.get("operation_generation") if handoff.get("operation_generation") is not None else -1) == int(row.get("operation_generation") if row.get("operation_generation") is not None else -2)
                 and str(handoff.get("callback_id") or "") == callback_id
             ]
             if len(handoffs) != 1:
@@ -750,7 +750,7 @@ def _reconstruct_release_authority(
             not isinstance(notification, dict)
             or notification.get("notification_type") != "operation.completed"
             or notification.get("operation_id") != observation.get("operation_id")
-            or int(notification.get("operation_generation") or -1) != generation
+            or int(notification.get("operation_generation") if notification.get("operation_generation") is not None else -1) != generation
         ):
             raise V03DogfoodPostRunFinalizerError("completion Notification immutable record binding differs")
     else:
@@ -874,8 +874,8 @@ def _reconstruct_release_authority(
             or not isinstance(notification, dict)
             or decision.get("operation_id") != observation.get("operation_id")
             or notification.get("operation_id") != observation.get("operation_id")
-            or int(decision.get("operation_generation") or -1) != generation
-            or int(notification.get("operation_generation") or -1) != generation
+            or int(decision.get("operation_generation") if decision.get("operation_generation") is not None else -1) != generation
+            or int(notification.get("operation_generation") if notification.get("operation_generation") is not None else -1) != generation
             or notification.get("decision_id") != decision_id
         ):
             raise V03DogfoodPostRunFinalizerError("session Decision/Notification immutable records differ from recovery trace")
