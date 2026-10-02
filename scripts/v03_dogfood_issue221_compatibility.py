@@ -61,12 +61,19 @@ def validate_delta(rows, *, source_sha, installation_sha, ancestor):
             "dogfood compatibility delta is not the complete reviewed path set"
             + f"; missing={missing}; extra={extra}"
         )
-    proof = {
+    reviewed_delta = {
         "source_main_sha": source_sha,
-        "installation_commit_sha": installation_sha,
         "source_final_ledger_run": SOURCE_FINAL_LEDGER_RUN,
-        "existing_runtime_tree_unchanged": True,
         "tree_delta": sorted(rows, key=lambda row: row["path"]),
+    }
+    reviewed_delta_digest = "sha256:" + hashlib.sha256(
+        json.dumps(reviewed_delta, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    proof = {
+        **reviewed_delta,
+        "installation_commit_sha": installation_sha,
+        "existing_runtime_tree_unchanged": True,
+        "reviewed_delta_digest": reviewed_delta_digest,
     }
     proof["compatibility_digest"] = "sha256:" + hashlib.sha256(
         json.dumps(proof, sort_keys=True, separators=(",", ":")).encode()
