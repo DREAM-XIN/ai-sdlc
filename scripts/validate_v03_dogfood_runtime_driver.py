@@ -24,6 +24,111 @@ def rejected(**kwargs):
     raise AssertionError(f"unexpectedly accepted: {kwargs}")
 
 
+def git_store_transport_tests(live):
+    """Exercise the production remote Git backend with an isolated local remote."""
+    import os
+    from pathlib import Path
+    import subprocess
+    import tempfile
+    from unittest.mock import patch
+    from operator_store_git import CasConflict
+    from operator_store_model import StoreMutation, StoreMutationPlan
+    from operator_store_protection import ProtectionReceipt
+    from operator_store_remote_git import RemoteGitStateRefBackend
+
+    job = live["jobs"]["dogfood"]
+    identity = {
+        "GIT_AUTHOR_NAME": "AI-SDLC Operator Store",
+        "GIT_AUTHOR_EMAIL": "operator-store@ai-sdlc.invalid",
+        "GIT_COMMITTER_NAME": "AI-SDLC Operator Store",
+        "GIT_COMMITTER_EMAIL": "operator-store@ai-sdlc.invalid",
+    }
+    expect(all(job.get("env", {}).get(key) == value for key, value in identity.items()),
+           "live Store Git subprocesses lack explicit trusted commit identity")
+    checkouts = [step for step in job["steps"]
+                 if str(step.get("uses", "")).startswith("actions/checkout@")]
+    expect(len(checkouts) == 1, "live checkout identity is ambiguous")
+    settings = checkouts[0].get("with", {})
+    expect(settings.get("token") == "${{ steps.event-token.outputs.token }}",
+           "Store Git transport must use the bounded Runtime App token")
+    expect(settings.get("persist-credentials") is True,
+           "Store Git push lacks checkout-managed authentication")
+    tokens = [step for step in job["steps"] if step.get("id") == "event-token"]
+    expect(len(tokens) == 1, "Runtime App token identity is ambiguous")
+    app = tokens[0]["with"]
+    expect(app.get("permission-contents") == "write"
+           and app.get("repositories") == "${{ github.event.repository.name }}"
+           and app.get("owner") == "${{ github.repository_owner }}",
+           "Store token escaped the installed repository")
+    expect(live["permissions"]["contents"] == "read",
+           "Actions token must not replace the Runtime App write identity")
+
+    # Real Git transport, no network/model/Worker or release evidence. Ignore
+    # runner/global Git identity so the pre-fix commit-tree failure is exercised.
+    isolated = {key: value for key, value in os.environ.items()
+                if not key.startswith("GIT_")}
+    isolated.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                    GIT_TERMINAL_PROMPT="0")
+    with tempfile.TemporaryDirectory(prefix="v03-dogfood-store-transport-") as temporary:
+        root = Path(temporary)
+        remote, first, second = root / "remote.git", root / "first", root / "second"
+        def git(cwd, *args):
+            return subprocess.run(["git", *args], cwd=cwd, text=True,
+                                  capture_output=True, check=True)
+        with patch.dict(os.environ, isolated, clear=True):
+            git(root, "init", "--bare", str(remote))
+            for directory in (first, second):
+                git(root, "init", str(directory))
+                git(directory, "remote", "add", "origin", str(remote))
+            backend = RemoteGitStateRefBackend(
+                repo_path=first, repository="dream-xin/ai-sdlc",
+                state_ref="refs/heads/ai-sdlc-operator-state")
+            path = "state/operator/v1/projections/op-transport-check.json"
+            initial = StoreMutationPlan(
+                None, (StoreMutation("replace_projection", path, {"transport": 1}),),
+                {"transport": 1})
+            try:
+                backend._build_commit(backend.read_snapshot(), initial)
+            except subprocess.CalledProcessError:
+                pass
+            else:
+                raise AssertionError("clean Store commit unexpectedly borrowed Git identity")
+            with patch.dict(os.environ, identity):
+                receipt = ProtectionReceipt(
+                    repository=backend.repository, state_ref=backend.state_ref,
+                    status="PROTECTED", verifier_identity="local-transport-test-only",
+                    verified_at="2026-10-02T00:00:00Z", policy_digest="test-only")
+                created = backend.commit(initial, receipt)
+                expect(created.snapshot.get(path) == {"transport": 1},
+                       "remote Store did not confirm committed projection")
+                author = git(first, "show", "-s", "--format=%an <%ae>|%cn <%ce>",
+                             created.ref_sha).stdout.strip()
+                expect(author == "AI-SDLC Operator Store <operator-store@ai-sdlc.invalid>"
+                       "|AI-SDLC Operator Store <operator-store@ai-sdlc.invalid>",
+                       "commit-tree did not inherit configured workflow identity")
+                rival = RemoteGitStateRefBackend(
+                    repo_path=second, repository=backend.repository,
+                    state_ref=backend.state_ref)
+                stale = rival.read_snapshot()
+                advanced = backend.commit(StoreMutationPlan(
+                    created.ref_sha,
+                    (StoreMutation("replace_projection", path, {"transport": 2}),),
+                    {"transport": 2}), receipt)
+                try:
+                    rival.commit(StoreMutationPlan(
+                        stale.ref_sha,
+                        (StoreMutation("replace_projection", path, {"transport": 3}),),
+                        {"transport": 3}), receipt)
+                except CasConflict:
+                    pass
+                else:
+                    raise AssertionError("stale Store writer overwrote remote CAS winner")
+                truth = backend.read_snapshot()
+                expect(truth.ref_sha == advanced.ref_sha and truth.get(path) == {"transport": 2},
+                       "rejected stale writer changed durable remote Store")
+    print("- isolated real commit-tree/push/read-back and stale-writer CAS passed")
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -53,6 +158,7 @@ def main():
     from v03_dogfood_execution_bindings import credential_identities
     root = Path(__file__).resolve().parents[1]
     live = yaml.safe_load((root / ".github/workflows/v03-real-dogfood-scenario.yml").read_text())
+    git_store_transport_tests(live)
     finalizer_text = (root / ".github/workflows/v03-finalize-real-dogfood-scenario.yml").read_text()
     finalizer = yaml.safe_load(finalizer_text)
     for workflow in (live, finalizer):
