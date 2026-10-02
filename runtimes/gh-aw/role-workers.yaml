@@ -1,4 +1,5 @@
 version: 0.1.0
+# v0.3 live verification includes a paid DeepSeek Reviewer fallback before Gemini.
 workers:
   - id: requirement-product-claude
     role: product
