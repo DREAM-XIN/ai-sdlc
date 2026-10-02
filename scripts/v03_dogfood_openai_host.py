@@ -25,6 +25,7 @@ class V03DogfoodOpenAIHostConfig:
     api_key: str
     model: str
     api_base: str = "https://api.openai.com/v1"
+    continuation_mode: str = "previous_response_id"
     max_tool_turns: int = 12
 
     def __post_init__(self) -> None:
@@ -32,6 +33,8 @@ class V03DogfoodOpenAIHostConfig:
             raise ValueError("dogfood Responses host requires server-owned API key/model")
         if not self.api_base.startswith("https://"):
             raise ValueError("dogfood Responses host requires HTTPS provider endpoint")
+        if self.continuation_mode not in {"previous_response_id", "full_history"}:
+            raise ValueError("dogfood Responses host continuation mode is unsupported")
         if self.max_tool_turns < 1 or self.max_tool_turns > 32:
             raise ValueError("dogfood Responses host tool-turn bound is invalid")
 
@@ -140,6 +143,7 @@ class V03DogfoodOpenAIResponsesHost:
         response_ids: list[str] = []
         call_ids: list[str] = []
         outputs: list[dict[str, Any]] = []
+        history: list[dict[str, Any]] = [{"role": "user", "content": instruction}]
         payload = self._create({
             "model": self.config.model,
             "input": instruction,
@@ -174,12 +178,22 @@ class V03DogfoodOpenAIResponsesHost:
                 raise V03DogfoodOpenAIHostError("adapter output correlation differs from exact provider call_id")
             call_ids.append(call_id)
             outputs.append(dict(result))
-            payload = self._create({
-                "model": self.config.model,
-                "previous_response_id": response_id,
-                "input": [result],
-                "tools": tools,
-                "parallel_tool_calls": False,
-            })
+            if self.config.continuation_mode == "full_history":
+                history.extend(dict(item) for item in payload["output"])
+                history.append(dict(result))
+                payload = self._create({
+                    "model": self.config.model,
+                    "input": history,
+                    "tools": tools,
+                    "parallel_tool_calls": False,
+                })
+            else:
+                payload = self._create({
+                    "model": self.config.model,
+                    "previous_response_id": response_id,
+                    "input": [result],
+                    "tools": tools,
+                    "parallel_tool_calls": False,
+                })
 
         raise V03DogfoodOpenAIHostError("dogfood Responses host failed to reach bounded terminal response")
