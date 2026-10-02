@@ -68,11 +68,11 @@ SCENARIOS = (
 )
 
 IDEMPOTENCY = {
-    CANCEL_BEFORE: "v03-release-fi-cancel-before-persist-linearization-r2",
-    PERSIST_BEFORE_CANCEL: "v03-release-fi-persist-linearized-before-cancel",
-    DUPLICATE_CALLBACK: "v03-release-fi-duplicate-callback",
-    OUT_OF_ORDER: "v03-release-fi-out-of-order-callback",
-    DUPLICATE_WORKER: "v03-release-fi-duplicate-worker-completion",
+    CANCEL_BEFORE: "v03-release-fi-cancel-before-persist-linearization-r3",
+    PERSIST_BEFORE_CANCEL: "v03-release-fi-persist-linearized-before-cancel-r2",
+    DUPLICATE_CALLBACK: "v03-release-fi-duplicate-callback-r2",
+    OUT_OF_ORDER: "v03-release-fi-out-of-order-callback-r2",
+    DUPLICATE_WORKER: "v03-release-fi-duplicate-worker-completion-r2",
     STALE_CANDIDATE: "v03-release-fi-stale-candidate-result",
 }
 

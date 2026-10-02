@@ -19,11 +19,11 @@ EXPECTED = (
     "stale-candidate-result",
 )
 EXPECTED_KEYS = {
-    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization-r2",
-    "persist-linearized-before-cancel": "v03-release-fi-persist-linearized-before-cancel",
-    "duplicate-callback": "v03-release-fi-duplicate-callback",
-    "out-of-order-callback": "v03-release-fi-out-of-order-callback",
-    "duplicate-worker-completion": "v03-release-fi-duplicate-worker-completion",
+    "cancel-before-persist-linearization": "v03-release-fi-cancel-before-persist-linearization-r3",
+    "persist-linearized-before-cancel": "v03-release-fi-persist-linearized-before-cancel-r2",
+    "duplicate-callback": "v03-release-fi-duplicate-callback-r2",
+    "out-of-order-callback": "v03-release-fi-out-of-order-callback-r2",
+    "duplicate-worker-completion": "v03-release-fi-duplicate-worker-completion-r2",
     "stale-candidate-result": "v03-release-fi-stale-candidate-result",
 }
 
