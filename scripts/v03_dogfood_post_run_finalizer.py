@@ -190,11 +190,28 @@ def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_
     )
 
 
+def _is_ancestor(result_source, repository: str, ancestor: str, descendant: str) -> bool:
+    if ancestor == descendant:
+        return True
+    payload = result_source._json(
+        repository,
+        f"/compare/{ancestor}...{descendant}",
+        result_source.config.target_token,
+    )
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("status") == "ahead"
+        and int(payload.get("behind_by") or 0) == 0
+        and str(((payload.get("merge_base_commit") or {}).get("sha")) or "").lower() == ancestor
+    )
+
+
 def _durable_run_bindings(preflight, observation, events):
-    """Re-establish each historical launch through the production result source."""
+    """Re-establish launches plus every trusted Developer-output candidate handoff."""
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     projection = vertical_projection(snapshot, observation["operation_id"])
     bindings = {}
+    ordered: list[dict[str, Any]] = []
     for row in events:
         if row.get("event_type") != "dispatch.launch.lookup-recorded" or (row.get("payload") or {}).get("lookup_state") != "LAUNCHED":
             continue
@@ -244,13 +261,84 @@ def _durable_run_bindings(preflight, observation, events):
                 result_source=preflight.composition.result_source,
                 lookup_sequence=int(row.get("sequence") or 0),
             )
-        bindings[run_id] = {
+
+        output_pr = resolved.run.candidate_pr_number
+        output_head = resolved.run.candidate_head_sha
+        if trusted["role"] == "developer" and observation.get("scenario") != "session_recovery":
+            callbacks = [
+                event for event in events
+                if event.get("event_type") == "worker.callback.recorded"
+                and event.get("operation_generation") == row.get("operation_generation")
+                and (event.get("payload") or {}).get("external_dispatch_key") == key
+            ]
+            if len(callbacks) != 1:
+                raise V03DogfoodPostRunFinalizerError("Developer run lacks one sealed callback for candidate handoff")
+            callback = callbacks[0]
+            callback_id = str((callback.get("payload") or {}).get("callback_id") or "")
+            handoffs = [
+                event for event in events
+                if event.get("event_type") == "candidate.handoff.adopted"
+                and event.get("operation_generation") == row.get("operation_generation")
+                and (event.get("payload") or {}).get("callback_id") == callback_id
+            ]
+            if len(handoffs) != 1:
+                raise V03DogfoodPostRunFinalizerError("Developer output lacks one durable trusted candidate handoff")
+            handoff = handoffs[0]
+            handoff_payload = handoff.get("payload") or {}
+            if (
+                int(handoff_payload.get("source_candidate_pr_number") or 0) != int(output_pr or 0)
+                or handoff_payload.get("source_candidate_head_sha") != output_head
+                or handoff_payload.get("prior_candidate_head_sha") != launch.get("candidate_head_sha")
+                or handoff_payload.get("dispatch_id") != launch.get("dispatch_id")
+                or int(handoff_payload.get("fixture_candidate_pr_number") or 0) != preflight.candidate_pr_number
+                or not (
+                    int(row.get("sequence") or 0)
+                    < int(callback.get("sequence") or 0)
+                    < int(handoff.get("sequence") or 0)
+                )
+            ):
+                raise V03DogfoodPostRunFinalizerError("Developer candidate handoff identity/order differs")
+        binding = {
             "repository": preflight.execution.repository, "feature_id": preflight.slot.feature_id,
             "target_ref": preflight.slot.target_ref, "candidate_pr_number": preflight.candidate_pr_number,
             "candidate_input_head_sha": launch.get("candidate_head_sha"),
+            "candidate_output_pr_number": output_pr,
+            "candidate_output_head_sha": output_head,
             "role": trusted["role"], "workflow": preflight.workflows.workflow_for(trusted["role"]),
-            "external_dispatch_key": key,
+            "external_dispatch_key": key, "lookup_sequence": int(row.get("sequence") or 0),
         }
+        bindings[run_id] = binding
+        ordered.append(binding)
+
+    latest_developer_head: str | None = None
+    for binding in ordered:
+        role = binding["role"]
+        input_head = str(binding.get("candidate_input_head_sha") or "")
+        if role == "developer" and observation.get("scenario") != "session_recovery":
+            output_head = str(binding.get("candidate_output_head_sha") or "")
+            if not _is_ancestor(
+                preflight.composition.result_source,
+                preflight.execution.repository,
+                input_head,
+                output_head,
+            ) or input_head == output_head:
+                raise V03DogfoodPostRunFinalizerError("Developer output is not a strict descendant of its dispatched input")
+            if latest_developer_head is not None and not _is_ancestor(
+                preflight.composition.result_source,
+                preflight.execution.repository,
+                latest_developer_head,
+                output_head,
+            ):
+                raise V03DogfoodPostRunFinalizerError("remediation candidate does not carry predecessor implementation")
+            latest_developer_head = output_head
+        elif role in {"reviewer", "qa"}:
+            if latest_developer_head is None or not _is_ancestor(
+                preflight.composition.result_source,
+                preflight.execution.repository,
+                latest_developer_head,
+                input_head,
+            ):
+                raise V03DogfoodPostRunFinalizerError("Gate role did not inspect a candidate containing exact Developer output")
     return bindings
 
 

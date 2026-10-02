@@ -23,8 +23,11 @@ from operator_openai_responses_production import (
 )
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
-from operator_store_model import normalize_repository
+from operator_store_model import digest_json, normalize_repository, operation_events
+from operator_vertical import VerticalInvariantError
+from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
+from operator_vertical_recovery import plan_vertical_callback_record
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
 from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
 from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector
@@ -33,6 +36,10 @@ from v03_dogfood_session_policy import DogfoodSessionDecisionPolicyVerifier
 from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+_DEVELOPER_PR_URI = re.compile(
+    r"^docs/features/(?P<feature>[^/]+)/worker-runs/(?P<dispatch>[^/]+)/"
+    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})\\.json$"
+)
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
 PROVIDER_SCOPE_ID = "v03-real-release-dogfood"
@@ -51,6 +58,7 @@ class DogfoodGitHubCandidateProvider:
         self.token = str(token or "")
         self.api_base = str(api_base or "").rstrip("/")
         self.http_get = http_get or self._default_get
+        self.runtime = None
         if not self.token or not self.api_base.startswith("https://"):
             raise ValueError("dogfood candidate provider requires trusted HTTPS GitHub read authority")
 
@@ -73,6 +81,95 @@ class DogfoodGitHubCandidateProvider:
             return int(exc.code), []
         except Exception:
             return 0, []
+
+    def bind_runtime(self, runtime: Any) -> None:
+        if self.runtime is not None and self.runtime is not runtime:
+            raise V03DogfoodCompositionError("candidate provider runtime binding changed")
+        if runtime is None or getattr(runtime, "backend", None) is None:
+            raise ValueError("candidate provider requires protected Store runtime")
+        self.runtime = runtime
+
+    @staticmethod
+    def _developer_receipt(envelope: dict[str, Any]) -> tuple[int, str]:
+        receipts = envelope.get("collected_outputs")
+        if not isinstance(receipts, list):
+            raise V03DogfoodCompositionError("developer callback lacks sealed output receipts")
+        matches: list[tuple[int, str]] = []
+        for receipt in receipts:
+            if not isinstance(receipt, dict) or receipt.get("kind") != "artifact":
+                continue
+            match = _DEVELOPER_PR_URI.fullmatch(str(receipt.get("trusted_uri") or ""))
+            if match:
+                matches.append((int(match.group("pr")), match.group("head")))
+        if len(matches) != 1:
+            raise V03DogfoodCompositionError("developer callback must bind one exact Draft PR output")
+        return matches[0]
+
+    def _pending_handoff(self, operation_id: str) -> dict[str, Any] | None:
+        if self.runtime is None:
+            return None
+        callbacks: dict[str, dict[str, Any]] = {}
+        handoffs: dict[str, dict[str, Any]] = {}
+        translated: dict[str, str] = {}
+        confirmed: set[str] = set()
+        for row in operation_events(self.runtime.backend.read_snapshot(), operation_id):
+            event_type = str(row.get("event_type") or "")
+            payload = row.get("payload") or {}
+            if event_type == "worker.callback.recorded":
+                envelope = payload.get("trusted_callback_envelope")
+                context = (envelope or {}).get("trusted_context") if isinstance(envelope, dict) else None
+                callback_id = str(payload.get("callback_id") or "")
+                if isinstance(context, dict) and context.get("role") == "developer" and callback_id:
+                    callbacks[callback_id] = envelope
+            elif event_type == "candidate.handoff.adopted":
+                callback_id = str(payload.get("callback_id") or "")
+                if callback_id:
+                    handoffs[callback_id] = payload
+            elif event_type == "feature.event.translated":
+                callback_id = str(payload.get("callback_id") or "")
+                event_id = str(payload.get("feature_event_id") or "")
+                if callback_id and event_id:
+                    translated[callback_id] = event_id
+            elif event_type == "feature.persist.confirmed":
+                event_id = str(payload.get("feature_event_id") or "")
+                if event_id:
+                    confirmed.add(event_id)
+        pending: list[dict[str, Any]] = []
+        for callback_id, envelope in callbacks.items():
+            event_id = translated.get(callback_id)
+            if event_id and event_id in confirmed:
+                continue
+            context = envelope.get("trusted_context") or {}
+            handoff = handoffs.get(callback_id)
+            if not isinstance(handoff, dict):
+                continue
+            source_pr, source_head = self._developer_receipt(envelope)
+            if (
+                handoff.get("source_candidate_pr_number") != source_pr
+                or handoff.get("source_candidate_head_sha") != source_head
+                or handoff.get("prior_candidate_head_sha") != context.get("candidate_head_sha")
+                or handoff.get("dispatch_id") != context.get("dispatch_id")
+            ):
+                raise V03DogfoodCompositionError("durable candidate handoff differs from sealed Developer callback")
+            pending.append(handoff)
+        if len(pending) > 1:
+            raise V03DogfoodCompositionError("multiple incomplete Developer candidate handoffs")
+        return pending[0] if pending else None
+
+    def _is_descendant(self, ancestor: str, descendant: str) -> bool:
+        if ancestor == descendant:
+            return True
+        status, payload = self.http_get(
+            f"{self.api_base}/repos/{self.repository}/compare/{ancestor}...{descendant}",
+            self._headers(),
+        )
+        return bool(
+            status == 200
+            and isinstance(payload, dict)
+            and payload.get("status") == "ahead"
+            and int(payload.get("behind_by") or 0) == 0
+            and str(((payload.get("merge_base_commit") or {}).get("sha")) or "").lower() == ancestor
+        )
 
     def _candidate(self) -> dict[str, Any]:
         owner = self.repository.split("/", 1)[0]
@@ -120,10 +217,275 @@ class DogfoodGitHubCandidateProvider:
         ):
             raise V03DogfoodCompositionError("candidate lookup escaped fixed dogfood slot identity")
         row = self._candidate()
+        current_head = str(row["head"]["sha"]).lower()
+        pending = self._pending_handoff(operation_id)
+        if pending is not None:
+            adopted_head = str(pending.get("source_candidate_head_sha") or "").lower()
+            prior_head = str(pending.get("prior_candidate_head_sha") or "").lower()
+            if (
+                int(pending.get("fixture_candidate_pr_number") or 0) != int(row["number"])
+                or not _SHA40.fullmatch(adopted_head)
+                or not _SHA40.fullmatch(prior_head)
+                or not self._is_descendant(adopted_head, current_head)
+            ):
+                raise V03DogfoodCompositionError("incomplete handoff no longer matches fixed candidate lineage")
+            current_head = prior_head
         return TrustedCandidateSnapshot(
             candidate_pr_number=int(row["number"]),
-            candidate_head_sha=str(row["head"]["sha"]).lower(),
+            candidate_head_sha=current_head,
         )
+
+
+class DogfoodCandidateHandoff:
+    """Adopt one sealed Developer Draft PR head onto the isolated fixture ref."""
+
+    def __init__(
+        self,
+        *,
+        slot: DogfoodSlot,
+        repository: str,
+        token: str,
+        candidate_provider: DogfoodGitHubCandidateProvider,
+        api_base: str = "https://api.github.com",
+        http_request=None,
+    ):
+        self.slot = slot
+        self.repository = normalize_repository(repository)
+        self.token = str(token or "")
+        self.candidate_provider = candidate_provider
+        self.api_base = str(api_base or "").rstrip("/")
+        self.http_request = http_request or self._default_request
+        if not self.token or not self.api_base.startswith("https://"):
+            raise ValueError("candidate handoff requires trusted HTTPS GitHub write authority")
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "ai-sdlc-v03-dogfood-handoff",
+        }
+
+    @staticmethod
+    def _default_request(method: str, url: str, headers: dict[str, str], body: dict[str, Any] | None):
+        data = None if body is None else json.dumps(body, sort_keys=True).encode("utf-8")
+        request_headers = dict(headers)
+        if data is not None:
+            request_headers["Content-Type"] = "application/json"
+        req = request.Request(url, headers=request_headers, data=data, method=method)
+        try:
+            with request.urlopen(req, timeout=30) as response:
+                raw = response.read()
+                return int(response.status), json.loads(raw.decode()) if raw else {}
+        except error.HTTPError as exc:
+            return int(exc.code), {}
+        except Exception:
+            return 0, {}
+
+    def _api(self, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, object]:
+        return self.http_request(
+            method,
+            f"{self.api_base}/repos/{self.repository}{path}",
+            self._headers(),
+            body,
+        )
+
+    def adopt(
+        self,
+        *,
+        executor: Any,
+        context: Any,
+        callback_id: str,
+        receipts: list[dict[str, Any]],
+    ) -> None:
+        if context.role != "developer" or context.feature_id != self.slot.feature_id or context.target_ref != self.slot.target_ref:
+            raise V03DogfoodCompositionError("candidate handoff escaped fixed Developer/fixture authority")
+        envelope = {"collected_outputs": receipts}
+        source_pr, source_head = self.candidate_provider._developer_receipt(envelope)
+        fixture = self.candidate_provider._candidate()
+        prior_head = str(context.candidate_head_sha or "").lower()
+        if int(fixture["number"]) < 1 or str(fixture["head"]["sha"]).lower() != prior_head:
+            raise V03DogfoodCompositionError("fixture candidate changed before Developer handoff")
+        status, pr = self._api("GET", f"/pulls/{source_pr}")
+        if (
+            status != 200
+            or not isinstance(pr, dict)
+            or pr.get("state") != "open"
+            or pr.get("draft") is not True
+            or str((pr.get("base") or {}).get("ref") or "") != self.slot.target_ref
+            or str((pr.get("head") or {}).get("sha") or "").lower() != source_head
+        ):
+            raise V03DogfoodCompositionError("sealed Developer Draft PR changed before handoff")
+        status, comparison = self._api("GET", f"/compare/{prior_head}...{source_head}")
+        if (
+            status != 200
+            or not isinstance(comparison, dict)
+            or comparison.get("status") != "ahead"
+            or int(comparison.get("ahead_by") or 0) < 1
+            or int(comparison.get("behind_by") or 0) != 0
+            or str(((comparison.get("merge_base_commit") or {}).get("sha")) or "").lower() != prior_head
+        ):
+            raise V03DogfoodCompositionError("Developer output is not a strict fast-forward of its reviewed fixture input")
+        ref_path = f"/git/refs/heads/{parse.quote(self.slot.target_ref, safe='')}"
+        status, current = self._api("GET", ref_path)
+        current_sha = str(((current or {}).get("object") or {}).get("sha") or "").lower() if isinstance(current, dict) else ""
+        if status != 200 or current_sha not in {prior_head, source_head}:
+            raise V03DogfoodCompositionError("fixture ref changed outside one-shot Developer handoff")
+        if current_sha == prior_head:
+            status, updated = self._api("PATCH", ref_path, {"sha": source_head, "force": False})
+            if status != 200 or str(((updated or {}).get("object") or {}).get("sha") or "").lower() != source_head:
+                raise V03DogfoodCompositionError("trusted Developer candidate fast-forward was not accepted")
+        executor._record_fact(
+            context.operation_id,
+            "candidate.handoff.adopted",
+            {
+                "callback_id": callback_id,
+                "dispatch_id": context.dispatch_id,
+                "target_ref": self.slot.target_ref,
+                "fixture_candidate_pr_number": int(fixture["number"]),
+                "prior_candidate_head_sha": prior_head,
+                "source_candidate_pr_number": source_pr,
+                "source_candidate_head_sha": source_head,
+            },
+        )
+
+
+class DogfoodTrustedCallbackCoordinator:
+    """Pause accepted callbacks around the trusted Developer handoff/lifecycle fence."""
+
+    def __init__(self, *, delegate: Any, candidate_handoff: DogfoodCandidateHandoff):
+        self.delegate = delegate
+        self.executor = delegate.executor
+        self.candidate_handoff = candidate_handoff
+
+    @staticmethod
+    def _artifact_uri(receipts: list[dict[str, Any]]) -> str:
+        rows = [
+            str(row.get("trusted_uri") or "")
+            for row in receipts
+            if isinstance(row, dict) and row.get("kind") == "artifact"
+        ]
+        if len(rows) != 1 or _DEVELOPER_PR_URI.fullmatch(rows[0]) is None:
+            raise V03DogfoodCompositionError("Developer callback lacks one exact implementation receipt")
+        return rows[0]
+
+    def _supersede_remediation_artifact(
+        self,
+        *,
+        context: Any,
+        callback_id: str,
+        receipts: list[dict[str, Any]],
+    ) -> None:
+        feature, manifest = self.executor.feature_gateway.read_feature(operation_id=context.operation_id)
+        tasks = manifest.get("tasks") or []
+        remediation = [
+            row for row in tasks
+            if isinstance(row, dict)
+            and row.get("id") == context.task_id
+            and row.get("kind") == "remediation"
+            and row.get("status") == "DONE"
+        ]
+        if not remediation:
+            return
+        uri = self._artifact_uri(receipts)
+        drafts = [
+            row for row in (manifest.get("artifacts") or [])
+            if isinstance(row, dict)
+            and row.get("type") == "implementation"
+            and row.get("status", "draft") == "draft"
+        ]
+        current = [row for row in drafts if row.get("uri") == uri]
+        previous = [row for row in drafts if row.get("uri") != uri]
+        if len(current) != 1 or len(previous) != 1:
+            raise VerticalInvariantError(
+                "BLOCKED",
+                "remediation supersession requires exactly one predecessor and one exact replacement draft",
+            )
+        event = {
+            "version": "0.1.0",
+            "id": "EVT-" + context.feature_id + "-VERTICAL-REMEDIATION-SUPERSEDE-"
+            + digest_json({
+                "callback_id": callback_id,
+                "previous": previous[0]["id"],
+                "replacement": current[0]["id"],
+                "revision": feature.revision,
+            })[:12].upper(),
+            "feature_id": context.feature_id,
+            "expected_revision": feature.revision,
+            "occurred_at": self.executor.runtime.clock(),
+            "changes": [
+                {"kind": "artifact", "id": previous[0]["id"], "status": "superseded"},
+            ],
+        }
+        self.executor._record_fact(
+            context.operation_id,
+            "feature.event.translated",
+            {
+                "feature_event_id": event["id"],
+                "feature_event_digest": digest_json(event),
+                "feature_event": event,
+                "feature_revision": feature.revision,
+                "feature_stage": feature.current_stage,
+                "feature_manifest_digest": feature.manifest_digest,
+                "candidate_head_sha": feature.candidate_head_sha,
+                "target_ref": feature.target_ref,
+                "callback_id": callback_id,
+                "purpose": "remediation_artifact_supersession",
+                "replacement_artifact_id": current[0]["id"],
+                "superseded_artifact_id": previous[0]["id"],
+            },
+        )
+        self.executor._persist(context.operation_id, event, feature)
+
+    def handle(
+        self,
+        *,
+        context: Any,
+        callback_id: str,
+        worker_payload: dict[str, Any],
+        receipts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        projection = self.executor._projection(context.operation_id)
+        if projection["generation"] != context.operation_generation:
+            raise VerticalInvariantError("SUPERSEDED_GENERATION", "callback belongs to a superseded generation")
+        if context.target_ref != self.executor.config.target_ref:
+            raise VerticalInvariantError("STALE_REVISION", "callback target ref is outside trusted dogfood runtime")
+        self.executor._commit(
+            lambda snapshot: plan_vertical_callback_record(
+                snapshot,
+                context=context,
+                callback_id=callback_id,
+                worker_payload=worker_payload,
+                receipts=receipts,
+                occurred_at=self.executor.runtime.clock(),
+                trusted_context_digest=self.executor.config.trusted_context_digest,
+            )
+        )
+        if context.role == "developer":
+            self.candidate_handoff.adopt(
+                executor=self.executor,
+                context=context,
+                callback_id=callback_id,
+                receipts=receipts,
+            )
+        result = process_recorded_callback(
+            self.executor,
+            context=context,
+            callback_id=callback_id,
+            worker_payload=worker_payload,
+            receipts=receipts,
+            trusted_role_policy=self.delegate.trusted_role_policy,
+            collector_namespace_policy=self.delegate.collector_namespace_policy,
+            content_loader=self.delegate.content_loader,
+            continue_after=False,
+        )
+        if context.role == "developer" and str(result.get("status") or "") not in {"BLOCKED", "NEEDS_USER"}:
+            self._supersede_remediation_artifact(
+                context=context,
+                callback_id=callback_id,
+                receipts=receipts,
+            )
+        return self.executor.advance_until_stop(operation_id=context.operation_id)
 
 
 @dataclass(frozen=True)
@@ -264,8 +626,20 @@ def build_v03_dogfood_full_composition(
         candidate_provider=candidate_provider,
     )
     feature_truth.bind(durable_truth)
+    candidate_provider.bind_runtime(responses.runtime)
+    candidate_handoff = DogfoodCandidateHandoff(
+        slot=slot,
+        repository=config.target_repository,
+        token=event_write_token,
+        candidate_provider=candidate_provider,
+        api_base=github_api_base,
+    )
+    callback_coordinator = DogfoodTrustedCallbackCoordinator(
+        delegate=bundle.callback_coordinator,
+        candidate_handoff=candidate_handoff,
+    )
     collector = ProductionGhAwVerticalResultCollector(
-        callback_coordinator=bundle.callback_coordinator,
+        callback_coordinator=callback_coordinator,
         result_source=result_source,
         workflows=workflows,
         control_repository=control_repository,
@@ -274,7 +648,11 @@ def build_v03_dogfood_full_composition(
 
     if responses.runtime is not bundle.runtime or durable_truth.runtime is not responses.runtime:
         raise V03DogfoodCompositionError("Responses/dogfood FeatureTruth escaped unique production Store runtime")
-    if collector.result_source is not result_source or collector.callback_coordinator is not bundle.callback_coordinator:
+    if (
+        collector.result_source is not result_source
+        or collector.callback_coordinator is not callback_coordinator
+        or callback_coordinator.executor is not bundle.callback_coordinator.executor
+    ):
         raise V03DogfoodCompositionError("dogfood collector escaped production authority graph")
     if responses.adapter.registration.registration_id != f"v03-dogfood:{slot.scenario}":
         raise V03DogfoodCompositionError("dogfood Responses registration escaped fixed scenario")
