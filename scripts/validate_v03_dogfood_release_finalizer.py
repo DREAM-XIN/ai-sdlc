@@ -7,6 +7,7 @@ from operator_vertical import VerticalInvariantError
 
 from v03_dogfood_post_run_finalizer import (
     V03DogfoodPostRunFinalizerError,
+    _milestone_facts,
     _reconstruct_release_authority,
 )
 from v03_dogfood_release_finalizer import V03DogfoodReleaseFinalizerError, build_release_record
