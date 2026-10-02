@@ -11,6 +11,7 @@ from v03_dogfood_live_gate import (
     V03DogfoodLiveGateError,
     assemble_dogfood_live_gate,
     public_gate,
+    select_review_anchor,
 )
 
 SHA = "a" * 40
@@ -113,6 +114,38 @@ def main():
         return replace(closure(**kwargs), trusted_main_head_sha="c" * 40)
 
     expect_failure(verifier=wrong_generation, label="Issue #221 generation mismatch")
+
+    digest = "sha256:" + "d" * 64
+    review_head = "e" * 40
+    pulls = [{"number": 348, "head": {"sha": review_head}}]
+    reviews = {
+        348: [{
+            "id": 7001,
+            "state": "COMMENTED",
+            "commit_id": review_head,
+            "body": "Independent Runtime / Dogfood Release-Evidence Review — PASS\n"
+                    + "Issue221-Compatibility-Anchor: " + digest,
+        }]
+    }
+    anchor = select_review_anchor(
+        pulls=pulls, reviews_by_pr=reviews, installation_sha=SHA, reviewed_delta_digest=digest,
+    )
+    require(anchor["pull_number"] == 348 and anchor["review_commit_id"] == review_head,
+            "reviewed delta anchor identity drifted")
+    bad = {348: [dict(reviews[348][0], commit_id="f" * 40)]}
+    try:
+        select_review_anchor(pulls=pulls, reviews_by_pr=bad, installation_sha=SHA, reviewed_delta_digest=digest)
+    except V03DogfoodLiveGateError:
+        pass
+    else:
+        raise AssertionError("stale-head independent review anchor unexpectedly passed")
+    bad = {348: [dict(reviews[348][0], body="Independent Runtime / Dogfood Release-Evidence Review — PASS")]}
+    try:
+        select_review_anchor(pulls=pulls, reviews_by_pr=bad, installation_sha=SHA, reviewed_delta_digest=digest)
+    except V03DogfoodLiveGateError:
+        pass
+    else:
+        raise AssertionError("review without exact compatibility digest unexpectedly passed")
 
     print("v0.3 dogfood live upstream gate: PASS")
 
