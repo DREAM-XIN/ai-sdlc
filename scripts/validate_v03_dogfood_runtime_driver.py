@@ -204,8 +204,21 @@ def main():
     from gh_aw_provider_registry import load_registry
     from v03_dogfood_execution_bindings import credential_identities
     root = Path(__file__).resolve().parents[1]
-    live = yaml.safe_load((root / ".github/workflows/v03-real-dogfood-scenario.yml").read_text())
+    live_path = root / ".github/workflows/v03-real-dogfood-scenario.yml"
+    live_text = live_path.read_text()
+    live = yaml.safe_load(live_text)
     git_store_transport_tests(live)
+    expect("AI_SDLC_DEEPSEEK_API_KEY" in live_text, "real dogfood controller lacks DeepSeek credential binding")
+    expect("AI_SDLC_DEEPSEEK_MODEL" in live_text, "real dogfood controller lacks DeepSeek model binding")
+    expect("AI_SDLC_RESPONSES_API_BASE: https://api.deepseek.com" in live_text,
+           "real dogfood controller lacks fixed DeepSeek Responses endpoint")
+    expect("AI_SDLC_OPENAI_API_KEY" not in live_text and "AI_SDLC_OPENAI_MODEL" not in live_text,
+           "real dogfood controller still requires OpenAI quota")
+    readiness_text = (root / ".github/workflows/v03-dogfood-readiness.yml").read_text()
+    expect("HAS_AI_SDLC_DEEPSEEK_API_KEY" in readiness_text,
+           "dogfood readiness does not check DeepSeek controller credential")
+    expect("HAS_AI_SDLC_OPENAI_API_KEY" not in readiness_text,
+           "dogfood readiness still blocks on OpenAI controller credential")
     finalizer_text = (root / ".github/workflows/v03-finalize-real-dogfood-scenario.yml").read_text()
     finalizer = yaml.safe_load(finalizer_text)
     for workflow in (live, finalizer):
