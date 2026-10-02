@@ -129,7 +129,7 @@ class DogfoodGitHubCandidateProvider:
                 callback_id = str(payload.get("callback_id") or "")
                 event_id = str(payload.get("feature_event_id") or "")
                 if callback_id and event_id:
-                    translated[callback_id] = event_id
+                    translated.setdefault(callback_id, event_id)
             elif event_type == "persist.confirmed":
                 event_id = str(payload.get("feature_event_id") or "")
                 if event_id:
