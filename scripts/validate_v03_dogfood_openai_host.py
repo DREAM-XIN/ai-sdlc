@@ -26,13 +26,19 @@ def response(response_id: str, *items, status: str = "completed"):
     return {"id": response_id, "status": status, "output": list(items)}
 
 
-def call(call_id: str):
+def call(call_id: str, name: str = "aisdlc_v1_system_capabilities"):
+    arguments = '{"api_version":"ai-sdlc.operator/v1"}'
+    if name == "aisdlc_v1_operation_start":
+        arguments = (
+            '{"api_version":"ai-sdlc.operator/v1","feature_id":"F-TEST",'
+            '"expected_feature_revision":1,"mode":"ASSISTED"}'
+        )
     return {
         "type": "function_call",
         "id": "fc_" + call_id,
         "call_id": call_id,
-        "name": "aisdlc_v1_system_capabilities",
-        "arguments": '{"api_version":"ai-sdlc.operator/v1"}',
+        "name": name,
+        "arguments": arguments,
         "status": "completed",
     }
 
@@ -114,9 +120,62 @@ def main() -> None:
     # the adapter boundary.
     must_fail([response("resp_pending", call("call_p"), status="in_progress")], "completed Responses")
 
-    # The supported profile is intentionally sequential and cannot partially
-    # execute a malformed provider batch.
-    must_fail([response("resp_multi", call("call_a"), call("call_b"))], "multiple function calls")
+    # DeepSeek Responses always enables parallel tool calls even when the request
+    # asks for false. Multiple read-only calls are accepted only after the whole
+    # batch is prevalidated, then serialized through the reviewed adapter.
+    parallel_adapter = FakeAdapter()
+    parallel_requests = []
+    parallel = host(
+        [
+            response("resp_multi", call("call_a"), call("call_b")),
+            response("resp_multi_done", message()),
+        ],
+        adapter=parallel_adapter,
+        continuation_mode="full_history",
+        api_base="https://api.deepseek.com",
+        requests=parallel_requests,
+    )
+    parallel_trace = parallel.run(scenario_instruction="trusted parallel-read dogfood")
+    assert parallel_trace.function_call_ids == ("call_a", "call_b")
+    assert [row["call_id"] for row in parallel_adapter.calls] == ["call_a", "call_b"]
+    assert len(parallel_requests) == 2
+    continuation_items = parallel_requests[1]["input"]
+    assert [row.get("call_id") for row in continuation_items if row.get("type") == "function_call"] == [
+        "call_a", "call_b"
+    ]
+    assert [row.get("call_id") for row in continuation_items if row.get("type") == "function_call_output"] == [
+        "call_a", "call_b"
+    ]
+
+    # A parallel batch containing any write must fail before *any* read or write
+    # reaches the adapter, preventing partial effects from one provider response.
+    mixed_adapter = FakeAdapter()
+    try:
+        host(
+            [response(
+                "resp_mixed",
+                call("call_read"),
+                call("call_write", "aisdlc_v1_operation_start"),
+            )],
+            adapter=mixed_adapter,
+        ).run(scenario_instruction="trusted mixed dogfood")
+    except V03DogfoodOpenAIHostError as exc:
+        assert "write capability" in str(exc)
+    else:
+        raise AssertionError("parallel mixed read/write batch unexpectedly passed")
+    assert mixed_adapter.calls == [], "mixed parallel batch partially reached adapter effects"
+
+    duplicate_batch_adapter = FakeAdapter()
+    try:
+        host(
+            [response("resp_batch_dup", call("call_same"), call("call_same"))],
+            adapter=duplicate_batch_adapter,
+        ).run(scenario_instruction="trusted duplicate batch")
+    except V03DogfoodOpenAIHostError as exc:
+        assert "duplicate call_id" in str(exc)
+    else:
+        raise AssertionError("duplicate call_id inside parallel batch unexpectedly passed")
+    assert duplicate_batch_adapter.calls == []
 
     # Built-in/hosted executable items are not alternate Operator authorities.
     must_fail([response("resp_builtin", {"type": "mcp_call", "id": "mcp_1"})], "unsupported executable")
