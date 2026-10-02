@@ -109,7 +109,6 @@ def build_v03_scenario_runtime_preflight(
             "repository": repository,
             "installation_commit_sha": execution.installation_commit_sha,
             "materialization_commit_sha": live_authority.materialization_commit_sha,
-            "protected_state_ref_sha": live_authority.protected_state_ref_sha,
             "policy_bundle_digest": live_authority.policy.bundle_digest,
             "reviewer_worker_id": reviewer_selection.worker_id,
             "reviewer_selection_policy": reviewer_selection.selection_policy,
