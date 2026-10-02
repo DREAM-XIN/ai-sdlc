@@ -21,9 +21,11 @@ class FakeHost:
         self.status = status
         self.duplicate = duplicate
         self.instructions = []
+        self.initial_tools = []
 
-    def run(self, *, scenario_instruction):
+    def run(self, *, scenario_instruction, initial_tool_name=None):
         self.instructions.append(scenario_instruction)
+        self.initial_tools.append(initial_tool_name)
         output = {
             "type": "function_call_output",
             "call_id": "call-start",
@@ -43,9 +45,11 @@ class FakeRecoveryHost:
         self.operation_id = operation_id
         self.include_all = include_all
         self.instructions = []
+        self.initial_tools = []
 
-    def run(self, *, scenario_instruction):
+    def run(self, *, scenario_instruction, initial_tool_name=None):
         self.instructions.append(scenario_instruction)
+        self.initial_tools.append(initial_tool_name)
         result = {
             "operations": [{"operation_id": self.operation_id, "status": "NEEDS_USER"}],
             "decisions": [{"operation_id": self.operation_id, "decision_id": "decision-1", "status": "PENDING"}],
@@ -127,6 +131,11 @@ def run_case(scenario, statuses, roles, *, recovery=True):
            "runner instruction must prevent DeepSeek from batching reads with operation.start")
     expect("do not place any other tool call beside operation.start" in host.instructions[0],
            "runner instruction must forbid parallel write batches")
+    expect(host.initial_tools == ["aisdlc_v1_operation_start"],
+           "runner must force the trusted initial operation.start tool")
+    if recovery_host is not None:
+        expect(recovery_host.initial_tools == ["aisdlc_v1_operator_inbox"],
+               "session recovery must force the trusted initial operator.inbox tool")
     return result
 
 
