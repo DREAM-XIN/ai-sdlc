@@ -206,8 +206,10 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         return 0
 
     host_config = V03DogfoodOpenAIHostConfig(
-        api_key=_required(os.environ, "AI_SDLC_OPENAI_API_KEY"),
-        model=_required(os.environ, "AI_SDLC_OPENAI_MODEL"),
+        api_key=_required(os.environ, "AI_SDLC_DEEPSEEK_API_KEY"),
+        model=_required(os.environ, "AI_SDLC_DEEPSEEK_MODEL"),
+        api_base=str(os.environ.get("AI_SDLC_RESPONSES_API_BASE") or "https://api.deepseek.com"),
+        stateless_history=True,
     )
     host = V03DogfoodOpenAIResponsesHost(config=host_config, adapter=preflight.composition.adapter)
     recovery_host = (
