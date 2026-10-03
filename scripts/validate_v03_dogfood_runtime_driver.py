@@ -683,6 +683,219 @@ def prehttp_recovery_fence_tests():
         "historical attempt recovery is not evaluated before old no-attempt transition",
     )
     print("- exact historical POLICY_DENIED is replayed with zero HTTP and one marker-before-launch site")
+    # Exercise the live recovery control flow with a real immutable Store
+    # marker plan, but no network/Worker effects.
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from operator_store_model import StoreSnapshot, apply_plan_to_snapshot
+
+    class Backend:
+        def __init__(self, snapshot=None):
+            self.snapshot = snapshot or StoreSnapshot(ref_sha="fixture-state-0", files={})
+
+        def read_snapshot(self):
+            return self.snapshot
+
+    class Runtime:
+        def __init__(self, backend, order):
+            self.backend = backend
+            self.order = order
+            self.commits = 0
+
+        def clock(self):
+            return "2026-10-03T06:55:00Z"
+
+        def commit_replanned(self, planner, *, max_attempts=4):
+            self.order.append("marker-commit")
+            self.commits += 1
+            plan = planner(self.backend.snapshot)
+            if plan.mutations:
+                self.backend.snapshot = apply_plan_to_snapshot(
+                    self.backend.snapshot,
+                    plan,
+                    new_ref_sha=f"fixture-state-{self.commits}",
+                )
+            return SimpleNamespace(result=plan.result)
+
+    class RaceRuntime(Runtime):
+        def commit_replanned(self, planner, *, max_attempts=4):
+            self.order.append("marker-race")
+            self.commits += 1
+            # Another writer won the marker CAS. The losing path must only
+            # lookup and must never call launch.
+            return SimpleNamespace(result={"acquired": False})
+
+    class Gateway:
+        def __init__(self, lookups, order, *, launch_receipt=None):
+            self.lookups = list(lookups)
+            self.order = order
+            self.launch_count = 0
+            self.launch_receipt = launch_receipt or {
+                "lookup_state": "LAUNCHED",
+                "receipt_id": "recovery-run-1",
+            }
+
+        def lookup(self, *, external_dispatch_key):
+            expect(
+                external_dispatch_key == h["external_dispatch_key"],
+                "recovery lookup escaped the fixed external key",
+            )
+            self.order.append("lookup")
+            if not self.lookups:
+                raise AssertionError("unexpected extra recovery lookup")
+            return self.lookups.pop(0)
+
+        def launch(self, *, dispatch):
+            self.order.append("launch")
+            self.launch_count += 1
+            return dict(self.launch_receipt)
+
+    def preflight_for(runtime, gateway):
+        return SimpleNamespace(
+            slot=SimpleNamespace(scenario="happy_path"),
+            composition=SimpleNamespace(runtime=runtime, dispatch_gateway=gateway),
+            trusted_context_digest="current-test-context",
+            execution=SimpleNamespace(installation_commit_sha="current-test-installation"),
+        )
+
+    def fake_dispatch(_snapshot, _preflight):
+        return {"_attempt_id": h["attempt_id"], "external_dispatch_key": h["external_dispatch_key"]}
+
+    fake_identity = (
+        {"status": "BLOCKED"},
+        {"candidate_head_sha": h["candidate_head_sha"]},
+        {"attempt_id": h["attempt_id"]},
+    )
+
+    order = []
+    runtime = Runtime(Backend(), order)
+    gateway = Gateway([{"lookup_state": "NOT_LAUNCHED", "receipt_id": None}], order)
+    preflight = preflight_for(runtime, gateway)
+    recorded = []
+    with (
+        patch.object(driver_subject, "_historical_recovery_dispatch", side_effect=fake_dispatch),
+        patch.object(driver_subject, "_verify_historical_prehttp_proof", return_value="proof-digest"),
+        patch.object(driver_subject, "_historical_attempt_identity", return_value=fake_identity),
+        patch.object(
+            driver_subject,
+            "_record_exact_recovery_launch",
+            side_effect=lambda _preflight, *, receipt: recorded.append(dict(receipt)),
+        ),
+    ):
+        expect(
+            driver_subject.recover_historical_prehttp_attempt(preflight) is True,
+            "first exact pre-HTTP recovery did not complete",
+        )
+    expect(
+        order == ["lookup", "marker-commit", "launch"],
+        "marker was not durably acquired between absence lookup and sole launch",
+    )
+    expect(gateway.launch_count == 1, "first recovery did not contain exactly one launch")
+    expect(len(recorded) == 1 and recorded[0]["receipt_id"] == "recovery-run-1",
+           "exact recovery receipt was not recorded")
+    marker = runtime.backend.snapshot.get(driver_subject.PREHTTP_RECOVERY_MARKER_PATH)
+    expect(marker is not None, "recovery launch occurred without durable marker")
+    driver_subject._validate_prehttp_recovery_marker(marker, "proof-digest")
+
+    replay_order = []
+    replay_runtime = Runtime(Backend(runtime.backend.snapshot), replay_order)
+    replay_gateway = Gateway(
+        [{"lookup_state": "LAUNCHED", "receipt_id": "recovery-run-1"}],
+        replay_order,
+    )
+    replay = preflight_for(replay_runtime, replay_gateway)
+    with (
+        patch.object(driver_subject, "_historical_recovery_dispatch", side_effect=fake_dispatch),
+        patch.object(driver_subject, "_verify_historical_prehttp_proof", return_value="proof-digest"),
+        patch.object(driver_subject, "_historical_attempt_identity", return_value=fake_identity),
+        patch.object(driver_subject, "_record_exact_recovery_launch", return_value=None),
+    ):
+        expect(
+            driver_subject.recover_historical_prehttp_attempt(replay) is True,
+            "marker replay could not adopt an exact launched receipt",
+        )
+    expect(
+        replay_gateway.launch_count == 0 and replay_order == ["lookup"],
+        "durable marker replay performed a second launch",
+    )
+
+    crash_order = []
+    crash_runtime = Runtime(Backend(runtime.backend.snapshot), crash_order)
+    crash_gateway = Gateway(
+        [{"lookup_state": "NOT_LAUNCHED", "receipt_id": None}],
+        crash_order,
+    )
+    crash = preflight_for(crash_runtime, crash_gateway)
+    with (
+        patch.object(driver_subject, "_historical_recovery_dispatch", side_effect=fake_dispatch),
+        patch.object(driver_subject, "_verify_historical_prehttp_proof", return_value="proof-digest"),
+        patch.object(driver_subject, "_historical_attempt_identity", return_value=fake_identity),
+    ):
+        try:
+            driver_subject.recover_historical_prehttp_attempt(crash)
+        except V03DogfoodRuntimeDriverError:
+            pass
+        else:
+            raise AssertionError("crash-after-marker replay escaped fail-closed boundary")
+    expect(
+        crash_gateway.launch_count == 0 and crash_order == ["lookup"],
+        "crash-after-marker replay attempted another launch",
+    )
+
+    unknown_order = []
+    unknown_runtime = Runtime(Backend(), unknown_order)
+    unknown_gateway = Gateway(
+        [{"lookup_state": "UNKNOWN", "receipt_id": None}],
+        unknown_order,
+    )
+    unknown = preflight_for(unknown_runtime, unknown_gateway)
+    with (
+        patch.object(driver_subject, "_historical_recovery_dispatch", side_effect=fake_dispatch),
+        patch.object(driver_subject, "_verify_historical_prehttp_proof", return_value="proof-digest"),
+        patch.object(driver_subject, "_historical_attempt_identity", return_value=fake_identity),
+    ):
+        try:
+            driver_subject.recover_historical_prehttp_attempt(unknown)
+        except V03DogfoodRuntimeDriverError:
+            pass
+        else:
+            raise AssertionError("UNKNOWN preflight escaped recovery fence")
+    expect(
+        unknown_gateway.launch_count == 0
+        and unknown_runtime.commits == 0
+        and unknown_order == ["lookup"],
+        "UNKNOWN preflight mutated Store or launched recovery",
+    )
+
+    race_order = []
+    race_runtime = RaceRuntime(Backend(), race_order)
+    race_gateway = Gateway(
+        [
+            {"lookup_state": "NOT_LAUNCHED", "receipt_id": None},
+            {"lookup_state": "NOT_LAUNCHED", "receipt_id": None},
+        ],
+        race_order,
+    )
+    race = preflight_for(race_runtime, race_gateway)
+    with (
+        patch.object(driver_subject, "_historical_recovery_dispatch", side_effect=fake_dispatch),
+        patch.object(driver_subject, "_verify_historical_prehttp_proof", return_value="proof-digest"),
+        patch.object(driver_subject, "_historical_attempt_identity", return_value=fake_identity),
+    ):
+        try:
+            driver_subject.recover_historical_prehttp_attempt(race)
+        except V03DogfoodRuntimeDriverError:
+            pass
+        else:
+            raise AssertionError("losing recovery marker race escaped fail-closed boundary")
+    expect(
+        race_gateway.launch_count == 0
+        and race_order == ["lookup", "marker-race", "lookup"],
+        "losing marker race obtained launch authority",
+    )
+    print("- recovery marker acquisition/replay/crash/UNKNOWN/CAS-race paths are dynamically one-shot")
+
+
 
 
 def main():
