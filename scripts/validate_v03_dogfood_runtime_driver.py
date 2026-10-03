@@ -336,7 +336,7 @@ def installation_transition_tests():
         "current-installation replay created a second takeover",
     )
 
-    launched_runtime, launched_preflight, _, _ = seeded("LAUNCHED")
+    launched_runtime, launched_preflight, launched_operation_id, _ = seeded("LAUNCHED")
     try:
         prepare_previous_installation_operation(launched_preflight)
     except V03DogfoodRuntimeDriverError:
@@ -344,7 +344,7 @@ def installation_transition_tests():
     else:
         raise AssertionError("launched predecessor escaped bounded transition")
     expect(
-        rebuild_projection(launched_runtime.backend.read_snapshot(), operation_id)["generation"] == 0,
+        rebuild_projection(launched_runtime.backend.read_snapshot(), launched_operation_id)["generation"] == 0,
         "rejected launched predecessor was mutated",
     )
     print("- exact old-context NOT_LAUNCHED window takes over once with one immutable effect key")
