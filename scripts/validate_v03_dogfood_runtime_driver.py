@@ -420,6 +420,52 @@ def installation_transition_tests():
         "rejected attempted predecessor was mutated",
     )
 
+
+    race_runtime, race_preflight, race_operation_id, race_semantic, race_external = seeded(
+        "NOT_LAUNCHED"
+    )
+    race_events = operation_events(race_runtime.backend.read_snapshot(), race_operation_id)
+    race_claim = race_events[2]["payload"]
+    race_authorization = race_events[3]["payload"]
+    original_commit_replanned = race_runtime.commit_replanned
+
+    def insert_attempt_before_fresh_plan(planner, *, max_attempts=4):
+        race_runtime.commit_replanned = original_commit_replanned
+        original_commit_replanned(
+            lambda snapshot: plan_external_create_attempt(
+                snapshot,
+                operation_id=race_operation_id,
+                generation=0,
+                claim_id=race_claim["claim_id"],
+                dispatch_id=race_authorization["dispatch_id"],
+                semantic_effect_key=race_semantic,
+                external_dispatch_key_value=race_external,
+                execution_binding={
+                    "worker_id": "dogfood-developer",
+                    "role": "developer",
+                    "profile": "dogfood",
+                    "workflow_file": "dogfood-worker.yml",
+                    "selection_policy_id": "dogfood-test-policy",
+                    "default_branch": "main",
+                },
+                occurred_at=now,
+                trusted_context_digest=old_context,
+            )
+        )
+        return original_commit_replanned(planner, max_attempts=max_attempts)
+
+    race_runtime.commit_replanned = insert_attempt_before_fresh_plan
+    try:
+        prepare_previous_installation_operation(race_preflight)
+    except V03DogfoodRuntimeDriverError:
+        pass
+    else:
+        raise AssertionError("CAS-racing external-create attempt escaped fresh predicate")
+    expect(
+        rebuild_projection(race_runtime.backend.read_snapshot(), race_operation_id)["generation"] == 0,
+        "CAS-racing attempt was followed by a takeover",
+    )
+
     wider_runtime, wider_preflight, wider_operation_id, wider_semantic, wider_external = seeded(
         "NOT_LAUNCHED"
     )
