@@ -11,7 +11,7 @@ from operator_store_backends import OperatorStoreRuntime
 from operator_store_git import CasConflict, GitStateRefBackend, MemoryStateRefBackend
 from operator_store_model import StoreSnapshot, operation_events, projection_path, rebuild_projection
 from operator_store_protection import PROTECTED, StaticProtectionVerifier
-from operator_vertical import VERTICAL_PROFILE
+from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
 from operator_effect_lineage_fences import (
     plan_lineage_authorize_launch,
     plan_lineage_dispatch_claim,
@@ -463,6 +463,51 @@ class WorkflowMapOnlyDelegate:
         return {"lookup_state": "LAUNCHED", "receipt_id": f"run-{self.post_count}"}
 
 
+def validate_registered_copilot_developer_binding():
+    class DeveloperWorkflowMap:
+        default_branch = "main"
+
+        def __init__(self, workflow):
+            self.workflow = workflow
+
+        def workflow_for(self, role):
+            require(role == "developer", "Developer frozen binding test escaped Developer role")
+            return self.workflow
+
+    class DeveloperMapOnlyDelegate:
+        def __init__(self, workflow):
+            self.workflows = DeveloperWorkflowMap(workflow)
+
+    gateway = StoreBackedOneShotExternalCreateGateway(
+        runtime=object(),
+        delegate=DeveloperMapOnlyDelegate("ai-sdlc-gh-aw-worker.lock.yml"),
+        trusted_context_digest=TRUST,
+        effect_lineage_required=True,
+    )
+    execution = gateway._binding_from_delegate({"role": "developer"})
+    require(execution == {
+        "worker_id": "ai-sdlc-gh-aw-worker",
+        "role": "developer",
+        "profile": "copilot",
+        "workflow_file": "ai-sdlc-gh-aw-worker.lock.yml",
+        "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
+        "default_branch": "main",
+    }, "Copilot Developer frozen execution binding drifted")
+
+    bad = StoreBackedOneShotExternalCreateGateway(
+        runtime=object(),
+        delegate=DeveloperMapOnlyDelegate("unregistered-worker.lock.yml"),
+        trusted_context_digest=TRUST,
+        effect_lineage_required=True,
+    )
+    try:
+        bad._binding_from_delegate({"role": "developer"})
+    except VerticalInvariantError as exc:
+        require(exc.code == "POLICY_DENIED", "unregistered Developer workflow failed with wrong code")
+    else:
+        raise AssertionError("unregistered Developer workflow escaped frozen execution binding set")
+
+
 def validate_registered_reviewer_provider_bindings_cross_post_boundary():
     cases = (
         (
@@ -520,12 +565,14 @@ def validate_registered_reviewer_provider_bindings_cross_post_boundary():
 
 
 def main():
+    validate_registered_copilot_developer_binding()
     validate_registered_reviewer_provider_bindings_cross_post_boundary()
     validate_real_git_cas_single_winner()
     validate_replay_forgery_takeover_and_projection_rebuild()
     validate_raw_writer_is_fenced()
     validate_lost_ack_fresh_process_provider_drift_and_cancel()
     print("Operator one-shot external-create fence validation passed")
+    print("- Copilot Developer frozen execution binding is accepted; unregistered Developer workflow is rejected")
     print("- Qwen/DeepSeek/Gemini Reviewer frozen workflow bindings cross the one-shot POST boundary")
     print("- real Git CAS elects one durable attempt creator; loser replans lookup-only")
     print("- replay, forged authorization, takeover and projection rebuild preserve immutable authority")
