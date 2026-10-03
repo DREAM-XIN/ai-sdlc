@@ -180,25 +180,15 @@ _SAFE_INSTALLATION_TRANSITION_EVENTS = (
 )
 
 
-def prepare_previous_installation_operation(preflight: Any) -> str | None:
-    """Move one exact pre-launch dogfood Operation onto the current installation.
-
-    This is deliberately narrower than general Operation recovery.  It accepts
-    only the observed old-installation window: one generation-0 revision-1
-    vertical Operation whose complete journal selects and authorizes exactly one
-    dispatch, whose only trusted lookup proves NOT_LAUNCHED, and which has no
-    callback or Persist facts.  Takeover preserves the existing immutable
-    reservation/external key; it neither retires nor replaces external work.
-    """
-    runtime = preflight.composition.runtime
-    snapshot = runtime.backend.read_snapshot()
+def _previous_installation_window(snapshot: Any, preflight: Any) -> tuple[str | None, str | None, str | None]:
+    """Validate the complete immutable window on this exact Store snapshot."""
     unfinished = query_unfinished(
         snapshot,
         target_repository=preflight.execution.repository,
         feature_id=preflight.slot.feature_id,
     )
     if not unfinished:
-        return None
+        return None, None, None
     if len(unfinished) != 1:
         raise V03DogfoodRuntimeDriverError(
             "dogfood installation transition requires exactly one unfinished Operation"
@@ -231,7 +221,7 @@ def prepare_previous_installation_operation(preflight: Any) -> str | None:
             "unfinished dogfood Operation lacks one trusted installation context"
         )
     if digests == {preflight.trusted_context_digest}:
-        return operation_id
+        return operation_id, None, None
     if preflight.trusted_context_digest in digests or len(digests) != 1:
         raise V03DogfoodRuntimeDriverError(
             "unfinished dogfood Operation mixes installation contexts"
@@ -265,18 +255,49 @@ def prepare_previous_installation_operation(preflight: Any) -> str | None:
         raise V03DogfoodRuntimeDriverError(
             "unfinished dogfood Operation lacks exact no-launch/no-attempt reservation proof"
         )
+    return operation_id, semantic_key, external_key
 
-    runtime.commit_replanned(
-        lambda fresh: plan_vertical_takeover(
+
+def prepare_previous_installation_operation(preflight: Any) -> str | None:
+    """Move one exact pre-launch dogfood Operation onto the current installation.
+
+    This is deliberately narrower than general Operation recovery.  It accepts
+    only the observed old-installation window: one generation-0 revision-1
+    vertical Operation whose complete journal selects and authorizes exactly one
+    dispatch, whose only trusted lookup proves NOT_LAUNCHED, and which has no
+    callback, Persist, or external-create-attempt fact.  Every CAS retry repeats
+    this complete predicate against the fresh protected Store snapshot.
+    """
+    runtime = preflight.composition.runtime
+    operation_id, semantic_key, external_key = _previous_installation_window(
+        runtime.backend.read_snapshot(), preflight
+    )
+    if operation_id is None or semantic_key is None or external_key is None:
+        return operation_id
+
+    def checked_takeover(fresh):
+        fresh_operation_id, fresh_semantic_key, fresh_external_key = (
+            _previous_installation_window(fresh, preflight)
+        )
+        if (
+            fresh_operation_id != operation_id
+            or fresh_semantic_key != semantic_key
+            or fresh_external_key != external_key
+        ):
+            raise V03DogfoodRuntimeDriverError(
+                "dogfood installation transition changed during protected CAS replan"
+            )
+        return plan_vertical_takeover(
             fresh,
             operation_id=operation_id,
             occurred_at=runtime.clock(),
             trusted_context_digest=preflight.trusted_context_digest,
         )
-    )
+
+    runtime.commit_replanned(checked_takeover)
     after = rebuild_projection(runtime.backend.read_snapshot(), operation_id)
     if (
-        int(after.get("generation", -1)) != generation + 1
+        int(after.get("generation", -1)) != 1
         or after.get("status") != "RUNNING"
         or external_key not in set(after.get("authorized_dispatches") or ())
     ):
