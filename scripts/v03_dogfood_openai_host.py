@@ -14,6 +14,7 @@ import re
 from typing import Any, Callable
 from urllib import error, request
 
+from operator_api import API_VERSION
 from operator_openai_responses import TOOL_CAPABILITIES, WRITE_CAPABILITIES, responses_request_profile
 
 _RESPONSE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
@@ -49,6 +50,29 @@ class V03DogfoodResponsesTrace:
     function_call_names: tuple[str, ...]
     function_outputs: tuple[dict[str, Any], ...]
     terminal_response: dict[str, Any]
+
+
+def dogfood_responses_request_profile() -> dict[str, Any]:
+    """Return the reviewed Responses profile with release-controller API version pinned.
+
+    The reusable adapter intentionally preserves canonical API-version negotiation.
+    Real v0.3 dogfood is different: the trusted release controller owns the exact
+    canonical version and must not ask the model to guess it.
+    """
+
+    profile = responses_request_profile()
+    tools = profile.get("tools")
+    if not isinstance(tools, list) or not tools:
+        raise V03DogfoodOpenAIHostError("reviewed Responses tool profile is missing")
+    for tool in tools:
+        if not isinstance(tool, dict):
+            raise V03DogfoodOpenAIHostError("reviewed Responses tool definition is malformed")
+        parameters = tool.get("parameters")
+        properties = parameters.get("properties") if isinstance(parameters, dict) else None
+        if not isinstance(properties, dict) or "api_version" not in properties:
+            raise V03DogfoodOpenAIHostError("dogfood tool lacks canonical api_version argument")
+        properties["api_version"] = {"type": "string", "enum": [API_VERSION]}
+    return profile
 
 
 class V03DogfoodOpenAIResponsesHost:
@@ -160,7 +184,7 @@ class V03DogfoodOpenAIResponsesHost:
         if not instruction or len(instruction.encode("utf-8")) > 16384:
             raise ValueError("dogfood scenario instruction is missing or unbounded")
 
-        profile = responses_request_profile()
+        profile = dogfood_responses_request_profile()
         if profile.get("parallel_tool_calls") is not False:
             raise V03DogfoodOpenAIHostError("reviewed Responses profile must keep parallel_tool_calls=false")
         tools = profile.get("tools")

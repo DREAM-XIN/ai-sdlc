@@ -2,10 +2,13 @@
 """Deterministic adversarial validation for the v0.3 real-dogfood Responses host."""
 from __future__ import annotations
 
+from operator_api import API_VERSION
+from operator_openai_responses import responses_request_profile
 from v03_dogfood_openai_host import (
     V03DogfoodOpenAIHostConfig,
     V03DogfoodOpenAIHostError,
     V03DogfoodOpenAIResponsesHost,
+    dogfood_responses_request_profile,
 )
 
 
@@ -84,6 +87,17 @@ def must_fail(rows, expected: str, *, max_turns=4):
 
 
 def main() -> None:
+    generic = responses_request_profile()
+    dogfood = dogfood_responses_request_profile()
+    assert generic is not dogfood
+    assert generic["tools"] != dogfood["tools"]
+    for tool in dogfood["tools"]:
+        api_schema = tool["parameters"]["properties"]["api_version"]
+        assert api_schema == {"type": "string", "enum": [API_VERSION]}
+    for tool in generic["tools"]:
+        api_schema = tool["parameters"]["properties"]["api_version"]
+        assert api_schema.get("enum") is None, "reusable adapter version negotiation was narrowed"
+
     adapter = FakeAdapter()
     runner = host([
         response("resp_1", call("call_1")),
