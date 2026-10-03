@@ -489,6 +489,45 @@ class DogfoodTrustedCallbackCoordinator:
         return self.executor.advance_until_stop(operation_id=context.operation_id)
 
 
+class DogfoodExecutionBoundDispatchGateway:
+    """Dogfood-only adapter exposing exact readiness-resolved execution identity."""
+
+    def __init__(self, *, delegate: GhAwVerticalRoleDispatchGateway, execution_bindings: dict[str, dict[str, str]]):
+        if not isinstance(delegate, GhAwVerticalRoleDispatchGateway):
+            raise ValueError("dogfood dispatch binding requires the production gh-aw gateway")
+        if set(execution_bindings) != {"developer", "reviewer", "qa"}:
+            raise ValueError("dogfood execution binding map is incomplete")
+        self.delegate = delegate
+        self.execution_bindings = {role: dict(value) for role, value in execution_bindings.items()}
+        self.transport = delegate.transport
+        self.workflows = delegate.workflows
+        for role, binding in self.execution_bindings.items():
+            if (
+                binding.get("role") != role
+                or binding.get("workflow_file") != self.workflows.workflow_for(role)
+                or binding.get("default_branch") != self.workflows.default_branch
+                or not binding.get("worker_id")
+                or not binding.get("profile")
+                or not binding.get("selection_policy_id")
+            ):
+                raise ValueError(f"dogfood execution binding drifted for {role}")
+
+    def execution_binding(self, *, dispatch: dict[str, Any]) -> dict[str, str]:
+        role = str(dispatch.get("role") or "")
+        binding = self.execution_bindings.get(role)
+        if binding is None:
+            raise VerticalInvariantError("POLICY_DENIED", "dogfood dispatch role escaped resolved execution bindings")
+        if self.workflows.workflow_for(role) != binding["workflow_file"]:
+            raise VerticalInvariantError("POLICY_DENIED", "dogfood workflow changed after readiness binding")
+        return dict(binding)
+
+    def launch(self, *, dispatch: dict[str, Any]) -> dict[str, Any]:
+        return self.delegate.launch(dispatch=dispatch)
+
+    def lookup(self, *, external_dispatch_key: str) -> dict[str, Any]:
+        return self.delegate.lookup(external_dispatch_key=external_dispatch_key)
+
+
 @dataclass(frozen=True)
 class V03DogfoodFullComposition:
     slot: DogfoodSlot
@@ -497,7 +536,7 @@ class V03DogfoodFullComposition:
     feature_truth_gateway: DeferredFixtureFeatureTruthGateway
     feature_event_gateway: Any
     actions_transport: GitHubActionsVerticalGhAwTransport
-    dispatch_gateway: GhAwVerticalRoleDispatchGateway
+    dispatch_gateway: DogfoodExecutionBoundDispatchGateway
     result_source: FirstAttemptDigestBoundGhAwResultSource
     responses: OpenAIResponsesProductionBundle
     bundle: Any
@@ -524,6 +563,7 @@ def build_v03_dogfood_full_composition(
     event_write_token: str,
     control_repository: str,
     workflows: GhAwVerticalWorkflowMap,
+    execution_bindings: dict[str, dict[str, str]],
     protection_verifier: Any,
     policy_authority: Any,
     trusted_context_digest: str,
@@ -590,7 +630,11 @@ def build_v03_dogfood_full_composition(
             api_url=github_api_base,
         )
     )
-    dispatch_gateway = GhAwVerticalRoleDispatchGateway(transport=actions_transport, workflows=workflows)
+    raw_dispatch_gateway = GhAwVerticalRoleDispatchGateway(transport=actions_transport, workflows=workflows)
+    dispatch_gateway = DogfoodExecutionBoundDispatchGateway(
+        delegate=raw_dispatch_gateway,
+        execution_bindings=execution_bindings,
+    )
 
     decision_verifier = policy_authority.decision_policy_verifier
     if slot.scenario == "session_recovery":
