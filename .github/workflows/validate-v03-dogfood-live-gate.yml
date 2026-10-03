@@ -3,6 +3,7 @@ name: Validate v0.3 Dogfood Live Gate
 on:
   pull_request:
     paths:
+      - '.github/workflows/v03-dogfood-readiness.yml'
       - 'scripts/v03_dogfood_issue221_compatibility.py'
       - 'scripts/validate_v03_dogfood_issue221_compatibility.py'
       - 'release/v0.3-dogfood-session-policy.json'
@@ -75,3 +76,16 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_release_finalizer.py
       - name: Validate trusted post-run finalizer imports
         run: PYTHONPATH=scripts python -m py_compile scripts/v03_dogfood_post_run_finalizer.py
+
+      - name: Compile embedded read-only readiness diagnostic
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          workflow = yaml.safe_load(Path(".github/workflows/v03-dogfood-readiness.yml").read_text())
+          step = next(row for row in workflow["jobs"]["inspect"]["steps"]
+                      if row.get("name") == "Inspect presence and reverify immutable upstream evidence without effects")
+          source = step["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+          compile(source, "readiness-diagnostic", "exec")
+          print("Readiness diagnostic Python syntax: PASS")
+          PY
