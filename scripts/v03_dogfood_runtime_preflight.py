@@ -9,6 +9,7 @@ from typing import Any, Callable
 from operator_production_runtime import TrustedFeatureBinding, TrustedOperatorRuntimeConfig
 from operator_store_model import digest_json, normalize_repository
 from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
+from gh_aw_role_workers import resolve_role_worker
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_full_composition import V03DogfoodFullComposition, build_v03_dogfood_full_composition
 from v03_dogfood_live_gate import DogfoodLiveGate
@@ -55,6 +56,48 @@ def _workflow_map(gate: DogfoodLiveGate) -> GhAwVerticalWorkflowMap:
     return workflows
 
 
+def _execution_bindings(gate: DogfoodLiveGate, workflows: GhAwVerticalWorkflowMap) -> dict[str, dict[str, str]]:
+    """Project the already-resolved production routes into dogfood-only one-shot identities."""
+    by_role = {row.role: row for row in gate.bindings}
+    if set(by_role) != {"developer", "reviewer", "qa"}:
+        raise V03DogfoodRuntimePreflightError("dogfood execution binding set is incomplete")
+    result: dict[str, dict[str, str]] = {}
+    for role in ("developer", "reviewer", "qa"):
+        row = by_role[role]
+        workflow = workflows.workflow_for(role)
+        if row.worker_workflow != workflow:
+            raise V03DogfoodRuntimePreflightError(f"{role} workflow differs from resolved production binding")
+        if row.specialized_role_worker:
+            worker = resolve_role_worker(row.role, row.stage, row.selected_profile)
+            if worker.worker_workflow != workflow:
+                raise V03DogfoodRuntimePreflightError(f"{role} specialized worker identity drifted")
+            worker_id = worker.id
+        else:
+            if role != "developer" or not workflow.endswith(".lock.yml"):
+                raise V03DogfoodRuntimePreflightError("generic production worker identity is not bounded")
+            worker_id = workflow.removesuffix(".lock.yml")
+        binding = {
+            "worker_id": worker_id,
+            "role": role,
+            "profile": row.selected_profile,
+            "workflow_file": workflow,
+            "selection_policy_id": (
+                "v03-frozen-reviewer-provider-order/v2"
+                if role == "reviewer"
+                else "v03-frozen-vertical-workflow-map/v1"
+            ),
+            "default_branch": workflows.default_branch,
+        }
+        if role == "reviewer":
+            if not row.accepted_credential_identities:
+                raise V03DogfoodRuntimePreflightError("Reviewer binding lacks credential identity")
+            binding["credential_name"] = row.accepted_credential_identities[0]
+        result[role] = binding
+    if len({row["workflow_file"] for row in result.values()}) != 3:
+        raise V03DogfoodRuntimePreflightError("dogfood execution workflows are not distinct")
+    return result
+
+
 def build_v03_dogfood_runtime_preflight(
     *,
     execution: TrustedMainExecution,
@@ -89,6 +132,7 @@ def build_v03_dogfood_runtime_preflight(
 
     repository = normalize_repository(execution.repository)
     workflows = _workflow_map(live_gate)
+    execution_bindings = _execution_bindings(live_gate, workflows)
     trusted_context_digest = digest_json({
         "schema_version": "ai-sdlc.v03-dogfood-runtime-preflight/v1",
         "repository": repository,
@@ -109,6 +153,7 @@ def build_v03_dogfood_runtime_preflight(
             "reviewer": workflows.reviewer_workflow,
             "qa": workflows.qa_workflow,
         },
+        "execution_bindings": execution_bindings,
     })
     config = TrustedOperatorRuntimeConfig(
         target_repository=repository,
@@ -127,6 +172,7 @@ def build_v03_dogfood_runtime_preflight(
         event_write_token=event_write_token,
         control_repository=repository,
         workflows=workflows,
+        execution_bindings=execution_bindings,
         protection_verifier=protection_verifier,
         policy_authority=live_authority.policy,
         trusted_context_digest=trusted_context_digest,
