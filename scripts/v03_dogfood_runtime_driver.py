@@ -55,7 +55,10 @@ HISTORICAL_PREHTTP_RECOVERY = {
     "attempt_id": "eca-1f340ab49f04ab7b0747907075aead41b8fa6f23",
     "claim_id": "dc-eed43eeddee6ae756e0f538621f2593fde10a828",
     "dispatch_id": "vertical-31df3f1ed41b54c58ed4c4030a9f97d9",
+    "selected_event_id": "loop-step-selected-d13700446f0139fb96e5717dc101bbdf",
+    "claim_event_id": "dispatch-claimed-f55e33e1ea7fd6b35eb44831e700d91f",
     "authorization_event_id": "dispatch-launch-authorized-8ea8faac43fb02dc1c3c8e481a40da93",
+    "lookup_event_id": "dispatch-launch-lookup-recorded-ef426f7c675283149f805fdab65861ec",
     "trusted_context_digest": "fbdb342609142209114f3ed10db8d6830ca16ff50aa48c7530f7e8fdd373e325",
     "last_sequence": 11,
     "task_identity": "vertical:implementation:1",
@@ -338,21 +341,38 @@ def _historical_attempt_identity(
             "historical pre-HTTP recovery execution binding drifted"
         )
 
-    generation_events = [
-        row for row in operation_events(snapshot, h["operation_id"])
+    generation_events = {
+        int(row.get("sequence", -1)): row
+        for row in operation_events(snapshot, h["operation_id"])
         if int(row.get("operation_generation", -1)) == h["generation"]
-    ]
-    tail = generation_events[-4:]
-    if tuple(row.get("event_type") for row in tail) != (
-        "loop.step.selected",
-        "dispatch.claimed",
-        "dispatch.launch.authorized",
-        "dispatch.launch.lookup-recorded",
+    }
+    try:
+        selected, claimed, authorized, lookup = (
+            generation_events[8],
+            generation_events[9],
+            generation_events[10],
+            generation_events[11],
+        )
+    except KeyError as exc:
+        raise V03DogfoodRuntimeDriverError(
+            "historical pre-HTTP recovery journal lost the exact immutable dispatch window"
+        ) from exc
+    if (
+        selected.get("event_id") != h["selected_event_id"]
+        or claimed.get("event_id") != h["claim_event_id"]
+        or authorized.get("event_id") != h["authorization_event_id"]
+        or lookup.get("event_id") != h["lookup_event_id"]
+        or tuple(row.get("event_type") for row in (selected, claimed, authorized, lookup))
+        != (
+            "loop.step.selected",
+            "dispatch.claimed",
+            "dispatch.launch.authorized",
+            "dispatch.launch.lookup-recorded",
+        )
     ):
         raise V03DogfoodRuntimeDriverError(
-            "historical pre-HTTP recovery journal escaped the exact dispatch tail"
+            "historical pre-HTTP recovery journal escaped the exact immutable dispatch window"
         )
-    selected, claimed, authorized, lookup = tail
     if (
         (selected.get("payload") or {}).get("step") != "IMPLEMENTATION_WORK"
         or (selected.get("payload") or {}).get("task_identity") != h["task_identity"]
