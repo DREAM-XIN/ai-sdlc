@@ -1,0 +1,101 @@
+version: 0.1.0
+tracking_issue: '#222'
+checked_at: '2026-08-11'
+status: decision-proposal
+recommended_disposition: QUALIFY
+legal_conclusion: none
+
+observed_collisions:
+  - repository: ai-sdlc-framework/ai-sdlc
+    product_name: AI-SDLC Framework
+    website: https://ai-sdlc.io/
+    evidence:
+      - https://github.com/ai-sdlc-framework/ai-sdlc
+      - https://ai-sdlc.io/docs/getting-started
+      - https://pypi.org/project/ai-sdlc-framework/
+    overlapping_surfaces:
+      - spec-driven-workflows
+      - autonomous-orchestration
+      - quality-gates
+      - independent-cross-harness-review
+      - conformance-suite
+      - agent-agnostic-adapters
+      - governance-and-audit
+  - repository: ParkerRex/ai-sdlc
+    product_name: AI-SDLC
+    evidence:
+      - https://github.com/ParkerRex/ai-sdlc
+      - https://pypi.org/project/ai-sdlc/
+    overlapping_surfaces:
+      - structured-sdlc-workflow
+      - ai-agnostic-development-assistance
+      - public-ai-sdlc-name
+      - pypi-ai-sdlc-name
+
+current_project_positioning:
+  descriptor: AI-SDLC
+  differentiator: trusted-sdlc-control-plane
+  v0_3_theme: AI-Operated SDLC
+  durable_authority_statement: Models propose; AI-SDLC validates; Workers execute; GitHub records.
+
+qualification_proposal:
+  product_brand:
+    action: adopt-distinct-product-name-before-broad-adoption
+    selected_name: null
+    selection_requires_separate_review: true
+  ai_sdlc_descriptor:
+    action: retain-as-generic-protocol-and-domain-descriptor
+  compatibility_namespaces_through_v0_3:
+    preserve:
+      - .ai-sdlc
+      - ai-sdlc.operator/v1
+      - ai-sdlc.operation-event/v1
+      - existing-feature-manifest-and-event-schema-identifiers
+      - existing-github-action-and-workflow-contracts
+      - repository-slug-until-approved-migration
+  repository_rename:
+    action: defer-to-approved-migration-plan
+  package_rename:
+    action: defer-until-a-public-package-is-selected
+  protocol_rename:
+    action: do-not-bundle-with-product-brand-change
+
+naming_criteria:
+  - distinctive-in-github-and-search
+  - available-or-clearly-differentiated-package-namespaces
+  - evokes-trusted-control-plane-not-code-generation
+  - short-enough-for-cli-and-documentation
+  - pronounceable-in-english-and-chinese-team-contexts
+  - does-not-imply-provider-or-github-lock-in
+  - supports-operator-control-plane-product-family
+  - migration-can-preserve-ai-sdlc-protocol-compatibility
+
+candidate_directions:
+  - trust-and-control-plane-metaphor
+  - evidence-and-gate-metaphor
+  - orchestration-with-authority-boundaries-metaphor
+  - neutral-invented-product-word-with-ai-sdlc-descriptor-subtitle
+
+migration_surfaces:
+  low_to_medium_cost:
+    - readme-display-name
+    - documentation-product-headings
+    - release-marketing-copy
+  medium_cost:
+    - workflow-display-names
+    - github-app-display-name
+    - documentation-links-and-badges
+  high_compatibility_cost:
+    - repository-slug
+    - .ai-sdlc-directory
+    - action-paths-and-pinned-caller-references
+    - ai-sdlc-protocol-schema-identifiers
+    - state-and-event-contract-identifiers
+    - slash-command-and-workflow-file-prefixes
+
+non_goals:
+  - trademark-or-legal-clearance
+  - repository-rename
+  - package-rename
+  - protocol-id-rename
+  - changing-v0-3-release-contracts
