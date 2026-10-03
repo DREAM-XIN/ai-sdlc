@@ -11,11 +11,6 @@ from operator_effect_lineage_fences import plan_lineage_external_create_attempt
 
 
 _WORKFLOW_BINDINGS = {
-    "ai-sdlc-gh-aw-worker.lock.yml": {
-        "worker_id": "ai-sdlc-gh-aw-worker",
-        "profile": "copilot",
-        "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
-    },
     "ai-sdlc-gh-aw-worker-codex.lock.yml": {
         "worker_id": "ai-sdlc-gh-aw-worker-codex",
         "profile": "codex",
