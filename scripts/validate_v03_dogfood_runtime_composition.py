@@ -453,7 +453,7 @@ def early_adapter_gate_test() -> None:
 
 def pre_create_retirement_tests() -> None:
     from operator_store_model import StoreSnapshot, make_event, event_path, apply_plan_to_snapshot, rebuild_projection
-    from v03_dogfood_pre_create_retirement import (
+    from v03_dogfood_runtime_driver import (
         OPERATION, SOURCE_CONTEXT, EVENT_IDS, EVENT_TYPES, PAYLOADS, SOURCE_RUN, SOURCE_HEAD,
         EFFECT, EXTERNAL_KEY, retirement_plan, require_failed_source,
     )
