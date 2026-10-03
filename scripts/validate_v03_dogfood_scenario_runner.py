@@ -30,9 +30,11 @@ class FakeHost:
             "output": json.dumps({"ok": True, "result": {"operation_id": self.operation_id, "generation": 0, "status": self.status}}),
         }
         outputs = (output, output) if self.duplicate else (output,)
+        names = ("aisdlc_v1_operation_start", "aisdlc_v1_operation_start") if self.duplicate else ("aisdlc_v1_operation_start",)
         return V03DogfoodResponsesTrace(
             response_ids=("resp_1",),
             function_call_ids=("call-start",),
+            function_call_names=names,
             function_outputs=outputs,
             terminal_response={"id": "resp_1", "status": "completed", "output": []},
         )
@@ -61,6 +63,7 @@ class FakeRecoveryHost:
         return V03DogfoodResponsesTrace(
             response_ids=("resp_recovery",),
             function_call_ids=("call-inbox",),
+            function_call_names=("aisdlc_v1_operator_inbox",),
             function_outputs=(output,),
             terminal_response={"id": "resp_recovery", "status": "completed", "output": []},
         )
@@ -169,6 +172,28 @@ def main():
         pass
     else:
         raise AssertionError("fresh session missing Notification was accepted")
+
+    start_output = {
+        "type": "function_call_output",
+        "call_id": "call-start",
+        "output": json.dumps({"ok": True, "result": {"operation_id": "op-dogfood-1", "generation": 0, "status": "WAITING_EXTERNAL"}}),
+    }
+    status_output = {
+        "type": "function_call_output",
+        "call_id": "call-status",
+        "output": json.dumps({"ok": True, "result": {"operation_id": "op-dogfood-1", "generation": 0, "status": "WAITING_EXTERNAL"}}),
+    }
+    start_then_status = V03DogfoodResponsesTrace(
+        response_ids=("resp-start", "resp-status"),
+        function_call_ids=("call-start", "call-status"),
+        function_call_names=("aisdlc_v1_operation_start", "aisdlc_v1_operation_status"),
+        function_outputs=(start_output, status_output),
+        terminal_response={"id": "resp-status", "status": "completed", "output": []},
+    )
+    expect(
+        runner._operation_start(start_then_status) == ("op-dogfood-1", "WAITING_EXTERNAL"),
+        "operation.status result was misclassified as a second operation.start",
+    )
 
     trace = FakeHost(duplicate=True).run(scenario_instruction="x")
     try:
