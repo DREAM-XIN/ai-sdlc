@@ -57,6 +57,7 @@ HISTORICAL_PREHTTP_RECOVERY = {
     "dispatch_id": "vertical-31df3f1ed41b54c58ed4c4030a9f97d9",
     "authorization_event_id": "dispatch-launch-authorized-8ea8faac43fb02dc1c3c8e481a40da93",
     "trusted_context_digest": "fbdb342609142209114f3ed10db8d6830ca16ff50aa48c7530f7e8fdd373e325",
+    "last_sequence": 11,
     "task_identity": "vertical:implementation:1",
     "task_id": "vertical:implementation:1",
     "role": "developer",
@@ -75,9 +76,9 @@ HISTORICAL_PREHTTP_CORE_BLOBS = {
 }
 PREHTTP_RECOVERY_MARKER_SCHEMA = "ai-sdlc.v03-dogfood-prehttp-recovery-attempt/v1"
 PREHTTP_RECOVERY_MARKER_PATH = (
-    "state/operator/v1/recovery/dogfood-prehttp/"
-    + HISTORICAL_PREHTTP_RECOVERY["semantic_effect_key"]
-    + ".json"
+    "state/operator/v1/operations/"
+    + HISTORICAL_PREHTTP_RECOVERY["operation_id"]
+    + "/dogfood-prehttp-recovery-attempt.json"
 )
 
 
@@ -279,7 +280,7 @@ def _historical_attempt_identity(
     if require_unknown and (
         projection.get("status") != "BLOCKED"
         or set(projection.get("unresolved_unknown") or ()) != {h["external_dispatch_key"]}
-        or int(projection.get("last_sequence", -1)) != 11
+        or int(projection.get("last_sequence", -1)) != h["last_sequence"]
     ):
         raise V03DogfoodRuntimeDriverError(
             "historical pre-HTTP recovery is not at the exact unresolved UNKNOWN boundary"
