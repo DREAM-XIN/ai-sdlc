@@ -10,6 +10,7 @@ from v03_dogfood_runtime_driver import (
     DOGFOOD_RESPONSES_API_BASE,
     DOGFOOD_RESPONSES_MODEL,
     dogfood_responses_host_config,
+    prepare_previous_installation_operation,
     require_mode,
 )
 
@@ -179,6 +180,177 @@ def git_store_transport_tests(live):
     print("- isolated real commit-tree/push/read-back and stale-writer CAS passed")
 
 
+
+def installation_transition_tests():
+    """Prove the old-installation window becomes G+1 without a new effect key."""
+    from types import SimpleNamespace
+
+    from operator_store import (
+        plan_authorize_launch,
+        plan_dispatch_claim,
+        plan_launch_lookup,
+        plan_operation_fact,
+        plan_operation_start,
+        plan_semantic_reservation,
+    )
+    from operator_store_backends import OperatorStoreRuntime
+    from operator_store_git import MemoryStateRefBackend
+    from operator_store_model import operation_events, rebuild_projection
+    from operator_store_protection import PROTECTED, StaticProtectionVerifier
+    from operator_vertical import VERTICAL_PROFILE
+    from v03_dogfood_fixture_pool import require_slot
+
+    repository = "DREAM-XIN/ai-sdlc"
+    state_ref = "refs/heads/ai-sdlc-operator-state"
+    feature_id = require_slot("happy_path").feature_id
+    old_context = "old-installation-context"
+    current_context = "current-installation-context"
+    now = "2026-10-03T02:00:00Z"
+
+    def seeded(lookup_state):
+        backend = MemoryStateRefBackend(repository=repository, state_ref=state_ref)
+        runtime = OperatorStoreRuntime(
+            backend=backend,
+            protection_verifier=StaticProtectionVerifier(status=PROTECTED),
+            clock=lambda: now,
+        )
+        started = runtime.commit_replanned(
+            lambda snapshot: plan_operation_start(
+                snapshot,
+                target_repository=repository,
+                feature_id=feature_id,
+                expected_revision=1,
+                idempotency_key="old-installation-start",
+                occurred_at=now,
+                trusted_context_digest=old_context,
+                operation_profile=VERTICAL_PROFILE,
+            )
+        )
+        operation_id = started.result["operation_id"]
+        runtime.commit_replanned(
+            lambda snapshot: plan_operation_fact(
+                snapshot,
+                operation_id=operation_id,
+                generation=0,
+                event_type="loop.step.selected",
+                payload={"step": "IMPLEMENTATION_WORK", "task_id": "implementation"},
+                occurred_at=now,
+                trusted_context_digest=old_context,
+            )
+        )
+        reserved = runtime.commit_replanned(
+            lambda snapshot: plan_semantic_reservation(
+                snapshot,
+                operation_id=operation_id,
+                generation=0,
+                target_repository=repository,
+                feature_id=feature_id,
+                expected_revision=1,
+                current_stage="implementation",
+                task_identity="vertical:implementation:fixture",
+                role="developer",
+                candidate_head_sha="a" * 40,
+                occurred_at=now,
+                trusted_context_digest=old_context,
+            )
+        )
+        claimed = runtime.commit_replanned(
+            lambda snapshot: plan_dispatch_claim(
+                snapshot,
+                operation_id=operation_id,
+                generation=0,
+                effect_key=reserved.result["semantic_effect_key"],
+                occurred_at=now,
+                trusted_context_digest=old_context,
+            )
+        )
+        runtime.commit_replanned(
+            lambda snapshot: plan_authorize_launch(
+                snapshot,
+                operation_id=operation_id,
+                generation=0,
+                claim_id=claimed.result["claim_id"],
+                dispatch_id="dispatch-old-installation",
+                occurred_at=now,
+                trusted_context_digest=old_context,
+                verified_expected_revision=1,
+                verified_stage="implementation",
+                verified_candidate_head_sha="a" * 40,
+            )
+        )
+        runtime.commit_replanned(
+            lambda snapshot: plan_launch_lookup(
+                snapshot,
+                operation_id=operation_id,
+                generation=0,
+                external_dispatch_key_value=reserved.result["external_dispatch_key"],
+                lookup_state=lookup_state,
+                receipt_id="1001" if lookup_state == "LAUNCHED" else None,
+                occurred_at=now,
+                trusted_context_digest=old_context,
+            )
+        )
+        preflight = SimpleNamespace(
+            execution=SimpleNamespace(repository=repository),
+            slot=require_slot("happy_path"),
+            trusted_context_digest=current_context,
+            composition=SimpleNamespace(runtime=runtime),
+        )
+        return runtime, preflight, operation_id, reserved.result["external_dispatch_key"]
+
+    runtime, preflight, operation_id, external_key = seeded("NOT_LAUNCHED")
+    before = runtime.backend.read_snapshot()
+    before_events = operation_events(before, operation_id)
+    before_reservations = {
+        path: value for path, value in before.files.items()
+        if "/reservations/external/" in path
+    }
+    expect(
+        prepare_previous_installation_operation(preflight) == operation_id,
+        "bounded old-installation Operation was not selected",
+    )
+    after = runtime.backend.read_snapshot()
+    projection = rebuild_projection(after, operation_id)
+    expect(
+        projection["generation"] == 1 and projection["status"] == "RUNNING",
+        "bounded installation transition did not create resumable generation 1",
+    )
+    expect(
+        external_key in projection["authorized_dispatches"],
+        "installation transition lost the existing external key",
+    )
+    expect(
+        before_reservations == {
+            path: value for path, value in after.files.items()
+            if "/reservations/external/" in path
+        },
+        "installation transition replaced immutable effect authority",
+    )
+    expect(
+        operation_events(after, operation_id)[:len(before_events)] == before_events,
+        "installation transition rewrote old Operation facts",
+    )
+    prepare_previous_installation_operation(preflight)
+    expect(
+        rebuild_projection(runtime.backend.read_snapshot(), operation_id)["generation"] == 1,
+        "current-installation replay created a second takeover",
+    )
+
+    launched_runtime, launched_preflight, _, _ = seeded("LAUNCHED")
+    try:
+        prepare_previous_installation_operation(launched_preflight)
+    except V03DogfoodRuntimeDriverError:
+        pass
+    else:
+        raise AssertionError("launched predecessor escaped bounded transition")
+    expect(
+        rebuild_projection(launched_runtime.backend.read_snapshot(), operation_id)["generation"] == 0,
+        "rejected launched predecessor was mutated",
+    )
+    print("- exact old-context NOT_LAUNCHED window takes over once with one immutable effect key")
+
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -201,6 +373,8 @@ def main():
         rejected(mode=VALIDATE_ONLY, scenario=scenario, event_name="workflow_dispatch", ref="refs/heads/main")
     rejected(mode=RUN, scenario="unknown", event_name="workflow_dispatch", ref="refs/heads/main")
     rejected(mode="unsafe", scenario="happy_path", event_name="pull_request", ref="refs/pull/348/merge")
+
+    installation_transition_tests()
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
