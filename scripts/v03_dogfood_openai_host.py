@@ -46,6 +46,7 @@ class V03DogfoodOpenAIHostConfig:
 class V03DogfoodResponsesTrace:
     response_ids: tuple[str, ...]
     function_call_ids: tuple[str, ...]
+    function_call_names: tuple[str, ...]
     function_outputs: tuple[dict[str, Any], ...]
     terminal_response: dict[str, Any]
 
@@ -168,6 +169,7 @@ class V03DogfoodOpenAIResponsesHost:
 
         response_ids: list[str] = []
         call_ids: list[str] = []
+        call_names: list[str] = []
         outputs: list[dict[str, Any]] = []
         history: list[dict[str, Any]] = [{"role": "user", "content": instruction}]
         payload = self._create({
@@ -187,6 +189,7 @@ class V03DogfoodOpenAIResponsesHost:
                 return V03DogfoodResponsesTrace(
                     response_ids=tuple(response_ids),
                     function_call_ids=tuple(call_ids),
+                    function_call_names=tuple(call_names),
                     function_outputs=tuple(outputs),
                     terminal_response=dict(payload),
                 )
@@ -210,6 +213,7 @@ class V03DogfoodOpenAIResponsesHost:
                 if result.get("call_id") != call_id:
                     raise V03DogfoodOpenAIHostError("adapter output correlation differs from exact provider call_id")
                 call_ids.append(call_id)
+                call_names.append(str(call.get("name") or ""))
                 outputs.append(dict(result))
                 batch_outputs.append(dict(result))
 
