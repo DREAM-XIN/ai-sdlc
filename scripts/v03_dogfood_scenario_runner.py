@@ -73,8 +73,12 @@ def _decode_output(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _operation_start(trace: V03DogfoodResponsesTrace) -> tuple[str, str]:
+    if len(trace.function_call_names) != len(trace.function_outputs):
+        raise V03DogfoodScenarioRunnerError("Responses trace lost function tool/output correlation")
     starts: list[tuple[str, str]] = []
-    for item in trace.function_outputs:
+    for name, item in zip(trace.function_call_names, trace.function_outputs):
+        if name != "aisdlc_v1_operation_start":
+            continue
         payload = _decode_output(item)
         result = payload.get("result") if payload.get("ok") is True else None
         if not isinstance(result, dict):
