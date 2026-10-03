@@ -13,8 +13,13 @@ from pathlib import Path
 import subprocess
 from typing import Any, Mapping
 
+from operator_external_create_attempt import external_create_attempt_path
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
+from operator_store import query_unfinished
 from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
+from operator_store_model import operation_events, rebuild_projection, reservation_path
+from operator_vertical import VERTICAL_PROFILE
+from operator_vertical_recovery import plan_vertical_takeover
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_live_gate import ALLOWED_SCENARIOS, assemble_dogfood_live_gate
 from v03_dogfood_openai_host import V03DogfoodOpenAIHostConfig, V03DogfoodOpenAIResponsesHost
@@ -165,6 +170,143 @@ def assemble_preflight(*, scenario: str, env: Mapping[str, str], checkout_sha: s
     )
 
 
+
+_SAFE_INSTALLATION_TRANSITION_EVENTS = (
+    "operation.started",
+    "loop.step.selected",
+    "dispatch.claimed",
+    "dispatch.launch.authorized",
+    "dispatch.launch.lookup-recorded",
+)
+
+
+def _previous_installation_window(snapshot: Any, preflight: Any) -> tuple[str | None, str | None, str | None]:
+    """Validate the complete immutable window on this exact Store snapshot."""
+    unfinished = query_unfinished(
+        snapshot,
+        target_repository=preflight.execution.repository,
+        feature_id=preflight.slot.feature_id,
+    )
+    if not unfinished:
+        return None, None, None
+    if len(unfinished) != 1:
+        raise V03DogfoodRuntimeDriverError(
+            "dogfood installation transition requires exactly one unfinished Operation"
+        )
+
+    operation_id = str(unfinished[0].get("operation_id") or "")
+    if not operation_id:
+        raise V03DogfoodRuntimeDriverError(
+            "unfinished dogfood Operation lacks immutable identity"
+        )
+    projection = rebuild_projection(snapshot, operation_id)
+    if (
+        projection.get("operation_profile") != VERTICAL_PROFILE
+        or int(projection.get("expected_feature_revision", -1)) != 1
+        or projection.get("status") != "RUNNING"
+    ):
+        raise V03DogfoodRuntimeDriverError(
+            "unfinished dogfood Operation is outside the bounded pre-launch transition"
+        )
+
+    generation = int(projection.get("generation", -1))
+    journal = operation_events(snapshot, operation_id)
+    current = [
+        row for row in journal
+        if int(row.get("operation_generation", -1)) == generation
+    ]
+    digests = {str(row.get("trusted_context_digest") or "") for row in current}
+    if not current or "" in digests:
+        raise V03DogfoodRuntimeDriverError(
+            "unfinished dogfood Operation lacks one trusted installation context"
+        )
+    if digests == {preflight.trusted_context_digest}:
+        return operation_id, None, None
+    if preflight.trusted_context_digest in digests or len(digests) != 1:
+        raise V03DogfoodRuntimeDriverError(
+            "unfinished dogfood Operation mixes installation contexts"
+        )
+
+    event_types = tuple(str(row.get("event_type") or "") for row in journal)
+    if generation != 0 or current != journal or event_types != _SAFE_INSTALLATION_TRANSITION_EVENTS:
+        raise V03DogfoodRuntimeDriverError(
+            "unfinished dogfood Operation escaped the exact pre-launch transition window"
+        )
+
+    selected, claimed, authorized, lookup = current[1:]
+    selected_payload = selected.get("payload") or {}
+    claim_payload = claimed.get("payload") or {}
+    authorization_payload = authorized.get("payload") or {}
+    lookup_payload = lookup.get("payload") or {}
+    semantic_key = str(claim_payload.get("semantic_effect_key") or "")
+    external_key = str(claim_payload.get("external_dispatch_key") or "")
+    reservation = snapshot.get(reservation_path(semantic_key)) if semantic_key else None
+    if (
+        selected_payload.get("step") != "IMPLEMENTATION_WORK"
+        or not isinstance(reservation, dict)
+        or reservation.get("external_dispatch_key") != external_key
+        or authorization_payload.get("semantic_effect_key") != semantic_key
+        or authorization_payload.get("external_dispatch_key") != external_key
+        or lookup_payload.get("external_dispatch_key") != external_key
+        or lookup_payload.get("lookup_state") != "NOT_LAUNCHED"
+        or lookup_payload.get("receipt_id") is not None
+        or snapshot.get(external_create_attempt_path(semantic_key)) is not None
+    ):
+        raise V03DogfoodRuntimeDriverError(
+            "unfinished dogfood Operation lacks exact no-launch/no-attempt reservation proof"
+        )
+    return operation_id, semantic_key, external_key
+
+
+def prepare_previous_installation_operation(preflight: Any) -> str | None:
+    """Move one exact pre-launch dogfood Operation onto the current installation.
+
+    This is deliberately narrower than general Operation recovery.  It accepts
+    only the observed old-installation window: one generation-0 revision-1
+    vertical Operation whose complete journal selects and authorizes exactly one
+    dispatch, whose only trusted lookup proves NOT_LAUNCHED, and which has no
+    callback, Persist, or external-create-attempt fact.  Every CAS retry repeats
+    this complete predicate against the fresh protected Store snapshot.
+    """
+    runtime = preflight.composition.runtime
+    operation_id, semantic_key, external_key = _previous_installation_window(
+        runtime.backend.read_snapshot(), preflight
+    )
+    if operation_id is None or semantic_key is None or external_key is None:
+        return operation_id
+
+    def checked_takeover(fresh):
+        fresh_operation_id, fresh_semantic_key, fresh_external_key = (
+            _previous_installation_window(fresh, preflight)
+        )
+        if (
+            fresh_operation_id != operation_id
+            or fresh_semantic_key != semantic_key
+            or fresh_external_key != external_key
+        ):
+            raise V03DogfoodRuntimeDriverError(
+                "dogfood installation transition changed during protected CAS replan"
+            )
+        return plan_vertical_takeover(
+            fresh,
+            operation_id=operation_id,
+            occurred_at=runtime.clock(),
+            trusted_context_digest=preflight.trusted_context_digest,
+        )
+
+    runtime.commit_replanned(checked_takeover)
+    after = rebuild_projection(runtime.backend.read_snapshot(), operation_id)
+    if (
+        int(after.get("generation", -1)) != 1
+        or after.get("status") != "RUNNING"
+        or external_key not in set(after.get("authorized_dispatches") or ())
+    ):
+        raise V03DogfoodRuntimeDriverError(
+            "dogfood installation transition did not preserve same-key authority"
+        )
+    return operation_id
+
+
 def public_preflight(preflight: Any) -> dict[str, Any]:
     return {
         "schema_version": "ai-sdlc.v03-dogfood-runtime-driver-preflight/v1",
@@ -217,6 +359,8 @@ def _execute_live(*, mode: str, scenario: str) -> int:
     if mode == PREFLIGHT_ONLY:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))
         return 0
+
+    prepare_previous_installation_operation(preflight)
 
     host_config = dogfood_responses_host_config(os.environ)
     host = V03DogfoodOpenAIResponsesHost(config=host_config, adapter=preflight.composition.adapter)
