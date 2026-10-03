@@ -489,6 +489,50 @@ class DogfoodTrustedCallbackCoordinator:
         return self.executor.advance_until_stop(operation_id=context.operation_id)
 
 
+
+class DogfoodCandidateBoundActionsTransport(GitHubActionsVerticalGhAwTransport):
+    """Keep Developer's fixed PR head in its payload, under fresh candidate truth.
+
+    The shared transport's Developer contract predates real-dogfood fixtures and
+    requires a null candidate payload field. All its other checks and its actual
+    one-POST/lookup behavior remain inherited unchanged.
+    """
+
+    def __init__(self, config, *, candidate_provider, **kwargs):
+        if not isinstance(candidate_provider, DogfoodGitHubCandidateProvider):
+            raise ValueError("dogfood transport requires the fixed candidate provider")
+        super().__init__(config, **kwargs)
+        self.candidate_provider = candidate_provider
+
+    def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
+        if workflow != self.config.workflows.developer_workflow:
+            return super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
+        try:
+            payload = json.loads(inputs["task_payload"])
+            context = payload["feature_context"]
+            vertical = context["vertical"]
+            head = vertical["candidate_head_sha"]
+            if not isinstance(head, str) or not _SHA40.fullmatch(head):
+                raise ValueError("candidate head is not exact")
+            checked = json.loads(inputs["task_payload"])
+            checked["feature_context"]["vertical"]["candidate_head_sha"] = None
+            checked_inputs = dict(inputs, task_payload=json.dumps(checked, sort_keys=True, separators=(",", ":")))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise VerticalInvariantError("INVALID_REQUEST", "dogfood Developer payload lacks exact candidate head") from exc
+        key = super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=checked_inputs)
+        candidate = self.candidate_provider.current_candidate(
+            operation_id=str(vertical.get("operation_id") or ""),
+            repository=inputs["target_repository"],
+            feature_id=inputs["feature_id"],
+            target_ref=inputs["target_ref"],
+        )
+        if candidate.candidate_head_sha != head:
+            raise VerticalInvariantError("STALE_REVISION", "dogfood Developer candidate changed before transport")
+        # Only the validation copy was normalized. The inherited dispatcher
+        # sends the original candidate-bound bytes and retains the stable key.
+        return key
+
+
 class DogfoodExecutionBoundDispatchGateway:
     """Dogfood-only adapter exposing exact readiness-resolved execution identity."""
 
@@ -622,13 +666,14 @@ def build_v03_dogfood_full_composition(
         source_config,
         target_repository=config.target_repository,
     )
-    actions_transport = GitHubActionsVerticalGhAwTransport(
+    actions_transport = DogfoodCandidateBoundActionsTransport(
         GitHubActionsWorkflowTransportConfig(
             control_repository=control_repository,
             token=actions_token,
             workflows=workflows,
             api_url=github_api_base,
-        )
+        ),
+        candidate_provider=candidate_provider,
     )
     raw_dispatch_gateway = GhAwVerticalRoleDispatchGateway(transport=actions_transport, workflows=workflows)
     dispatch_gateway = DogfoodExecutionBoundDispatchGateway(
