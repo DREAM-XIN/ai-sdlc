@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 from typing import Any, Mapping
 
+from operator_external_create_attempt import external_create_attempt_path
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
 from operator_store import query_unfinished
 from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
@@ -183,8 +184,8 @@ def prepare_previous_installation_operation(preflight: Any) -> str | None:
     """Move one exact pre-launch dogfood Operation onto the current installation.
 
     This is deliberately narrower than general Operation recovery.  It accepts
-    only the observed old-installation window: one revision-1 vertical
-    Operation whose current generation has selected and authorized exactly one
+    only the observed old-installation window: one generation-0 revision-1
+    vertical Operation whose complete journal selects and authorizes exactly one
     dispatch, whose only trusted lookup proves NOT_LAUNCHED, and which has no
     callback or Persist facts.  Takeover preserves the existing immutable
     reservation/external key; it neither retires nor replaces external work.
@@ -219,9 +220,9 @@ def prepare_previous_installation_operation(preflight: Any) -> str | None:
         )
 
     generation = int(projection.get("generation", -1))
+    journal = operation_events(snapshot, operation_id)
     current = [
-        row
-        for row in operation_events(snapshot, operation_id)
+        row for row in journal
         if int(row.get("operation_generation", -1)) == generation
     ]
     digests = {str(row.get("trusted_context_digest") or "") for row in current}
@@ -236,10 +237,8 @@ def prepare_previous_installation_operation(preflight: Any) -> str | None:
             "unfinished dogfood Operation mixes installation contexts"
         )
 
-    event_types = tuple(str(row.get("event_type") or "") for row in current)
-    expected_start = "operation.started" if generation == 0 else "operation.generation.started"
-    expected_events = (expected_start,) + _SAFE_INSTALLATION_TRANSITION_EVENTS[1:]
-    if event_types != expected_events:
+    event_types = tuple(str(row.get("event_type") or "") for row in journal)
+    if generation != 0 or current != journal or event_types != _SAFE_INSTALLATION_TRANSITION_EVENTS:
         raise V03DogfoodRuntimeDriverError(
             "unfinished dogfood Operation escaped the exact pre-launch transition window"
         )
@@ -261,9 +260,10 @@ def prepare_previous_installation_operation(preflight: Any) -> str | None:
         or lookup_payload.get("external_dispatch_key") != external_key
         or lookup_payload.get("lookup_state") != "NOT_LAUNCHED"
         or lookup_payload.get("receipt_id") is not None
+        or snapshot.get(external_create_attempt_path(semantic_key)) is not None
     ):
         raise V03DogfoodRuntimeDriverError(
-            "unfinished dogfood Operation lacks exact no-launch reservation proof"
+            "unfinished dogfood Operation lacks exact no-launch/no-attempt reservation proof"
         )
 
     runtime.commit_replanned(
