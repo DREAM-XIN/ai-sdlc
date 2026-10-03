@@ -15,6 +15,7 @@ from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_runtime_preflight import _execution_bindings
 from v03_dogfood_full_composition import (
     DogfoodCandidateHandoff,
+    DogfoodCandidateBoundActionsTransport,
     DogfoodExecutionBoundDispatchGateway,
     DogfoodGitHubCandidateProvider,
     DogfoodTrustedCallbackCoordinator,
@@ -403,6 +404,94 @@ def execution_binding_wrapper_test() -> None:
         raise AssertionError("unknown dogfood role escaped exact execution binding set")
 
 
+
+def developer_candidate_transport_tests() -> None:
+    import json
+    from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
+    from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway
+    from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
+    from validate_operator_vertical_gh_aw_actions_transport import FakeGitHubActionsHttp
+
+    slot = require_slot("happy_path")
+    workflows = GhAwVerticalWorkflowMap(
+        default_branch="main", developer_workflow="ai-sdlc-gh-aw-worker.lock.yml",
+        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        qa_workflow="ai-sdlc-gh-aw-qa-gemini.lock.yml",
+    )
+    head = "70781c774ce0c4dda0b70ea5c19e6bf4b39bbb23"
+    state = {"head": head}
+    provider = DogfoodGitHubCandidateProvider(
+        slot=slot, repository=REPOSITORY, token="test-read",
+        http_get=lambda _url, _headers: (200, [_pr(slot, head=state["head"])]),
+    )
+    config = GitHubActionsWorkflowTransportConfig(
+        control_repository=REPOSITORY, token="test-actions", workflows=workflows,
+        launch_poll_attempts=1, launch_poll_seconds=0,
+    )
+    dispatch = dict(
+        operation_id="op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4", operation_generation=1,
+        operation_profile=VERTICAL_PROFILE,
+        semantic_effect_key="80b31137a408f2b0ee85248bd069b972af80b9777f91f2bd00c9b27b42f9e804",
+        external_dispatch_key="dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1",
+        dispatch_id="vertical-31df3f1ed41b54c58ed4c4030a9f97d9",
+        target_repository=REPOSITORY, target_ref=slot.target_ref, feature_id=slot.feature_id,
+        expected_revision=1, feature_stage="implementation", task_id="vertical:implementation:1",
+        task_identity="vertical:implementation:1", role="developer",
+        candidate_pr_number=552, candidate_head_sha=head,
+    )
+    inputs = GhAwVerticalRoleDispatchGateway(transport=object(), workflows=workflows)._inputs(dispatch)
+    original = json.dumps(inputs, sort_keys=True)
+    old_http = FakeGitHubActionsHttp(create_run_on_post=True)
+    old = GitHubActionsVerticalGhAwTransport(config, http=old_http, sleeper=lambda _: None)
+    try:
+        old.dispatch(workflow=workflows.developer_workflow, ref="main", inputs=inputs)
+    except VerticalInvariantError as exc:
+        require(exc.code == "POLICY_DENIED" and "payload is not bound" in str(exc), "wrong root-cause rejection")
+    else:
+        raise AssertionError("old transport accepted real Developer candidate")
+    require(old_http.get_calls == 0 and old_http.post_calls == 0, "root-cause path reached HTTP")
+    print("Historical Developer candidate mismatch reproduced: POLICY_DENIED before any HTTP")
+
+    http = FakeGitHubActionsHttp(create_run_on_post=True)
+    fixed = DogfoodCandidateBoundActionsTransport(config, candidate_provider=provider, http=http, sleeper=lambda _: None)
+    result = fixed.dispatch(workflow=workflows.developer_workflow, ref="main", inputs=inputs)
+    require(result == {"lookup_state": "LAUNCHED", "receipt_id": "9001"}, "fixed Developer did not converge")
+    require(http.post_calls == 1, "fixed transport did not preserve one POST")
+    sent = http.last_post["document"]["inputs"]
+    require(json.loads(sent["task_payload"])["feature_context"]["vertical"]["candidate_head_sha"] == head, "candidate stripped from real payload")
+    require(sent == inputs and json.dumps(inputs, sort_keys=True) == original, "transport mutated original semantic inputs")
+    fixed.dispatch(workflow=workflows.developer_workflow, ref="main", inputs=inputs)
+    require(http.post_calls == 1, "existing receipt caused another POST")
+
+    state["head"] = "2" * 40
+    stale_http = FakeGitHubActionsHttp(create_run_on_post=True)
+    stale = DogfoodCandidateBoundActionsTransport(config, candidate_provider=provider, http=stale_http, sleeper=lambda _: None)
+    try:
+        stale.dispatch(workflow=workflows.developer_workflow, ref="main", inputs=inputs)
+    except VerticalInvariantError as exc:
+        require(exc.code == "STALE_REVISION", "wrong stale-candidate rejection")
+    else:
+        raise AssertionError("changed candidate reached dispatch")
+    require(stale_http.post_calls == stale_http.get_calls == 0, "stale candidate reached Actions HTTP")
+    state["head"] = head
+    for field, value in (("role", "reviewer"), ("stage", "verification"), ("dispatch_key", "invalid")):
+        bad = dict(inputs, **{field: value})
+        try:
+            fixed.dispatch(workflow=workflows.developer_workflow, ref="main", inputs=bad)
+        except VerticalInvariantError as exc:
+            require(exc.code in {"POLICY_DENIED", "INVALID_REQUEST"}, "wrong envelope rejection")
+        else:
+            raise AssertionError("Developer envelope tamper accepted: " + field)
+    require(http.post_calls == 1, "tampered envelope reached another POST")
+    for role in ("reviewer", "qa"):
+        role_dispatch = dict(dispatch, role=role)
+        role_inputs = GhAwVerticalRoleDispatchGateway(transport=object(), workflows=workflows)._inputs(role_dispatch)
+        role_http = FakeGitHubActionsHttp(create_run_on_post=True)
+        role_transport = DogfoodCandidateBoundActionsTransport(config, candidate_provider=provider, http=role_http, sleeper=lambda _: None)
+        receipt = role_transport.dispatch(workflow=workflows.workflow_for(role), ref="main", inputs=role_inputs)
+        require(receipt["lookup_state"] == "LAUNCHED" and role_http.post_calls == 1, "Gate role contract changed")
+
+
 def early_adapter_gate_test() -> None:
     slot = require_slot("happy_path")
     config = TrustedOperatorRuntimeConfig(
@@ -457,6 +546,7 @@ def main() -> None:
     source_contract_tests()
     readiness_execution_binding_test()
     execution_binding_wrapper_test()
+    developer_candidate_transport_tests()
     early_adapter_gate_test()
     print("v0.3 real-dogfood Responses production composition: PASS")
 
