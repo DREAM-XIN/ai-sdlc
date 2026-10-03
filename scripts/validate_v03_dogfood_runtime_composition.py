@@ -12,6 +12,7 @@ from operator_openai_responses import ADAPTER_ID
 from operator_production_runtime import TrustedFeatureBinding, TrustedOperatorRuntimeConfig
 from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
 from v03_dogfood_fixture_pool import require_slot
+from v03_dogfood_runtime_preflight import _execution_bindings
 from v03_dogfood_full_composition import (
     DogfoodCandidateHandoff,
     DogfoodExecutionBoundDispatchGateway,
@@ -314,6 +315,43 @@ def source_contract_tests() -> None:
     require("remediation_artifact_supersession" in source, "remediation lifecycle lost explicit supersession")
 
 
+def readiness_execution_binding_test() -> None:
+    workflows = GhAwVerticalWorkflowMap(
+        default_branch="main",
+        developer_workflow="ai-sdlc-gh-aw-worker.lock.yml",
+        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        qa_workflow="ai-sdlc-gh-aw-qa-gemini.lock.yml",
+    )
+    rows = (
+        SimpleNamespace(
+            role="developer", stage="implementation", selected_profile="copilot",
+            worker_workflow=workflows.developer_workflow, specialized_role_worker=False,
+            accepted_credential_identities=("COPILOT_GITHUB_TOKEN",),
+        ),
+        SimpleNamespace(
+            role="reviewer", stage="code-review", selected_profile="deepseek",
+            worker_workflow=workflows.reviewer_workflow, specialized_role_worker=True,
+            accepted_credential_identities=("DEEPSEEK_API_KEY",),
+        ),
+        SimpleNamespace(
+            role="qa", stage="verification", selected_profile="gemini",
+            worker_workflow=workflows.qa_workflow, specialized_role_worker=True,
+            accepted_credential_identities=("GEMINI_API_KEY",),
+        ),
+    )
+    bindings = _execution_bindings(SimpleNamespace(bindings=rows), workflows)
+    require(bindings["developer"]["worker_id"] == "ai-sdlc-gh-aw-worker", "Copilot Developer worker id drifted")
+    require(bindings["developer"]["profile"] == "copilot", "Copilot Developer profile drifted")
+    require(bindings["reviewer"]["worker_id"] == "code-review-reviewer-deepseek", "DeepSeek Reviewer worker id drifted")
+    require(bindings["reviewer"]["credential_name"] == "DEEPSEEK_API_KEY", "DeepSeek Reviewer credential drifted")
+    require(bindings["qa"]["worker_id"] == "verification-qa-gemini", "Gemini QA worker id drifted")
+    require(
+        {bindings[role]["workflow_file"] for role in bindings}
+        == {workflows.developer_workflow, workflows.reviewer_workflow, workflows.qa_workflow},
+        "readiness execution binding workflow set drifted",
+    )
+
+
 def execution_binding_wrapper_test() -> None:
     workflows = GhAwVerticalWorkflowMap(
         default_branch="main",
@@ -417,6 +455,7 @@ def main() -> None:
     candidate_tests()
     handoff_and_supersession_tests()
     source_contract_tests()
+    readiness_execution_binding_test()
     execution_binding_wrapper_test()
     early_adapter_gate_test()
     print("v0.3 real-dogfood Responses production composition: PASS")
