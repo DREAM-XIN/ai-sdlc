@@ -20,6 +20,7 @@ from v03_dogfood_live_gate import ALLOWED_SCENARIOS, assemble_dogfood_live_gate
 from v03_dogfood_openai_host import V03DogfoodOpenAIHostConfig, V03DogfoodOpenAIResponsesHost
 from v03_dogfood_runtime_preflight import build_v03_dogfood_runtime_preflight
 from v03_dogfood_scenario_runner import run_scenario
+from v03_dogfood_pre_create_retirement import retire_reviewed_pre_create_operation
 from v03_real_runtime_live_authority import load_live_authority, require_trusted_main_execution
 
 VALIDATE_ONLY = "validate-only"
@@ -218,6 +219,7 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))
         return 0
 
+    retire_reviewed_pre_create_operation(preflight)
     host_config = dogfood_responses_host_config(os.environ)
     host = V03DogfoodOpenAIResponsesHost(config=host_config, adapter=preflight.composition.adapter)
     recovery_host = (

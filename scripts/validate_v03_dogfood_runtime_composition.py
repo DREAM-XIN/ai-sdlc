@@ -451,6 +451,104 @@ def early_adapter_gate_test() -> None:
     require("adapter_id" in signature.parameters, "dogfood builder lost explicit adapter binding")
 
 
+def pre_create_retirement_tests() -> None:
+    from operator_store_model import StoreSnapshot, make_event, event_path, apply_plan_to_snapshot, rebuild_projection
+    from v03_dogfood_pre_create_retirement import (
+        OPERATION, SOURCE_CONTEXT, EVENT_IDS, EVENT_TYPES, PAYLOADS, SOURCE_RUN, SOURCE_HEAD,
+        EFFECT, EXTERNAL_KEY, retirement_plan, require_failed_source,
+    )
+    from operator_external_create_attempt import external_create_attempt_path
+    from copy import deepcopy
+
+    def snapshot():
+        files = {}
+        for index in range(5):
+            event = make_event(
+                operation_id=OPERATION, generation=0, sequence=index + 1,
+                event_id=EVENT_IDS[index], event_type=EVENT_TYPES[index],
+                occurred_at="2026-10-03T01:18:20Z", payload=deepcopy(PAYLOADS[index]),
+                trusted_context_digest=SOURCE_CONTEXT,
+            )
+            files[event_path(OPERATION, index + 1, EVENT_IDS[index])] = event
+        return StoreSnapshot(ref_sha="a" * 40, files=files)
+
+    def rejected(current, context="new-authority"):
+        try:
+            retirement_plan(current, occurred_at="2026-10-03T02:00:00Z",
+                            trusted_context_digest=context)
+        except Exception:
+            return
+        raise AssertionError("unsafe pre-create retirement was accepted")
+
+    before = snapshot()
+    plan = retirement_plan(before, occurred_at="2026-10-03T02:00:00Z",
+                           trusted_context_digest="new-authority")
+    require(plan is not None, "reviewed failed pre-create Operation did not retire")
+    after = apply_plan_to_snapshot(before, plan)
+    require(rebuild_projection(after, OPERATION)["status"] == "CANCELLED",
+            "retirement did not use canonical cancellation")
+    require(all(after.files[path] == value for path, value in before.files.items()),
+            "retirement rewrote immutable history")
+    require(retirement_plan(after, occurred_at="2026-10-03T02:01:00Z",
+                            trusted_context_digest="later-authority") is None,
+            "retirement replay added another effect")
+    rejected(before, SOURCE_CONTEXT)
+    for index, field, value in (
+        (0, "trusted_context_digest", "wrong-context"),
+        (1, "operation_generation", 1),
+        (2, "event_id", "wrong-claim"),
+    ):
+        changed = snapshot()
+        path = event_path(OPERATION, index + 1, EVENT_IDS[index])
+        changed.files[path][field] = value
+        rejected(changed)
+    changed = snapshot()
+    changed.files[event_path(OPERATION, 5, EVENT_IDS[4])]["payload"]["lookup_state"] = "UNKNOWN"
+    rejected(changed)
+    changed = snapshot()
+    changed.files[event_path(OPERATION, 5, EVENT_IDS[4])]["payload"].update(
+        lookup_state="LAUNCHED", receipt_id="123")
+    rejected(changed)
+    changed = snapshot()
+    changed.files[external_create_attempt_path(EFFECT)] = {
+        "schema_version": "ai-sdlc.external-create-attempt/v1",
+        "semantic_effect_key": EFFECT, "external_dispatch_key": EXTERNAL_KEY,
+        "created_operation_id": OPERATION,
+    }
+    rejected(changed)
+    changed = snapshot()
+    extra = make_event(
+        operation_id=OPERATION, generation=0, sequence=6, event_id="extra-callback",
+        event_type="worker.callback.recorded", occurred_at="2026-10-03T02:00:00Z",
+        payload={"callback_id": "unexpected", "callback_digest": "a" * 64,
+                 "external_dispatch_key": EXTERNAL_KEY}, trusted_context_digest=SOURCE_CONTEXT,
+    )
+    changed.files[event_path(OPERATION, 6, "extra-callback")] = extra
+    rejected(changed)
+    source = {
+        "id": SOURCE_RUN, "status": "completed", "conclusion": "failure",
+        "event": "workflow_dispatch", "head_branch": "main", "head_sha": SOURCE_HEAD,
+        "path": ".github/workflows/v03-real-dogfood-scenario.yml", "run_attempt": 1,
+        "repository": {"full_name": "DREAM-XIN/ai-sdlc"},
+    }
+    require_failed_source(source)
+    for field, value in (("status", "in_progress"), ("conclusion", "success"),
+                         ("head_sha", "b" * 40), ("run_attempt", 2), ("id", SOURCE_RUN + 1)):
+        invalid = dict(source, **{field: value})
+        try:
+            require_failed_source(invalid)
+        except Exception:
+            pass
+        else:
+            raise AssertionError("source run identity/status drift accepted")
+    driver = (ROOT / "scripts" / "v03_dogfood_runtime_driver.py").read_text(encoding="utf-8")
+    live = driver[driver.index("def _execute_live"):]
+    require(live.index("if mode == PREFLIGHT_ONLY:") < live.index("retire_reviewed_pre_create_operation(preflight)"),
+            "preflight gained retirement writes")
+    require(live.index("retire_reviewed_pre_create_operation(preflight)") < live.index("observation = run_scenario("),
+            "retirement ran after model effects")
+
+
 def main() -> None:
     candidate_tests()
     handoff_and_supersession_tests()
@@ -458,6 +556,7 @@ def main() -> None:
     readiness_execution_binding_test()
     execution_binding_wrapper_test()
     early_adapter_gate_test()
+    pre_create_retirement_tests()
     print("v0.3 real-dogfood Responses production composition: PASS")
 
 
