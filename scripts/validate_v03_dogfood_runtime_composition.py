@@ -14,6 +14,7 @@ from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_full_composition import (
     DogfoodCandidateHandoff,
+    DogfoodExecutionBoundDispatchGateway,
     DogfoodGitHubCandidateProvider,
     DogfoodTrustedCallbackCoordinator,
     V03DogfoodCompositionError,
@@ -313,6 +314,57 @@ def source_contract_tests() -> None:
     require("remediation_artifact_supersession" in source, "remediation lifecycle lost explicit supersession")
 
 
+def execution_binding_wrapper_test() -> None:
+    workflows = GhAwVerticalWorkflowMap(
+        default_branch="main",
+        developer_workflow="ai-sdlc-gh-aw-worker.lock.yml",
+        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        qa_workflow="ai-sdlc-gh-aw-qa-gemini.lock.yml",
+    )
+    raw = __import__("operator_vertical_gh_aw").GhAwVerticalRoleDispatchGateway(
+        transport=object(), workflows=workflows,
+    )
+    bindings = {
+        "developer": {
+            "worker_id": "ai-sdlc-gh-aw-worker",
+            "role": "developer",
+            "profile": "copilot",
+            "workflow_file": workflows.developer_workflow,
+            "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
+            "default_branch": "main",
+        },
+        "reviewer": {
+            "worker_id": "code-review-reviewer-deepseek",
+            "role": "reviewer",
+            "profile": "deepseek",
+            "workflow_file": workflows.reviewer_workflow,
+            "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
+            "default_branch": "main",
+            "credential_name": "DEEPSEEK_API_KEY",
+        },
+        "qa": {
+            "worker_id": "verification-qa-gemini",
+            "role": "qa",
+            "profile": "gemini",
+            "workflow_file": workflows.qa_workflow,
+            "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
+            "default_branch": "main",
+        },
+    }
+    bound = DogfoodExecutionBoundDispatchGateway(delegate=raw, execution_bindings=bindings)
+    require(bound.transport is raw.transport and bound.workflows is workflows, "dogfood wrapper replaced production transport")
+    require(
+        bound.execution_binding(dispatch={"role": "developer"}) == bindings["developer"],
+        "Copilot Developer execution binding drifted",
+    )
+    try:
+        bound.execution_binding(dispatch={"role": "product"})
+    except Exception:
+        pass
+    else:
+        raise AssertionError("unknown dogfood role escaped exact execution binding set")
+
+
 def early_adapter_gate_test() -> None:
     slot = require_slot("happy_path")
     config = TrustedOperatorRuntimeConfig(
@@ -339,6 +391,11 @@ def early_adapter_gate_test() -> None:
             event_write_token="event-token",
             control_repository=REPOSITORY,
             workflows=workflows,
+            execution_bindings={
+                "developer": {"worker_id": "x", "role": "developer", "profile": "copilot", "workflow_file": workflows.developer_workflow, "selection_policy_id": "p", "default_branch": "main"},
+                "reviewer": {"worker_id": "y", "role": "reviewer", "profile": "copilot", "workflow_file": workflows.reviewer_workflow, "selection_policy_id": "p", "default_branch": "main"},
+                "qa": {"worker_id": "z", "role": "qa", "profile": "gemini", "workflow_file": workflows.qa_workflow, "selection_policy_id": "p", "default_branch": "main"},
+            },
             protection_verifier=object(),
             policy_authority=object(),
             trusted_context_digest="digest",
@@ -360,6 +417,7 @@ def main() -> None:
     candidate_tests()
     handoff_and_supersession_tests()
     source_contract_tests()
+    execution_binding_wrapper_test()
     early_adapter_gate_test()
     print("v0.3 real-dogfood Responses production composition: PASS")
 
