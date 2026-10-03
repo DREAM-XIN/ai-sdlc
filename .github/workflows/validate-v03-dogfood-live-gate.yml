@@ -77,15 +77,137 @@ jobs:
       - name: Validate trusted post-run finalizer imports
         run: PYTHONPATH=scripts python -m py_compile scripts/v03_dogfood_post_run_finalizer.py
 
-      - name: Compile embedded read-only readiness diagnostic
+      - name: Validate embedded read-only readiness diagnostic
         run: |
           python - <<'PY'
+          import io
+          import json
           from pathlib import Path
+          from types import SimpleNamespace
+          from urllib import error
           import yaml
+
           workflow = yaml.safe_load(Path(".github/workflows/v03-dogfood-readiness.yml").read_text())
           step = next(row for row in workflow["jobs"]["inspect"]["steps"]
                       if row.get("name") == "Inspect presence and reverify immutable upstream evidence without effects")
           source = step["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
           compile(source, "readiness-diagnostic", "exec")
-          print("Readiness diagnostic Python syntax: PASS")
+          pure = source.split("# READ_ONLY_ACTIONS_DIAGNOSTIC_BEGIN\n", 1)[1].split(
+              "# READ_ONLY_ACTIONS_DIAGNOSTIC_END", 1
+          )[0]
+          namespace = {"json": json}
+          exec(pure, namespace)
+          NoRedirect = namespace["NoRedirect"]
+          make_actions_get = namespace["make_actions_get"]
+          scan_actions_runs = namespace["scan_actions_runs"]
+          diagnose_dispatch = namespace["diagnose_dispatch"]
+
+          assert NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://example.invalid") is None
+
+          class Response(io.BytesIO):
+              status = 200
+              def __enter__(self):
+                  return self
+              def __exit__(self, *args):
+                  self.close()
+
+          class RecordingOpener:
+              def __init__(self, payload=None, exc=None):
+                  self.payload, self.exc, self.requests = payload, exc, []
+              def open(self, req, timeout):
+                  self.requests.append((req, timeout))
+                  if self.exc:
+                      raise self.exc
+                  return Response(json.dumps(self.payload).encode())
+
+          token = "diagnostic-test-token"
+          opener = RecordingOpener({"ok": True})
+          assert make_actions_get(token, opener)("/probe") == (200, {"ok": True})
+          req, timeout = opener.requests[0]
+          assert req.get_method() == "GET" and req.data is None and timeout == 20
+          assert req.full_url.endswith("/probe")
+          assert token in req.get_header("Authorization")
+          http_error = error.HTTPError("https://example.invalid", 403, "private-error", {},
+                                       io.BytesIO(b"private-response-body"))
+          failure = make_actions_get(token, RecordingOpener(exc=http_error))("/probe")
+          assert failure == (403, None)
+          assert token not in repr(failure) and "private-response-body" not in repr(failure)
+
+          binding = SimpleNamespace(role="Developer", worker_workflow="worker.yml")
+          registration = {"id": 77, "path": ".github/workflows/worker.yml", "state": "active"}
+          key = "dispatch-test"
+          def reader_for(scans, registration_payload=registration, registration_status=200):
+              pages = list(scans)
+              def read(suffix):
+                  if suffix.startswith("/actions/workflows/"):
+                      return registration_status, registration_payload
+                  assert pages, "unexpected scan request"
+                  return 200, pages.pop(0)
+              return read
+
+          exact = {"id": 10, "workflow_id": 77, "path": ".github/workflows/worker.yml",
+                   "event": "workflow_dispatch", "display_title": "AI-SDLC gh-aw " + key,
+                   "head_branch": "main", "head_sha": "a" * 40, "status": "completed",
+                   "conclusion": "success"}
+          stable = [{"total_count": 1, "workflow_runs": [exact]},
+                    {"total_count": 1, "workflow_runs": [dict(exact)]}]
+          result = diagnose_dispatch([binding], key, reader_for(stable))
+          assert result["collection_complete"] is True
+          assert [row["id"] for row in result["matching_runs"]] == [10]
+          assert result["mismatched_runs"] == []
+          assert result["resolution_authority"] is False and result["release_eligible"] is False
+
+          collision = dict(exact, id=11, workflow_id=88, path=".github/workflows/other.yml")
+          result = diagnose_dispatch(
+              [binding], key,
+              reader_for([{"total_count": 1, "workflow_runs": [collision]},
+                          {"total_count": 1, "workflow_runs": [dict(collision)]}]),
+          )
+          assert result["matching_runs"] == []
+          assert result["mismatched_runs"][0]["mismatch_reason"] == "workflow_identity_or_event_mismatch"
+
+          malformed = lambda suffix: (200, {"total_count": "1", "workflow_runs": []})
+          assert scan_actions_runs(malformed)["complete"] is False
+          duplicate_payload = {"total_count": 2, "workflow_runs": [exact, dict(exact)]}
+          assert scan_actions_runs(lambda suffix: (200, duplicate_payload))["error"]["reason"] == "duplicate_run_ids"
+
+          changing_pages = iter([
+              (200, {"total_count": 2, "workflow_runs": [exact]}),
+              (200, {"total_count": 3, "workflow_runs": [dict(exact, id=12)]}),
+          ])
+          changed = scan_actions_runs(lambda suffix: next(changing_pages))
+          assert changed["error"]["reason"] == "changing_total_count"
+
+          capped = scan_actions_runs(
+              lambda suffix: (200, {"total_count": 2, "workflow_runs": [exact]}),
+              max_pages=1,
+          )
+          assert capped["error"]["reason"] == "page_cap_exhausted"
+
+          drift_a, drift_b = dict(exact, id=20), dict(exact, id=21)
+          drift = diagnose_dispatch(
+              [binding], key,
+              reader_for([{"total_count": 1, "workflow_runs": [drift_a]},
+                          {"total_count": 1, "workflow_runs": [drift_b]}]),
+          )
+          assert drift["collection_complete"] is False
+          assert drift["collection_error"]["reason"] == "unstable_or_incomplete_collection"
+
+          empty = diagnose_dispatch(
+              [binding], key,
+              reader_for([{"total_count": 0, "workflow_runs": []},
+                          {"total_count": 0, "workflow_runs": []}]),
+          )
+          assert empty["collection_complete"] is True and empty["matching_runs"] == []
+          assert empty["resolution_authority"] is False and empty["release_eligible"] is False
+
+          unresolved = diagnose_dispatch(
+              [binding], key,
+              reader_for([{"total_count": 1, "workflow_runs": [exact]},
+                          {"total_count": 1, "workflow_runs": [dict(exact)]}],
+                         registration_payload=None, registration_status=404),
+          )
+          assert unresolved["matching_runs"] == [] and len(unresolved["mismatched_runs"]) == 1
+          assert unresolved["workflow_registration"][0]["binding_valid"] is False
+          print("Readiness diagnostic security and stability tests: PASS")
           PY
