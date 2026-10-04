@@ -596,6 +596,26 @@ def prehttp_recovery_fence_tests():
         "recovery marker could masquerade as external reservation authority",
     )
 
+    # Match Git's actual blob object identity. The live recovery proof compares
+    # current trusted-main source with immutable historical blob SHAs, so a
+    # textual backslash-zero must never stand in for Git's NUL header byte.
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory(prefix="v03-dogfood-blob-hash-") as temporary:
+        fixture = Path(temporary) / "blob.bin"
+        fixture.write_bytes(b"dogfood-blob-regression\n")
+        expected_blob = subprocess.run(
+            ["git", "hash-object", str(fixture)],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        expect(
+            driver_subject._git_blob_sha(fixture) == expected_blob,
+            "dogfood source blob hashing differs from Git object identity",
+        )
+
     workflows = GhAwVerticalWorkflowMap(
         default_branch="main",
         developer_workflow="ai-sdlc-gh-aw-worker.lock.yml",
