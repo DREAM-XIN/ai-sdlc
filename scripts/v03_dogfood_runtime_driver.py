@@ -223,7 +223,7 @@ def assemble_preflight(*, scenario: str, env: Mapping[str, str], checkout_sha: s
 def _git_blob_sha(path: Path) -> str:
     data = path.read_bytes()
     return hashlib.sha1(
-        b"blob " + str(len(data)).encode("ascii") + b"\\0" + data
+        b"blob " + str(len(data)).encode("ascii") + b"\0" + data
     ).hexdigest()
 
 
