@@ -611,6 +611,54 @@ def _plan_prehttp_recovery_marker(
     )
 
 
+def _durable_exact_recovery_launch(
+    snapshot: Any,
+    *,
+    receipt_id: str,
+) -> bool:
+    """Recognize the one durable recovery LAUNCHED fact across installations."""
+    h = HISTORICAL_PREHTTP_RECOVERY
+    launched: list[dict[str, Any]] = []
+    for row in operation_events(snapshot, h["operation_id"]):
+        if (
+            row.get("event_type") != "dispatch.launch.lookup-recorded"
+            or int(row.get("operation_generation", -1)) != h["generation"]
+        ):
+            continue
+        payload = row.get("payload") or {}
+        if (
+            str(payload.get("external_dispatch_key") or "")
+            != h["external_dispatch_key"]
+            or payload.get("lookup_state") != "LAUNCHED"
+        ):
+            continue
+        launched.append(row)
+
+    if not launched:
+        return False
+    if len(launched) != 1:
+        raise V03DogfoodRuntimeDriverError(
+            "historical pre-HTTP recovery has ambiguous durable launch receipts"
+        )
+    row = launched[0]
+    payload = row.get("payload") or {}
+    try:
+        sequence = int(row.get("sequence", -1))
+    except (TypeError, ValueError) as exc:
+        raise V03DogfoodRuntimeDriverError(
+            "historical pre-HTTP durable launch lacks valid sequence identity"
+        ) from exc
+    if (
+        str(payload.get("receipt_id") or "") != receipt_id
+        or sequence <= h["last_sequence"]
+        or not str(row.get("trusted_context_digest") or "")
+    ):
+        raise V03DogfoodRuntimeDriverError(
+            "historical pre-HTTP durable launch receipt identity drifted"
+        )
+    return True
+
+
 def _record_exact_recovery_launch(
     preflight: Any,
     *,
@@ -624,19 +672,28 @@ def _record_exact_recovery_launch(
         raise V03DogfoodRuntimeDriverError(
             "historical pre-HTTP recovery lacks an exact launched receipt"
         )
+    receipt_id = str(receipt["receipt_id"])
     runtime = preflight.composition.runtime
-    runtime.commit_replanned(
-        lambda snapshot: plan_launch_lookup(
+
+    def plan(snapshot: Any) -> StoreMutationPlan:
+        if _durable_exact_recovery_launch(snapshot, receipt_id=receipt_id):
+            return StoreMutationPlan(
+                snapshot.ref_sha,
+                tuple(),
+                {"already_recorded": True, "receipt_id": receipt_id},
+            )
+        return plan_launch_lookup(
             snapshot,
             operation_id=h["operation_id"],
             generation=h["generation"],
             external_dispatch_key_value=h["external_dispatch_key"],
             lookup_state="LAUNCHED",
-            receipt_id=str(receipt["receipt_id"]),
+            receipt_id=receipt_id,
             occurred_at=runtime.clock(),
             trusted_context_digest=preflight.trusted_context_digest,
         )
-    )
+
+    runtime.commit_replanned(plan)
 
 
 def recover_historical_prehttp_attempt(preflight: Any) -> bool:
