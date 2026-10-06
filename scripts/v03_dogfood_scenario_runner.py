@@ -134,19 +134,20 @@ def _dispatch_rows(preflight: Any, operation_id: str) -> list[dict[str, Any]]:
         enriched["_dogfood_role"] = selected[1]
         payload = row.get("payload") or {}
         external_key = str(payload.get("external_dispatch_key") or "")
-        semantic_key = str(payload.get("semantic_effect_key") or "")
-        if not external_key or not semantic_key:
-            raise V03DogfoodScenarioRunnerError("dispatch claim lacks stable logical effect identity")
-
-        existing_index = claim_index_by_external_key.get(external_key)
+        existing_index = claim_index_by_external_key.get(external_key) if external_key else None
         if existing_index is None:
-            claim_index_by_external_key[external_key] = len(claims)
+            if external_key:
+                claim_index_by_external_key[external_key] = len(claims)
             claims.append(enriched)
         else:
             existing = claims[existing_index]
             existing_payload = existing.get("payload") or {}
+            semantic_key = str(payload.get("semantic_effect_key") or "")
+            existing_semantic_key = str(existing_payload.get("semantic_effect_key") or "")
             if (
-                str(existing_payload.get("semantic_effect_key") or "") != semantic_key
+                not semantic_key
+                or not existing_semantic_key
+                or existing_semantic_key != semantic_key
                 or _dispatch_role(existing) != selected[1]
             ):
                 raise V03DogfoodScenarioRunnerError(
