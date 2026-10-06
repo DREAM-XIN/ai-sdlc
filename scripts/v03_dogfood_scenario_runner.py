@@ -101,16 +101,23 @@ def _projection(preflight: Any, operation_id: str) -> dict[str, Any]:
 
 
 def _dispatch_rows(preflight: Any, operation_id: str) -> list[dict[str, Any]]:
-    """Attach role from the immediately preceding trusted selected-step fact.
+    """Return one logical dispatch claim per external effect.
 
     dispatch.claimed intentionally contains no role. The Vertical executor first
     records loop.step.selected, then creates the semantic reservation/claim for
     that exact action. Reconstructing role from that durable sequence avoids
     trusting a field that does not exist in the closed dispatch-claim schema.
+
+    A generation takeover may replay the same semantic effect under the same
+    external_dispatch_key. That is one logical external dispatch, not concurrent
+    work. Collapse only that exact cross-generation replay, keeping the newest
+    claim. Any role/semantic drift, same-generation duplicate, or generation
+    regression still fails closed.
     """
     rows = _events(preflight, operation_id)
     selected: tuple[int, str] | None = None
     claims: list[dict[str, Any]] = []
+    claim_index_by_external_key: dict[str, int] = {}
     for row in rows:
         event_type = row.get("event_type")
         sequence = int(row.get("sequence", -1))
@@ -125,7 +132,38 @@ def _dispatch_rows(preflight: Any, operation_id: str) -> list[dict[str, Any]]:
             raise V03DogfoodScenarioRunnerError("dispatch claim lacks preceding trusted role-bearing selected step")
         enriched = dict(row)
         enriched["_dogfood_role"] = selected[1]
-        claims.append(enriched)
+        payload = row.get("payload") or {}
+        external_key = str(payload.get("external_dispatch_key") or "")
+        semantic_key = str(payload.get("semantic_effect_key") or "")
+        if not external_key or not semantic_key:
+            raise V03DogfoodScenarioRunnerError("dispatch claim lacks stable logical effect identity")
+
+        existing_index = claim_index_by_external_key.get(external_key)
+        if existing_index is None:
+            claim_index_by_external_key[external_key] = len(claims)
+            claims.append(enriched)
+        else:
+            existing = claims[existing_index]
+            existing_payload = existing.get("payload") or {}
+            if (
+                str(existing_payload.get("semantic_effect_key") or "") != semantic_key
+                or _dispatch_role(existing) != selected[1]
+            ):
+                raise V03DogfoodScenarioRunnerError(
+                    "cross-generation dispatch replay changed logical effect identity"
+                )
+            try:
+                previous_generation = int(existing.get("operation_generation", -1))
+                generation = int(row.get("operation_generation", -1))
+            except (TypeError, ValueError) as exc:
+                raise V03DogfoodScenarioRunnerError(
+                    "dispatch replay lacks valid generation identity"
+                ) from exc
+            if previous_generation < 0 or generation <= previous_generation:
+                raise V03DogfoodScenarioRunnerError(
+                    "repeated dispatch claim did not advance operation generation"
+                )
+            claims[existing_index] = enriched
         selected = None
     return claims
 
