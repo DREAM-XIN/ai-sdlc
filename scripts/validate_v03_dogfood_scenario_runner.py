@@ -223,6 +223,63 @@ def main():
     finally:
         runner._events = old_events
 
+    # A trusted generation takeover may repeat the same claim for the same
+    # external effect. Dogfood must count that as one logical dispatch while
+    # retaining the newest generation's claim.
+    old_events = runner._events
+    try:
+        logical_key = "dispatch-" + "b" * 40
+        semantic_key = "c" * 64
+        runner._events = lambda p, op: [
+            {"sequence": 1, "operation_generation": 0, "event_type": "loop.step.selected",
+             "payload": {"step": "IMPLEMENTATION_WORK"}},
+            {"sequence": 2, "operation_generation": 0, "event_type": "dispatch.claimed",
+             "payload": {"external_dispatch_key": logical_key, "semantic_effect_key": semantic_key}},
+            {"sequence": 3, "operation_generation": 1, "event_type": "loop.step.selected",
+             "payload": {"step": "IMPLEMENTATION_WORK"}},
+            {"sequence": 4, "operation_generation": 1, "event_type": "dispatch.claimed",
+             "payload": {"external_dispatch_key": logical_key, "semantic_effect_key": semantic_key}},
+        ]
+        rows = runner._dispatch_rows(SimpleNamespace(), "op")
+        expect(len(rows) == 1, "cross-generation replay was misclassified as a second logical dispatch")
+        expect(rows[0]["operation_generation"] == 1, "logical replay did not retain newest generation claim")
+
+        runner._events = lambda p, op: [
+            {"sequence": 1, "operation_generation": 0, "event_type": "loop.step.selected",
+             "payload": {"step": "IMPLEMENTATION_WORK"}},
+            {"sequence": 2, "operation_generation": 0, "event_type": "dispatch.claimed",
+             "payload": {"external_dispatch_key": logical_key, "semantic_effect_key": semantic_key}},
+            {"sequence": 3, "operation_generation": 1, "event_type": "loop.step.selected",
+             "payload": {"step": "CODE_REVIEW"}},
+            {"sequence": 4, "operation_generation": 1, "event_type": "dispatch.claimed",
+             "payload": {"external_dispatch_key": logical_key, "semantic_effect_key": semantic_key}},
+        ]
+        try:
+            runner._dispatch_rows(SimpleNamespace(), "op")
+        except runner.V03DogfoodScenarioRunnerError:
+            pass
+        else:
+            raise AssertionError("cross-generation replay with role drift was accepted")
+
+        runner._events = lambda p, op: [
+            {"sequence": 1, "operation_generation": 1, "event_type": "loop.step.selected",
+             "payload": {"step": "IMPLEMENTATION_WORK"}},
+            {"sequence": 2, "operation_generation": 1, "event_type": "dispatch.claimed",
+             "payload": {"external_dispatch_key": logical_key, "semantic_effect_key": semantic_key}},
+            {"sequence": 3, "operation_generation": 1, "event_type": "loop.step.selected",
+             "payload": {"step": "IMPLEMENTATION_WORK"}},
+            {"sequence": 4, "operation_generation": 1, "event_type": "dispatch.claimed",
+             "payload": {"external_dispatch_key": logical_key, "semantic_effect_key": semantic_key}},
+        ]
+        try:
+            runner._dispatch_rows(SimpleNamespace(), "op")
+        except runner.V03DogfoodScenarioRunnerError:
+            pass
+        else:
+            raise AssertionError("same-generation duplicate dispatch claim was accepted")
+    finally:
+        runner._events = old_events
+
 
     good = dict(id=1001, event="workflow_dispatch", head_branch="main", head_sha="a"*40,
                 path=".github/workflows/worker.yml", display_title="AI-SDLC gh-aw key",
