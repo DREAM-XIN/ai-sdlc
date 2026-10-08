@@ -21,7 +21,7 @@ from operator_external_create_attempt import external_create_attempt_path, find_
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
 from operator_store import plan_launch_lookup, query_unfinished
 from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
-from operator_store_model import StoreMutation, StoreMutationPlan, digest_json, operation_events, rebuild_projection, reservation_path
+from operator_store_model import StoreMutation, StoreMutationPlan, canonical_json, digest_json, normalize_repository, operation_events, rebuild_projection, reservation_path
 from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_recovery import plan_vertical_takeover
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
