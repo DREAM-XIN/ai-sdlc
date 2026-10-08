@@ -837,6 +837,8 @@ def recovery_lock_transform_tests(root):
         "persist_credentials_false": 2,
         "removed_trigger_lines": 3,
         "removed_trigger_references": 4,
+        "body_hash_from": "40961d116883db65077e5ae5bd58b487c3cc9b5852dfa630e7951d2aaae4a2bf",
+        "body_hash_to": "40b451fd769aa24683aedfee3a4ad5ab2fed5510ad248c95227a87b6a6b583b3",
     }, "recovery lock transform provenance drifted")
     body = "".join(lines[:1] + lines[2:])
     expect("GH_AW_CI_TRIGGER_TOKEN" not in body and "persist-credentials: true" not in body,
@@ -871,6 +873,8 @@ def recovery_lock_transform_tests(root):
     end = upstream.find("\n", pos)
     trigger_line = "          GH_AW_CI_TRIGGER_TOKEN: $" + "{{ secrets.GH_AW_CI_TRIGGER_TOKEN }}\n"
     upstream = upstream[:end + 1] + trigger_line + upstream[end + 1:]
+    upstream = upstream.replace(
+        provenance["body_hash_to"], provenance["body_hash_from"], 1)
     raw = upstream.encode()
     git_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
     expect(git_blob == provenance["upstream_blob_sha"],
@@ -880,6 +884,12 @@ def recovery_lock_transform_tests(root):
     transformed = transformed.replace("#   - GH_AW_CI_TRIGGER_TOKEN\n", "", 1)
     transformed = transformed.replace("persist-credentials: true", "persist-credentials: false", 2)
     transformed = transformed.replace(trigger_line, "", 1)
+    transformed = transformed.replace(
+        provenance["body_hash_from"], provenance["body_hash_to"], 1)
+    source = (root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md").read_text()
+    source_body = source.split("\n---\n", 1)[1].rstrip("\n")
+    expect(hashlib.sha256(source_body.encode()).hexdigest() == provenance["body_hash_to"],
+           "recovery source body is not bound to transformed lock metadata")
     expect(transformed == body, "declared recovery lock transform is not deterministic/reversible")
     print("- recovery Developer lock is an exact reversible hardening of gh-aw v0.89.21 strict output")
 
