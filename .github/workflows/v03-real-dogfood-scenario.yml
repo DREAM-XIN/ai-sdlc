@@ -100,6 +100,9 @@ jobs:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
           AI_SDLC_EVENT_WRITE_TOKEN: ${{ steps.event-token.outputs.token }}
           AI_SDLC_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID: ${{ vars.AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID }}
+          AI_SDLC_RECOVERY_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY }}
+          AI_SDLC_HISTORICAL_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
           AI_SDLC_DOGFOOD_OBSERVATION_PATH: evidence/v03-dogfood/${{ inputs.scenario }}-observation.json
         run: |
           set -euo pipefail
