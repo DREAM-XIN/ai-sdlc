@@ -839,6 +839,72 @@ def prehttp_recovery_fence_tests():
         "durable marker replay performed a second launch",
     )
 
+    # A later trusted-main installation must adopt the already durable exact
+    # LAUNCHED fact instead of trying to rewrite the same event identity under
+    # a new trusted-context digest.
+    prior_launch = {
+        "sequence": h["last_sequence"] + 1,
+        "operation_generation": h["generation"],
+        "event_type": "dispatch.launch.lookup-recorded",
+        "trusted_context_digest": "previous-trusted-main-context",
+        "payload": {
+            "external_dispatch_key": h["external_dispatch_key"],
+            "lookup_state": "LAUNCHED",
+            "receipt_id": "recovery-run-1",
+        },
+    }
+    with patch.object(driver_subject, "operation_events", return_value=[prior_launch]):
+        expect(
+            driver_subject._durable_exact_recovery_launch(
+                object(), receipt_id="recovery-run-1"
+            ) is True,
+            "exact durable recovery launch was not recognized across installations",
+        )
+        try:
+            driver_subject._durable_exact_recovery_launch(
+                object(), receipt_id="different-receipt"
+            )
+        except V03DogfoodRuntimeDriverError:
+            pass
+        else:
+            raise AssertionError("conflicting durable recovery receipt was accepted")
+
+        class DurableReplayRuntime:
+            def __init__(self):
+                self.commits = 0
+                self.plan = None
+
+            def clock(self):
+                return "2026-10-06T08:30:00Z"
+
+            def commit_replanned(self, planner, *, max_attempts=4):
+                self.commits += 1
+                snapshot = SimpleNamespace(ref_sha="durable-launch-state")
+                self.plan = planner(snapshot)
+                return SimpleNamespace(result=self.plan.result)
+
+        durable_runtime = DurableReplayRuntime()
+        durable_preflight = SimpleNamespace(
+            composition=SimpleNamespace(runtime=durable_runtime),
+            trusted_context_digest="new-trusted-main-context",
+        )
+        with patch.object(
+            driver_subject,
+            "plan_launch_lookup",
+            side_effect=AssertionError("durable exact launch was rewritten"),
+        ):
+            driver_subject._record_exact_recovery_launch(
+                durable_preflight,
+                receipt={"lookup_state": "LAUNCHED", "receipt_id": "recovery-run-1"},
+            )
+        expect(
+            durable_runtime.commits == 1
+            and durable_runtime.plan is not None
+            and not durable_runtime.plan.mutations
+            and durable_runtime.plan.result.get("already_recorded") is True,
+            "cross-installation recovery replay did not become a no-write adoption",
+        )
+
     crash_order = []
     crash_runtime = Runtime(Backend(runtime.backend.snapshot), crash_order)
     crash_gateway = Gateway(
