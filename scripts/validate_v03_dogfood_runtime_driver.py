@@ -870,6 +870,18 @@ def main():
     live_text = live_path.read_text()
     live = yaml.safe_load(live_text)
     readiness_text = (root / ".github/workflows/v03-dogfood-readiness.yml").read_text()
+    recovery_source = (root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md").read_text()
+    recovery_lock = (root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml").read_text()
+    qa_source = (root / ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.md").read_text()
+    qa_lock = (root / ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.lock.yml").read_text()
+    for source, lock in ((recovery_source, recovery_lock), (qa_source, qa_lock)):
+        expect("GH_AW_CI_TRIGGER_TOKEN" not in source and "\n  conclusion:\n" not in source,
+               "recovery Worker source retained a generic collector dispatch")
+        expect(lock.startswith('# gh-aw-metadata: {"schema_version":"v4"')
+               and '"compiler_version":"v0.89.21"' in lock and '"strict":true' in lock,
+               "recovery Worker lock lacks strict pinned compiler provenance")
+        expect("persist-credentials: true" not in lock,
+               "recovery Worker lock persisted checkout credentials")
     expect("secrets.DEEPSEEK_API_KEY" in live_text and "AI_SDLC_DEEPSEEK_API_KEY" in live_text,
            "real dogfood workflow lacks DeepSeek Responses credential binding")
     expect("AI_SDLC_OPENAI_API_KEY" not in live_text and "AI_SDLC_OPENAI_MODEL" not in live_text,
