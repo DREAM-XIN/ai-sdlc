@@ -959,6 +959,16 @@ def recovery_safe_output_source_tests():
         external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=trusted)
     expect(resolved.run.run_id == run_id and resolved.run.candidate_pr_number == 901,
            "recovery Safe Output resolver lost exact run/Draft PR")
+    expect(source.seal_readiness(
+        external_dispatch_key=key, expected_receipt_identity=str(run_id),
+        source_head_sha=source_head) == "READY",
+        "successful recovery run/Safe Output was not ready to seal")
+    state["run"]["status"], state["run"]["conclusion"] = "in_progress", None
+    expect(source.seal_readiness(
+        external_dispatch_key=key, expected_receipt_identity=str(run_id),
+        source_head_sha=source_head) == "PENDING",
+        "in-progress recovery run was prematurely sealable")
+    state["run"]["status"], state["run"]["conclusion"] = "completed", "success"
     expect("--first-attempt--" in resolved.outputs[0].trusted_uri
            and source.load_content(resolved.outputs[0].trusted_uri),
            "recovery Safe Output lacks digest/content/run lease")
@@ -1022,13 +1032,54 @@ def bounded_recovery_execution_tests():
             self.receipt = {"lookup_state": "LAUNCHED", "receipt_id": "40000000002"}
             if self.ack_loss: raise RuntimeError("simulated lost acknowledgement")
             return self.receipt
+    class ResultSource:
+        def seal_readiness(self, **kwargs): return "READY"
+        def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
+            run_id = int(expected_receipt_identity)
+            run = SimpleNamespace(
+                run_id=run_id,
+                run_url=f"https://github.com/dream-xin/ai-sdlc/actions/runs/{run_id}",
+                receipt_identity=str(run_id),
+                control_repository="dream-xin/ai-sdlc",
+                workflow_file=subject.RECOVERY_WORKFLOW,
+                workflow_ref="main",
+                event="workflow_dispatch",
+                status="completed",
+                conclusion="success",
+                display_title="AI-SDLC gh-aw " + external_dispatch_key,
+                external_dispatch_key=external_dispatch_key,
+                role="developer",
+                task_id=trusted_context["task_id"],
+                worker_identity=f"gh-aw:{subject.RECOVERY_WORKFLOW}@{trusted_context['source_head_sha']}",
+                collector_identity="collector",
+                candidate_pr_number=901,
+                candidate_head_sha="7" * 40,
+            )
+            output = SimpleNamespace(
+                label="implementation", kind="artifact", media_type="application/json",
+                trusted_uri=(
+                    "docs/features/" + trusted_context["feature_id"] + "/worker-runs/"
+                    + trusted_context["dispatch_id"] + "/developer-pr-901-" + "7" * 40
+                    + "-binding-" + "8" * 64 + "--first-attempt--key-"
+                    + external_dispatch_key + "--run-" + str(run_id) + "--head-"
+                    + trusted_context["source_head_sha"] + "--lease-" + "9" * 64 + ".json"
+                ),
+            )
+            return SimpleNamespace(
+                run=run,
+                role_payload={"status": "COMPLETED", "summary": "test", "outputs": [
+                    {"label": "implementation", "kind": "artifact"}]},
+                outputs=(output,),
+            )
     def preflight(gateway):
         runtime = Runtime()
         return SimpleNamespace(
             slot=SimpleNamespace(scenario="happy_path"),
             execution=SimpleNamespace(repository="dream-xin/ai-sdlc", installation_commit_sha="5" * 40),
             trusted_context_digest="sha256:" + "6" * 64,
-            composition=SimpleNamespace(runtime=runtime, recovery_dispatch_gateway=gateway))
+            composition=SimpleNamespace(
+                runtime=runtime, recovery_dispatch_gateway=gateway,
+                recovery_result_source=ResultSource()))
     patches = (
         patch.object(subject, "observe_historical_worker_for_review",
                      return_value={"observation_digest": subject.RECOVERY_OBSERVATION_DIGEST}),
