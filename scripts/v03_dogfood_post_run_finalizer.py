@@ -35,7 +35,11 @@ RUNTIME_KIND = "github-actions/gh-aw-production"
 RECOVERY_OPERATION_ID = "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"
 RECOVERY_EXTERNAL_KEY = "dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1"
 RECOVERY_SCHEMA = "ai-sdlc.v03-dogfood-bounded-recovery/v1"
-RECOVERY_RECEIPT_PATH = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-bounded-recovery/sealed-receipt.json"
+RECOVERY_BASE_PATH = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-bounded-recovery"
+RECOVERY_AUTHORIZATION_PATH = RECOVERY_BASE_PATH + "/authorization.json"
+RECOVERY_ATTEMPT_PATH = RECOVERY_BASE_PATH + "/create-attempt.json"
+RECOVERY_RECEIPT_PATH = RECOVERY_BASE_PATH + "/sealed-receipt.json"
+RECOVERY_OBSERVATION_DIGEST = "sha256:a86b7ead37bf96abe9b6e43098b7873b821833c6d93c720ed7409835af18916f"
 
 
 class V03DogfoodPostRunFinalizerError(RuntimeError):
@@ -60,6 +64,53 @@ def _load(path: Path) -> dict[str, Any]:
 
 def _run_uri(repository: str, run_id: int) -> str:
     return f"https://github.com/{repository}/actions/runs/{run_id}"
+
+
+def _validated_recovery_chain(snapshot: Any) -> dict[str, Any]:
+    authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
+    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+    sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+    if not all(isinstance(row, dict) for row in (authorization, attempt, sealed)):
+        raise V03DogfoodPostRunFinalizerError("finalizer lacks complete recovery fact chain")
+    authorization_digest = "sha256:" + digest_json(authorization)
+    attempt_digest = "sha256:" + digest_json(attempt)
+    exact = {
+        "schema_version": RECOVERY_SCHEMA,
+        "operation_id": RECOVERY_OPERATION_ID,
+        "external_dispatch_key": RECOVERY_EXTERNAL_KEY,
+        "historical_runtime_receipt_identity": "37204777409",
+        "historical_observation_digest": RECOVERY_OBSERVATION_DIGEST,
+        "authorization_digest": authorization_digest,
+        "create_attempt_digest": attempt_digest,
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "head_branch": "main",
+        "role": "developer",
+        "stage": "implementation",
+    }
+    if (
+        any(sealed.get(key) != value for key, value in exact.items())
+        or attempt.get("authorization_digest") != authorization_digest
+        or attempt.get("status") != "ARMED"
+        or sealed.get("provider_fence_digest") != authorization.get("provider_fence_digest")
+        or sealed.get("worker_blobs") != authorization.get("worker_blobs")
+        or sealed.get("trusted_context_digest") != authorization.get("trusted_context_digest")
+        or sealed.get("source_head_sha") != authorization.get("installation_commit_sha")
+        or sealed.get("display_title") != "AI-SDLC gh-aw " + str(sealed.get("recovery_dispatch_key") or "")
+        or not str(sealed.get("receipt_id") or "").isdigit()
+    ):
+        raise V03DogfoodPostRunFinalizerError("finalizer recovery fact-chain digest/identity drifted")
+    for key in (
+        "operation_id", "operation_generation", "semantic_effect_key", "external_dispatch_key",
+        "recovery_dispatch_key", "recovery_dispatch_id", "workflow_file", "installation_commit_sha",
+        "source_head_sha", "target_repository", "head_branch", "event", "display_title",
+        "trusted_context_digest", "feature_id", "target_ref", "task_id", "task_identity",
+        "stage", "role", "expected_revision", "candidate_pr_number", "candidate_head_sha",
+        "provider_fence_digest", "historical_observation_digest", "worker_blobs",
+    ):
+        if attempt.get(key) != authorization.get(key) or sealed.get(key) != authorization.get(key):
+            raise V03DogfoodPostRunFinalizerError(f"finalizer recovery chain lost {key} binding")
+    return sealed
 
 
 def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -99,14 +150,7 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
             raise V03DogfoodPostRunFinalizerError("durable LAUNCHED lookup lacks exact Actions receipt")
         run_ids.append(int(receipt))
     if operation_id == RECOVERY_OPERATION_ID:
-        sealed = preflight.composition.runtime.backend.read_snapshot().get(RECOVERY_RECEIPT_PATH)
-        if (
-            not isinstance(sealed, dict)
-            or sealed.get("schema_version") != RECOVERY_SCHEMA
-            or sealed.get("external_dispatch_key") != RECOVERY_EXTERNAL_KEY
-            or not str(sealed.get("receipt_id") or "").isdigit()
-        ):
-            raise V03DogfoodPostRunFinalizerError("finalizer lacks sealed recovery receipt")
+        sealed = _validated_recovery_chain(preflight.composition.runtime.backend.read_snapshot())
         run_ids.insert(0, int(sealed["receipt_id"]))
     declared = [int(value) for value in (observation.get("workflow_run_ids") or [])]
     if run_ids != declared or not run_ids or len(set(run_ids)) != len(run_ids):
@@ -249,14 +293,8 @@ def _durable_run_bindings(preflight, observation, events):
         run_id = int(lookup["receipt_id"])
         recovery_sealed = None
         if observation["operation_id"] == RECOVERY_OPERATION_ID and key == RECOVERY_EXTERNAL_KEY:
-            recovery_sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
-            if (
-                str(run_id) != "37204777409"
-                or not isinstance(recovery_sealed, dict)
-                or recovery_sealed.get("schema_version") != RECOVERY_SCHEMA
-                or recovery_sealed.get("external_dispatch_key") != key
-                or not str(recovery_sealed.get("receipt_id") or "").isdigit()
-            ):
+            recovery_sealed = _validated_recovery_chain(snapshot)
+            if str(run_id) != "37204777409" or recovery_sealed.get("external_dispatch_key") != key:
                 raise V03DogfoodPostRunFinalizerError("recovery binding is not separated from historical receipt")
             run_id = int(recovery_sealed["receipt_id"])
         authorizations = [event for event in events if event.get("event_type") == "dispatch.launch.authorized"
