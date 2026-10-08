@@ -819,6 +819,243 @@ def historical_worker_evidence_tests():
     print("- historical Worker proof brackets exact source/jobs/logs with six GETs and grants no recovery authority")
 
 
+
+def recovery_lock_transform_tests(root):
+    """Prove the checked-in lock is one deterministic transform of strict compiler output."""
+    import hashlib
+    import json
+    path = root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml"
+    hardened = path.read_text()
+    lines = hardened.splitlines(keepends=True)
+    expect(len(lines) > 3 and lines[1].startswith("# ai-sdlc-recovery-lock-transform: "),
+           "recovery Developer lock lacks deterministic transform provenance")
+    provenance = json.loads(lines[1].split(": ", 1)[1])
+    expect(provenance == {
+        "schema": "ai-sdlc.v03-recovery-lock-transform/v1",
+        "compiler": "gh-aw-v0.89.21-strict",
+        "upstream_blob_sha": "a7ce0bf9d4f1b309f938afbda66cacc9d0d399a1",
+        "persist_credentials_false": 2,
+        "removed_trigger_lines": 3,
+        "removed_trigger_references": 4,
+    }, "recovery lock transform provenance drifted")
+    body = "".join(lines[:1] + lines[2:])
+    expect("GH_AW_CI_TRIGGER_TOKEN" not in body and "persist-credentials: true" not in body,
+           "hardened recovery lock retained forbidden credential surface")
+    upstream = body
+    upstream = upstream.replace(
+        '"DEEPSEEK_API_KEY","GH_AW_DEFAULT_OTLP_ENDPOINT"',
+        '"DEEPSEEK_API_KEY","GH_AW_CI_TRIGGER_TOKEN","GH_AW_DEFAULT_OTLP_ENDPOINT"', 1)
+    upstream = upstream.replace(
+        "#   - GH_AW_DEFAULT_OTLP_ENDPOINT\n",
+        "#   - GH_AW_CI_TRIGGER_TOKEN\n#   - GH_AW_DEFAULT_OTLP_ENDPOINT\n", 1)
+    safe_checkout = """      - name: Checkout repository
+        if: (!cancelled()) && needs.agent.result != 'skipped' && contains(needs.agent.outputs.output_types, 'create_pull_request')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          token: TOKEN_EXPR
+""".replace("TOKEN_EXPR", "$" + "{{ secrets.GITHUB_TOKEN }}")
+    safe_subcheckout = """      - name: Checkout dream-xin/ai-sdlc into ai-sdlc
+        if: (!cancelled()) && needs.agent.result != 'skipped' && contains(needs.agent.outputs.output_types, 'create_pull_request')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+"""
+    expect(upstream.count(safe_checkout) == 1 and upstream.count(safe_subcheckout) == 1,
+           "recovery lock checkout transform sites drifted")
+    upstream = upstream.replace(safe_checkout, safe_checkout.replace("persist-credentials: false", "persist-credentials: true"), 1)
+    upstream = upstream.replace(safe_subcheckout, safe_subcheckout.replace("persist-credentials: false", "persist-credentials: true"), 1)
+    handler = '          GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG: '
+    pos = upstream.find(handler)
+    expect(pos >= 0, "recovery lock lost Safe Outputs handler")
+    end = upstream.find("\n", pos)
+    trigger_line = "          GH_AW_CI_TRIGGER_TOKEN: $" + "{{ secrets.GH_AW_CI_TRIGGER_TOKEN }}\n"
+    upstream = upstream[:end + 1] + trigger_line + upstream[end + 1:]
+    raw = upstream.encode()
+    git_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+    expect(git_blob == provenance["upstream_blob_sha"],
+           "hardened recovery lock cannot reconstruct exact strict compiler output")
+    transformed = upstream
+    transformed = transformed.replace(',"GH_AW_CI_TRIGGER_TOKEN"', "", 1)
+    transformed = transformed.replace("#   - GH_AW_CI_TRIGGER_TOKEN\n", "", 1)
+    transformed = transformed.replace("persist-credentials: true", "persist-credentials: false", 2)
+    transformed = transformed.replace(trigger_line, "", 1)
+    expect(transformed == body, "declared recovery lock transform is not deterministic/reversible")
+    print("- recovery Developer lock is an exact reversible hardening of gh-aw v0.89.21 strict output")
+
+
+def recovery_safe_output_source_tests():
+    """Execute the recovery-only Safe Output resolver against realistic GitHub shapes."""
+    import json
+    from urllib.parse import urlparse
+    from operator_vertical import VerticalInvariantError
+    from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
+    from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig
+    from v03_dogfood_full_composition import (
+        COLLECTOR_IDENTITY, RECOVERY_DEVELOPER_WORKFLOW, RecoverySafeOutputGhAwResultSource,
+    )
+    run_id = 40000000001
+    key = "recovery-test-key"
+    source_head = "1" * 40
+    candidate_head = "2" * 40
+    feature = "F-OPERATOR-V03-DOGFOOD-HAPPY-0001"
+    target_ref = "dogfood/v0.3-happy-path-0001"
+    prefix = f"gh-aw/{feature}-{run_id}-v1"
+    run = {
+        "id": run_id, "run_attempt": 1,
+        "html_url": f"https://github.com/dream-xin/ai-sdlc/actions/runs/{run_id}",
+        "path": ".github/workflows/" + RECOVERY_DEVELOPER_WORKFLOW,
+        "display_title": "AI-SDLC gh-aw " + key, "event": "workflow_dispatch",
+        "head_branch": "main", "head_sha": source_head,
+        "status": "completed", "conclusion": "success",
+    }
+    jobs = {"jobs": [{
+        "id": 9001, "name": "safe_outputs", "run_id": run_id, "run_attempt": 1,
+        "head_sha": source_head, "status": "completed", "conclusion": "success",
+    }]}
+    pr = {
+        "number": 901, "html_url": "https://github.com/dream-xin/ai-sdlc/pull/901",
+        "state": "open", "draft": True, "title": "[ai-sdlc gh-aw] bounded implementation",
+        "head": {"ref": prefix + "-fixed", "sha": candidate_head, "repo": {"full_name": "dream-xin/ai-sdlc"}},
+        "base": {"ref": target_ref, "repo": {"full_name": "dream-xin/ai-sdlc"}},
+    }
+    state = {"run": run, "jobs": jobs, "prs": [pr], "pr": pr}
+    calls = []
+    def http(*, method, url, token):
+        calls.append((method, url))
+        suffix = urlparse(url).path.split("/repos/dream-xin/ai-sdlc", 1)[1]
+        if suffix == f"/actions/runs/{run_id}": value = state["run"]
+        elif suffix == f"/actions/runs/{run_id}/attempts/1/jobs": value = state["jobs"]
+        elif suffix == "/pulls": value = state["prs"]
+        elif suffix == "/pulls/901": value = state["pr"]
+        else: raise AssertionError("recovery resolver escaped exact GET inventory: " + suffix)
+        return 200, {}, json.dumps(value).encode()
+    workflows = GhAwVerticalWorkflowMap(
+        default_branch="main", developer_workflow=RECOVERY_DEVELOPER_WORKFLOW,
+        reviewer_workflow="reviewer.lock.yml", qa_workflow="qa.lock.yml")
+    source = RecoverySafeOutputGhAwResultSource(
+        GitHubActionsGhAwResultSourceConfig(
+            control_repository="dream-xin/ai-sdlc", control_token="control",
+            target_token="target", workflows=workflows, collector_identity=COLLECTOR_IDENTITY),
+        target_repository="dream-xin/ai-sdlc", http=http)
+    trusted = {
+        "operation_id": "op", "operation_generation": 1, "operation_profile": "vertical-v0.3",
+        "semantic_effect_key": "semantic", "external_dispatch_key": key,
+        "dispatch_id": "dispatch", "target_repository": "dream-xin/ai-sdlc",
+        "target_ref": target_ref, "feature_id": feature, "expected_revision": 1,
+        "feature_stage": "implementation", "role": "developer", "task_id": "TASK-1",
+        "launch_candidate_head_sha": "3" * 40, "source_head_sha": source_head}
+    resolved = source.resolve(
+        external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=trusted)
+    expect(resolved.run.run_id == run_id and resolved.run.candidate_pr_number == 901,
+           "recovery Safe Output resolver lost exact run/Draft PR")
+    expect("--first-attempt--" in resolved.outputs[0].trusted_uri
+           and source.load_content(resolved.outputs[0].trusted_uri),
+           "recovery Safe Output lacks digest/content/run lease")
+    expect(calls and all(method == "GET" for method, _ in calls),
+           "recovery Safe Output resolution attempted a mutation")
+    def must_reject(mutate):
+        saved = json.loads(json.dumps(state))
+        mutate(state)
+        try:
+            source.resolve(external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=trusted)
+        except VerticalInvariantError: pass
+        else: raise AssertionError("recovery Safe Output accepted drift/ambiguity")
+        state.clear(); state.update(saved)
+    must_reject(lambda s: s["run"].update(run_attempt=2))
+    must_reject(lambda s: s.update(prs=[s["pr"], dict(s["pr"], number=902)]))
+    must_reject(lambda s: s["jobs"]["jobs"][0].update(conclusion="failure"))
+    must_reject(lambda s: s["pr"]["head"].update(sha="bad"))
+    stale = dict(trusted); stale["source_head_sha"] = "4" * 40
+    try:
+        source.resolve(external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=stale)
+    except VerticalInvariantError: pass
+    else: raise AssertionError("recovery Safe Output accepted stale main source")
+    print("- recovery Safe Output dynamically rejects duplicate/attempt2/wrong-head/stale evidence")
+
+
+def bounded_recovery_execution_tests():
+    """Exercise CAS winner/replay/ack-loss and zero-POST failure behavior."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from operator_store_model import StoreSnapshot, apply_plan_to_snapshot, digest_json
+    import v03_dogfood_runtime_driver as subject
+    fence = {
+        "schema_version": subject.RECOVERY_SCHEMA,
+        "app_id": 4576406, "app_client_id": "Iv23libojxnnuF43petx",
+        "installation_id": 153325330, "historical_status": 401, "recovery_status": 200,
+        "historical_public_key_digest": subject.HISTORICAL_APP_PUBLIC_KEY_DIGEST,
+        "recovery_public_key_digest": "sha256:" + "9" * 64,
+        "recovery_authority": False, "release_eligible": False}
+    fence["fence_digest"] = "sha256:" + digest_json(fence)
+    class Backend:
+        def __init__(self): self.snapshot = StoreSnapshot("s0", {})
+        def read_snapshot(self): return self.snapshot
+    class Runtime:
+        def __init__(self): self.backend = Backend(); self.n = 0
+        def clock(self): return "2026-10-08T00:00:00Z"
+        def commit_replanned(self, planner):
+            plan = planner(self.backend.snapshot)
+            if plan.mutations:
+                self.n += 1
+                self.backend.snapshot = apply_plan_to_snapshot(
+                    self.backend.snapshot, plan, new_ref_sha=f"s{self.n}")
+            return SimpleNamespace(result=plan.result)
+    class Gateway:
+        def __init__(self, ack_loss=False):
+            self.post_count = 0; self.ack_loss = ack_loss; self.receipt = None
+        def lookup(self, *, external_dispatch_key):
+            return self.receipt or {"lookup_state": "NOT_LAUNCHED"}
+        def launch(self, *, dispatch):
+            self.post_count += 1
+            self.receipt = {"lookup_state": "LAUNCHED", "receipt_id": "40000000002"}
+            if self.ack_loss: raise RuntimeError("simulated lost acknowledgement")
+            return self.receipt
+    def preflight(gateway):
+        runtime = Runtime()
+        return SimpleNamespace(
+            slot=SimpleNamespace(scenario="happy_path"),
+            execution=SimpleNamespace(repository="dream-xin/ai-sdlc", installation_commit_sha="5" * 40),
+            trusted_context_digest="sha256:" + "6" * 64,
+            composition=SimpleNamespace(runtime=runtime, recovery_dispatch_gateway=gateway))
+    patches = (
+        patch.object(subject, "observe_historical_worker_for_review",
+                     return_value={"observation_digest": subject.RECOVERY_OBSERVATION_DIGEST}),
+        patch.object(subject, "_observe_provider_rotation", return_value=fence),
+        patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})),
+        patch.object(subject, "_recovery_worker_blobs", return_value={
+            "a": "1" * 40, "b": "2" * 40, "c": "3" * 40, "d": "4" * 40}),
+        patch.dict(subject.os.environ, {"AI_SDLC_ACTIONS_READ_TOKEN": "test"}, clear=False))
+    for p in patches: p.start()
+    try:
+        gateway = Gateway(); pf = preflight(gateway)
+        sealed = subject.recover_historical_prehttp_attempt(pf)
+        expect(gateway.post_count == 1 and sealed["receipt_id"] == "40000000002",
+               "bounded recovery did not make exactly one POST and seal")
+        replay = subject.recover_historical_prehttp_attempt(pf)
+        expect(replay == sealed and gateway.post_count == 1, "bounded recovery replay repeated POST")
+        lost = Gateway(ack_loss=True); pf_lost = preflight(lost)
+        sealed_lost = subject.recover_historical_prehttp_attempt(pf_lost)
+        expect(lost.post_count == 1 and sealed_lost["receipt_id"] == "40000000002",
+               "ack-loss lookup did not seal without a second POST")
+        loser = Gateway(); pf_loser = preflight(loser)
+        first_plan = subject._plan_bounded_recovery(
+            pf_loser.composition.runtime.backend.read_snapshot(), preflight=pf_loser, fence=fence)
+        pf_loser.composition.runtime.backend.snapshot = apply_plan_to_snapshot(
+            pf_loser.composition.runtime.backend.snapshot, first_plan, new_ref_sha="race-winner")
+        try: subject.recover_historical_prehttp_attempt(pf_loser)
+        except subject.V03DogfoodRuntimeDriverError: pass
+        else: raise AssertionError("CAS loser without receipt was allowed to POST")
+        expect(loser.post_count == 0, "CAS loser/unknown receipt performed a POST")
+        broken = deepcopy(fence); broken["historical_status"] = 200
+        try: subject._validate_provider_rotation_fence(broken)
+        except subject.V03DogfoodRuntimeDriverError: pass
+        else: raise AssertionError("old-key-still-valid provider fence was accepted")
+    finally:
+        for p in reversed(patches): p.stop()
+    print("- bounded recovery dynamically proves CAS winner/replay/ack-loss and zero-POST loser fencing")
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -846,6 +1083,11 @@ def main():
     prehttp_recovery_fence_tests()
     historical_worker_adoption_tests()
     historical_worker_evidence_tests()
+    from pathlib import Path
+    validation_root = Path(__file__).resolve().parents[1]
+    recovery_lock_transform_tests(validation_root)
+    recovery_safe_output_source_tests()
+    bounded_recovery_execution_tests()
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
