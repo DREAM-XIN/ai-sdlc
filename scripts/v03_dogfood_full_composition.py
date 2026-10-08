@@ -592,6 +592,58 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
     the one open Draft PR whose protected head name embeds the immutable run id.
     """
 
+    def seal_readiness(self, *, external_dispatch_key: str, expected_receipt_identity: str, source_head_sha: str) -> str:
+        """Return PENDING/READY; terminal failure raises without permitting a seal."""
+        receipt = str(expected_receipt_identity or "")
+        if not receipt.isdigit() or int(receipt) < 1:
+            raise VerticalInvariantError("INVALID_REQUEST", "recovery seal receipt is not exact")
+        run_id = int(receipt)
+        run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
+        workflow = self._workflow_file(run) if isinstance(run, dict) else ""
+        if (
+            not isinstance(run, dict)
+            or int(run.get("id") or 0) != run_id
+            or int(run.get("run_attempt") or 0) != 1
+            or workflow != RECOVERY_DEVELOPER_WORKFLOW
+            or str(run.get("html_url") or "").lower()
+               != f"https://github.com/{self.config.control_repository}/actions/runs/{run_id}".lower()
+            or str(run.get("display_title") or "") != f"AI-SDLC gh-aw {external_dispatch_key}"
+            or run.get("event") != "workflow_dispatch"
+            or str(run.get("head_branch") or "") != DEFAULT_BRANCH
+            or str(run.get("head_sha") or "") != source_head_sha
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery run cannot be sealed against authorized source")
+        status = str(run.get("status") or "")
+        conclusion = run.get("conclusion")
+        if status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            return "PENDING"
+        if status != "completed" or conclusion != "success":
+            raise VerticalInvariantError("BLOCKED", "recovery run terminated without success")
+        jobs_doc = self._json(
+            self.config.control_repository,
+            f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100",
+            self.config.control_token,
+        )
+        jobs = jobs_doc.get("jobs") if isinstance(jobs_doc, dict) else None
+        if not isinstance(jobs, list):
+            raise VerticalInvariantError("BLOCKED", "recovery run lacks exact attempt-1 jobs")
+        safe = [row for row in jobs if isinstance(row, dict) and row.get("name") == "safe_outputs"]
+        if len(safe) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery run lacks one Safe Outputs job")
+        safe_status = str(safe[0].get("status") or "")
+        safe_conclusion = safe[0].get("conclusion")
+        if safe_status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            return "PENDING"
+        if (
+            safe_status != "completed"
+            or safe_conclusion != "success"
+            or int(safe[0].get("run_id") or 0) != run_id
+            or int(safe[0].get("run_attempt") or 0) != 1
+            or str(safe[0].get("head_sha") or "") != source_head_sha
+        ):
+            raise VerticalInvariantError("BLOCKED", "recovery Safe Outputs job terminated without exact success")
+        return "READY"
+
     def resolve(self, *, external_dispatch_key: str, expected_receipt_identity: str, trusted_context: dict[str, Any]) -> TrustedGhAwResolvedResult:
         if (
             not isinstance(trusted_context, dict)
@@ -840,6 +892,12 @@ class DogfoodRecoveryCollector:
             or resolved.run.task_id != sealed["task_id"]
             or resolved.run.role != sealed["role"]
             or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['source_head_sha']}"
+            or resolved.run.candidate_pr_number != sealed.get("output_candidate_pr_number")
+            or resolved.run.candidate_head_sha != sealed.get("output_candidate_head_sha")
+            or len(resolved.outputs) != 1
+            or resolved.outputs[0].trusted_uri != sealed.get("safe_output_uri")
+            or "sha256:" + digest_json({"trusted_uri": resolved.outputs[0].trusted_uri})
+               != sealed.get("safe_output_digest")
         ):
             raise VerticalInvariantError("POLICY_DENIED", "resolved recovery run differs from sealed full binding")
         _validate_run(
