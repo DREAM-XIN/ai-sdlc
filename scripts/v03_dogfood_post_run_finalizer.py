@@ -87,6 +87,8 @@ def _validated_recovery_chain(snapshot: Any) -> dict[str, Any]:
         "head_branch": "main",
         "role": "developer",
         "stage": "implementation",
+        "run_status": "completed",
+        "run_conclusion": "success",
     }
     if (
         any(sealed.get(key) != value for key, value in exact.items())
@@ -98,6 +100,13 @@ def _validated_recovery_chain(snapshot: Any) -> dict[str, Any]:
         or sealed.get("source_head_sha") != authorization.get("installation_commit_sha")
         or sealed.get("display_title") != "AI-SDLC gh-aw " + str(sealed.get("recovery_dispatch_key") or "")
         or not str(sealed.get("receipt_id") or "").isdigit()
+        or not isinstance(sealed.get("output_candidate_pr_number"), int)
+        or sealed.get("output_candidate_pr_number") < 1
+        or not str(sealed.get("output_candidate_head_sha") or "")
+        or not str(sealed.get("safe_output_uri") or "")
+        or sealed.get("safe_output_digest")
+           != "sha256:" + digest_json({"trusted_uri": sealed.get("safe_output_uri")})
+        or not str(sealed.get("resolved_run_digest") or "").startswith("sha256:")
     ):
         raise V03DogfoodPostRunFinalizerError("finalizer recovery fact-chain digest/identity drifted")
     for key in (
@@ -328,6 +337,8 @@ def _durable_run_bindings(preflight, observation, events):
             resolve_trusted = dict(trusted)
             resolve_trusted["external_dispatch_key"] = resolve_key
             resolve_trusted["dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
+            resolve_trusted["task_id"] = str(recovery_sealed["task_id"])
+            resolve_trusted["source_head_sha"] = str(recovery_sealed["source_head_sha"])
         resolved = result_source.resolve(
             external_dispatch_key=resolve_key,
             expected_receipt_identity=str(run_id),
@@ -335,6 +346,31 @@ def _durable_run_bindings(preflight, observation, events):
         )
         if resolved.run.run_id != run_id or resolved.run.role != trusted["role"]:
             raise V03DogfoodPostRunFinalizerError("production result source differs from durable launch")
+        if recovery_sealed is not None:
+            resolved_digest = "sha256:" + digest_json({
+                "run_id": resolved.run.run_id,
+                "receipt_identity": resolved.run.receipt_identity,
+                "workflow_file": resolved.run.workflow_file,
+                "workflow_ref": resolved.run.workflow_ref,
+                "event": resolved.run.event,
+                "status": resolved.run.status,
+                "conclusion": resolved.run.conclusion,
+                "display_title": resolved.run.display_title,
+                "external_dispatch_key": resolved.run.external_dispatch_key,
+                "role": resolved.run.role,
+                "task_id": resolved.run.task_id,
+                "worker_identity": resolved.run.worker_identity,
+                "candidate_pr_number": resolved.run.candidate_pr_number,
+                "candidate_head_sha": resolved.run.candidate_head_sha,
+            })
+            if (
+                resolved.run.candidate_pr_number != recovery_sealed["output_candidate_pr_number"]
+                or resolved.run.candidate_head_sha != recovery_sealed["output_candidate_head_sha"]
+                or len(resolved.outputs) != 1
+                or resolved.outputs[0].trusted_uri != recovery_sealed["safe_output_uri"]
+                or resolved_digest != recovery_sealed["resolved_run_digest"]
+            ):
+                raise V03DogfoodPostRunFinalizerError("finalizer resolver differs from sealed successful recovery proof")
         if trusted["role"] in {"reviewer", "qa"} and (
             resolved.run.candidate_pr_number != preflight.candidate_pr_number
             or resolved.run.candidate_head_sha != launch.get("candidate_head_sha")
