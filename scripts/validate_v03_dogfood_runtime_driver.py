@@ -1033,6 +1033,7 @@ def bounded_recovery_execution_tests():
             if self.ack_loss: raise RuntimeError("simulated lost acknowledgement")
             return self.receipt
     class ResultSource:
+        def __init__(self): self.mismatch = False
         def seal_readiness(self, **kwargs): return "READY"
         def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
             run_id = int(expected_receipt_identity)
@@ -1057,7 +1058,7 @@ def bounded_recovery_execution_tests():
             )
             output = SimpleNamespace(
                 label="implementation", kind="artifact", media_type="application/json",
-                trusted_uri=(
+                trusted_uri=(("mismatch-" if self.mismatch else "") +
                     "docs/features/" + trusted_context["feature_id"] + "/worker-runs/"
                     + trusted_context["dispatch_id"] + "/developer-pr-901-" + "7" * 40
                     + "-binding-" + "8" * 64 + "--first-attempt--key-"
@@ -1116,6 +1117,91 @@ def bounded_recovery_execution_tests():
             try: _validated_recovery_chain(snap)
             except V03DogfoodPostRunFinalizerError: pass
             else: raise AssertionError("finalizer accepted " + corrupt + " recovery chain")
+
+        # Execute the real finalizer recovery branch, including task/source context
+        # and fresh resolved run/output comparison, rather than a detached helper.
+        import v03_dogfood_post_run_finalizer as finalizer_subject
+        from operator_store_model import reservation_path
+        h = subject.HISTORICAL_PREHTTP_RECOVERY
+        final_snapshot = pf.composition.runtime.backend.snapshot
+        final_snapshot.files[reservation_path(h["semantic_effect_key"])] = {
+            "external_dispatch_key": h["external_dispatch_key"],
+            "feature_id": h["feature_id"],
+            "role": h["role"],
+            "expected_revision": 1,
+        }
+        final_preflight = SimpleNamespace(
+            execution=pf.execution,
+            slot=SimpleNamespace(
+                feature_id=h["feature_id"], target_ref=h["target_ref"],
+            ),
+            candidate_pr_number=h["candidate_pr_number"],
+            composition=pf.composition,
+        )
+        final_events = [
+            {
+                "event_type": "dispatch.launch.authorized", "operation_generation": 1,
+                "sequence": 11, "payload": {
+                    "external_dispatch_key": h["external_dispatch_key"],
+                    "semantic_effect_key": h["semantic_effect_key"],
+                    "dispatch_id": h["dispatch_id"], "stage": h["stage"],
+                    "role": h["role"], "candidate_head_sha": h["candidate_head_sha"],
+                    "task_id": h["task_id"],
+                },
+            },
+            {
+                "event_type": "dispatch.launch.lookup-recorded", "operation_generation": 1,
+                "sequence": 12, "payload": {
+                    "external_dispatch_key": h["external_dispatch_key"],
+                    "lookup_state": "LAUNCHED", "receipt_id": "37204777409",
+                },
+            },
+        ]
+        final_observation = {
+            "operation_id": h["operation_id"], "scenario": "session_recovery",
+        }
+        with patch.object(
+            finalizer_subject, "vertical_projection",
+            return_value={"operation_profile": subject.VERTICAL_PROFILE},
+        ):
+            bindings = finalizer_subject._durable_run_bindings(
+                final_preflight, final_observation, final_events
+            )
+            expect(int(sealed["receipt_id"]) in bindings,
+                   "finalizer recovery branch did not bind sealed successful run")
+            pf.composition.recovery_result_source.mismatch = True
+            try:
+                finalizer_subject._durable_run_bindings(
+                    final_preflight, final_observation, final_events
+                )
+            except V03DogfoodPostRunFinalizerError:
+                pass
+            else:
+                raise AssertionError("finalizer accepted fresh run/output mismatch")
+            pf.composition.recovery_result_source.mismatch = False
+
+        # Corrupt the real protected receipt, then execute the actual live
+        # pre-host boundary.  It must reject with no POST, model construction or
+        # Store mutation/continuation.
+        pf.composition.runtime.backend.snapshot.files[subject.RECOVERY_RECEIPT_PATH] = {
+            **sealed, "source_head_sha": "0" * 40,
+        }
+        before_post, before_store = gateway.post_count, pf.composition.runtime.n
+        with (
+            patch.object(subject, "assemble_preflight", return_value=pf),
+            patch.object(subject, "_head", return_value="5" * 40),
+            patch.object(subject, "V03DogfoodOpenAIResponsesHost") as host_constructor,
+        ):
+            try:
+                subject._execute_live(mode=subject.RUN, scenario="happy_path")
+            except subject.V03DogfoodRuntimeDriverError:
+                pass
+            else:
+                raise AssertionError("corrupt sealed receipt crossed the live pre-host boundary")
+            expect(not host_constructor.called, "corrupt sealed receipt constructed a model host")
+        expect(gateway.post_count == before_post and pf.composition.runtime.n == before_store,
+               "corrupt sealed receipt caused a POST or Store continuation")
+
         lost = Gateway(ack_loss=True); pf_lost = preflight(lost)
         sealed_lost = subject.recover_historical_prehttp_attempt(pf_lost)
         expect(lost.post_count == 1 and sealed_lost["receipt_id"] == "40000000002",
