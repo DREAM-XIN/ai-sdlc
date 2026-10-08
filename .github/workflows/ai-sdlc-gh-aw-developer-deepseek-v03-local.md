@@ -78,7 +78,6 @@ checkout:
   fetch:
     - "*"
   current: true
-  persist-credentials: false
   github-token: ${{ secrets.GITHUB_TOKEN }}
 safe-outputs:
   github-token: ${{ secrets.GITHUB_TOKEN }}
