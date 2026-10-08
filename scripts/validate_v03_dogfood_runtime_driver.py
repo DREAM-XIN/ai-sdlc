@@ -1009,7 +1009,8 @@ def historical_worker_adoption_tests():
     preflight = SimpleNamespace(
         execution=SimpleNamespace(installation_commit_sha=installation),
         workflows=SimpleNamespace(workflow_for=Mock(return_value=workflow)),
-        composition=SimpleNamespace(runtime=SimpleNamespace(backend=backend), result_source=source),
+        composition=SimpleNamespace(runtime=SimpleNamespace(backend=backend), result_source=source,
+                                    adapter=object()),
     )
     cases = (
         dict(head_sha="5ed049a4cce9c39a42385337da35a46dcaf378eb",
@@ -1068,6 +1069,7 @@ def historical_worker_adoption_tests():
             raise AssertionError("collectible current first-attempt receipt did not reach scenario")
         expect(host.call_count == 1 and scenario.call_count == 1,
                "guard prevented a valid exact current-main receipt from continuing")
+    print("- adopted historical Worker is checked before model work; stale/failed/rerun/wrong-key remain blocked")
 
 
 def main():
