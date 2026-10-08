@@ -32,6 +32,10 @@ from validate_v03_dogfood_evidence import SCENARIO_PROFILES
 
 VERIFIER_IDENTITY = "ai-sdlc/v0.3-production-dogfood-post-run-verifier/v1"
 RUNTIME_KIND = "github-actions/gh-aw-production"
+RECOVERY_OPERATION_ID = "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"
+RECOVERY_EXTERNAL_KEY = "dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1"
+RECOVERY_SCHEMA = "ai-sdlc.v03-dogfood-bounded-recovery/v1"
+RECOVERY_RECEIPT_PATH = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-bounded-recovery/sealed-receipt.json"
 
 
 class V03DogfoodPostRunFinalizerError(RuntimeError):
@@ -76,8 +80,9 @@ def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> 
     return events, projection
 
 
-def _durable_receipt(events: list[dict[str, Any]], observation: Mapping[str, Any]) -> Mapping[str, Any]:
+def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: Mapping[str, Any]) -> Mapping[str, Any]:
     run_ids: list[int] = []
+    operation_id = str(observation.get("operation_id") or "")
     for row in events:
         if row.get("event_type") != "dispatch.launch.lookup-recorded":
             continue
@@ -85,9 +90,24 @@ def _durable_receipt(events: list[dict[str, Any]], observation: Mapping[str, Any
         if payload.get("lookup_state") != "LAUNCHED":
             continue
         receipt = str(payload.get("receipt_id") or "")
+        key = str(payload.get("external_dispatch_key") or "")
+        if operation_id == RECOVERY_OPERATION_ID and key == RECOVERY_EXTERNAL_KEY:
+            if receipt != "37204777409":
+                raise V03DogfoodPostRunFinalizerError("historical launch receipt identity drifted")
+            continue
         if not receipt.isdigit() or int(receipt) < 1:
             raise V03DogfoodPostRunFinalizerError("durable LAUNCHED lookup lacks exact Actions receipt")
         run_ids.append(int(receipt))
+    if operation_id == RECOVERY_OPERATION_ID:
+        sealed = preflight.composition.runtime.backend.read_snapshot().get(RECOVERY_RECEIPT_PATH)
+        if (
+            not isinstance(sealed, dict)
+            or sealed.get("schema_version") != RECOVERY_SCHEMA
+            or sealed.get("external_dispatch_key") != RECOVERY_EXTERNAL_KEY
+            or not str(sealed.get("receipt_id") or "").isdigit()
+        ):
+            raise V03DogfoodPostRunFinalizerError("finalizer lacks sealed recovery receipt")
+        run_ids.insert(0, int(sealed["receipt_id"]))
     declared = [int(value) for value in (observation.get("workflow_run_ids") or [])]
     if run_ids != declared or not run_ids or len(set(run_ids)) != len(run_ids):
         raise V03DogfoodPostRunFinalizerError("protected Store runtime receipt sequence differs from raw observation")
@@ -97,7 +117,7 @@ def _durable_receipt(events: list[dict[str, Any]], observation: Mapping[str, Any
     return {"receipt_identity": receipt_identity, "workflow_run_ids": run_ids}
 
 
-def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence):
+def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence, recovery_run=False):
     """Verify the original accepted callback; never mint replacement receipts."""
     key, generation = trusted["external_dispatch_key"], trusted["operation_generation"]
     callbacks = [row for row in events if row.get("event_type") == "worker.callback.recorded"
@@ -133,11 +153,20 @@ def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_
     expected_context["target_repository"] = normalize_repository(expected_context["target_repository"])
     if comparable != expected_context:
         raise V03DogfoodPostRunFinalizerError("original callback differs from historical launch/fresh run")
-    callback_id = "gh-aw-callback-" + digest_json({
-        "operation_id": trusted["operation_id"], "generation": generation,
-        "external_dispatch_key": key, "runtime_receipt_identity": str(resolved.run.run_id),
-        "run_id": resolved.run.run_id,
-    })[:24]
+    if recovery_run:
+        callback_id = "gh-aw-recovery-callback-" + digest_json({
+            "operation_id": trusted["operation_id"],
+            "external_dispatch_key": key,
+            "recovery_dispatch_key": recovery_run["recovery_dispatch_key"],
+            "runtime_receipt_identity": str(resolved.run.run_id),
+            "run_id": resolved.run.run_id,
+        })[:24]
+    else:
+        callback_id = "gh-aw-callback-" + digest_json({
+            "operation_id": trusted["operation_id"], "generation": generation,
+            "external_dispatch_key": key, "runtime_receipt_identity": str(resolved.run.run_id),
+            "run_id": resolved.run.run_id,
+        })[:24]
     if payload.get("callback_id") != callback_id:
         raise V03DogfoodPostRunFinalizerError("original callback identity differs from exact run")
     accepted = [row for row in events if row.get("event_type") == "worker.result.validated"
@@ -218,6 +247,18 @@ def _durable_run_bindings(preflight, observation, events):
         lookup = row["payload"]
         key = str(lookup.get("external_dispatch_key") or "")
         run_id = int(lookup["receipt_id"])
+        recovery_sealed = None
+        if observation["operation_id"] == RECOVERY_OPERATION_ID and key == RECOVERY_EXTERNAL_KEY:
+            recovery_sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+            if (
+                str(run_id) != "37204777409"
+                or not isinstance(recovery_sealed, dict)
+                or recovery_sealed.get("schema_version") != RECOVERY_SCHEMA
+                or recovery_sealed.get("external_dispatch_key") != key
+                or not str(recovery_sealed.get("receipt_id") or "").isdigit()
+            ):
+                raise V03DogfoodPostRunFinalizerError("recovery binding is not separated from historical receipt")
+            run_id = int(recovery_sealed["receipt_id"])
         authorizations = [event for event in events if event.get("event_type") == "dispatch.launch.authorized"
                           and (event.get("payload") or {}).get("external_dispatch_key") == key
                           and event.get("operation_generation") == row.get("operation_generation")]
@@ -240,8 +281,19 @@ def _durable_run_bindings(preflight, observation, events):
             "feature_stage": str(launch["stage"]), "role": str(launch["role"]),
             "launch_candidate_head_sha": launch.get("candidate_head_sha"),
         }
-        resolved = preflight.composition.result_source.resolve(
-            external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=trusted
+        result_source = preflight.composition.result_source
+        resolve_key = key
+        resolve_trusted = trusted
+        if recovery_sealed is not None:
+            result_source = preflight.composition.recovery_result_source
+            resolve_key = str(recovery_sealed["recovery_dispatch_key"])
+            resolve_trusted = dict(trusted)
+            resolve_trusted["external_dispatch_key"] = resolve_key
+            resolve_trusted["dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
+        resolved = result_source.resolve(
+            external_dispatch_key=resolve_key,
+            expected_receipt_identity=str(run_id),
+            trusted_context=resolve_trusted,
         )
         if resolved.run.run_id != run_id or resolved.run.role != trusted["role"]:
             raise V03DogfoodPostRunFinalizerError("production result source differs from durable launch")
@@ -258,8 +310,9 @@ def _durable_run_bindings(preflight, observation, events):
         else:
             _verify_consumed_result(
                 events=events, trusted=trusted, resolved=resolved,
-                result_source=preflight.composition.result_source,
+                result_source=result_source,
                 lookup_sequence=int(row.get("sequence") or 0),
+                recovery_run=recovery_sealed or False,
             )
 
         output_pr = resolved.run.candidate_pr_number
@@ -304,7 +357,10 @@ def _durable_run_bindings(preflight, observation, events):
             "candidate_input_head_sha": launch.get("candidate_head_sha"),
             "candidate_output_pr_number": output_pr,
             "candidate_output_head_sha": output_head,
-            "role": trusted["role"], "workflow": preflight.workflows.workflow_for(trusted["role"]),
+            "role": trusted["role"], "workflow": (
+                str(recovery_sealed["workflow_file"]) if recovery_sealed is not None
+                else preflight.workflows.workflow_for(trusted["role"])
+            ),
             "external_dispatch_key": key, "lookup_sequence": int(row.get("sequence") or 0),
         }
         bindings[run_id] = binding
@@ -722,7 +778,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         raise V03DogfoodPostRunFinalizerError("candidate PR differs from independently resolved fixture authority")
 
     events, projection = _durable_operation_facts(preflight, observation)
-    receipt = _durable_receipt(events, observation)
+    receipt = _durable_receipt(preflight, events, observation)
     categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation)
     generation = int(projection.get("generation") or 0)
     if generation < 1:
