@@ -1080,7 +1080,7 @@ def bounded_recovery_execution_tests():
             trusted_context_digest="sha256:" + "6" * 64,
             composition=SimpleNamespace(
                 runtime=runtime, recovery_dispatch_gateway=gateway,
-                recovery_result_source=ResultSource()))
+                result_source=ResultSource(), recovery_result_source=ResultSource()))
     patches = (
         patch.object(subject, "observe_historical_worker_for_review",
                      return_value={"observation_digest": subject.RECOVERY_OBSERVATION_DIGEST}),
