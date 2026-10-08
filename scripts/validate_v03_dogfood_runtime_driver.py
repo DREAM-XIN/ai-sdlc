@@ -1045,6 +1045,26 @@ def bounded_recovery_execution_tests():
                "bounded recovery did not make exactly one POST and seal")
         replay = subject.recover_historical_prehttp_attempt(pf)
         expect(replay == sealed and gateway.post_count == 1, "bounded recovery replay repeated POST")
+        from v03_dogfood_post_run_finalizer import (
+            V03DogfoodPostRunFinalizerError, _validated_recovery_chain,
+        )
+        expect(_validated_recovery_chain(pf.composition.runtime.backend.read_snapshot()) == sealed,
+               "finalizer did not accept the exact complete recovery chain")
+        for corrupt in ("missing-authorization", "conflicting-receipt", "attempt-digest"):
+            snap = deepcopy(pf.composition.runtime.backend.read_snapshot())
+            if corrupt == "missing-authorization":
+                del snap.files[subject.RECOVERY_AUTHORIZATION_PATH]
+            elif corrupt == "conflicting-receipt":
+                snap.files[subject.RECOVERY_RECEIPT_PATH] = {
+                    **snap.files[subject.RECOVERY_RECEIPT_PATH], "source_head_sha": "0" * 40,
+                }
+            else:
+                snap.files[subject.RECOVERY_ATTEMPT_PATH] = {
+                    **snap.files[subject.RECOVERY_ATTEMPT_PATH], "candidate_head_sha": "0" * 40,
+                }
+            try: _validated_recovery_chain(snap)
+            except V03DogfoodPostRunFinalizerError: pass
+            else: raise AssertionError("finalizer accepted " + corrupt + " recovery chain")
         lost = Gateway(ack_loss=True); pf_lost = preflight(lost)
         sealed_lost = subject.recover_historical_prehttp_attempt(pf_lost)
         expect(lost.post_count == 1 and sealed_lost["receipt_id"] == "40000000002",
