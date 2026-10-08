@@ -87,8 +87,8 @@ jobs:
         id: event-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
-          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write

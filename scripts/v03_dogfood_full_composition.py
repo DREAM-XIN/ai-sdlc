@@ -23,14 +23,18 @@ from operator_openai_responses_production import (
 )
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
-from operator_store_model import digest_json, normalize_repository, operation_events
-from operator_vertical import VerticalInvariantError
+from operator_store_model import canonical_json, digest_json, normalize_repository, operation_events, reservation_path
+from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result
 from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
 from operator_vertical_recovery import plan_vertical_callback_record
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
 from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
-from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector
+from operator_vertical_gh_aw_collector import MaterializedGhAwOutput, TrustedGhAwResolvedResult, TrustedGhAwRun
+from operator_vertical_gh_aw_github_source import (
+    GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector,
+    _build_receipts, _current_launch_binding, _validate_run,
+)
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_session_policy import DogfoodSessionDecisionPolicyVerifier
 from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
@@ -43,6 +47,14 @@ _DEVELOPER_PR_URI = re.compile(
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
 PROVIDER_SCOPE_ID = "v03-real-release-dogfood"
+RECOVERY_DEVELOPER_WORKFLOW = "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml"
+RECOVERY_SCHEMA = "ai-sdlc.v03-dogfood-bounded-recovery/v1"
+RECOVERY_OPERATION_ID = "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"
+RECOVERY_BASE_PATH = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-bounded-recovery"
+RECOVERY_AUTHORIZATION_PATH = RECOVERY_BASE_PATH + "/authorization.json"
+RECOVERY_ATTEMPT_PATH = RECOVERY_BASE_PATH + "/create-attempt.json"
+RECOVERY_RECEIPT_PATH = RECOVERY_BASE_PATH + "/sealed-receipt.json"
+RECOVERY_OBSERVATION_DIGEST = "sha256:a86b7ead37bf96abe9b6e43098b7873b821833c6d93c720ed7409835af18916f"
 
 
 class V03DogfoodCompositionError(RuntimeError):
@@ -572,6 +584,377 @@ class DogfoodExecutionBoundDispatchGateway:
         return self.delegate.lookup(external_dispatch_key=external_dispatch_key)
 
 
+class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource):
+    """Resolve the recovery Developer Draft PR from exact run-bound GitHub truth.
+
+    The recovery Worker deliberately has no lifecycle conclusion dispatch.  Its
+    trusted result is therefore derived from the successful Safe Outputs job and
+    the one open Draft PR whose protected head name embeds the immutable run id.
+    """
+
+    def seal_readiness(self, *, external_dispatch_key: str, expected_receipt_identity: str, source_head_sha: str) -> str:
+        """Return PENDING/READY; terminal failure raises without permitting a seal."""
+        receipt = str(expected_receipt_identity or "")
+        if not receipt.isdigit() or int(receipt) < 1:
+            raise VerticalInvariantError("INVALID_REQUEST", "recovery seal receipt is not exact")
+        run_id = int(receipt)
+        run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
+        workflow = self._workflow_file(run) if isinstance(run, dict) else ""
+        if (
+            not isinstance(run, dict)
+            or int(run.get("id") or 0) != run_id
+            or int(run.get("run_attempt") or 0) != 1
+            or workflow != RECOVERY_DEVELOPER_WORKFLOW
+            or str(run.get("html_url") or "").lower()
+               != f"https://github.com/{self.config.control_repository}/actions/runs/{run_id}".lower()
+            or str(run.get("display_title") or "") != f"AI-SDLC gh-aw {external_dispatch_key}"
+            or run.get("event") != "workflow_dispatch"
+            or str(run.get("head_branch") or "") != DEFAULT_BRANCH
+            or str(run.get("head_sha") or "") != source_head_sha
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery run cannot be sealed against authorized source")
+        status = str(run.get("status") or "")
+        conclusion = run.get("conclusion")
+        if status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            return "PENDING"
+        if status != "completed" or conclusion != "success":
+            raise VerticalInvariantError("BLOCKED", "recovery run terminated without success")
+        jobs_doc = self._json(
+            self.config.control_repository,
+            f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100",
+            self.config.control_token,
+        )
+        jobs = jobs_doc.get("jobs") if isinstance(jobs_doc, dict) else None
+        if not isinstance(jobs, list):
+            raise VerticalInvariantError("BLOCKED", "recovery run lacks exact attempt-1 jobs")
+        safe = [row for row in jobs if isinstance(row, dict) and row.get("name") == "safe_outputs"]
+        if len(safe) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery run lacks one Safe Outputs job")
+        safe_status = str(safe[0].get("status") or "")
+        safe_conclusion = safe[0].get("conclusion")
+        if safe_status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            return "PENDING"
+        if (
+            safe_status != "completed"
+            or safe_conclusion != "success"
+            or int(safe[0].get("run_id") or 0) != run_id
+            or int(safe[0].get("run_attempt") or 0) != 1
+            or str(safe[0].get("head_sha") or "") != source_head_sha
+        ):
+            raise VerticalInvariantError("BLOCKED", "recovery Safe Outputs job terminated without exact success")
+        return "READY"
+
+    def resolve(self, *, external_dispatch_key: str, expected_receipt_identity: str, trusted_context: dict[str, Any]) -> TrustedGhAwResolvedResult:
+        if (
+            not isinstance(trusted_context, dict)
+            or trusted_context.get("role") != "developer"
+            or normalize_repository(str(trusted_context.get("target_repository") or "")) != self.target_repository
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery Safe Output source escaped trusted Developer scope")
+        receipt = str(expected_receipt_identity or "")
+        if not receipt.isdigit() or int(receipt) < 1:
+            raise VerticalInvariantError("INVALID_REQUEST", "recovery receipt is not one exact Actions run")
+        run_id = int(receipt)
+        before = self._first_attempt_run_snapshot(run_id=run_id, external_dispatch_key=external_dispatch_key)
+        if (
+            before["workflow_file"] != RECOVERY_DEVELOPER_WORKFLOW
+            or before["head_sha"] != str(trusted_context.get("source_head_sha") or "")
+        ):
+            raise VerticalInvariantError("STALE_REVISION", "recovery run is not exact admitted main source")
+
+        jobs_path = f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"
+        jobs_before = self._json(self.config.control_repository, jobs_path, self.config.control_token)
+        rows = jobs_before.get("jobs") if isinstance(jobs_before, dict) else None
+        safe = [row for row in rows or [] if isinstance(row, dict) and row.get("name") == "safe_outputs"]
+        if (
+            not isinstance(rows, list)
+            or len(safe) != 1
+            or safe[0].get("status") != "completed"
+            or safe[0].get("conclusion") != "success"
+            or int(safe[0].get("run_attempt") or 0) != 1
+            or int(safe[0].get("run_id") or 0) != run_id
+            or str(safe[0].get("head_sha") or "") != before["head_sha"]
+        ):
+            raise VerticalInvariantError("BLOCKED", "recovery Safe Outputs job is not one exact successful first attempt")
+
+        feature_id = str(trusted_context.get("feature_id") or "")
+        expected_revision = int(trusted_context.get("expected_revision") or 0)
+        target_ref = str(trusted_context.get("target_ref") or "")
+        task_id = str(trusted_context.get("task_id") or "")
+        dispatch_id = str(trusted_context.get("dispatch_id") or "")
+        if not feature_id or expected_revision < 1 or not target_ref or not task_id or not dispatch_id:
+            raise VerticalInvariantError("BLOCKED", "recovery protected context lacks exact task/candidate binding")
+        prefix = f"gh-aw/{feature_id}-{run_id}-v{expected_revision}"
+        query = parse.urlencode({"state": "open", "base": target_ref, "per_page": 100})
+        listed = self._json(self.target_repository, f"/pulls?{query}", self.config.target_token)
+        candidates = [
+            row for row in listed if isinstance(row, dict)
+            and row.get("state") == "open"
+            and row.get("draft") is True
+            and str(row.get("title") or "").startswith("[ai-sdlc gh-aw] ")
+            and str((row.get("head") or {}).get("ref") or "").startswith(prefix)
+            and str(((row.get("head") or {}).get("repo") or {}).get("full_name") or "").lower() == self.target_repository
+            and str(((row.get("base") or {}).get("repo") or {}).get("full_name") or "").lower() == self.target_repository
+        ] if isinstance(listed, list) else []
+        if len(candidates) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery run does not own exactly one open Draft PR Safe Output")
+        number = int(candidates[0].get("number") or 0)
+        pr = self._json(self.target_repository, f"/pulls/{number}", self.config.target_token)
+        head_sha = str((pr.get("head") or {}).get("sha") or "") if isinstance(pr, dict) else ""
+        if (
+            not isinstance(pr, dict)
+            or int(pr.get("number") or 0) != number
+            or number < 1
+            or pr.get("state") != "open"
+            or pr.get("draft") is not True
+            or str((pr.get("base") or {}).get("ref") or "") != target_ref
+            or not _SHA40.fullmatch(head_sha)
+            or not str((pr.get("head") or {}).get("ref") or "").startswith(prefix)
+            or str(pr.get("html_url") or "").lower() != f"https://github.com/{self.target_repository}/pull/{number}".lower()
+        ):
+            raise VerticalInvariantError("STALE_REVISION", "recovery Draft PR Safe Output changed after run-bound discovery")
+
+        after = self._first_attempt_run_snapshot(run_id=run_id, external_dispatch_key=external_dispatch_key)
+        jobs_after = self._json(self.config.control_repository, jobs_path, self.config.control_token)
+        if not self._same_run_snapshot(before, after) or canonical_json(jobs_before) != canonical_json(jobs_after):
+            raise VerticalInvariantError("BLOCKED", "recovery run/jobs changed while resolving Safe Output")
+        trusted_run = TrustedGhAwRun(
+            run_id=run_id,
+            run_url=before["run_url"],
+            receipt_identity=receipt,
+            control_repository=normalize_repository(self.config.control_repository),
+            workflow_file=RECOVERY_DEVELOPER_WORKFLOW,
+            workflow_ref=self.config.workflows.default_branch,
+            event="workflow_dispatch",
+            status="completed",
+            conclusion="success",
+            display_title=before["display_title"],
+            external_dispatch_key=external_dispatch_key,
+            role="developer",
+            task_id=task_id,
+            worker_identity=f"gh-aw:{RECOVERY_DEVELOPER_WORKFLOW}@{before['head_sha']}",
+            collector_identity=self.config.collector_identity,
+            candidate_pr_number=number,
+            candidate_head_sha=head_sha,
+        )
+        payload = {
+            "status": "COMPLETED",
+            "summary": f"Trusted recovery gh-aw Draft PR #{number} completed for {task_id}.",
+            "outputs": [{"label": "implementation", "kind": "artifact"}],
+        }
+        base = MaterializedGhAwOutput(
+            "implementation", "artifact", "application/json",
+            f"docs/features/{feature_id}/worker-runs/{dispatch_id}/developer-pr-{number}-{head_sha}.json",
+        )
+        resolved = TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(base,))
+        bound = self._revalidate_developer(resolved=resolved, trusted_context=trusted_context, base_uri=base.trusted_uri)
+        leased = MaterializedGhAwOutput(
+            label=bound.label,
+            kind=bound.kind,
+            media_type=bound.media_type,
+            trusted_uri=self._lease_uri(bound, after),
+        )
+        return TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(leased,))
+
+
+class DogfoodRecoveryCollector:
+    """Collect only the one sealed recovery run, then reuse the closed callback path."""
+
+    def __init__(self, *, callback_coordinator, result_source, workflows, control_repository, clock):
+        self.callback_coordinator = callback_coordinator
+        self.result_source = result_source
+        self.workflows = workflows
+        self.control_repository = normalize_repository(control_repository)
+        self.clock = clock
+
+    def handle(self, *, operation_id: str, external_dispatch_key: str) -> dict[str, Any]:
+        if operation_id != RECOVERY_OPERATION_ID:
+            raise VerticalInvariantError("POLICY_DENIED", "recovery collector escaped frozen Operation")
+        executor = self.callback_coordinator.executor
+        snapshot = executor.runtime.backend.read_snapshot()
+        sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+        authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
+        attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+        if not isinstance(authorization, dict) or not isinstance(attempt, dict) or not isinstance(sealed, dict):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks complete immutable fact chain")
+        authorization_digest = "sha256:" + digest_json(authorization)
+        attempt_digest = "sha256:" + digest_json(attempt)
+        sealed_bindings = {
+            "schema_version": RECOVERY_SCHEMA,
+            "operation_id": operation_id,
+            "external_dispatch_key": external_dispatch_key,
+            "workflow_file": RECOVERY_DEVELOPER_WORKFLOW,
+            "authorization_digest": authorization_digest,
+            "create_attempt_digest": attempt_digest,
+            "historical_observation_digest": RECOVERY_OBSERVATION_DIGEST,
+            "run_attempt": 1,
+            "event": "workflow_dispatch",
+            "head_branch": DEFAULT_BRANCH,
+            "role": "developer",
+            "stage": "implementation",
+        }
+        if (
+            any(sealed.get(key) != value for key, value in sealed_bindings.items())
+            or attempt.get("schema_version") != RECOVERY_SCHEMA
+            or attempt.get("authorization_digest") != authorization_digest
+            or attempt.get("status") != "ARMED"
+            or authorization.get("schema_version") != RECOVERY_SCHEMA
+            or authorization.get("historical_observation_digest") != RECOVERY_OBSERVATION_DIGEST
+            or sealed.get("provider_fence_digest") != authorization.get("provider_fence_digest")
+            or sealed.get("worker_blobs") != authorization.get("worker_blobs")
+            or sealed.get("trusted_context_digest") != authorization.get("trusted_context_digest")
+            or sealed.get("source_head_sha") != authorization.get("installation_commit_sha")
+            or sealed.get("target_repository") != authorization.get("target_repository")
+            or sealed.get("target_ref") != authorization.get("target_ref")
+            or sealed.get("feature_id") != authorization.get("feature_id")
+            or sealed.get("task_id") != authorization.get("task_id")
+            or sealed.get("candidate_pr_number") != authorization.get("candidate_pr_number")
+            or sealed.get("candidate_head_sha") != authorization.get("candidate_head_sha")
+            or sealed.get("expected_revision") != authorization.get("expected_revision")
+            or sealed.get("recovery_dispatch_key") != authorization.get("recovery_dispatch_key")
+            or sealed.get("recovery_dispatch_id") != authorization.get("recovery_dispatch_id")
+            or sealed.get("display_title") != "AI-SDLC gh-aw " + str(sealed.get("recovery_dispatch_key") or "")
+            or not str(sealed.get("receipt_id") or "").isdigit()
+            or not isinstance(authorization.get("worker_blobs"), dict)
+            or len(authorization["worker_blobs"]) != 4
+            or not str(authorization.get("provider_fence_digest") or "").startswith("sha256:")
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery immutable authorization/attempt/receipt chain drifted")
+        for key in (
+            "operation_id", "operation_generation", "semantic_effect_key", "external_dispatch_key",
+            "recovery_dispatch_key", "recovery_dispatch_id", "workflow_file", "installation_commit_sha",
+            "trusted_context_digest", "feature_id", "target_ref", "task_id", "stage", "role",
+            "expected_revision", "candidate_pr_number", "candidate_head_sha", "provider_fence_digest",
+            "historical_observation_digest", "worker_blobs",
+        ):
+            if attempt.get(key) != authorization.get(key):
+                raise VerticalInvariantError("POLICY_DENIED", f"recovery create-attempt lost {key} binding")
+        projection, launch, historical_receipt = _current_launch_binding(
+            snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
+        )
+        if (
+            str(historical_receipt) != "37204777409"
+            or str(launch.get("role") or "") != "developer"
+            or int(authorization.get("operation_generation") or -1) != int(projection["generation"])
+            or authorization.get("feature_id") != projection.get("feature_id")
+            or int(authorization.get("expected_revision") or -1) != int(projection["expected_feature_revision"])
+            or authorization.get("semantic_effect_key") != launch.get("semantic_effect_key")
+            or authorization.get("stage") != launch.get("stage")
+            or authorization.get("role") != launch.get("role")
+            or authorization.get("candidate_head_sha") != launch.get("candidate_head_sha")
+            or authorization.get("task_id") != launch.get("task_id")
+            or normalize_repository(str(authorization.get("target_repository") or "")) != normalize_repository(str(projection["target_repository"]))
+            or authorization.get("target_ref") != executor.config.target_ref
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "historical launch/full recovery binding drifted")
+        semantic_key = str(launch["semantic_effect_key"])
+        reservation = snapshot.get(reservation_path(semantic_key))
+        if not isinstance(reservation, dict):
+            raise VerticalInvariantError("INTERNAL_FAILURE", "durable semantic reservation is missing")
+        recovery_key = str(sealed["recovery_dispatch_key"])
+        receipt = str(sealed["receipt_id"])
+        trusted = {
+            "operation_id": operation_id,
+            "operation_generation": int(projection["generation"]),
+            "operation_profile": VERTICAL_PROFILE,
+            "semantic_effect_key": semantic_key,
+            "external_dispatch_key": recovery_key,
+            "dispatch_id": str(sealed["recovery_dispatch_id"]),
+            "target_repository": normalize_repository(str(projection["target_repository"])),
+            "target_ref": executor.config.target_ref,
+            "feature_id": str(projection["feature_id"]),
+            "expected_revision": int(projection["expected_feature_revision"]),
+            "feature_stage": str(launch["stage"]),
+            "role": "developer",
+            "task_id": str(sealed["task_id"]),
+            "launch_candidate_head_sha": launch.get("candidate_head_sha"),
+            "source_head_sha": str(sealed["source_head_sha"]),
+        }
+        resolved = self.result_source.resolve(
+            external_dispatch_key=recovery_key,
+            expected_receipt_identity=receipt,
+            trusted_context=trusted,
+        )
+        recovery_launch = dict(launch)
+        recovery_launch.update({
+            "external_dispatch_key": recovery_key,
+            "dispatch_id": str(sealed["recovery_dispatch_id"]),
+        })
+        recovery_reservation = dict(reservation)
+        recovery_reservation["external_dispatch_key"] = recovery_key
+        if (
+            resolved.run.run_id != int(receipt)
+            or resolved.run.workflow_file != sealed["workflow_file"]
+            or resolved.run.workflow_ref != sealed["head_branch"]
+            or resolved.run.event != sealed["event"]
+            or resolved.run.display_title != sealed["display_title"]
+            or resolved.run.external_dispatch_key != sealed["recovery_dispatch_key"]
+            or resolved.run.task_id != sealed["task_id"]
+            or resolved.run.role != sealed["role"]
+            or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['source_head_sha']}"
+            or resolved.run.candidate_pr_number != sealed.get("output_candidate_pr_number")
+            or resolved.run.candidate_head_sha != sealed.get("output_candidate_head_sha")
+            or len(resolved.outputs) != 1
+            or resolved.outputs[0].trusted_uri != sealed.get("safe_output_uri")
+            or "sha256:" + digest_json({"trusted_uri": resolved.outputs[0].trusted_uri})
+               != sealed.get("safe_output_digest")
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "resolved recovery run differs from sealed full binding")
+        _validate_run(
+            resolved.run,
+            control_repository=self.control_repository,
+            workflows=self.workflows,
+            launch=recovery_launch,
+            expected_receipt_identity=receipt,
+            external_dispatch_key=recovery_key,
+            reservation=recovery_reservation,
+        )
+        worker_payload = validate_worker_result("developer", resolved.role_payload)
+        context = TrustedDispatchContext(
+            operation_id=operation_id,
+            operation_generation=int(projection["generation"]),
+            operation_profile=VERTICAL_PROFILE,
+            semantic_effect_key=semantic_key,
+            external_dispatch_key=external_dispatch_key,
+            dispatch_id=str(launch["dispatch_id"]),
+            runtime_receipt_identity=receipt,
+            target_repository=str(projection["target_repository"]),
+            target_ref=executor.config.target_ref,
+            feature_id=str(projection["feature_id"]),
+            expected_revision=int(projection["expected_feature_revision"]),
+            feature_stage=str(launch["stage"]),
+            task_id=resolved.run.task_id,
+            role="developer",
+            candidate_pr_number=None,
+            candidate_head_sha=launch.get("candidate_head_sha"),
+            worker_identity=resolved.run.worker_identity,
+            collector_identity=resolved.run.collector_identity,
+        )
+        declared = {str(row["label"]): str(row["kind"]) for row in worker_payload.get("outputs", [])}
+        receipts = _build_receipts(
+            coordinator=self.callback_coordinator,
+            context=context,
+            outputs=resolved.outputs,
+            declared_outputs=declared,
+            collected_at=str(self.clock()),
+        )
+        if set(declared.items()) != {(row["label"], row["kind"]) for row in receipts}:
+            raise VerticalInvariantError("BLOCKED", "sealed recovery outputs differ from role result")
+        callback_id = "gh-aw-recovery-callback-" + digest_json({
+            "operation_id": operation_id,
+            "external_dispatch_key": external_dispatch_key,
+            "recovery_dispatch_key": recovery_key,
+            "runtime_receipt_identity": receipt,
+            "run_id": resolved.run.run_id,
+        })[:24]
+        return self.callback_coordinator.handle(
+            context=context,
+            callback_id=callback_id,
+            worker_payload=worker_payload,
+            receipts=receipts,
+        )
+
+
 @dataclass(frozen=True)
 class V03DogfoodFullComposition:
     slot: DogfoodSlot
@@ -585,6 +968,10 @@ class V03DogfoodFullComposition:
     responses: OpenAIResponsesProductionBundle
     bundle: Any
     collector: ProductionGhAwVerticalResultCollector
+    recovery_workflows: GhAwVerticalWorkflowMap
+    recovery_dispatch_gateway: GhAwVerticalRoleDispatchGateway
+    recovery_result_source: FirstAttemptDigestBoundGhAwResultSource
+    recovery_collector: DogfoodRecoveryCollector
     policy_authority: Any
 
     @property
@@ -675,6 +1062,37 @@ def build_v03_dogfood_full_composition(
         ),
         candidate_provider=candidate_provider,
     )
+    recovery_workflows = GhAwVerticalWorkflowMap(
+        default_branch=DEFAULT_BRANCH,
+        developer_workflow=RECOVERY_DEVELOPER_WORKFLOW,
+        reviewer_workflow=workflows.reviewer_workflow,
+        qa_workflow=workflows.qa_workflow,
+    )
+    recovery_source_config = GitHubActionsGhAwResultSourceConfig(
+        control_repository=control_repository,
+        control_token=actions_token,
+        target_token=target_read_token,
+        workflows=recovery_workflows,
+        collector_identity=COLLECTOR_IDENTITY,
+        api_url=github_api_base,
+    )
+    recovery_result_source = RecoverySafeOutputGhAwResultSource(
+        recovery_source_config,
+        target_repository=config.target_repository,
+    )
+    recovery_transport = DogfoodCandidateBoundActionsTransport(
+        GitHubActionsWorkflowTransportConfig(
+            control_repository=control_repository,
+            token=actions_token,
+            workflows=recovery_workflows,
+            api_url=github_api_base,
+        ),
+        candidate_provider=candidate_provider,
+    )
+    recovery_dispatch_gateway = GhAwVerticalRoleDispatchGateway(
+        transport=recovery_transport,
+        workflows=recovery_workflows,
+    )
     raw_dispatch_gateway = GhAwVerticalRoleDispatchGateway(transport=actions_transport, workflows=workflows)
     dispatch_gateway = DogfoodExecutionBoundDispatchGateway(
         delegate=raw_dispatch_gateway,
@@ -735,6 +1153,13 @@ def build_v03_dogfood_full_composition(
         control_repository=control_repository,
         clock=clock,
     )
+    recovery_collector = DogfoodRecoveryCollector(
+        callback_coordinator=callback_coordinator,
+        result_source=recovery_result_source,
+        workflows=recovery_workflows,
+        control_repository=control_repository,
+        clock=clock,
+    )
 
     if responses.runtime is not bundle.runtime or durable_truth.runtime is not responses.runtime:
         raise V03DogfoodCompositionError("Responses/dogfood FeatureTruth escaped unique production Store runtime")
@@ -761,5 +1186,9 @@ def build_v03_dogfood_full_composition(
         responses=responses,
         bundle=bundle,
         collector=collector,
+        recovery_workflows=recovery_workflows,
+        recovery_dispatch_gateway=recovery_dispatch_gateway,
+        recovery_result_source=recovery_result_source,
+        recovery_collector=recovery_collector,
         policy_authority=policy_authority,
     )

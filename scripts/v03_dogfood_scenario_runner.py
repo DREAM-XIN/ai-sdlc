@@ -33,6 +33,10 @@ STEP_ROLE = {
     "VERIFICATION_QA": "qa",
 }
 TERMINAL = {"DONE", "BLOCKED", "CANCELLED", "NEEDS_USER"}
+RECOVERY_OPERATION_ID = "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"
+RECOVERY_EXTERNAL_KEY = "dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1"
+RECOVERY_SCHEMA = "ai-sdlc.v03-dogfood-bounded-recovery/v1"
+RECOVERY_RECEIPT_PATH = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-bounded-recovery/sealed-receipt.json"
 
 
 class V03DogfoodScenarioRunnerError(RuntimeError):
@@ -192,10 +196,27 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
         if payload.get("lookup_state") != "LAUNCHED":
             continue
         receipt = str(payload.get("receipt_id") or "")
+        external_key = str(payload.get("external_dispatch_key") or "")
+        if operation_id == RECOVERY_OPERATION_ID and external_key == RECOVERY_EXTERNAL_KEY:
+            if receipt != "37204777409":
+                raise V03DogfoodScenarioRunnerError("historical launch receipt identity drifted")
+            continue
         if not receipt.isdigit() or int(receipt) < 1:
             raise V03DogfoodScenarioRunnerError("LAUNCHED dispatch lacks exact Actions receipt")
         run_ids.append(int(receipt))
         receipts.append(receipt)
+    if operation_id == RECOVERY_OPERATION_ID:
+        sealed = preflight.composition.runtime.backend.read_snapshot().get(RECOVERY_RECEIPT_PATH)
+        if (
+            not isinstance(sealed, dict)
+            or sealed.get("schema_version") != RECOVERY_SCHEMA
+            or sealed.get("external_dispatch_key") != RECOVERY_EXTERNAL_KEY
+            or not str(sealed.get("receipt_id") or "").isdigit()
+        ):
+            raise V03DogfoodScenarioRunnerError("historical recovery lacks sealed canonical receipt")
+        receipt = str(sealed["receipt_id"])
+        run_ids.insert(0, int(receipt))
+        receipts.insert(0, receipt)
     if not run_ids:
         raise V03DogfoodScenarioRunnerError("real dogfood produced no trusted Actions run receipt")
     if len(run_ids) != len(set(run_ids)):
@@ -227,17 +248,32 @@ def wait_for_worker_run(*, read_run, receipt, workflow, installation_sha, extern
 
 
 def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
-    source = preflight.composition.result_source
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     _projection, launch, receipt = _current_launch_binding(
         snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
     )
+    source = preflight.composition.result_source
+    workflow = preflight.workflows.workflow_for(str(launch["role"]))
+    lookup_key = external_dispatch_key
+    if operation_id == RECOVERY_OPERATION_ID and external_dispatch_key == RECOVERY_EXTERNAL_KEY:
+        sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+        if (
+            not isinstance(sealed, dict)
+            or sealed.get("schema_version") != RECOVERY_SCHEMA
+            or sealed.get("external_dispatch_key") != external_dispatch_key
+            or not str(sealed.get("receipt_id") or "").isdigit()
+        ):
+            raise V03DogfoodScenarioRunnerError("recovery wait lacks sealed exact receipt")
+        source = preflight.composition.recovery_result_source
+        workflow = str(sealed.get("workflow_file") or "")
+        lookup_key = str(sealed.get("recovery_dispatch_key") or "")
+        receipt = str(sealed["receipt_id"])
     return wait_for_worker_run(
         read_run=lambda run_id: source._json(source.config.control_repository,
                                             f"/actions/runs/{run_id}", source.config.control_token),
-        receipt=receipt, workflow=preflight.workflows.workflow_for(str(launch["role"])),
+        receipt=receipt, workflow=workflow,
         installation_sha=preflight.execution.installation_commit_sha,
-        external_dispatch_key=external_dispatch_key,
+        external_dispatch_key=lookup_key,
     )
 
 
@@ -247,11 +283,12 @@ def _collect_next(preflight: Any, operation_id: str, consumed: int) -> int:
         raise V03DogfoodScenarioRunnerError("WAITING_EXTERNAL has no fresh durable dispatch claim")
     if len(claims) != consumed + 1:
         raise V03DogfoodScenarioRunnerError("multiple unconsumed dispatch claims appeared concurrently")
-    _wait_current_dispatch(preflight, operation_id, _external_key(claims[-1]))
-    preflight.composition.collector.handle(
-        operation_id=operation_id,
-        external_dispatch_key=_external_key(claims[-1]),
-    )
+    external_key = _external_key(claims[-1])
+    _wait_current_dispatch(preflight, operation_id, external_key)
+    collector = preflight.composition.collector
+    if operation_id == RECOVERY_OPERATION_ID and external_key == RECOVERY_EXTERNAL_KEY:
+        collector = preflight.composition.recovery_collector
+    collector.handle(operation_id=operation_id, external_dispatch_key=external_key)
     return consumed + 1
 
 
