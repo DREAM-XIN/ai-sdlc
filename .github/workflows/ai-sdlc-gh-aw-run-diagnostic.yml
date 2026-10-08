@@ -7,7 +7,8 @@ permissions:
   contents: write
 jobs:
   verify-key-fence:
-    if: ${{ github.repository == 'DREAM-XIN/ai-sdlc' && github.ref_name == 'dogfood/gh-aw-diagnose-key-revocation-20261008' && github.event.head_commit.message == 'dogfood: verify revoked historical Worker key' }}
+    if: >-
+      ${{ github.repository == 'DREAM-XIN/ai-sdlc' && github.ref_name == 'dogfood/gh-aw-diagnose-key-revocation-20261008' && github.event.head_commit.message == 'dogfood: verify revoked historical Worker key' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
