@@ -104,53 +104,6 @@ jobs:
             F-OPERATOR-V03-DOGFOOD-HAPPY-0001:dogfood/v0.3-happy-path-0001|F-OPERATOR-V03-DOGFOOD-REMEDIATION-0001:dogfood/v0.3-review-remediation-0001|F-OPERATOR-V03-DOGFOOD-SESSION-0001:dogfood/v0.3-session-recovery-0001) ;;
             *) echo "::error::Worker identity is outside the fixed v0.3 fixture pool"; exit 1 ;;
           esac
-  conclusion:
-    permissions:
-      actions: write
-      contents: read
-    pre-steps:
-      - name: Dispatch non-authoritative Gate-role recommendation to trusted collector
-        env:
-          TRIGGER_TOKEN: ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}
-          TARGET_REPOSITORY: ${{ inputs.target_repository }}
-          TARGET_REF: ${{ inputs.target_ref }}
-          FEATURE_ID: ${{ inputs.feature_id }}
-          TRUSTED_TASK_ID: ${{ fromJSON(inputs.task_payload).task.id }}
-          EXPECTED_REVISION: ${{ inputs.expected_revision }}
-          STAGE: ${{ inputs.stage }}
-          ROLE: ${{ inputs.role }}
-          CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
-          CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
-          SOURCE_RUN_ID: ${{ github.run_id }}
-          SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}
-          COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
-          COMMENT_URL: ${{ needs.safe_outputs.outputs.comment_url }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          test -n "${TRIGGER_TOKEN:-}"
-          test -n "$TRUSTED_TASK_ID"
-          test -n "$SOURCE_RUN_ID"
-          test -n "$SOURCE_WORKFLOW_REF"
-          test -n "$COMMENT_ID"
-          test -n "$COMMENT_URL"
-          GH_TOKEN="$TRIGGER_TOKEN" gh workflow run ai-sdlc-gh-aw-gate-result.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$DEFAULT_BRANCH" \
-            --field target_repository="$TARGET_REPOSITORY" \
-            --field target_ref="$TARGET_REF" \
-            --field feature_id="$FEATURE_ID" \
-            --field task_id="$TRUSTED_TASK_ID" \
-            --field expected_revision="$EXPECTED_REVISION" \
-            --field stage="$STAGE" \
-            --field role="$ROLE" \
-            --field candidate_pr_number="$CANDIDATE_PR_NUMBER" \
-            --field candidate_head_sha="$CANDIDATE_HEAD_SHA" \
-            --field source_run_id="$SOURCE_RUN_ID" \
-            --field source_workflow_ref="$SOURCE_WORKFLOW_REF" \
-            --field comment_id="$COMMENT_ID" \
-            --field comment_url="$COMMENT_URL" \
-            --field persist=true
 ---
 # AI-SDLC bounded autonomous Verification QA worker
 
