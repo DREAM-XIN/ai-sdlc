@@ -1973,13 +1973,13 @@ jobs:
         if: (!cancelled()) && needs.agent.result != 'skipped' && contains(needs.agent.outputs.output_types, 'create_pull_request')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: true
+          persist-credentials: false
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Checkout dream-xin/ai-sdlc into ai-sdlc
         if: (!cancelled()) && needs.agent.result != 'skipped' && contains(needs.agent.outputs.output_types, 'create_pull_request')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: true
+          persist-credentials: false
           repository: dream-xin/ai-sdlc
           ref: ${{ inputs.target_ref }}
           path: ai-sdlc
