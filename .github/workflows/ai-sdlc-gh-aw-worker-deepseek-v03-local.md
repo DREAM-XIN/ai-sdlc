@@ -64,6 +64,7 @@ permissions:
   pull-requests: read
 # Release-only same-repository worker; model tools never receive the historical App key.
 tools:
+  bash: ["git:*", "python:*", "python3:*", "cat:*", "ls:*", "rg:*", "mkdir:*", "head:*", "tail:*", "test:*"]
   github:
     toolsets: [repos, issues, pull_requests]
     github-token: ${{ secrets.GITHUB_TOKEN }}
