@@ -1,65 +1,50 @@
-name: AI-SDLC gh-aw Run Diagnostic
-
+name: Verify v0.3 Runtime App permission grants
+run-name: "v0.3 Runtime App permission probe"
 on:
   push:
     branches:
-      - 'dogfood/gh-aw-diagnose-*'
+      - 'dogfood/gh-aw-diagnose-permissions-20261008'
     paths:
       - 'dogfood/gh-aw-diagnose.yaml'
-
 permissions:
-  actions: read
-  contents: write
-
+  contents: read
 jobs:
-  diagnose:
+  verify-permissions:
+    if: github.repository == 'DREAM-XIN/ai-sdlc' && github.ref == 'refs/heads/dogfood/gh-aw-diagnose-permissions-20261008'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-      - name: Validate exact diagnostic trigger
-        run: |
-          python - <<'PY'
-          import yaml
-          expected = {
-              'version': '0.1.0',
-              'workflow': 'ai-sdlc-gh-aw-worker-gemini.lock.yml',
-              'ref': 'main',
-          }
-          actual = yaml.safe_load(open('dogfood/gh-aw-diagnose.yaml'))
-          if actual != expected:
-              raise SystemExit(f'diagnostic trigger must equal {expected}')
-          PY
-      - name: Capture sanitized recent worker run metadata
+      - name: Check presence of existing trusted Runtime App credentials
         env:
-          GH_TOKEN: ${{ github.token }}
+          HAS_CLIENT_ID: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID != '' }}
+          HAS_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
-          gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow ai-sdlc-gh-aw-worker-gemini.lock.yml \
-            --branch main \
-            --limit 10 \
-            --json databaseId,status,conclusion,headBranch,event,createdAt,updatedAt,url \
-            > dogfood/gh-aw-diagnostic.json
-          python - <<'PY'
-          import json
-          path='dogfood/gh-aw-diagnostic.json'
-          data=json.load(open(path))
-          if not isinstance(data, list):
-              raise SystemExit('unexpected run metadata shape')
-          # Persist only GitHub run metadata. No logs, prompts, outputs, or secrets.
-          json.dump(data, open(path,'w'), indent=2, sort_keys=True)
-          open(path,'a').write('\n')
-          PY
-      - name: Persist diagnostic metadata on diagnostic branch
+          test "$HAS_CLIENT_ID" = true
+          test "$HAS_PRIVATE_KEY" = true
+      - name: Mint exact-repository token with existing Worker required permissions
+        id: probe-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.AI_SDLC_RUNTIME_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          skip-token-revoke: false
+      - name: Record permission grant result without repository effects
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.token }}
+          APP_SLUG: ${{ steps.probe-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.probe-token.outputs.installation-id }}
         run: |
-          git config user.name "ai-sdlc[bot]"
-          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          git add -- dogfood/gh-aw-diagnostic.json
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "chore(dogfood): capture gh-aw worker run metadata"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          set -euo pipefail
+          test -n "$PROBE_TOKEN"
+          test "$APP_SLUG" = dream-xin-ai-sdlc-runtime-operator
+          test "$INSTALLATION_ID" = 153325330
+          echo 'Runtime App permission probe: PASS'
+          echo 'Exact repository: DREAM-XIN/ai-sdlc'
+          echo 'Contents, Issues, Pull requests: write grant accepted by GitHub'
+          echo 'No model, Worker, Feature Event, Store write or release evidence was produced.'

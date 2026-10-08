@@ -1,0 +1,4 @@
+version: '0.1.0'
+purpose: runtime-app-permission-probe
+model_called: false
+worker_dispatched: false
