@@ -126,3 +126,5 @@ Your job is bounded to the target repository `${{ inputs.target_repository }}` a
 8. After requesting `create_pull_request`, stop. Do not call any result-reporting tool and do not emit a completion `noop`. The deterministic `conclusion` job consumes the trusted Safe Output PR URL, constructs the structured Worker Result, and dispatches it back to AI-SDLC. A remediation result may complete only its remediation task; independent review and Gate state remain unchanged.
 
 If the target repository identity does not match the Feature context, the trusted ancestry base is missing, the pre-edit diff from that base is non-empty, role ownership is ambiguous, or `create_pull_request` rejects the branch/base relationship, stop rather than falling back to `main` or broadening permissions. If you cannot request the Draft PR, do not claim completion. Do not edit the Feature Manifest directly. Do not pass or waive any Gate. Do not merge or release. Independent AI-SDLC review and verification remain later stages.
+
+<!-- Recovery worker is Safe-Output-only; lifecycle collection remains trusted. -->
