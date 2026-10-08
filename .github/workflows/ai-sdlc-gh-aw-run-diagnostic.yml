@@ -2,12 +2,12 @@ name: Verify provider-backed historical Worker credential revocation
 on:
   push:
     branches: ['dogfood/gh-aw-diagnose-key-revocation-20261008']
-    paths: ['dogfood/gh-aw-key-revocation.yaml']
+    paths: ['dogfood/gh-aw-key-revocation.yaml', '.github/workflows/ai-sdlc-gh-aw-run-diagnostic.yml']
 permissions:
   contents: write
 jobs:
   verify-key-fence:
-    if: ${{ github.repository == 'DREAM-XIN/ai-sdlc' && github.ref_name == 'dogfood/gh-aw-diagnose-key-revocation-20261008' }}
+    if: ${{ github.repository == 'DREAM-XIN/ai-sdlc' && github.ref_name == 'dogfood/gh-aw-diagnose-key-revocation-20261008' && github.event.head_commit.message == 'dogfood: verify revoked historical Worker key' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -105,3 +105,110 @@ jobs:
           git add -- dogfood/gh-aw-key-revocation-observation.json
           git commit -m 'dogfood: record bounded provider key revocation observation'
           git push origin "HEAD:${GITHUB_REF_NAME}"
+
+  validate-probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - name: Validate cryptographic probe using generated test keys and no provider calls
+        run: |
+          python - <<'PY'
+          import ast, base64, contextlib, hashlib, io, json, os, pathlib, subprocess, tempfile, time
+          from unittest.mock import patch
+          from urllib import request, error
+          raw = pathlib.Path(".github/workflows/ai-sdlc-gh-aw-run-diagnostic.yml").read_text()
+          section = raw.split("      - name: Observe old-key rejection and distinct recovery-key acceptance", 1)[1].split("      - name: Persist only", 1)[0]
+          python_source = section.split("          python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+          python_source = "\n".join(line[10:] for line in python_source.splitlines())
+          ast.parse(python_source)
+          real_old = "2765aa5be8fe724421236d1ff15fb6ebaccc51b7476d82c27ead7e366cb32636"
+          old_key = subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+          new_key = subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+          public = lambda key: subprocess.run(["openssl", "pkey", "-pubout", "-outform", "DER"], input=key, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+          old_public = hashlib.sha256(public(old_key)).hexdigest()
+          source = python_source.replace(real_old, old_public)
+          def decode(value):
+              return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+          class Response:
+              status = 200
+              headers = {"X-GitHub-Request-Id": "TEST:0001", "Date": "Thu, 08 Oct 2026 03:00:00 GMT"}
+              def __init__(self, app_id):
+                  self.data = {"id": app_id, "slug": "dream-xin-ai-sdlc-runtime-operator"}
+              def __enter__(self): return self
+              def __exit__(self, *args): pass
+              def read(self): return json.dumps(self.data).encode()
+          def run_case(*, old_status=401, new_status=200, app_id=4576406, same_key=False, old_missing=False, new_missing=False, fingerprint_changed=False, redirect=False):
+              calls = []
+              keys = [old_key, old_key if same_key else new_key]
+              class FakeOpener:
+                  def open(self, req, timeout):
+                      assert req.full_url == "https://api.github.com/app" and req.get_method() == "GET" and timeout == 30
+                      auth = req.get_header("Authorization")
+                      assert auth.startswith("Bearer ")
+                      jwt = auth[7:]
+                      header, payload, signature = jwt.split(".")
+                      assert json.loads(decode(header)) == {"alg": "RS256", "typ": "JWT"}
+                      claims = json.loads(decode(payload))
+                      assert claims["iss"] == "Iv23libojxnnuF43petx"
+                      assert abs(claims["iat"] - (int(time.time()) - 60)) <= 5
+                      assert abs(claims["exp"] - (int(time.time()) + 300)) <= 5
+                      key = keys[len(calls)]
+                      pem = subprocess.run(["openssl", "pkey", "-pubout"], input=key, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+                      with tempfile.NamedTemporaryFile() as pub, tempfile.NamedTemporaryFile() as sig:
+                          pub.write(pem); pub.flush()
+                          sig.write(decode(signature)); sig.flush()
+                          verified = subprocess.run(["openssl", "dgst", "-sha256", "-verify", pub.name, "-signature", sig.name], input=(header + "." + payload).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                      assert verified.returncode == 0
+                      calls.append(jwt)
+                      if redirect:
+                          raise RuntimeError("unexpected GitHub credential-probe redirect")
+                      status = old_status if len(calls) == 1 else new_status
+                      if status != 200:
+                          raise error.HTTPError(req.full_url, status, "synthetic provider response", Response.headers, None)
+                      return Response(app_id)
+              env = {"PATH": os.environ["PATH"], "OLD_APP_KEY": "" if old_missing else old_key.decode(), "RECOVERY_APP_KEY": "" if new_missing else keys[1].decode(), "RECOVERY_CLIENT_ID": "Iv23libojxnnuF43petx", "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "1"}
+              case_source = source.replace(old_public, "0" * 64) if fingerprint_changed else source
+              captured = io.StringIO()
+              namespace = {}
+              success = True
+              original = os.getcwd()
+              with tempfile.TemporaryDirectory() as tmp:
+                  try:
+                      os.chdir(tmp)
+                      with patch.dict(os.environ, env, clear=True), patch("urllib.request.build_opener", return_value=FakeOpener()), contextlib.redirect_stdout(captured):
+                          try:
+                              exec(compile(case_source, "<bounded-revocation-probe>", "exec"), namespace)
+                          except (SystemExit, RuntimeError):
+                              success = False
+                      path = pathlib.Path("dogfood/gh-aw-key-revocation-observation.json")
+                      doc = json.loads(path.read_text()) if path.exists() else None
+                  finally:
+                      os.chdir(original)
+              assert old_key.decode() not in captured.getvalue() and new_key.decode() not in captured.getvalue()
+              assert all(jwt not in captured.getvalue() for jwt in calls)
+              if doc:
+                  assert doc["recovery_authority"] is False and doc["future_attempts_fenced"] is False and doc["release_eligible"] is False
+                  assert doc["provider_invalidation"] is success
+              return success, doc, namespace
+          # Prepare the output directory inside the test process without changing the probe.
+          mkdir_original = tempfile.TemporaryDirectory
+          class WithOutputDirectory(mkdir_original):
+              def __enter__(self):
+                  p = super().__enter__()
+                  pathlib.Path(p, "dogfood").mkdir()
+                  return p
+          with patch("tempfile.TemporaryDirectory", WithOutputDirectory):
+              ok, doc, namespace = run_case()
+              assert ok and doc["status"] == "REVOCATION_OBSERVED"
+              for args in ({"old_status": 200}, {"old_status": 403}, {"new_status": 401}, {"app_id": 1}, {"same_key": True}, {"old_missing": True}, {"new_missing": True}, {"fingerprint_changed": True}, {"redirect": True}):
+                  assert run_case(**args)[0] is False
+          try:
+              namespace["NoRedirect"]().redirect_request(None, None, 302, "", {}, "https://example.invalid/")
+          except RuntimeError:
+              pass
+          else:
+              raise AssertionError("provider redirect must be rejected")
+          print("Credential revocation diagnostic validation: PASS (JWT signatures/claims, exact GET, rejection cases, no secret output, redirects)")
+          PY
