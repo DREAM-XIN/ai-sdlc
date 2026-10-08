@@ -721,21 +721,80 @@ class DogfoodRecoveryCollector:
         executor = self.callback_coordinator.executor
         snapshot = executor.runtime.backend.read_snapshot()
         sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+        authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
+        attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+        if not isinstance(authorization, dict) or not isinstance(attempt, dict) or not isinstance(sealed, dict):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks complete immutable fact chain")
+        authorization_digest = "sha256:" + digest_json(authorization)
+        attempt_digest = "sha256:" + digest_json(attempt)
+        sealed_bindings = {
+            "schema_version": RECOVERY_SCHEMA,
+            "operation_id": operation_id,
+            "external_dispatch_key": external_dispatch_key,
+            "workflow_file": RECOVERY_DEVELOPER_WORKFLOW,
+            "authorization_digest": authorization_digest,
+            "create_attempt_digest": attempt_digest,
+            "historical_observation_digest": RECOVERY_OBSERVATION_DIGEST,
+            "run_attempt": 1,
+            "event": "workflow_dispatch",
+            "head_branch": DEFAULT_BRANCH,
+            "role": "developer",
+            "stage": "implementation",
+        }
         if (
-            not isinstance(sealed, dict)
-            or sealed.get("schema_version") != RECOVERY_SCHEMA
-            or sealed.get("operation_id") != operation_id
-            or sealed.get("external_dispatch_key") != external_dispatch_key
-            or sealed.get("workflow_file") != RECOVERY_DEVELOPER_WORKFLOW
+            any(sealed.get(key) != value for key, value in sealed_bindings.items())
+            or attempt.get("schema_version") != RECOVERY_SCHEMA
+            or attempt.get("authorization_digest") != authorization_digest
+            or attempt.get("status") != "ARMED"
+            or authorization.get("schema_version") != RECOVERY_SCHEMA
+            or authorization.get("historical_observation_digest") != RECOVERY_OBSERVATION_DIGEST
+            or sealed.get("provider_fence_digest") != authorization.get("provider_fence_digest")
+            or sealed.get("worker_blobs") != authorization.get("worker_blobs")
+            or sealed.get("trusted_context_digest") != authorization.get("trusted_context_digest")
+            or sealed.get("source_head_sha") != authorization.get("installation_commit_sha")
+            or sealed.get("target_repository") != authorization.get("target_repository")
+            or sealed.get("target_ref") != authorization.get("target_ref")
+            or sealed.get("feature_id") != authorization.get("feature_id")
+            or sealed.get("task_id") != authorization.get("task_id")
+            or sealed.get("candidate_pr_number") != authorization.get("candidate_pr_number")
+            or sealed.get("candidate_head_sha") != authorization.get("candidate_head_sha")
+            or sealed.get("expected_revision") != authorization.get("expected_revision")
+            or sealed.get("recovery_dispatch_key") != authorization.get("recovery_dispatch_key")
+            or sealed.get("recovery_dispatch_id") != authorization.get("recovery_dispatch_id")
+            or sealed.get("display_title") != "AI-SDLC gh-aw " + str(sealed.get("recovery_dispatch_key") or "")
             or not str(sealed.get("receipt_id") or "").isdigit()
-            or not str(sealed.get("recovery_dispatch_key") or "")
+            or not isinstance(authorization.get("worker_blobs"), dict)
+            or len(authorization["worker_blobs"]) != 4
+            or not str(authorization.get("provider_fence_digest") or "").startswith("sha256:")
         ):
-            raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks sealed exact receipt")
+            raise VerticalInvariantError("POLICY_DENIED", "recovery immutable authorization/attempt/receipt chain drifted")
+        for key in (
+            "operation_id", "operation_generation", "semantic_effect_key", "external_dispatch_key",
+            "recovery_dispatch_key", "recovery_dispatch_id", "workflow_file", "installation_commit_sha",
+            "trusted_context_digest", "feature_id", "target_ref", "task_id", "stage", "role",
+            "expected_revision", "candidate_pr_number", "candidate_head_sha", "provider_fence_digest",
+            "historical_observation_digest", "worker_blobs",
+        ):
+            if attempt.get(key) != authorization.get(key):
+                raise VerticalInvariantError("POLICY_DENIED", f"recovery create-attempt lost {key} binding")
         projection, launch, historical_receipt = _current_launch_binding(
             snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
         )
-        if str(historical_receipt) != "37204777409" or str(launch.get("role") or "") != "developer":
-            raise VerticalInvariantError("POLICY_DENIED", "historical launch binding drifted")
+        if (
+            str(historical_receipt) != "37204777409"
+            or str(launch.get("role") or "") != "developer"
+            or int(authorization.get("operation_generation") or -1) != int(projection["generation"])
+            or authorization.get("feature_id") != projection.get("feature_id")
+            or int(authorization.get("expected_revision") or -1) != int(projection["expected_feature_revision"])
+            or authorization.get("semantic_effect_key") != launch.get("semantic_effect_key")
+            or authorization.get("stage") != launch.get("stage")
+            or authorization.get("role") != launch.get("role")
+            or authorization.get("candidate_head_sha") != launch.get("candidate_head_sha")
+            or authorization.get("task_id") != launch.get("task_id")
+            or normalize_repository(str(authorization.get("target_repository") or "")) != normalize_repository(str(projection["target_repository"]))
+            or authorization.get("target_ref") != executor.config.target_ref
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "historical launch/full recovery binding drifted")
         semantic_key = str(launch["semantic_effect_key"])
         reservation = snapshot.get(reservation_path(semantic_key))
         if not isinstance(reservation, dict):
@@ -755,7 +814,9 @@ class DogfoodRecoveryCollector:
             "expected_revision": int(projection["expected_feature_revision"]),
             "feature_stage": str(launch["stage"]),
             "role": "developer",
+            "task_id": str(sealed["task_id"]),
             "launch_candidate_head_sha": launch.get("candidate_head_sha"),
+            "source_head_sha": str(sealed["source_head_sha"]),
         }
         resolved = self.result_source.resolve(
             external_dispatch_key=recovery_key,
@@ -769,6 +830,18 @@ class DogfoodRecoveryCollector:
         })
         recovery_reservation = dict(reservation)
         recovery_reservation["external_dispatch_key"] = recovery_key
+        if (
+            resolved.run.run_id != int(receipt)
+            or resolved.run.workflow_file != sealed["workflow_file"]
+            or resolved.run.workflow_ref != sealed["head_branch"]
+            or resolved.run.event != sealed["event"]
+            or resolved.run.display_title != sealed["display_title"]
+            or resolved.run.external_dispatch_key != sealed["recovery_dispatch_key"]
+            or resolved.run.task_id != sealed["task_id"]
+            or resolved.run.role != sealed["role"]
+            or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['source_head_sha']}"
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "resolved recovery run differs from sealed full binding")
         _validate_run(
             resolved.run,
             control_repository=self.control_repository,
