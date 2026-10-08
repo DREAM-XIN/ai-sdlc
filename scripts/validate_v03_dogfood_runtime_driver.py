@@ -1131,6 +1131,30 @@ def historical_worker_evidence_tests():
             read_json=read_json, read_bytes=read_bytes
         )
 
+    # Exercise the production wrapper too, including the real reader construction.
+    from unittest.mock import patch
+    from operator_vertical_gh_aw_github_source import TargetScopedGitHubActionsGhAwResultSource
+    http_calls = []
+    def http(**kwargs):
+        http_calls.append(dict(kwargs))
+        expect(kwargs["method"] == "GET", "production observation attempted an HTTP mutation")
+        prefix = "https://api.github.com/repos/dream-xin/ai-sdlc"
+        expect(kwargs["url"].startswith(prefix), "production reader escaped the fixed repository")
+        suffix = kwargs["url"][len(prefix):]
+        payloads = {run_path: run, jobs_path: jobs, source_path: source}
+        if suffix == "/actions/jobs/111443899606/logs":
+            return 200, {}, log
+        expect(suffix in payloads, "production reader escaped its bounded GET inventory")
+        return 200, {}, json.dumps(payloads[suffix]).encode()
+    with patch.object(TargetScopedGitHubActionsGhAwResultSource, "_http", side_effect=http):
+        observed = driver_subject.observe_historical_worker_for_review(
+            actions_read_token="private-observation-test-token"
+        )
+    expect(observed == collect() and len(http_calls) == 6,
+           "production reader did not reproduce the exact pure observation")
+    expect("private-observation-test-token" not in repr(observed),
+           "read credential leaked into observation")
+
     proof = collect()
     expect(len(calls) == 6 and all(method == "GET" for method, _ in calls),
            "historical observation escaped the bounded GET-only reader")
