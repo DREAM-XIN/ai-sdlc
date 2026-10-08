@@ -1187,10 +1187,78 @@ def _bounded_recovery_dispatch(preflight: Any, authorization: Mapping[str, Any])
     }
 
 
-def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], receipt: Mapping[str, Any]) -> dict[str, Any]:
+def _recovery_trusted_context(authorization: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "operation_id": authorization["operation_id"],
+        "operation_generation": authorization["operation_generation"],
+        "operation_profile": VERTICAL_PROFILE,
+        "semantic_effect_key": authorization["semantic_effect_key"],
+        "external_dispatch_key": authorization["recovery_dispatch_key"],
+        "dispatch_id": authorization["recovery_dispatch_id"],
+        "target_repository": authorization["target_repository"],
+        "target_ref": authorization["target_ref"],
+        "feature_id": authorization["feature_id"],
+        "expected_revision": authorization["expected_revision"],
+        "feature_stage": authorization["stage"],
+        "role": authorization["role"],
+        "task_id": authorization["task_id"],
+        "launch_candidate_head_sha": authorization["candidate_head_sha"],
+        "source_head_sha": authorization["source_head_sha"],
+    }
+
+
+def _resolve_recovery_run_for_seal(preflight: Any, *, authorization: Mapping[str, Any], receipt_id: str) -> Any:
+    source = preflight.composition.recovery_result_source
+    key = str(authorization["recovery_dispatch_key"])
+    for _poll in range(121):
+        readiness = source.seal_readiness(
+            external_dispatch_key=key,
+            expected_receipt_identity=receipt_id,
+            source_head_sha=str(authorization["source_head_sha"]),
+        )
+        if readiness == "READY":
+            resolved = source.resolve(
+                external_dispatch_key=key,
+                expected_receipt_identity=receipt_id,
+                trusted_context=_recovery_trusted_context(authorization),
+            )
+            if (
+                resolved.run.run_id != int(receipt_id)
+                or resolved.run.receipt_identity != receipt_id
+                or resolved.run.workflow_file != RECOVERY_WORKFLOW
+                or resolved.run.workflow_ref != "main"
+                or resolved.run.event != "workflow_dispatch"
+                or resolved.run.status != "completed"
+                or resolved.run.conclusion != "success"
+                or resolved.run.display_title != authorization["display_title"]
+                or resolved.run.external_dispatch_key != key
+                or resolved.run.role != authorization["role"]
+                or resolved.run.task_id != authorization["task_id"]
+                or resolved.run.worker_identity
+                   != f"gh-aw:{RECOVERY_WORKFLOW}@{authorization['source_head_sha']}"
+                or not isinstance(resolved.run.candidate_pr_number, int)
+                or resolved.run.candidate_pr_number < 1
+                or not str(resolved.run.candidate_head_sha or "")
+                or len(resolved.outputs) != 1
+                or resolved.outputs[0].label != "implementation"
+                or resolved.outputs[0].kind != "artifact"
+            ):
+                raise V03DogfoodRuntimeDriverError("recovery successful run/Safe Output binding is incomplete")
+            return resolved
+        if readiness != "PENDING":
+            raise V03DogfoodRuntimeDriverError("recovery run seal readiness is invalid")
+        time.sleep(10)
+    raise V03DogfoodRuntimeDriverError("recovery run did not complete within bounded seal wait")
+
+
+def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], receipt: Mapping[str, Any], resolved: Any) -> dict[str, Any]:
     receipt_id = str(receipt.get("receipt_id") or "")
-    if receipt.get("lookup_state") != "LAUNCHED" or not receipt_id.isdigit():
-        raise V03DogfoodRuntimeDriverError("bounded recovery lacks one exact launched receipt")
+    if (
+        receipt.get("lookup_state") != "LAUNCHED"
+        or not receipt_id.isdigit()
+        or resolved.run.run_id != int(receipt_id)
+    ):
+        raise V03DogfoodRuntimeDriverError("bounded recovery lacks one exact successful launched receipt")
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     _validate_recovery_pair(snapshot, authorization)
     attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
@@ -1230,6 +1298,28 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
         "worker_blobs": authorization["worker_blobs"],
         "role": authorization["role"],
         "stage": authorization["stage"],
+        "run_status": resolved.run.status,
+        "run_conclusion": resolved.run.conclusion,
+        "output_candidate_pr_number": resolved.run.candidate_pr_number,
+        "output_candidate_head_sha": resolved.run.candidate_head_sha,
+        "safe_output_uri": resolved.outputs[0].trusted_uri,
+        "safe_output_digest": "sha256:" + digest_json({"trusted_uri": resolved.outputs[0].trusted_uri}),
+        "resolved_run_digest": "sha256:" + digest_json({
+            "run_id": resolved.run.run_id,
+            "receipt_identity": resolved.run.receipt_identity,
+            "workflow_file": resolved.run.workflow_file,
+            "workflow_ref": resolved.run.workflow_ref,
+            "event": resolved.run.event,
+            "status": resolved.run.status,
+            "conclusion": resolved.run.conclusion,
+            "display_title": resolved.run.display_title,
+            "external_dispatch_key": resolved.run.external_dispatch_key,
+            "role": resolved.run.role,
+            "task_id": resolved.run.task_id,
+            "worker_identity": resolved.run.worker_identity,
+            "candidate_pr_number": resolved.run.candidate_pr_number,
+            "candidate_head_sha": resolved.run.candidate_head_sha,
+        }),
         "sealed_at": preflight.composition.runtime.clock(),
     }
     def plan(snapshot: Any) -> StoreMutationPlan:
@@ -1266,15 +1356,31 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
     authorization = result["authorization"]
     key = str(authorization["recovery_dispatch_key"])
     existing = preflight.composition.runtime.backend.read_snapshot().get(RECOVERY_RECEIPT_PATH)
-    if isinstance(existing, dict):
-        return existing
+    if existing is not None:
+        if not isinstance(existing, dict) or not str(existing.get("receipt_id") or "").isdigit():
+            raise V03DogfoodRuntimeDriverError("existing recovery receipt is malformed before model execution")
+        resolved = _resolve_recovery_run_for_seal(
+            preflight, authorization=authorization, receipt_id=str(existing["receipt_id"])
+        )
+        return _seal_recovery_receipt(
+            preflight,
+            authorization=authorization,
+            receipt={"lookup_state": "LAUNCHED", "receipt_id": str(existing["receipt_id"])},
+            resolved=resolved,
+        )
 
     before = preflight.composition.recovery_dispatch_gateway.lookup(
         external_dispatch_key=key
     )
     if result.get("acquired") is not True:
         if isinstance(before, dict) and before.get("lookup_state") == "LAUNCHED":
-            return _seal_recovery_receipt(preflight, authorization=authorization, receipt=before)
+            receipt_id = str(before.get("receipt_id") or "")
+            resolved = _resolve_recovery_run_for_seal(
+                preflight, authorization=authorization, receipt_id=receipt_id
+            )
+            return _seal_recovery_receipt(
+                preflight, authorization=authorization, receipt=before, resolved=resolved
+            )
         raise V03DogfoodRuntimeDriverError(
             "bounded recovery attempt already armed; zero or ambiguous receipt forbids another POST"
         )
@@ -1285,7 +1391,13 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
         receipt = preflight.composition.recovery_dispatch_gateway.launch(dispatch=dispatch)
     except Exception:
         receipt = preflight.composition.recovery_dispatch_gateway.lookup(external_dispatch_key=key)
-    return _seal_recovery_receipt(preflight, authorization=authorization, receipt=receipt)
+    receipt_id = str(receipt.get("receipt_id") or "") if isinstance(receipt, dict) else ""
+    resolved = _resolve_recovery_run_for_seal(
+        preflight, authorization=authorization, receipt_id=receipt_id
+    )
+    return _seal_recovery_receipt(
+        preflight, authorization=authorization, receipt=receipt, resolved=resolved
+    )
 
 
 _SAFE_INSTALLATION_TRANSITION_EVENTS = (
