@@ -1,0 +1,18 @@
+{
+  "app_slug": "dream-xin-ai-sdlc-runtime-operator",
+  "client_id": "Iv23libojxnnuF43petx",
+  "credential_identity": "AI_SDLC_RUNTIME_APP_PRIVATE_KEY",
+  "current_key_authentication": "ACCEPTED",
+  "future_attempts_fenced": false,
+  "historical_worker_run_id": 37204777409,
+  "historical_workflow_blob_sha": "e618477192ef8cde47cf36a9b162aee1069f3eef",
+  "installation_id": 153325330,
+  "provider_invalidation": false,
+  "public_key_sha256": "2765aa5be8fe724421236d1ff15fb6ebaccc51b7476d82c27ead7e366cb32636",
+  "recovery_authority": false,
+  "release_eligible": false,
+  "repository": "dream-xin/ai-sdlc",
+  "run_id": 37723691424,
+  "schema_version": "ai-sdlc.v03-historical-worker-credential-observation/v1",
+  "source_sha": "0bb45670495271a4c4019bba7a7313d338de0272"
+}
