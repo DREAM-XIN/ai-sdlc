@@ -91,6 +91,191 @@ class V03DogfoodRuntimeDriverError(RuntimeError):
     pass
 
 
+
+# This is a review input, never a launch/invalidation capability.
+HISTORICAL_FAILED_WORKER = {
+    "run_id": 37204777409,
+    "workflow_id": 329456712,
+    "head_sha": "5ed049a4cce9c39a42385337da35a46dcaf378eb",
+    "workflow_blob_sha": "e618477192ef8cde47cf36a9b162aee1069f3eef",
+    "jobs": {
+        "activation": (111443581703, "success"),
+        "agent": (111443640237, "failure"),
+        "detection": (111443685002, "success"),
+        "safe_outputs": (111443824035, "failure"),
+        "conclusion": (111443899606, "failure"),
+    },
+}
+
+
+def collect_historical_worker_recovery_evidence(*, read_json, read_bytes) -> dict[str, Any]:
+    """Bracket immutable first-attempt facts from GitHub; grant no recovery."""
+    h, w = HISTORICAL_PREHTTP_RECOVERY, HISTORICAL_FAILED_WORKER
+    run_path = f"/actions/runs/{w['run_id']}"
+    before = read_json(run_path)
+    identity = {
+        "id": w["run_id"], "workflow_id": w["workflow_id"],
+        "event": "workflow_dispatch", "head_branch": "main",
+        "head_sha": w["head_sha"],
+        "path": ".github/workflows/" + h["workflow_file"],
+        "display_title": "AI-SDLC gh-aw " + h["external_dispatch_key"],
+        "run_attempt": 1, "status": "completed", "conclusion": "failure",
+    }
+
+    def require_run(run):
+        if (not isinstance(run, dict)
+                or any(type(run.get(k)) is not int for k in ("id", "workflow_id", "run_attempt"))
+                or any(run.get(k) != v for k, v in identity.items())):
+            raise V03DogfoodRuntimeDriverError("historical failed Worker identity/attempt/status drifted")
+        repository = run.get("repository") or {}
+        if str(repository.get("full_name") or "").lower() != "dream-xin/ai-sdlc":
+            raise V03DogfoodRuntimeDriverError("historical failed Worker repository drifted")
+        if not run.get("updated_at"):
+            raise V03DogfoodRuntimeDriverError("historical failed Worker lacks update identity")
+
+    require_run(before)
+    source_path = "/contents/.github/workflows/" + h["workflow_file"] + "?ref=" + w["head_sha"]
+    source = read_json(source_path)
+    if not isinstance(source, dict) or (
+        source.get("sha"), source.get("encoding"), source.get("path"), source.get("type")
+    ) != (w["workflow_blob_sha"], "base64", ".github/workflows/" + h["workflow_file"], "file"):
+        raise V03DogfoodRuntimeDriverError("historical failed Worker source binding drifted")
+    try:
+        raw = base64.b64decode("".join(str(source["content"]).split()), validate=True)
+    except (KeyError, ValueError) as exc:
+        raise V03DogfoodRuntimeDriverError("historical failed Worker source is malformed") from exc
+    blob = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw).hexdigest()
+    if blob != w["workflow_blob_sha"]:
+        raise V03DogfoodRuntimeDriverError("historical failed Worker source bytes drifted")
+
+    jobs_path = run_path + "/attempts/1/jobs?per_page=100"
+
+    def require_jobs(payload):
+        rows = payload.get("jobs") if isinstance(payload, dict) else None
+        if (not isinstance(rows, list) or type(payload.get("total_count")) is not int
+                or payload["total_count"] != len(w["jobs"]) or len(rows) != len(w["jobs"])):
+            raise V03DogfoodRuntimeDriverError("historical first-attempt jobs are incomplete")
+        by_name = {}
+        for job in rows:
+            if (not isinstance(job, dict) or not isinstance(job.get("name"), str)
+                    or job.get("name") in by_name):
+                raise V03DogfoodRuntimeDriverError("historical first-attempt jobs are ambiguous")
+            name = job.get("name")
+            expected = w["jobs"].get(name)
+            if (expected is None
+                    or any(type(job.get(k)) is not int for k in ("id", "run_id", "run_attempt"))
+                    or (
+                job.get("id"), job.get("conclusion"), job.get("status"),
+                job.get("run_id"), job.get("run_attempt"), job.get("head_sha")
+            ) != (expected[0], expected[1], "completed", w["run_id"], 1, w["head_sha"])):
+                raise V03DogfoodRuntimeDriverError("historical first-attempt job identity drifted")
+            steps = job.get("steps")
+            if (not isinstance(steps, list) or not steps
+                    or any(not isinstance(s, dict) or s.get("status") != "completed"
+                           or type(s.get("number")) is not int for s in steps)
+                    or [s["number"] for s in steps] != sorted({s["number"] for s in steps})):
+                raise V03DogfoodRuntimeDriverError("historical first-attempt steps are incomplete")
+            by_name[name] = job
+        return by_name
+
+    jobs_first = read_json(jobs_path)
+    jobs = require_jobs(jobs_first)
+
+    def require_step(job, name, conclusion):
+        matches = [s for s in jobs[job]["steps"] if s.get("name") == name]
+        if len(matches) != 1 or matches[0].get("conclusion") != conclusion:
+            raise V03DogfoodRuntimeDriverError("historical execution boundary drifted: " + job + "/" + name)
+        return matches[0]["number"]
+
+    failed = require_step("agent", "Generate GitHub App token for checkout (0)", "failure")
+    checkout = require_step("agent", "Checkout repository", "skipped")
+    model = require_step("agent", "Execute GitHub Copilot CLI", "skipped")
+    if not failed < checkout < model:
+        raise V03DogfoodRuntimeDriverError("historical pre-model failure ordering drifted")
+    require_step("agent", "Generate GitHub App token", "skipped")
+    require_step("detection", "Execute threat detection with AWF", "skipped")
+    safe_token = require_step("safe_outputs", "Generate GitHub App token", "failure")
+    safe_outputs = require_step("safe_outputs", "Process Safe Outputs", "skipped")
+    if not safe_token < safe_outputs:
+        raise V03DogfoodRuntimeDriverError("historical safe-output failure ordering drifted")
+    require_step("conclusion", "Dispatch structured worker result after Draft PR", "failure")
+
+    logs = read_bytes(f"/actions/jobs/{w['jobs']['conclusion'][0]}/logs")
+    if not isinstance(logs, bytes) or not logs:
+        raise V03DogfoodRuntimeDriverError("historical conclusion log is unavailable")
+    from operator_vertical_gh_aw_github_source import TargetScopedGitHubActionsGhAwResultSource
+    values = TargetScopedGitHubActionsGhAwResultSource._log_env(logs)
+    expected_env = {
+        "FEATURE_ID": h["feature_id"], "EXPECTED_REVISION": "1",
+        "TARGET_REF": h["target_ref"], "TARGET_REPOSITORY": "dream-xin/ai-sdlc",
+    }
+    for key, value in expected_env.items():
+        if tuple(dict.fromkeys(values.get(key, ()))) != (value,):
+            raise V03DogfoodRuntimeDriverError("historical conclusion input binding drifted: " + key)
+    if not values.get("PR_URL") or any(value != "" for value in values["PR_URL"]):
+        raise V03DogfoodRuntimeDriverError("historical conclusion does not prove empty Draft PR input")
+
+    jobs_second = read_json(jobs_path)
+    require_jobs(jobs_second)
+    after = read_json(run_path)
+    require_run(after)
+    if before != after or jobs_first != jobs_second:
+        raise V03DogfoodRuntimeDriverError("historical evidence changed during read-only collection")
+
+    material = {
+        "schema_version": "ai-sdlc.v03-dogfood-historical-worker-observation/v1",
+        "repository": "dream-xin/ai-sdlc",
+        "operation_id": h["operation_id"], "operation_generation": h["generation"],
+        "semantic_effect_key": h["semantic_effect_key"],
+        "external_dispatch_key": h["external_dispatch_key"],
+        "runtime_receipt_identity": str(w["run_id"]),
+        "run_identity": identity, "run_updated_at": after["updated_at"],
+        "workflow_blob_sha": blob,
+        "jobs_digest": digest_json(jobs_second),
+        "conclusion_log_sha256": hashlib.sha256(logs).hexdigest(),
+        "agent_model_step": "skipped", "safe_output_processing_step": "skipped",
+        "callback_pr_url_empty": True, "stable_reads": True,
+        "provider_invalidation": False, "future_attempts_fenced": False,
+        "recovery_authority": False, "release_eligible": False,
+        "remaining_requirements": [
+            "trusted-proof-preventing-any-later-old-execution-effect",
+            "independent-admission-of-a-bounded-recovery-contract",
+            "protected-cas-authorization-before-any-successor-execution",
+            "deepseek-capable-independent-developer-reviewer-qa-bindings",
+        ],
+    }
+    return {**material, "observation_digest": "sha256:" + digest_json(material)}
+
+
+
+def observe_historical_worker_for_review(*, actions_read_token: str) -> dict[str, Any]:
+    """Use only the existing read-only, credential-safe GitHub result reader."""
+    if not isinstance(actions_read_token, str) or not actions_read_token:
+        raise V03DogfoodRuntimeDriverError("historical observation requires an Actions read token")
+    from operator_vertical_gh_aw_github_source import (
+        GitHubActionsGhAwResultSourceConfig, TargetScopedGitHubActionsGhAwResultSource,
+    )
+    workflows = GhAwVerticalWorkflowMap(
+        default_branch="main",
+        developer_workflow=HISTORICAL_PREHTTP_RECOVERY["workflow_file"],
+        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
+        qa_workflow="ai-sdlc-gh-aw-qa-gemini.lock.yml",
+    )
+    repository = "dream-xin/ai-sdlc"
+    source = TargetScopedGitHubActionsGhAwResultSource(
+        GitHubActionsGhAwResultSourceConfig(
+            control_repository=repository, control_token=actions_read_token,
+            target_token=actions_read_token, workflows=workflows,
+            collector_identity="v03-historical-worker-observation-reader",
+        ),
+        target_repository=repository,
+    )
+    return collect_historical_worker_recovery_evidence(
+        read_json=lambda suffix: source._json(repository, suffix, actions_read_token),
+        read_bytes=lambda suffix: source._bytes(repository, suffix, actions_read_token),
+    )
+
+
 def _required(env: Mapping[str, str], name: str) -> str:
     value = str(env.get(name) or "").strip()
     if not value:
