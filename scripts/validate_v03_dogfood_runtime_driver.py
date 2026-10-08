@@ -984,6 +984,92 @@ def prehttp_recovery_fence_tests():
 
 
 
+def historical_worker_adoption_tests():
+    """A durable launch receipt is checked before any new model session."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+    import v03_dogfood_scenario_runner as runner
+
+    h = driver_subject.HISTORICAL_PREHTTP_RECOVERY
+    installation = "a" * 40
+    receipt = "37204777409"
+    workflow = h["workflow_file"]
+    good = dict(
+        id=int(receipt), event="workflow_dispatch", head_branch="main",
+        head_sha=installation, path=".github/workflows/" + workflow,
+        display_title="AI-SDLC gh-aw " + h["external_dispatch_key"],
+        run_attempt=1, status="completed", conclusion="success",
+    )
+    backend = SimpleNamespace(read_snapshot=Mock(return_value=object()))
+    source = SimpleNamespace(
+        config=SimpleNamespace(control_repository="DREAM-XIN/ai-sdlc", control_token="read-only-test-token"),
+        _json=Mock(),
+    )
+    preflight = SimpleNamespace(
+        execution=SimpleNamespace(installation_commit_sha=installation),
+        workflows=SimpleNamespace(workflow_for=Mock(return_value=workflow)),
+        composition=SimpleNamespace(runtime=SimpleNamespace(backend=backend), result_source=source),
+    )
+    cases = (
+        dict(head_sha="5ed049a4cce9c39a42385337da35a46dcaf378eb",
+             conclusion="failure"),
+        dict(conclusion="failure"),
+        dict(run_attempt=2),
+        dict(display_title="AI-SDLC gh-aw wrong-key"),
+    )
+    for changed in cases:
+        source._json.reset_mock()
+        source._json.return_value = {**good, **changed}
+        with (
+            patch.object(driver_subject, "assemble_preflight", return_value=preflight),
+            patch.object(driver_subject, "_head", return_value=installation),
+            patch.object(driver_subject, "recover_historical_prehttp_attempt", return_value=True),
+            patch.object(driver_subject, "prepare_previous_installation_operation") as takeover,
+            patch.object(runner, "_current_launch_binding",
+                         return_value=({}, {"role": "developer"}, receipt)),
+            patch.object(driver_subject, "dogfood_responses_host_config") as config,
+            patch.object(driver_subject, "V03DogfoodOpenAIResponsesHost") as host,
+            patch.object(driver_subject, "run_scenario") as scenario,
+        ):
+            try:
+                driver_subject._execute_live(mode=RUN, scenario="happy_path")
+            except V03DogfoodRuntimeDriverError as exc:
+                expect("HISTORICAL_WORKER_NOT_COLLECTIBLE" in str(exc),
+                       "uncollectible receipt lost actionable blocker identity")
+            else:
+                raise AssertionError("uncollectible historical Worker reached the model")
+            expect(not config.called and not host.called and not scenario.called,
+                   "historical Worker rejection happened after model/session work")
+            expect(not takeover.called, "adopted receipt triggered a replacement generation")
+            source._json.assert_called_once_with(
+                "DREAM-XIN/ai-sdlc", "/actions/runs/" + receipt, "read-only-test-token"
+            )
+
+    class StopAfterGuard(RuntimeError):
+        pass
+
+    source._json.return_value = deepcopy(good)
+    with (
+        patch.object(driver_subject, "assemble_preflight", return_value=preflight),
+        patch.object(driver_subject, "_head", return_value=installation),
+        patch.object(driver_subject, "recover_historical_prehttp_attempt", return_value=True),
+        patch.object(runner, "_current_launch_binding",
+                     return_value=({}, {"role": "developer"}, receipt)),
+        patch.object(driver_subject, "dogfood_responses_host_config", return_value=object()),
+        patch.object(driver_subject, "V03DogfoodOpenAIResponsesHost", return_value=object()) as host,
+        patch.object(driver_subject, "run_scenario", side_effect=StopAfterGuard) as scenario,
+    ):
+        try:
+            driver_subject._execute_live(mode=RUN, scenario="happy_path")
+        except StopAfterGuard:
+            pass
+        else:
+            raise AssertionError("collectible current first-attempt receipt did not reach scenario")
+        expect(host.call_count == 1 and scenario.call_count == 1,
+               "guard prevented a valid exact current-main receipt from continuing")
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -1009,6 +1095,7 @@ def main():
 
     installation_transition_tests()
     prehttp_recovery_fence_tests()
+    historical_worker_adoption_tests()
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",

@@ -27,7 +27,9 @@ from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_live_gate import ALLOWED_SCENARIOS, assemble_dogfood_live_gate
 from v03_dogfood_openai_host import V03DogfoodOpenAIHostConfig, V03DogfoodOpenAIResponsesHost
 from v03_dogfood_runtime_preflight import build_v03_dogfood_runtime_preflight
-from v03_dogfood_scenario_runner import run_scenario
+from v03_dogfood_scenario_runner import (
+    V03DogfoodScenarioRunnerError, _wait_current_dispatch, run_scenario,
+)
 from v03_real_runtime_live_authority import load_live_authority, require_trusted_main_execution
 
 VALIDATE_ONLY = "validate-only"
@@ -972,6 +974,18 @@ def _execute_live(*, mode: str, scenario: str) -> int:
     recovered_historical_attempt = recover_historical_prehttp_attempt(preflight)
     if not recovered_historical_attempt:
         prepare_previous_installation_operation(preflight)
+    else:
+        # Receipt adoption does not imply result collectibility. Apply the same
+        # protected launch/current-installation/first-attempt wait as collection
+        # before paying for or starting a new Responses session.
+        h = HISTORICAL_PREHTTP_RECOVERY
+        try:
+            _wait_current_dispatch(preflight, h["operation_id"], h["external_dispatch_key"])
+        except V03DogfoodScenarioRunnerError as exc:
+            raise V03DogfoodRuntimeDriverError(
+                "HISTORICAL_WORKER_NOT_COLLECTIBLE: " + str(exc)
+                + "; original receipt retained; rerun, replacement dispatch and release evidence remain unauthorized"
+            ) from exc
 
     host_config = dogfood_responses_host_config(os.environ)
     host = V03DogfoodOpenAIResponsesHost(config=host_config, adapter=preflight.composition.adapter)
