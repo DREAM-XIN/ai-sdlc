@@ -236,6 +236,25 @@ jobs:
           key = "dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1"
           bindings = gate.bindings if "gate" in locals() else ()
           result["dispatch_diagnostic"] = diagnose_dispatch(bindings, key, actions_get)
+          # Stable terminal/skipped-step observations are review inputs only.
+          # They never invalidate a key or authorize a replacement execution.
+          from v03_dogfood_runtime_driver import observe_historical_worker_for_review
+          try:
+              result["historical_worker_observation"] = observe_historical_worker_for_review(
+                  actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
+              )
+              result["recovery_error"] = "historical terminal/skipped-step observation lacks future-execution fencing and bounded recovery authorization"
+              if result["status"] == "READY":
+                  result["status"] = "BLOCKED_RECOVERY_AUTHORITY"
+          except Exception as exc:
+              result["recovery_error"] = str(exc)
+              if result["status"] == "READY":
+                  result["status"] = "BLOCKED_RECOVERY_EVIDENCE"
+          result["worker_provider_coverage"] = [
+              dict(role=row.role, selected_profile=row.selected_profile,
+                   deepseek_in_frozen_candidates="deepseek" in row.candidate_order)
+              for row in bindings
+          ]
 
           Path("evidence/readiness.json").write_text(json.dumps(result, indent=2, sort_keys=True)+"\n")
           print(json.dumps(result, indent=2, sort_keys=True))
@@ -249,6 +268,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          jq -r '"<!-- ai-sdlc-v03-dogfood-readiness -->\nDogfood readiness: **" + .status + "**\nMain: `" + .installation_commit_sha + "`\nMissing configuration: " + (.missing_configuration | join(", ")) + "\nUpstream error: " + (.upstream_error // "none") + "\nNo model, Worker, Store or lifecycle effects were executed."' evidence/readiness.json > evidence/receipt.md
+          jq -r '"<!-- ai-sdlc-v03-dogfood-readiness -->\nDogfood readiness: **" + .status + "**\nMain: `" + .installation_commit_sha + "`\nMissing configuration: " + (.missing_configuration | join(", ")) + "\nUpstream error: " + (.upstream_error // "none") + "\nRecovery blocker: " + (.recovery_error // "none") + "\nNo model, Worker, Store or lifecycle effects were executed."' evidence/readiness.json > evidence/receipt.md
           gh issue comment 239 --repo "$GITHUB_REPOSITORY" --body-file evidence/receipt.md
           jq -e '.status == "READY"' evidence/readiness.json >/dev/null

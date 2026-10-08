@@ -41,6 +41,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   validate:
@@ -70,6 +71,32 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_scenario_runner.py
       - name: Validate trusted-main dogfood runtime driver
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
+      - name: Observe immutable historical Worker through read-only GitHub API
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from v03_dogfood_runtime_driver import observe_historical_worker_for_review
+          doc = observe_historical_worker_for_review(
+              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
+          )
+          assert doc["recovery_authority"] is False and doc["future_attempts_fenced"] is False
+          assert doc["provider_invalidation"] is False and doc["release_eligible"] is False
+          Path("evidence").mkdir(exist_ok=True)
+          Path("evidence/historical-worker-observation.json").write_text(
+              json.dumps(doc, indent=2, sort_keys=True) + chr(10),
+          )
+          print(json.dumps(doc, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          name: v03-historical-worker-observation
+          path: evidence/historical-worker-observation.json
+          if-no-files-found: error
       - name: Validate trusted production dogfood provenance
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_production_provenance.py
       - name: Validate closed dogfood release-run finalizer
