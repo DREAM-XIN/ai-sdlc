@@ -1099,15 +1099,15 @@ def _validate_recovery_pair(snapshot: Any, expected: Mapping[str, Any]) -> bool:
     stable = {key: value for key, value in expected.items() if key != "created_at"}
     if any(authorization.get(key) != value for key, value in stable.items()):
         raise V03DogfoodRuntimeDriverError("bounded recovery authorization identity drifted")
-    if (
-        attempt.get("schema_version") != RECOVERY_SCHEMA
-        or attempt.get("authorization_digest") != "sha256:" + digest_json(authorization)
-        or attempt.get("operation_id") != expected["operation_id"]
-        or attempt.get("semantic_effect_key") != expected["semantic_effect_key"]
-        or attempt.get("recovery_dispatch_key") != expected["recovery_dispatch_key"]
-        or attempt.get("status") != "ARMED"
-    ):
-        raise V03DogfoodRuntimeDriverError("bounded recovery create-attempt identity drifted")
+    authorization_digest = "sha256:" + digest_json(authorization)
+    expected_attempt = dict(authorization)
+    expected_attempt.update({
+        "authorization_digest": authorization_digest,
+        "attempt_id": "recovery-create-attempt-" + digest_json(authorization)[:32],
+        "status": "ARMED",
+    })
+    if canonical_json(attempt) != canonical_json(expected_attempt):
+        raise V03DogfoodRuntimeDriverError("bounded recovery create-attempt/full authorization binding drifted")
     return True
 
 
@@ -1129,27 +1129,32 @@ def _plan_bounded_recovery(snapshot: Any, *, preflight: Any, fence: Mapping[str,
         "recovery_dispatch_id": recovery_dispatch_id,
         "workflow_file": RECOVERY_WORKFLOW,
         "installation_commit_sha": preflight.execution.installation_commit_sha,
+        "source_head_sha": preflight.execution.installation_commit_sha,
+        "target_repository": normalize_repository(preflight.execution.repository),
+        "head_branch": "main",
+        "event": "workflow_dispatch",
         "trusted_context_digest": preflight.trusted_context_digest,
         "feature_id": h["feature_id"],
         "target_ref": h["target_ref"],
+        "task_id": h["task_id"],
+        "task_identity": h["task_identity"],
         "stage": h["stage"],
         "role": h["role"],
+        "expected_revision": 1,
         "candidate_pr_number": h["candidate_pr_number"],
         "candidate_head_sha": h["candidate_head_sha"],
+        "display_title": "AI-SDLC gh-aw " + recovery_key,
         "worker_blobs": _recovery_worker_blobs(),
         "created_at": preflight.composition.runtime.clock(),
     }
     if _validate_recovery_pair(snapshot, expected):
         return StoreMutationPlan(snapshot.ref_sha, tuple(), {"acquired": False, "authorization": snapshot.get(RECOVERY_AUTHORIZATION_PATH)})
-    attempt = {
-        "schema_version": RECOVERY_SCHEMA,
+    attempt = dict(expected)
+    attempt.update({
         "authorization_digest": "sha256:" + digest_json(expected),
-        "operation_id": h["operation_id"],
-        "semantic_effect_key": h["semantic_effect_key"],
-        "recovery_dispatch_key": recovery_key,
+        "attempt_id": "recovery-create-attempt-" + digest_json(expected)[:32],
         "status": "ARMED",
-        "created_at": expected["created_at"],
-    }
+    })
     return StoreMutationPlan(
         snapshot.ref_sha,
         (
@@ -1186,20 +1191,45 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
     receipt_id = str(receipt.get("receipt_id") or "")
     if receipt.get("lookup_state") != "LAUNCHED" or not receipt_id.isdigit():
         raise V03DogfoodRuntimeDriverError("bounded recovery lacks one exact launched receipt")
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    _validate_recovery_pair(snapshot, authorization)
+    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+    if not isinstance(attempt, dict):
+        raise V03DogfoodRuntimeDriverError("bounded recovery create-attempt disappeared before seal")
     expected = {
         "schema_version": RECOVERY_SCHEMA,
         "operation_id": authorization["operation_id"],
         "operation_generation": authorization["operation_generation"],
         "semantic_effect_key": authorization["semantic_effect_key"],
         "external_dispatch_key": authorization["external_dispatch_key"],
+        "historical_attempt_id": authorization["historical_attempt_id"],
+        "historical_runtime_receipt_identity": authorization["historical_runtime_receipt_identity"],
+        "historical_observation_digest": authorization["historical_observation_digest"],
+        "provider_fence_digest": authorization["provider_fence_digest"],
+        "authorization_digest": "sha256:" + digest_json(authorization),
+        "create_attempt_digest": "sha256:" + digest_json(attempt),
         "recovery_dispatch_key": authorization["recovery_dispatch_key"],
         "recovery_dispatch_id": authorization["recovery_dispatch_id"],
         "receipt_id": receipt_id,
         "workflow_file": RECOVERY_WORKFLOW,
         "installation_commit_sha": authorization["installation_commit_sha"],
+        "source_head_sha": authorization["source_head_sha"],
+        "target_repository": authorization["target_repository"],
+        "head_branch": authorization["head_branch"],
+        "event": authorization["event"],
+        "display_title": authorization["display_title"],
+        "run_attempt": 1,
+        "trusted_context_digest": authorization["trusted_context_digest"],
+        "feature_id": authorization["feature_id"],
+        "target_ref": authorization["target_ref"],
+        "task_id": authorization["task_id"],
+        "task_identity": authorization["task_identity"],
+        "expected_revision": authorization["expected_revision"],
+        "candidate_pr_number": authorization["candidate_pr_number"],
         "candidate_head_sha": authorization["candidate_head_sha"],
-        "role": "developer",
-        "stage": "implementation",
+        "worker_blobs": authorization["worker_blobs"],
+        "role": authorization["role"],
+        "stage": authorization["stage"],
         "sealed_at": preflight.composition.runtime.clock(),
     }
     def plan(snapshot: Any) -> StoreMutationPlan:
