@@ -679,7 +679,7 @@ def historical_worker_adoption_tests():
     )
     expect(
         composition.RECOVERY_DEVELOPER_WORKFLOW
-        == "ai-sdlc-gh-aw-worker-deepseek-v03-local.lock.yml",
+        == "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
         "recovery Developer workflow identity drifted",
     )
     print("- scenario collector and finalizer keep historical and recovery receipts distinct")
