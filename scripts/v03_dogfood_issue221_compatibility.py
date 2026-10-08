@@ -50,8 +50,8 @@ ADDED_PATHS = frozenset({
     "release/v0.3-dogfood-session-policy.json",
     "scripts/v03_dogfood_session_policy.py",
     "scripts/validate_v03_dogfood_session_policy.py",
-    ".github/workflows/ai-sdlc-gh-aw-worker-deepseek-v03-local.md",
-    ".github/workflows/ai-sdlc-gh-aw-worker-deepseek-v03-local.lock.yml",
+    ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md",
+    ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.md",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.lock.yml",
 })
