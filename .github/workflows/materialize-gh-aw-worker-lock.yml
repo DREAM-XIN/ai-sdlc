@@ -90,6 +90,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
         run: gh aw compile "ai-sdlc-gh-aw-qa-gemini-v03-local" --strict
+      - name: Strict-compile bounded v0.3 recovery workers
+        env:
+          GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          gh aw compile "ai-sdlc-gh-aw-developer-deepseek-v03-local" --strict
+          gh aw compile "ai-sdlc-gh-aw-qa-deepseek-v03-local" --strict
       - name: Strict-compile every specialized role worker
         env:
           GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || github.token }}
@@ -129,6 +136,10 @@ jobs:
           print('.github/workflows/ai-sdlc-gh-aw-reviewer-gemini-v03-local.lock.yml')
           print('.github/workflows/ai-sdlc-gh-aw-qa-gemini-v03-local.md')
           print('.github/workflows/ai-sdlc-gh-aw-qa-gemini-v03-local.lock.yml')
+          print('.github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md')
+          print('.github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml')
+          print('.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.md')
+          print('.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.lock.yml')
           print('.github/workflows/ai-sdlc-gh-aw-preflight.yml')
           print('.github/workflows/ai-sdlc-gh-aw-dispatch-profile.yml')
           PY
