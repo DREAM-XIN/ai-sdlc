@@ -23,14 +23,17 @@ from operator_openai_responses_production import (
 )
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
-from operator_store_model import digest_json, normalize_repository, operation_events
-from operator_vertical import VerticalInvariantError
+from operator_store_model import digest_json, normalize_repository, operation_events, reservation_path
+from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result
 from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
 from operator_vertical_recovery import plan_vertical_callback_record
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
 from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
-from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector
+from operator_vertical_gh_aw_github_source import (
+    GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector,
+    _build_receipts, _current_launch_binding, _validate_run,
+)
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_session_policy import DogfoodSessionDecisionPolicyVerifier
 from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
@@ -43,6 +46,10 @@ _DEVELOPER_PR_URI = re.compile(
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
 PROVIDER_SCOPE_ID = "v03-real-release-dogfood"
+RECOVERY_DEVELOPER_WORKFLOW = "ai-sdlc-gh-aw-worker-deepseek-v03-local.lock.yml"
+RECOVERY_SCHEMA = "ai-sdlc.v03-dogfood-bounded-recovery/v1"
+RECOVERY_OPERATION_ID = "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"
+RECOVERY_RECEIPT_PATH = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-bounded-recovery/sealed-receipt.json"
 
 
 class V03DogfoodCompositionError(RuntimeError):
@@ -572,6 +579,125 @@ class DogfoodExecutionBoundDispatchGateway:
         return self.delegate.lookup(external_dispatch_key=external_dispatch_key)
 
 
+class DogfoodRecoveryCollector:
+    """Collect only the one sealed recovery run, then reuse the closed callback path."""
+
+    def __init__(self, *, callback_coordinator, result_source, workflows, control_repository, clock):
+        self.callback_coordinator = callback_coordinator
+        self.result_source = result_source
+        self.workflows = workflows
+        self.control_repository = normalize_repository(control_repository)
+        self.clock = clock
+
+    def handle(self, *, operation_id: str, external_dispatch_key: str) -> dict[str, Any]:
+        if operation_id != RECOVERY_OPERATION_ID:
+            raise VerticalInvariantError("POLICY_DENIED", "recovery collector escaped frozen Operation")
+        executor = self.callback_coordinator.executor
+        snapshot = executor.runtime.backend.read_snapshot()
+        sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+        if (
+            not isinstance(sealed, dict)
+            or sealed.get("schema_version") != RECOVERY_SCHEMA
+            or sealed.get("operation_id") != operation_id
+            or sealed.get("external_dispatch_key") != external_dispatch_key
+            or sealed.get("workflow_file") != RECOVERY_DEVELOPER_WORKFLOW
+            or not str(sealed.get("receipt_id") or "").isdigit()
+            or not str(sealed.get("recovery_dispatch_key") or "")
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks sealed exact receipt")
+        projection, launch, historical_receipt = _current_launch_binding(
+            snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
+        )
+        if str(historical_receipt) != "37204777409" or str(launch.get("role") or "") != "developer":
+            raise VerticalInvariantError("POLICY_DENIED", "historical launch binding drifted")
+        semantic_key = str(launch["semantic_effect_key"])
+        reservation = snapshot.get(reservation_path(semantic_key))
+        if not isinstance(reservation, dict):
+            raise VerticalInvariantError("INTERNAL_FAILURE", "durable semantic reservation is missing")
+        recovery_key = str(sealed["recovery_dispatch_key"])
+        receipt = str(sealed["receipt_id"])
+        trusted = {
+            "operation_id": operation_id,
+            "operation_generation": int(projection["generation"]),
+            "operation_profile": VERTICAL_PROFILE,
+            "semantic_effect_key": semantic_key,
+            "external_dispatch_key": recovery_key,
+            "dispatch_id": str(sealed["recovery_dispatch_id"]),
+            "target_repository": normalize_repository(str(projection["target_repository"])),
+            "target_ref": executor.config.target_ref,
+            "feature_id": str(projection["feature_id"]),
+            "expected_revision": int(projection["expected_feature_revision"]),
+            "feature_stage": str(launch["stage"]),
+            "role": "developer",
+            "launch_candidate_head_sha": launch.get("candidate_head_sha"),
+        }
+        resolved = self.result_source.resolve(
+            external_dispatch_key=recovery_key,
+            expected_receipt_identity=receipt,
+            trusted_context=trusted,
+        )
+        recovery_launch = dict(launch)
+        recovery_launch.update({
+            "external_dispatch_key": recovery_key,
+            "dispatch_id": str(sealed["recovery_dispatch_id"]),
+        })
+        recovery_reservation = dict(reservation)
+        recovery_reservation["external_dispatch_key"] = recovery_key
+        _validate_run(
+            resolved.run,
+            control_repository=self.control_repository,
+            workflows=self.workflows,
+            launch=recovery_launch,
+            expected_receipt_identity=receipt,
+            external_dispatch_key=recovery_key,
+            reservation=recovery_reservation,
+        )
+        worker_payload = validate_worker_result("developer", resolved.role_payload)
+        context = TrustedDispatchContext(
+            operation_id=operation_id,
+            operation_generation=int(projection["generation"]),
+            operation_profile=VERTICAL_PROFILE,
+            semantic_effect_key=semantic_key,
+            external_dispatch_key=external_dispatch_key,
+            dispatch_id=str(launch["dispatch_id"]),
+            runtime_receipt_identity=receipt,
+            target_repository=str(projection["target_repository"]),
+            target_ref=executor.config.target_ref,
+            feature_id=str(projection["feature_id"]),
+            expected_revision=int(projection["expected_feature_revision"]),
+            feature_stage=str(launch["stage"]),
+            task_id=resolved.run.task_id,
+            role="developer",
+            candidate_pr_number=None,
+            candidate_head_sha=launch.get("candidate_head_sha"),
+            worker_identity=resolved.run.worker_identity,
+            collector_identity=resolved.run.collector_identity,
+        )
+        declared = {str(row["label"]): str(row["kind"]) for row in worker_payload.get("outputs", [])}
+        receipts = _build_receipts(
+            coordinator=self.callback_coordinator,
+            context=context,
+            outputs=resolved.outputs,
+            declared_outputs=declared,
+            collected_at=str(self.clock()),
+        )
+        if set(declared.items()) != {(row["label"], row["kind"]) for row in receipts}:
+            raise VerticalInvariantError("BLOCKED", "sealed recovery outputs differ from role result")
+        callback_id = "gh-aw-recovery-callback-" + digest_json({
+            "operation_id": operation_id,
+            "external_dispatch_key": external_dispatch_key,
+            "recovery_dispatch_key": recovery_key,
+            "runtime_receipt_identity": receipt,
+            "run_id": resolved.run.run_id,
+        })[:24]
+        return self.callback_coordinator.handle(
+            context=context,
+            callback_id=callback_id,
+            worker_payload=worker_payload,
+            receipts=receipts,
+        )
+
+
 @dataclass(frozen=True)
 class V03DogfoodFullComposition:
     slot: DogfoodSlot
@@ -585,6 +711,10 @@ class V03DogfoodFullComposition:
     responses: OpenAIResponsesProductionBundle
     bundle: Any
     collector: ProductionGhAwVerticalResultCollector
+    recovery_workflows: GhAwVerticalWorkflowMap
+    recovery_dispatch_gateway: GhAwVerticalRoleDispatchGateway
+    recovery_result_source: FirstAttemptDigestBoundGhAwResultSource
+    recovery_collector: DogfoodRecoveryCollector
     policy_authority: Any
 
     @property
@@ -675,6 +805,37 @@ def build_v03_dogfood_full_composition(
         ),
         candidate_provider=candidate_provider,
     )
+    recovery_workflows = GhAwVerticalWorkflowMap(
+        default_branch=DEFAULT_BRANCH,
+        developer_workflow=RECOVERY_DEVELOPER_WORKFLOW,
+        reviewer_workflow=workflows.reviewer_workflow,
+        qa_workflow=workflows.qa_workflow,
+    )
+    recovery_source_config = GitHubActionsGhAwResultSourceConfig(
+        control_repository=control_repository,
+        control_token=actions_token,
+        target_token=target_read_token,
+        workflows=recovery_workflows,
+        collector_identity=COLLECTOR_IDENTITY,
+        api_url=github_api_base,
+    )
+    recovery_result_source = FirstAttemptDigestBoundGhAwResultSource(
+        recovery_source_config,
+        target_repository=config.target_repository,
+    )
+    recovery_transport = DogfoodCandidateBoundActionsTransport(
+        GitHubActionsWorkflowTransportConfig(
+            control_repository=control_repository,
+            token=actions_token,
+            workflows=recovery_workflows,
+            api_url=github_api_base,
+        ),
+        candidate_provider=candidate_provider,
+    )
+    recovery_dispatch_gateway = GhAwVerticalRoleDispatchGateway(
+        transport=recovery_transport,
+        workflows=recovery_workflows,
+    )
     raw_dispatch_gateway = GhAwVerticalRoleDispatchGateway(transport=actions_transport, workflows=workflows)
     dispatch_gateway = DogfoodExecutionBoundDispatchGateway(
         delegate=raw_dispatch_gateway,
@@ -735,6 +896,13 @@ def build_v03_dogfood_full_composition(
         control_repository=control_repository,
         clock=clock,
     )
+    recovery_collector = DogfoodRecoveryCollector(
+        callback_coordinator=callback_coordinator,
+        result_source=recovery_result_source,
+        workflows=recovery_workflows,
+        control_repository=control_repository,
+        clock=clock,
+    )
 
     if responses.runtime is not bundle.runtime or durable_truth.runtime is not responses.runtime:
         raise V03DogfoodCompositionError("Responses/dogfood FeatureTruth escaped unique production Store runtime")
@@ -761,5 +929,9 @@ def build_v03_dogfood_full_composition(
         responses=responses,
         bundle=bundle,
         collector=collector,
+        recovery_workflows=recovery_workflows,
+        recovery_dispatch_gateway=recovery_dispatch_gateway,
+        recovery_result_source=recovery_result_source,
+        recovery_collector=recovery_collector,
         policy_authority=policy_authority,
     )
