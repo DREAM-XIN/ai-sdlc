@@ -887,7 +887,7 @@ def _record_exact_recovery_launch(
 
 
 RECOVERY_SCHEMA = "ai-sdlc.v03-dogfood-bounded-recovery/v1"
-RECOVERY_WORKFLOW = "ai-sdlc-gh-aw-worker-deepseek-v03-local.lock.yml"
+RECOVERY_WORKFLOW = "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml"
 RECOVERY_BASE_PATH = (
     "state/operator/v1/operations/" + HISTORICAL_PREHTTP_RECOVERY["operation_id"]
     + "/dogfood-bounded-recovery"
@@ -1078,8 +1078,8 @@ def _recovery_dispatch_identity(preflight: Any) -> tuple[str, str]:
 def _recovery_worker_blobs() -> dict[str, str]:
     root = Path(__file__).resolve().parents[1]
     paths = (
-        ".github/workflows/ai-sdlc-gh-aw-worker-deepseek-v03-local.md",
-        ".github/workflows/ai-sdlc-gh-aw-worker-deepseek-v03-local.lock.yml",
+        ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md",
+        ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
         ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.md",
         ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.lock.yml",
     )
