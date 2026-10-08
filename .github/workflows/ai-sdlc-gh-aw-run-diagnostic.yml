@@ -1,65 +1,103 @@
-name: AI-SDLC gh-aw Run Diagnostic
-
+name: Verify provider-backed historical Worker credential revocation
 on:
   push:
-    branches:
-      - 'dogfood/gh-aw-diagnose-*'
-    paths:
-      - 'dogfood/gh-aw-diagnose.yaml'
-
+    branches: ['dogfood/gh-aw-diagnose-key-revocation-20261008']
+    paths: ['dogfood/gh-aw-key-revocation.yaml']
 permissions:
-  actions: read
   contents: write
-
 jobs:
-  diagnose:
+  verify-key-fence:
+    if: ${{ github.repository == 'DREAM-XIN/ai-sdlc' && github.ref_name == 'dogfood/gh-aw-diagnose-key-revocation-20261008' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-      - name: Validate exact diagnostic trigger
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - name: Verify exact bounded diagnostic trigger
         run: |
           python - <<'PY'
           import yaml
-          expected = {
-              'version': '0.1.0',
-              'workflow': 'ai-sdlc-gh-aw-worker-gemini.lock.yml',
-              'ref': 'main',
-          }
-          actual = yaml.safe_load(open('dogfood/gh-aw-diagnose.yaml'))
-          if actual != expected:
-              raise SystemExit(f'diagnostic trigger must equal {expected}')
+          expected = {"version": "0.1.0", "purpose": "verify-revoked-historical-worker-key", "historical_run_id": 37204777409}
+          assert yaml.safe_load(open("dogfood/gh-aw-key-revocation.yaml")) == expected
           PY
-      - name: Capture sanitized recent worker run metadata
+      - name: Observe old-key rejection and distinct recovery-key acceptance
         env:
-          GH_TOKEN: ${{ github.token }}
+          OLD_APP_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          RECOVERY_APP_KEY: ${{ secrets.AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY }}
+          RECOVERY_CLIENT_ID: ${{ vars.AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID }}
+        run: |
+          python - <<'PY'
+          import base64, hashlib, json, os, subprocess, tempfile, time
+          from urllib import request, error
+          expected_old_public = "2765aa5be8fe724421236d1ff15fb6ebaccc51b7476d82c27ead7e366cb32636"
+          client_id = "Iv23libojxnnuF43petx"
+          if os.environ.get("RECOVERY_CLIENT_ID") != client_id:
+              raise SystemExit("distinct recovery client-id binding is missing")
+          def b64(raw):
+              return base64.urlsafe_b64encode(raw).rstrip(b"=")
+          def observe(key):
+              if not key:
+                  raise SystemExit("both key inputs must be present for the bounded revocation diagnostic")
+              raw = key.encode("utf-8")
+              public = subprocess.run(["openssl", "pkey", "-pubout", "-outform", "DER"], input=raw, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+              fingerprint = hashlib.sha256(public).hexdigest()
+              now = int(time.time())
+              header = b64(b'{"alg":"RS256","typ":"JWT"}')
+              payload = b64(json.dumps({"iat": now - 60, "exp": now + 300, "iss": client_id}, separators=(",", ":")).encode())
+              unsigned = header + b"." + payload
+              with tempfile.NamedTemporaryFile() as keyfile:
+                  keyfile.write(raw)
+                  keyfile.flush()
+                  signed = subprocess.run(["openssl", "dgst", "-sha256", "-sign", keyfile.name], input=unsigned, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+              jwt = (unsigned + b"." + b64(signed)).decode("ascii")
+              req = request.Request("https://api.github.com/app", method="GET", headers={"Authorization": "Bearer " + jwt, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "ai-sdlc-bounded-worker-credential-fence"})
+              try:
+                  with request.urlopen(req, timeout=30) as response:
+                      status = response.status
+                      body = json.loads(response.read().decode())
+                      headers = response.headers
+                  app_id = body.get("id")
+                  slug = body.get("slug")
+              except error.HTTPError as exc:
+                  status, headers, app_id, slug = exc.code, exc.headers, None, None
+                  exc.close()
+              return {"public_key_sha256": fingerprint, "http_status": status, "app_id": app_id, "app_slug": slug, "github_request_id": headers.get("X-GitHub-Request-Id"), "github_date": headers.get("Date")}
+          old = observe(os.environ.get("OLD_APP_KEY", ""))
+          if old["public_key_sha256"] != expected_old_public:
+              raise SystemExit("historical secret value changed; do not reinterpret the pinned key")
+          new = observe(os.environ.get("RECOVERY_APP_KEY", ""))
+          valid = old["http_status"] == 401 and new["http_status"] == 200 and new["app_id"] == 4576406 and new["app_slug"] == "dream-xin-ai-sdlc-runtime-operator" and new["public_key_sha256"] != expected_old_public
+          doc = {
+              "schema_version": "ai-sdlc.v03-historical-worker-key-revocation-observation/v1",
+              "repository": "dream-xin/ai-sdlc",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "historical_run_id": 37204777409,
+              "historical_workflow_blob_sha": "e618477192ef8cde47cf36a9b162aee1069f3eef",
+              "baseline_run_id": 37723691424,
+              "baseline_source_sha": "0bb45670495271a4c4019bba7a7313d338de0272",
+              "old_credential_identity": "AI_SDLC_RUNTIME_APP_PRIVATE_KEY",
+              "recovery_credential_identity": "AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY",
+              "client_id": client_id,
+              "old_key": old,
+              "recovery_key": new,
+              "status": "REVOCATION_OBSERVED" if valid else "BLOCKED",
+              "provider_invalidation": valid,
+              "future_attempts_fenced": False,
+              "recovery_authority": False,
+              "release_eligible": False,
+          }
+          with open("dogfood/gh-aw-key-revocation-observation.json", "w", encoding="utf-8") as f:
+              json.dump(doc, f, indent=2, sort_keys=True)
+              f.write("\n")
+          print(json.dumps(doc, sort_keys=True))
+          if not valid:
+              raise SystemExit("no provider-backed key revocation observation")
+          PY
+      - name: Persist only successful non-release revocation observation
         run: |
           set -euo pipefail
-          gh run list \
-            --repo "$GITHUB_REPOSITORY" \
-            --workflow ai-sdlc-gh-aw-worker-gemini.lock.yml \
-            --branch main \
-            --limit 10 \
-            --json databaseId,status,conclusion,headBranch,event,createdAt,updatedAt,url \
-            > dogfood/gh-aw-diagnostic.json
-          python - <<'PY'
-          import json
-          path='dogfood/gh-aw-diagnostic.json'
-          data=json.load(open(path))
-          if not isinstance(data, list):
-              raise SystemExit('unexpected run metadata shape')
-          # Persist only GitHub run metadata. No logs, prompts, outputs, or secrets.
-          json.dump(data, open(path,'w'), indent=2, sort_keys=True)
-          open(path,'a').write('\n')
-          PY
-      - name: Persist diagnostic metadata on diagnostic branch
-        run: |
-          git config user.name "ai-sdlc[bot]"
-          git config user.email "ai-sdlc[bot]@users.noreply.github.com"
-          git add -- dogfood/gh-aw-diagnostic.json
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "chore(dogfood): capture gh-aw worker run metadata"
+          git config user.name 'ai-sdlc[bot]'
+          git config user.email 'ai-sdlc[bot]@users.noreply.github.com'
+          git add -- dogfood/gh-aw-key-revocation-observation.json
+          git commit -m 'dogfood: record bounded provider key revocation observation'
           git push origin "HEAD:${GITHUB_REF_NAME}"
