@@ -32,6 +32,10 @@ jobs:
           client_id = "Iv23libojxnnuF43petx"
           if os.environ.get("RECOVERY_CLIENT_ID") != client_id:
               raise SystemExit("distinct recovery client-id binding is missing")
+          class NoRedirect(request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise RuntimeError("unexpected GitHub credential-probe redirect")
+          opener = request.build_opener(NoRedirect())
           def b64(raw):
               return base64.urlsafe_b64encode(raw).rstrip(b"=")
           def observe(key):
@@ -51,7 +55,7 @@ jobs:
               jwt = (unsigned + b"." + b64(signed)).decode("ascii")
               req = request.Request("https://api.github.com/app", method="GET", headers={"Authorization": "Bearer " + jwt, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "ai-sdlc-bounded-worker-credential-fence"})
               try:
-                  with request.urlopen(req, timeout=30) as response:
+                  with opener.open(req, timeout=30) as response:
                       status = response.status
                       body = json.loads(response.read().decode())
                       headers = response.headers
@@ -65,7 +69,7 @@ jobs:
           if old["public_key_sha256"] != expected_old_public:
               raise SystemExit("historical secret value changed; do not reinterpret the pinned key")
           new = observe(os.environ.get("RECOVERY_APP_KEY", ""))
-          valid = old["http_status"] == 401 and new["http_status"] == 200 and new["app_id"] == 4576406 and new["app_slug"] == "dream-xin-ai-sdlc-runtime-operator" and new["public_key_sha256"] != expected_old_public
+          valid = old["http_status"] == 401 and new["http_status"] == 200 and new["app_id"] == 4576406 and new["app_slug"] == "dream-xin-ai-sdlc-runtime-operator" and new["public_key_sha256"] != expected_old_public and all(item.get("github_request_id") and item.get("github_date") for item in (old, new))
           doc = {
               "schema_version": "ai-sdlc.v03-historical-worker-key-revocation-observation/v1",
               "repository": "dream-xin/ai-sdlc",
