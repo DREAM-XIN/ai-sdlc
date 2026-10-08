@@ -77,6 +77,7 @@ checkout:
   ref: ${{ inputs.candidate_head_sha }}
   fetch-depth: 0
   current: true
+  persist-credentials: false
   github-token: ${{ secrets.GITHUB_TOKEN }}
 safe-outputs:
   github-token: ${{ secrets.GITHUB_TOKEN }}
