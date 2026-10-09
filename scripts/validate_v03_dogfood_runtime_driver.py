@@ -1102,6 +1102,11 @@ def pinned_provider_revocation_tests():
         patch.object(subject.urlrequest, "urlopen", side_effect=fake_get),
     ):
         fence = subject._observe_provider_rotation(live_env)
+        replay_fence = subject._observe_provider_rotation(live_env)
+        expect(fence["fence_digest"] == replay_fence["fence_digest"],
+               "rechecked provider authentication changed frozen CAS recovery identity")
+        expect(fence["observed_at"] == observed["old_key"]["github_date"],
+               "provider fence uses a mutable local clock rather than immutable observation")
         expect(fence["historical_status"] == 401 and fence["recovery_status"] == 200
                and fence["provider_observation_run_id"] == run_id
                and fence["provider_observation_blob_sha"] == blob_sha,
@@ -1118,8 +1123,8 @@ def pinned_provider_revocation_tests():
                 pass
             else:
                 raise AssertionError("unsafe key configuration passed provider fence")
-    expect(calls == [("https://api.github.com/app", "GET", 20)],
-           "new-key probe made extra or misdirected provider requests")
+    expect(calls == [("https://api.github.com/app", "GET", 20)] * 2,
+           "two bounded new-key checks made extra or misdirected provider requests")
     print("- pinned provider run/jobs/source/tree/blob and legacy-secret/new-key fences validated")
 
 
