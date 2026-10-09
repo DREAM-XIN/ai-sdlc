@@ -174,6 +174,9 @@ def recovery_execution_binding(policy_authority):
 
 
 def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
+    if post_handoff_present(snapshot):
+        attestation, _, _ = validate_post_handoff_reconciliation(snapshot, consumer_binding=execution_binding)
+        execution_binding = attestation["producer_execution_binding"]
     route = recovery_route(snapshot)
     authorization, attempt, continuation = route["authorization"], route["attempt"], route["bridge"]
     artifact = sealed.get("safe_output_artifact_proof") if isinstance(sealed, dict) else None
@@ -646,6 +649,383 @@ def read_dogfood_handoff(snapshot, operation_id, callback_id, *, require_applied
 
 
 
+# Fixed post-handoff reconsideration of one successful execution. This never
+# authorizes an execution, a candidate-ref write, or a second reconciliation.
+POST_HANDOFF_ADMISSION = {
+    "uri": "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6077801329",
+    "body_digest": "sha256:9bc48d9ea996dbe503b46de35279380d94ac6470c54b8234188a2012d87fa9d0",
+}
+POST_HANDOFF_PATH = REPLACEMENT_BASE_PATH + "/post-handoff-reconciliation-1.json"
+POST_HANDOFF_STORE = "d3ccde10fb3f30e29d27e51bcc82fb9ce49c93f9"
+POST_HANDOFF_SOURCE = "6e75792b8e441167cfaadab2d13667a2d80721b8"
+POST_HANDOFF_RUN = 37905505035
+POST_HANDOFF_PR = 577
+POST_HANDOFF_HEAD = "a7b208a49668fb9ae16de908a52418106c616819"
+POST_HANDOFF_CALLBACK = "gh-aw-recovery-callback-1e23a4b1837d62c529fb4002"
+POST_HANDOFF_FACT_BASE = (
+    f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-candidate-handoffs/"
+    "1f546bd51bfea6214480ecea7789f74bb7c26356a2362357f4bd22aa0367b7be"
+)
+POST_HANDOFF_DOCUMENT_BLOBS = {
+    REPLACEMENT_AUTHORIZATION_PATH: "e68d45041c47083c2da5521aa325fcf58bef256b",
+    REPLACEMENT_ATTEMPT_PATH: "706888dddd1acc157cdbeb5b54ace6539125e16b",
+    REPLACEMENT_RECEIPT_PATH: "7558b2b3ffe08bb255d3c287fffa49f5fc988f0e",
+    POST_HANDOFF_FACT_BASE + "/intent.json": "da06cd8849fff194e3cdbeb1df54d3efa69f850e",
+    POST_HANDOFF_FACT_BASE + "/applied.json": "eb63e61ff00ae20bbe465d205c98924056e77827",
+}
+POST_HANDOFF_HISTORY_BLOBS = REPLACEMENT_HISTORY_BLOBS + [
+    "d773017efeec4ceccd65aaf28c1574c5aa6c9f69",
+    "93c3c64ea155b65bdbeaf78eed0067590aed9ede",
+    "5a6969ba938f6153705d999065f786d4bb3159ec",
+]
+
+
+def post_handoff_present(snapshot):
+    return POST_HANDOFF_PATH in snapshot.files
+
+
+def validate_post_handoff_predecessor(snapshot):
+    """Keep the entire rejected observation and applied handoff immutable."""
+    validate_replacement_chain(snapshot)
+    events = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    if (len(events) < 15
+            or [_recovery_document_blob(row) for row in events[:15]] != POST_HANDOFF_HISTORY_BLOBS
+            or any(not isinstance(snapshot.get(path), dict)
+                   or _recovery_document_blob(snapshot.get(path)) != blob
+                   for path, blob in POST_HANDOFF_DOCUMENT_BLOBS.items())):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff frozen predecessor changed")
+    sealed = snapshot.get(REPLACEMENT_RECEIPT_PATH)
+    if (sealed["receipt_id"] != str(POST_HANDOFF_RUN)
+            or sealed["execution_source_head_sha"] != POST_HANDOFF_SOURCE
+            or sealed["output_candidate_pr_number"] != POST_HANDOFF_PR
+            or sealed["output_candidate_head_sha"] != POST_HANDOFF_HEAD):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff producer identity differs")
+    return sealed, events
+
+
+def post_handoff_observation_id(attestation):
+    identity = {key: value for key, value in attestation.items()
+                if key not in {"created_at", "observation_callback_id"}}
+    return "gh-aw-post-handoff-observation-" + digest_json(identity)[:24]
+
+
+def validate_post_handoff_reconciliation(snapshot, *, consumer_binding=None):
+    sealed, events = validate_post_handoff_predecessor(snapshot)
+    attestation = snapshot.get(POST_HANDOFF_PATH)
+    if not isinstance(attestation, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff attestation is missing or malformed")
+    expected = {
+        "schema_version": "ai-sdlc.v03-post-handoff-reconciliation/v1",
+        "ordinal": 1, "operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+        "predecessor_store_commit": POST_HANDOFF_STORE,
+        "predecessor_event_blobs": POST_HANDOFF_HISTORY_BLOBS,
+        "predecessor_document_blobs": POST_HANDOFF_DOCUMENT_BLOBS,
+        "original_callback_id": POST_HANDOFF_CALLBACK,
+        "original_callback_envelope_digest": events[12]["payload"]["trusted_callback_envelope_digest"],
+        "producer_execution_binding": {key: sealed[key] for key in recovery_execution_binding_fields()},
+        "producer_run_id": POST_HANDOFF_RUN, "output_pr_number": POST_HANDOFF_PR,
+        "output_head_sha": POST_HANDOFF_HEAD, "execution_authority": False,
+    }
+    extras = {"consumer_execution_binding", "closed_pr_attestation", "historical_open_binding",
+              "observation_callback_id", "created_at", "admission"}
+    binding = attestation.get("consumer_execution_binding")
+    if (set(attestation) != set(expected) | extras
+            or any(canonical_json(attestation.get(k)) != canonical_json(v) for k, v in expected.items())
+            or type(attestation.get("ordinal")) is not int
+            or not isinstance(binding, dict) or set(binding) != set(recovery_execution_binding_fields())
+            or not _SHA40.fullmatch(str(binding.get("execution_source_head_sha") or ""))
+            or binding["execution_source_head_sha"] == POST_HANDOFF_SOURCE
+            or not _SHA40.fullmatch(str(binding.get("execution_materialization_commit_sha") or ""))
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(binding.get(k) or ""))
+                   for k in ("execution_policy_bundle_digest", "execution_policy_receipt_digest"))
+            or (consumer_binding is not None and binding != consumer_binding)
+            or not attestation.get("created_at")
+            or attestation.get("observation_callback_id") != post_handoff_observation_id(attestation)):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff reconciliation authority differs")
+    _, closed, historical = post_handoff_binding_material(snapshot)
+    if (attestation["admission"] != POST_HANDOFF_ADMISSION
+            or attestation["closed_pr_attestation"] != closed
+            or attestation["historical_open_binding"] != historical):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff historical/current observations differ")
+    new_id = attestation["observation_callback_id"]
+    callbacks = [e for e in events if e["event_type"] == "worker.callback.recorded"
+                 and (e["payload"].get("trusted_callback_envelope") or {}).get("trusted_context", {}).get("role") == "developer"]
+    if (len(callbacks) != 2 or callbacks[0] != events[12]
+            or callbacks[1]["sequence"] != 16 or callbacks[1]["operation_generation"] != 1
+            or callbacks[1]["payload"].get("callback_id") != new_id
+            or {k: v for k, v in callbacks[1]["payload"].items() if k != "callback_id"}
+               != {k: v for k, v in events[12]["payload"].items() if k != "callback_id"}):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff observation relation changed")
+    return attestation, events[12], callbacks[1]
+
+
+def recovery_execution_binding_fields():
+    return ("execution_source_head_sha", "execution_policy_bundle_digest",
+            "execution_materialization_commit_sha", "execution_policy_receipt_digest")
+
+
+def post_handoff_binding_material(snapshot):
+    sealed, events = validate_post_handoff_predecessor(snapshot)
+    receipt = events[12]["payload"]["trusted_callback_envelope"]["collected_outputs"][0]
+    content = (canonical_json({
+        "repository": sealed["target_repository"], "pr_number": POST_HANDOFF_PR,
+        "pr_url": sealed["safe_output_artifact_proof"]["pr_url"],
+        "base_ref": sealed["target_ref"], "head_sha": POST_HANDOFF_HEAD,
+    }) + "\n").encode("utf-8")
+    historical = {
+        "kind": "developer-pr", "repository": sealed["target_repository"],
+        "pr_number": POST_HANDOFF_PR, "pr_url": sealed["safe_output_artifact_proof"]["pr_url"],
+        "state": "open", "draft": True, "base_ref": sealed["target_ref"],
+        "head_ref": "gh-aw/F-OPERATOR-V03-DOGFOOD-HAPPY-0001-37905505035-v1-02ee4804c679cf64",
+        "head_sha": POST_HANDOFF_HEAD, "content_sha256": hashlib.sha256(content).hexdigest(),
+    }
+    location = _DEVELOPER_PR_URI.fullmatch(sealed["safe_output_uri"])
+    if (len(content) != receipt["size_bytes"] or historical["content_sha256"] != receipt["sha256"]
+            or digest_json(historical) != location.group("binding")):
+        raise VerticalInvariantError("POLICY_DENIED", "pinned historical PR material differs")
+    current = dict(historical, state="closed")
+    return content, {
+        "current_binding_material": current,
+        "current_binding_digest": "sha256:" + digest_json(current),
+        "state": "closed", "merged": True, "draft": True,
+        "merge_commit_sha": POST_HANDOFF_HEAD,
+        "merged_at": "2026-10-09T08:47:29Z", "closed_at": "2026-10-09T08:47:29Z",
+        "merged_by": {"login": "dream-xin-ai-sdlc-runtime-operator[bot]", "id": 316394104, "type": "Bot"},
+        "artifact_proof": sealed["safe_output_artifact_proof"],
+    }, {
+        "material": historical, "digest": digest_json(historical),
+        "trusted_uri": sealed["safe_output_uri"], "content_sha256": receipt["sha256"],
+        "size_bytes": receipt["size_bytes"],
+    }
+
+
+def plan_post_handoff_reconciliation(snapshot, *, consumer_binding, closed_pr_attestation,
+                                     historical_open_binding, occurred_at, trusted_context_digest):
+    from operator_store_model import apply_plan_to_snapshot
+    sealed, events = validate_post_handoff_predecessor(snapshot)
+    if post_handoff_present(snapshot):
+        attestation, _, observation = validate_post_handoff_reconciliation(
+            snapshot, consumer_binding=consumer_binding)
+        failed = [e for e in events[16:] if e["event_type"] == "worker.result.rejected"
+                  and e["payload"].get("callback_id") == attestation["observation_callback_id"]]
+        if failed:
+            raise VerticalInvariantError("BLOCKED", "the single reconciled observation was rejected")
+        return StoreMutationPlan(snapshot.ref_sha, (), {"acquired": False, "attestation": attestation,
+                                                       "callback": observation["payload"]})
+    projection = rebuild_projection(snapshot, RECOVERY_OPERATION_ID)
+    if (len(events) != 15 or projection["generation"] != 1 or projection["status"] != "BLOCKED"
+            or projection["expected_feature_revision"] != 1
+            or projection["unresolved_unknown"] or projection["lineage_blocks"]
+            or projection["pending_decisions"] or projection["requested_persists"]
+            or projection["linearized_persists"] or projection["confirmed_persists"]):
+        raise VerticalInvariantError("POLICY_DENIED", "reconciliation escaped exact rejected callback boundary")
+    _, expected_closed, expected_historical = post_handoff_binding_material(snapshot)
+    if closed_pr_attestation != expected_closed or historical_open_binding != expected_historical:
+        raise VerticalInvariantError("POLICY_DENIED", "reconciliation fresh proof differs from fixed transition")
+    attestation = {
+        "schema_version": "ai-sdlc.v03-post-handoff-reconciliation/v1",
+        "ordinal": 1, "operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+        "predecessor_store_commit": POST_HANDOFF_STORE,
+        "predecessor_event_blobs": POST_HANDOFF_HISTORY_BLOBS,
+        "predecessor_document_blobs": POST_HANDOFF_DOCUMENT_BLOBS,
+        "original_callback_id": POST_HANDOFF_CALLBACK,
+        "original_callback_envelope_digest": events[12]["payload"]["trusted_callback_envelope_digest"],
+        "producer_execution_binding": {key: sealed[key] for key in recovery_execution_binding_fields()},
+        "producer_run_id": POST_HANDOFF_RUN, "output_pr_number": POST_HANDOFF_PR,
+        "output_head_sha": POST_HANDOFF_HEAD, "execution_authority": False,
+        "consumer_execution_binding": dict(consumer_binding),
+        "closed_pr_attestation": closed_pr_attestation,
+        "historical_open_binding": historical_open_binding,
+        "admission": POST_HANDOFF_ADMISSION,
+        "created_at": occurred_at,
+    }
+    attestation["observation_callback_id"] = post_handoff_observation_id(attestation)
+    mutation = StoreMutation("create_immutable", POST_HANDOFF_PATH, attestation)
+    provisional = apply_plan_to_snapshot(snapshot, StoreMutationPlan(snapshot.ref_sha, (mutation,), {}))
+    envelope = events[12]["payload"]["trusted_callback_envelope"]
+    plan = plan_vertical_callback_record(
+        provisional, context=TrustedDispatchContext(**envelope["trusted_context"]),
+        callback_id=attestation["observation_callback_id"], worker_payload=envelope["worker_payload"],
+        receipts=envelope["collected_outputs"], occurred_at=occurred_at,
+        trusted_context_digest=trusted_context_digest,
+    )
+    complete = apply_plan_to_snapshot(provisional, plan)
+    validate_post_handoff_reconciliation(complete, consumer_binding=consumer_binding)
+    return StoreMutationPlan(snapshot.ref_sha, (mutation, *plan.mutations),
+        {"acquired": True, "attestation": attestation,
+         "callback": operation_events(complete, RECOVERY_OPERATION_ID)[15]["payload"]})
+
+
+def observe_post_handoff_pr(source, snapshot):
+    """Authenticate current closure separately from the historical open receipt."""
+    sealed, events = validate_post_handoff_predecessor(snapshot)
+    pr = source._json(source.target_repository, f"/pulls/{POST_HANDOFF_PR}", source.config.target_token)
+    expected_url = f"https://github.com/{source.target_repository}/pull/{POST_HANDOFF_PR}"
+    before = events[12]["payload"]["trusted_callback_envelope"]
+    receipt = before["collected_outputs"][0]
+    head = pr.get("head") or {} if isinstance(pr, dict) else {}
+    base = pr.get("base") or {} if isinstance(pr, dict) else {}
+    if (not isinstance(pr, dict) or type(pr.get("number")) is not int or pr["number"] != POST_HANDOFF_PR
+            or pr.get("state") != "closed" or pr.get("merged") is not True or pr.get("draft") is not True
+            or pr.get("merge_commit_sha") != POST_HANDOFF_HEAD or head.get("sha") != POST_HANDOFF_HEAD
+            or pr.get("merged_at") != "2026-10-09T08:47:29Z" or pr.get("closed_at") != pr["merged_at"]
+            or (pr.get("merged_by") or {}).get("login") != "dream-xin-ai-sdlc-runtime-operator[bot]"
+            or (pr.get("merged_by") or {}).get("id") != 316394104
+            or (pr.get("merged_by") or {}).get("type") != "Bot"
+            or str(pr.get("html_url") or "").lower() != expected_url
+            or base.get("ref") != sealed["target_ref"]
+            or base.get("sha") != sealed["candidate_head_sha"]
+            or str((base.get("repo") or {}).get("full_name") or "").lower() != source.target_repository
+            or str((head.get("repo") or {}).get("full_name") or "").lower() != source.target_repository
+            or head.get("ref") != "gh-aw/F-OPERATOR-V03-DOGFOOD-HAPPY-0001-37905505035-v1-02ee4804c679cf64"):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff PR is not the exact authenticated closure")
+    content = source._developer_content_for_target(pr)
+    if (len(content) != receipt["size_bytes"]
+            or hashlib.sha256(content).hexdigest() != receipt["sha256"]):
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff immutable content differs")
+    current_material = source._developer_binding_material(pr, content)
+    # This is explicitly historical digest material, never a changed provider response.
+    historical_material = dict(current_material, state="open")
+    location = _DEVELOPER_PR_URI.fullmatch(sealed["safe_output_uri"])
+    if source._binding_digest(historical_material) != location.group("binding"):
+        raise VerticalInvariantError("POLICY_DENIED", "historical open-state receipt cannot be re-established")
+    proof = source._run_owned_safe_output(run_id=POST_HANDOFF_RUN, source_head_sha=POST_HANDOFF_SOURCE, pr=pr)
+    if proof != sealed["safe_output_artifact_proof"]:
+        raise VerticalInvariantError("POLICY_DENIED", "post-handoff artifact changed")
+    closed = {
+        "current_binding_material": current_material,
+        "current_binding_digest": "sha256:" + digest_json(current_material),
+        "state": pr["state"], "merged": pr["merged"], "draft": pr["draft"],
+        "merge_commit_sha": pr["merge_commit_sha"], "merged_at": pr["merged_at"],
+        "closed_at": pr["closed_at"],
+        "merged_by": {k: pr["merged_by"][k] for k in ("login", "id", "type")},
+        "artifact_proof": proof,
+    }
+    historical = {"material": historical_material, "digest": source._binding_digest(historical_material),
+                  "trusted_uri": sealed["safe_output_uri"], "content_sha256": receipt["sha256"],
+                  "size_bytes": receipt["size_bytes"]}
+    if post_handoff_present(snapshot):
+        attestation, _, _ = validate_post_handoff_reconciliation(snapshot)
+        if (attestation["closed_pr_attestation"] != closed
+                or attestation["historical_open_binding"] != historical):
+            raise VerticalInvariantError("POLICY_DENIED", "post-handoff observation changed after authorization")
+    return pr, content, closed, historical
+
+from operator_vertical_reconcile_classified import FailureClassifyingTrustedRecoveringVerticalExecutor
+
+
+class DogfoodPostHandoffRecoveringExecutor(FailureClassifyingTrustedRecoveringVerticalExecutor):
+    """Same protected executor base, with one explicit observation supersession."""
+    def _reconcile_callback(self, operation_id: str) -> bool | None:
+        snapshot = self.runtime.backend.read_snapshot()
+        if operation_id != RECOVERY_OPERATION_ID or not post_handoff_present(snapshot):
+            return super()._reconcile_callback(operation_id)
+        attestation, original, observation = validate_post_handoff_reconciliation(
+            snapshot, consumer_binding=recovery_execution_binding(self.post_handoff_policy_authority))
+        current = self._public(operation_id)
+        if current["status"] in {"CANCELLED", "DONE", "NEEDS_USER"}:
+            return None
+        events = self._events(operation_id)
+        rejected: dict[str, dict[str, Any]] = {}
+        for event in events:
+            if event["event_type"] != "worker.result.rejected":
+                continue
+            payload = event.get("payload") or {}
+            callback_id = str(payload.get("callback_id") or "")
+            if callback_id:
+                rejected[callback_id] = dict(payload)
+        translated = {
+            str((event.get("payload") or {}).get("callback_id"))
+            for event in events
+            if event["event_type"] == "feature.event.translated"
+            and (event.get("payload") or {}).get("callback_id")
+        }
+        validated = {
+            str((event.get("payload") or {}).get("callback_id"))
+            for event in events
+            if event["event_type"] == "worker.result.validated"
+            and (event.get("payload") or {}).get("callback_id")
+        }
+        generation = self._projection(operation_id)["generation"]
+        for event in events:
+            if event["event_type"] != "worker.callback.recorded":
+                continue
+            if int(event["operation_generation"]) != generation:
+                continue
+            payload = event.get("payload") or {}
+            callback_id = str(payload.get("callback_id") or "")
+            if callback_id == POST_HANDOFF_CALLBACK:
+                continue  # Only the independently authenticated rejected observation.
+            if not callback_id or callback_id in translated:
+                continue
+            rejection = rejected.get(callback_id)
+            if rejection is not None:
+                code = str(rejection.get("code") or "")
+                reason = str(rejection.get("reason") or "durable callback result rejection")
+                if code == "NEEDS_USER":
+                    if current["status"] != "NEEDS_USER":
+                        self._stable_stop(operation_id, status="NEEDS_USER", reason=reason)
+                        return True
+                    continue
+                if code in {"BLOCKED", "POLICY_DENIED", "STALE_REVISION"}:
+                    if current["status"] != "BLOCKED":
+                        self._stable_stop(operation_id, status="BLOCKED", reason=reason)
+                        return True
+                    continue
+                continue
+            if callback_id in validated and current["status"] in {"BLOCKED", "NEEDS_USER"}:
+                continue
+            envelope = recover_vertical_callback(
+                self.runtime.backend.read_snapshot(),
+                operation_id=operation_id,
+                callback_id=callback_id,
+            )
+            context = TrustedDispatchContext(**dict(envelope["trusted_context"]))
+            process_recorded_callback(
+                self,
+                context=context,
+                callback_id=callback_id,
+                worker_payload=dict(envelope["worker_payload"]),
+                receipts=list(envelope["collected_outputs"]),
+                trusted_role_policy=self.trusted_role_policy,
+                collector_namespace_policy=self.collector_namespace_policy,
+                content_loader=self.content_loader,
+                continue_after=False,
+            )
+            return True
+        return None
+
+
+def install_post_handoff_executor(responses, policy_authority):
+    from dataclasses import replace
+    bundle = responses.operator_bundle
+    previous = bundle.executor
+    if not isinstance(previous, FailureClassifyingTrustedRecoveringVerticalExecutor):
+        raise V03DogfoodCompositionError("dogfood reconciliation lacks production recovering executor")
+    executor = DogfoodPostHandoffRecoveringExecutor(
+        base_executor=previous.base, content_loader=previous.content_loader,
+        trusted_role_policy=previous.trusted_role_policy,
+        collector_namespace_policy=previous.collector_namespace_policy,
+    )
+    executor.post_handoff_policy_authority = policy_authority
+    bundle.callback_coordinator.executor = executor
+    seen = set()
+    for backends in (bundle.backends, bundle.vertical_bundle.api_backends, responses.backends):
+        for backend in backends.values():
+            if id(backend) in seen:
+                continue
+            seen.add(id(backend))
+            if getattr(backend, "executor", None) is previous:
+                backend.executor = executor
+    vertical = replace(bundle.vertical_bundle, executor=executor)
+    bundle = replace(bundle, vertical_bundle=vertical)
+    responses = replace(responses, operator_bundle=bundle)
+    if (bundle.executor.base is not previous.base or bundle.runtime is not previous.runtime
+            or bundle.callback_coordinator.executor is not executor
+            or bundle.backends["operation.start"].executor is not executor):
+        raise V03DogfoodCompositionError("dogfood reconciliation split production authority")
+    return responses
+
 class DogfoodGitHubCandidateProvider:
     """Fresh-read exactly one same-repository PR for one immutable dogfood slot."""
 
@@ -719,9 +1099,16 @@ class DogfoodGitHubCandidateProvider:
                     translated.setdefault(payload["callback_id"], payload["feature_event_id"])
             elif kind == "persist.confirmed":
                 confirmed.add(payload.get("feature_event_id"))
+        reconciliation = None
+        if post_handoff_present(snapshot):
+            reconciliation, _, _ = validate_post_handoff_reconciliation(snapshot)
         pending = []
         for callback_id in callbacks:
-            if translated.get(callback_id) in confirmed:
+            if reconciliation and callback_id == reconciliation["observation_callback_id"]:
+                continue
+            lifecycle_id = (reconciliation["observation_callback_id"]
+                            if reconciliation and callback_id == POST_HANDOFF_CALLBACK else callback_id)
+            if translated.get(lifecycle_id) in confirmed:
                 continue
             fact = read_dogfood_handoff(snapshot, operation_id, callback_id)
             if fact is not None:
@@ -771,6 +1158,47 @@ class DogfoodGitHubCandidateProvider:
             raise V03DogfoodCompositionError("dogfood candidate PR repository/ref/head authority drifted")
         return row
 
+
+    def _validate_pending_persist_head(self, snapshot, pending, current_head, lifecycle_id):
+        """Permit only independently observed canonical in-progress Persist bytes."""
+        gateway = getattr(self, "persist_gateway", None)
+        gateway = getattr(gateway, "delegate", gateway)
+        from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+        if not isinstance(gateway, DurableVerticalFeaturePersistGateway):
+            raise V03DogfoodCompositionError("advanced handoff lacks canonical Persist authority")
+        translated = [e["payload"] for e in operation_events(snapshot, pending["operation_id"])
+                      if e["event_type"] == "feature.event.translated"
+                      and e["payload"].get("callback_id") == lifecycle_id]
+        if len(translated) != 1:
+            raise V03DogfoodCompositionError("advanced handoff lacks exact translated Event")
+        binding = gateway._resolve(event_id=translated[0]["feature_event_id"], target_ref=pending["target_ref"])
+        receipt = gateway.event_gateway.lookup_receipt(feature_id=binding.feature_id,
+            event_id=binding.event_id, expected_revision=binding.expected_revision,
+            expected_event_digest=gateway._canonical_event_digest(binding))
+        if receipt.state not in {"PENDING", "APPLIED"}:
+            raise V03DogfoodCompositionError("pending Persist has no independent receipt")
+        current_head = self._candidate()["head"]["sha"]
+        status, comparison = self.http_get(
+            f"{self.api_base}/repos/{self.repository}/compare/{pending['source_candidate_head_sha']}...{current_head}",
+            self._headers())
+        rows = comparison.get("files") if isinstance(comparison, dict) else None
+        commits = comparison.get("commits") if isinstance(comparison, dict) else None
+        manifest_path = f"state/features/{binding.feature_id}.yaml"
+        allowed = {receipt.event_path: receipt.event_blob_sha, manifest_path: receipt.manifest_blob_sha}
+        if (status != 200 or not isinstance(rows, list) or not 1 <= len(rows) <= 2
+                or not isinstance(commits, list) or type(comparison.get("total_commits")) is not int
+                or not 1 <= len(commits) == comparison["total_commits"] <= 4
+                or comparison.get("status") != "ahead" or comparison.get("behind_by") != 0
+                or (comparison.get("merge_base_commit") or {}).get("sha") != pending["source_candidate_head_sha"]
+                or len({row.get("filename") for row in rows}) != len(rows)
+                or any(row.get("filename") not in allowed or row.get("sha") != allowed[row["filename"]]
+                       or row.get("status") not in {"added", "modified", "removed"} for row in rows)
+                or (receipt.state == "PENDING" and {row["filename"] for row in rows} != {receipt.event_path})
+                or (receipt.state == "APPLIED" and manifest_path not in {row["filename"] for row in rows})):
+            raise V03DogfoodCompositionError("pending handoff contains noncanonical Persist changes")
+        if self._candidate()["head"]["sha"] != current_head:
+            raise V03DogfoodCompositionError("candidate changed during pending Persist verification")
+
     def current_candidate(self, *, operation_id: str, repository: str, feature_id: str, target_ref: str) -> TrustedCandidateSnapshot:
         if (
             not operation_id
@@ -789,9 +1217,16 @@ class DogfoodGitHubCandidateProvider:
                 int(pending.get("fixture_candidate_pr_number") or 0) != int(row["number"])
                 or not _SHA40.fullmatch(adopted_head)
                 or not _SHA40.fullmatch(prior_head)
-                or current_head not in {prior_head, adopted_head}
             ):
                 raise V03DogfoodCompositionError("incomplete handoff no longer matches fixed candidate lineage")
+            if current_head not in {prior_head, adopted_head}:
+                snapshot = self.runtime.backend.read_snapshot()
+                lifecycle_id = pending["callback_id"]
+                if post_handoff_present(snapshot):
+                    attestation, _, _ = validate_post_handoff_reconciliation(snapshot)
+                    if lifecycle_id == POST_HANDOFF_CALLBACK:
+                        lifecycle_id = attestation["observation_callback_id"]
+                self._validate_pending_persist_head(snapshot, pending, current_head, lifecycle_id)
             current_head = prior_head
         return TrustedCandidateSnapshot(
             candidate_pr_number=int(row["number"]),
@@ -1034,18 +1469,27 @@ class DogfoodTrustedCallbackCoordinator:
                 trusted_context_digest=self.executor.config.trusted_context_digest,
             )
         )
+        reconciled = False
+        snapshot = self.executor.runtime.backend.read_snapshot()
+        if post_handoff_present(snapshot):
+            attestation, _, observation = validate_post_handoff_reconciliation(snapshot)
+            reconciled = callback_id == attestation["observation_callback_id"]
+            if reconciled and observation["payload"]["trusted_callback_envelope"] != {
+                    "trusted_context": _context_payload(context),
+                    "worker_payload": worker_payload, "collected_outputs": receipts}:
+                raise VerticalInvariantError("POLICY_DENIED", "reconciled callback envelope differs")
         if context.role == "developer":
             feature, _ = self.executor.feature_gateway.read_feature(operation_id=context.operation_id)
             validate_collected_outputs(
                 context=context, feature=feature, worker_payload=worker_payload,
                 receipts=receipts, content_loader=self.delegate.content_loader,
             )
-            self.candidate_handoff.adopt(
-                executor=self.executor,
-                context=context,
-                callback_id=callback_id,
-                receipts=receipts,
-            )
+            if not reconciled:
+                self.candidate_handoff.adopt(
+                    executor=self.executor, context=context, callback_id=callback_id, receipts=receipts,
+                )
+            else:
+                read_dogfood_handoff(snapshot, context.operation_id, POST_HANDOFF_CALLBACK, require_applied=True)
         result = process_recorded_callback(
             self.executor,
             context=context,
@@ -1311,6 +1755,47 @@ class DogfoodExecutionBoundDispatchGateway:
 
 
 class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource):
+    def bind_post_handoff(self, runtime, policy_authority):
+        self.post_handoff_runtime = runtime
+        self.post_handoff_policy_authority = policy_authority
+
+    def _post_handoff_snapshot(self):
+        runtime = getattr(self, "post_handoff_runtime", None)
+        if runtime is None:
+            return None
+        snapshot = runtime.backend.read_snapshot()
+        seal = snapshot.get(REPLACEMENT_RECEIPT_PATH)
+        if not post_handoff_present(snapshot) and (
+                not isinstance(seal, dict) or seal.get("receipt_id") != str(POST_HANDOFF_RUN)):
+            return None
+        validate_post_handoff_predecessor(snapshot)
+        if post_handoff_present(snapshot):
+            validate_post_handoff_reconciliation(snapshot, consumer_binding=recovery_execution_binding(
+                self.post_handoff_policy_authority))
+        return snapshot
+
+    def load_content(self, uri):
+        snapshot = self._post_handoff_snapshot()
+        if snapshot is None:
+            return super().load_content(uri)
+        sealed, _ = validate_post_handoff_predecessor(snapshot)
+        validate_post_handoff_reconciliation(snapshot, consumer_binding=recovery_execution_binding(
+            self.post_handoff_policy_authority))
+        if uri != sealed["safe_output_uri"]:
+            raise VerticalInvariantError("POLICY_DENIED", "post-handoff content is not original sealed URI")
+        before = self._first_attempt_run_snapshot(
+            run_id=POST_HANDOFF_RUN, external_dispatch_key=sealed["recovery_dispatch_key"])
+        match = _FIRST_ATTEMPT_URI_RE.fullmatch(uri)
+        if before["head_sha"] != POST_HANDOFF_SOURCE or digest_json(before) != match.group("lease"):
+            raise VerticalInvariantError("POLICY_DENIED", "post-handoff first-attempt lease changed")
+        _, content, _, _ = observe_post_handoff_pr(self, snapshot)
+        after = self._first_attempt_run_snapshot(
+            run_id=POST_HANDOFF_RUN, external_dispatch_key=sealed["recovery_dispatch_key"])
+        if not self._same_run_snapshot(before, after):
+            raise VerticalInvariantError("POLICY_DENIED", "post-handoff run changed while loading")
+        return content
+
+
     """Resolve the recovery Developer Draft PR from exact run-bound GitHub truth.
 
     The recovery Worker deliberately has no lifecycle conclusion dispatch.  Its
@@ -1555,11 +2040,21 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
         if not feature_id or expected_revision < 1 or not target_ref or not task_id or not dispatch_id:
             raise VerticalInvariantError("BLOCKED", "recovery protected context lacks exact task/candidate binding")
         prefix = f"gh-aw/{feature_id}-{run_id}-v{expected_revision}"
+        post_snapshot = self._post_handoff_snapshot()
+        if post_snapshot is not None:
+            sealed, _ = validate_post_handoff_predecessor(post_snapshot)
+            if (run_id != POST_HANDOFF_RUN or external_dispatch_key != sealed["recovery_dispatch_key"]
+                    or target_ref != sealed["target_ref"] or task_id != sealed["task_id"]
+                    or feature_id != sealed["feature_id"] or expected_revision != 1
+                    or dispatch_id != sealed["collector_dispatch_id"]):
+                raise VerticalInvariantError("POLICY_DENIED", "post-handoff resolution escaped fixed producer")
+            archived_pr, _, _, _ = observe_post_handoff_pr(self, post_snapshot)
         query = parse.urlencode({"state": "open", "base": target_ref, "per_page": 100})
-        listed = self._json(self.target_repository, f"/pulls?{query}", self.config.target_token)
+        listed = ([archived_pr] if post_snapshot is not None else
+                  self._json(self.target_repository, f"/pulls?{query}", self.config.target_token))
         candidates = [
             row for row in listed if isinstance(row, dict)
-            and row.get("state") == "open"
+            and (row.get("state") == "open" or (post_snapshot is not None and row.get("state") == "closed"))
             and row.get("draft") is True
             and str(row.get("title") or "").startswith("[ai-sdlc gh-aw] ")
             and str((row.get("head") or {}).get("ref") or "").startswith(prefix)
@@ -1576,7 +2071,7 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
             or int(pr.get("number") or 0) != number
             or number < 1
             or (external_dispatch_key != ARMED_RECOVERY_KEY and (number == REPLACEMENT_FAILED_PR or head_sha == REPLACEMENT_FAILED_HEAD))
-            or pr.get("state") != "open"
+            or (pr.get("state") != "open" and not (post_snapshot is not None and pr.get("state") == "closed"))
             or pr.get("draft") is not True
             or str((pr.get("base") or {}).get("ref") or "") != target_ref
             or not _SHA40.fullmatch(head_sha)
@@ -1619,7 +2114,12 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
             f"docs/features/{feature_id}/worker-runs/{dispatch_id}/developer-pr-{number}-{head_sha}.json",
         )
         resolved = TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(base,))
-        bound = self._revalidate_developer(resolved=resolved, trusted_context=trusted_context, base_uri=base.trusted_uri)
+        if post_snapshot is not None:
+            observe_post_handoff_pr(self, post_snapshot)
+            original = _FIRST_ATTEMPT_URI_RE.fullmatch(sealed["safe_output_uri"])
+            bound = MaterializedGhAwOutput("implementation", "artifact", "application/json", original.group("base") + ".json")
+        else:
+            bound = self._revalidate_developer(resolved=resolved, trusted_context=trusted_context, base_uri=base.trusted_uri)
         leased = MaterializedGhAwOutput(
             label=bound.label,
             kind=bound.kind,
@@ -1630,6 +2130,213 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
             self._safe_output_proofs = {}
         self._safe_output_proofs[run_id] = artifact_proof
         return TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(leased,))
+
+
+class DogfoodHandoffAwareResultSource(FirstAttemptDigestBoundGhAwResultSource):
+    """Read-only revalidation of an output changed only by its recorded handoff."""
+
+    def _http(self, *, method, url, token):
+        if re.fullmatch(r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/artifacts/[1-9][0-9]*/zip", url.lower()):
+            req = request.Request(url, method=method, headers={
+                "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                "X-GitHub-Api-Version": self.config.api_version, "User-Agent": self.config.user_agent,
+            })
+            try:
+                with request.build_opener(_GitHubSafeRedirectHandler()).open(req, timeout=30) as response:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive exceeds bound")
+                    return int(response.status), dict(response.headers.items()), raw
+            except VerticalInvariantError:
+                raise
+            except Exception as exc:
+                raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive unavailable") from exc
+        return FirstAttemptDigestBoundGhAwResultSource._http(self, method=method, url=url, token=token)
+
+
+
+    def _developer_observation(self, *, values, run_id, external_dispatch_key, trusted):
+        if trusted.get("feature_stage") != "code-review":
+            return super()._developer_observation(values=values, run_id=run_id,
+                external_dispatch_key=external_dispatch_key, trusted=trusted)
+        runtime = getattr(self, "handoff_runtime", None)
+        if runtime is None or trusted.get("role") != "developer":
+            raise VerticalInvariantError("POLICY_DENIED", "remediation source lacks protected runtime")
+        snapshot = runtime.backend.read_snapshot()
+        rows = [e for e in operation_events(snapshot, trusted["operation_id"])
+                if e["operation_generation"] == trusted["operation_generation"]]
+        launches = [e["payload"] for e in rows if e["event_type"] == "dispatch.launch.authorized"
+                    and e["payload"].get("external_dispatch_key") == external_dispatch_key]
+        lookups = [e["payload"] for e in rows if e["event_type"] == "dispatch.launch.lookup-recorded"
+                   and e["payload"].get("external_dispatch_key") == external_dispatch_key]
+        reservation = snapshot.get(reservation_path(trusted["semantic_effect_key"]))
+        if (len(launches) != 1 or not isinstance(reservation, dict) or not lookups
+                or lookups[-1].get("lookup_state") != "LAUNCHED"
+                or {str(p.get("receipt_id")) for p in lookups if p.get("lookup_state") == "LAUNCHED"} != {str(run_id)}
+                or any(launches[0].get(k) != v for k, v in {
+                    "stage": "code-review", "role": "developer", "dispatch_id": trusted["dispatch_id"],
+                    "semantic_effect_key": trusted["semantic_effect_key"],
+                    "candidate_head_sha": trusted["launch_candidate_head_sha"]}.items())
+                or any(reservation.get(k) != v for k,v in {
+                    "external_dispatch_key": external_dispatch_key, "feature_id": trusted["feature_id"],
+                    "expected_revision": trusted["expected_revision"], "current_stage": "code-review",
+                    "role": "developer"}.items())):
+            raise VerticalInvariantError("POLICY_DENIED", "remediation wire mapping lacks exact launch/reservation")
+        try:
+            payload = json.loads(self._one(values, "TASK_PAYLOAD"))
+            task_id = payload["task"]["id"]
+        except Exception as exc:
+            raise VerticalInvariantError("POLICY_DENIED", "remediation task payload is malformed") from exc
+        identity = str(reservation.get("task_identity") or "")
+        if (not identity.startswith("vertical:code-remediation:")
+                or not _task_binding_matches(identity, task_id)
+                or payload["task"].get("kind") != "remediation"
+                or self._one(values, "STAGE") != "implementation"):
+            raise VerticalInvariantError("POLICY_DENIED", "remediation task/wire stage is not the pinned Worker contract")
+        dispatch = dict(trusted, task_id=task_id, task_identity=identity,
+                        candidate_head_sha=trusted["launch_candidate_head_sha"])
+        if payload != json.loads(GhAwVerticalRoleDispatchGateway._task_payload(dispatch)):
+            raise VerticalInvariantError("POLICY_DENIED", "remediation logged task differs from protected dispatch")
+        # The immutable workflow wire stage is implementation; the Feature remains
+        # code-review. Only this independently bound remediation observation maps it.
+        return super()._developer_observation(values=values, run_id=run_id,
+            external_dispatch_key=external_dispatch_key,
+            trusted=dict(trusted, feature_stage="implementation"))
+
+    def bind_handoff(self, runtime, persist_gateway):
+        self.handoff_runtime = runtime
+        self.handoff_persist_gateway = persist_gateway
+
+    def _applied_output(self, *, uri=None, trusted=None, key=None, receipt=None):
+        runtime = getattr(self, "handoff_runtime", None)
+        if runtime is None:
+            return None
+        snapshot = runtime.backend.read_snapshot()
+        matches = []
+        from operator_store_model import operation_ids
+        for operation_id in operation_ids(snapshot):
+            for event in operation_events(snapshot, operation_id):
+                if event["event_type"] != "worker.callback.recorded":
+                    continue
+                payload = event["payload"]
+                envelope = payload.get("trusted_callback_envelope") or {}
+                context = envelope.get("trusted_context") or {}
+                if context.get("role") != "developer":
+                    continue
+                outputs = envelope.get("collected_outputs") or []
+                if len(outputs) != 1:
+                    continue
+                output = outputs[0]
+                if uri is not None and output.get("trusted_uri") != uri:
+                    continue
+                if trusted is not None and any(context.get(field) != trusted.get(field) for field in (
+                        "operation_id", "operation_generation", "feature_id", "expected_revision",
+                        "feature_stage", "dispatch_id", "semantic_effect_key", "target_ref")):
+                    continue
+                if key is not None and context.get("external_dispatch_key") != key:
+                    continue
+                if receipt is not None and context.get("runtime_receipt_identity") != str(receipt):
+                    continue
+                fact = read_dogfood_handoff(snapshot, operation_id, payload.get("callback_id"))
+                if fact is None or fact["applied"] is None:
+                    continue
+                if (digest_json(envelope) != payload.get("trusted_callback_envelope_digest")
+                        or digest_json({"worker_payload": envelope["worker_payload"], "receipts": outputs})
+                           != payload.get("callback_digest")):
+                    raise VerticalInvariantError("POLICY_DENIED", "handoff callback integrity changed")
+                matches.append((snapshot, event, output, fact))
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "post-handoff output is ambiguous")
+        return matches[0]
+
+    def _attested_content(self, matched):
+        snapshot, event, receipt, fact = matched
+        envelope = event["payload"]["trusted_callback_envelope"]
+        context = envelope["trusted_context"]
+        uri = receipt["trusted_uri"]
+        match = _DEVELOPER_PR_URI.fullmatch(uri)
+        lease = _FIRST_ATTEMPT_URI_RE.fullmatch(uri)
+        if not match or not lease:
+            raise VerticalInvariantError("POLICY_DENIED", "handoff output lacks exact content/run binding")
+        run_id = int(lease.group("run"))
+        before = self._first_attempt_run_snapshot(run_id=run_id, external_dispatch_key=lease.group("key"))
+        if (before["head_sha"] != lease.group("head") or digest_json(before) != lease.group("lease")
+                or before["role"] != "developer" or context["runtime_receipt_identity"] != str(run_id)
+                or context["worker_identity"] != f"gh-aw:{before['workflow_file']}@{before['head_sha']}"
+                or context["collector_identity"] != self.config.collector_identity):
+            raise VerticalInvariantError("POLICY_DENIED", "handoff run lease changed")
+        pr = self._json(self.target_repository, f"/pulls/{int(match.group('pr'))}", self.config.target_token)
+        intent, applied = fact["intent"], fact["applied"]
+        if not isinstance(pr, dict):
+            raise VerticalInvariantError("POLICY_DENIED", "handoff PR response is malformed")
+        if pr.get("state") == "open":
+            return super().load_content(uri), before
+        head, base = pr.get("head") or {}, pr.get("base") or {}
+        if (pr.get("state") != "closed" or pr.get("merged") is not True or pr.get("draft") is not True
+                or pr.get("number") != intent["source_candidate_pr_number"]
+                or head.get("sha") != intent["source_candidate_head_sha"]
+                or pr.get("merge_commit_sha") != head.get("sha") or applied["observed_ref_sha"] != head.get("sha")
+                or not pr.get("merged_at") or pr.get("closed_at") != pr["merged_at"]
+                or (pr.get("merged_by") or {}).get("login") != "dream-xin-ai-sdlc-runtime-operator[bot]"
+                or (pr.get("merged_by") or {}).get("id") != 316394104
+                or (pr.get("merged_by") or {}).get("type") != "Bot"
+                or base.get("ref") != context["target_ref"]
+                or any(str((part.get("repo") or {}).get("full_name") or "").lower() != self.target_repository
+                       for part in (head, base))
+                or not str(head.get("ref") or "").startswith(
+                    f"gh-aw/{context['feature_id']}-{run_id}-v{context['expected_revision']}")):
+            raise VerticalInvariantError("POLICY_DENIED", "PR closure is not its exact authorized handoff")
+        content = self._developer_content_for_target(pr)
+        historical = dict(self._developer_binding_material(pr, content), state="open")
+        if (len(content) != receipt["size_bytes"] or hashlib.sha256(content).hexdigest() != receipt["sha256"]
+                or digest_json(historical) != match.group("binding")):
+            raise VerticalInvariantError("POLICY_DENIED", "handoff historical open-state receipt changed")
+        RecoverySafeOutputGhAwResultSource._run_owned_safe_output(
+            self, run_id=run_id, source_head_sha=before["head_sha"], pr=pr)
+        after = self._first_attempt_run_snapshot(run_id=run_id, external_dispatch_key=lease.group("key"))
+        if not self._same_run_snapshot(before, after):
+            raise VerticalInvariantError("POLICY_DENIED", "handoff run changed during content observation")
+        return content, before
+
+    def load_content(self, uri):
+        matched = self._applied_output(uri=uri)
+        if matched is None:
+            return super().load_content(uri)
+        return self._attested_content(matched)[0]
+
+    def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
+        matched = (self._applied_output(trusted=trusted_context, key=external_dispatch_key,
+                                       receipt=expected_receipt_identity)
+                   if trusted_context.get("role") == "developer" else None)
+        if matched is None:
+            return super().resolve(external_dispatch_key=external_dispatch_key,
+                expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
+        snapshot, event, output, fact = matched
+        _, run_snapshot = self._attested_content(matched)
+        run, workflow, logs = self._exact_run(external_dispatch_key=external_dispatch_key,
+                                             receipt=str(expected_receipt_identity))
+        observed = self._developer_observation(values=self._log_env(logs), run_id=int(run["id"]),
+            external_dispatch_key=external_dispatch_key, trusted=trusted_context)
+        envelope = event["payload"]["trusted_callback_envelope"]
+        context = envelope["trusted_context"]
+        expected_url = f"https://github.com/{self.target_repository}/pull/{fact['intent']['source_candidate_pr_number']}"
+        if (str(observed["pr_url"]).lower() != expected_url or observed["task_id"] != context["task_id"]
+                or workflow != self.config.workflows.developer_workflow):
+            raise VerticalInvariantError("POLICY_DENIED", "post-handoff conclusion differs from protected output")
+        trusted_run = TrustedGhAwRun(
+            run_id=int(run["id"]), run_url=run_snapshot["run_url"], receipt_identity=str(run["id"]),
+            control_repository=normalize_repository(self.config.control_repository),
+            workflow_file=workflow, workflow_ref=self.config.workflows.default_branch,
+            event="workflow_dispatch", status="completed", conclusion="success",
+            display_title=run_snapshot["display_title"], external_dispatch_key=external_dispatch_key,
+            role="developer", task_id=context["task_id"], worker_identity=context["worker_identity"],
+            collector_identity=context["collector_identity"],
+            candidate_pr_number=fact["intent"]["source_candidate_pr_number"],
+            candidate_head_sha=fact["intent"]["source_candidate_head_sha"])
+        return TrustedGhAwResolvedResult(run=trusted_run, role_payload=envelope["worker_payload"],
+            outputs=(MaterializedGhAwOutput(output["label"], output["kind"], output["media_type"], output["trusted_uri"]),))
 
 
 class DogfoodRecoveryBoundContentLoader:
@@ -1997,7 +2704,7 @@ def build_v03_dogfood_full_composition(
         collector_identity=COLLECTOR_IDENTITY,
         api_url=github_api_base,
     )
-    result_source = FirstAttemptDigestBoundGhAwResultSource(
+    result_source = DogfoodHandoffAwareResultSource(
         source_config,
         target_repository=config.target_repository,
     )
@@ -2079,8 +2786,11 @@ def build_v03_dogfood_full_composition(
         github_api_base=github_api_base,
         clock=clock,
     )
+    responses = install_post_handoff_executor(responses, policy_authority)
     bundle = responses.operator_bundle
     content_loader.bind_runtime(responses.runtime)
+    recovery_result_source.bind_post_handoff(responses.runtime, policy_authority)
+    result_source.bind_handoff(responses.runtime, bundle.executor.persist_gateway)
     durable_truth = DurableDecisionFeatureTruthGateway(
         runtime=responses.runtime,
         feature_gateway=feature_event_gateway,
@@ -2088,6 +2798,7 @@ def build_v03_dogfood_full_composition(
     )
     feature_truth.bind(durable_truth)
     candidate_provider.bind_runtime(responses.runtime)
+    candidate_provider.persist_gateway = bundle.executor.persist_gateway
     candidate_handoff = DogfoodCandidateHandoff(
         slot=slot,
         repository=config.target_repository,

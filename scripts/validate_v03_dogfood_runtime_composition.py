@@ -477,6 +477,355 @@ def handoff_and_supersession_tests() -> None:
 
 
 
+def capture_post_handoff_authority_graph(responses):
+    """Capture references before installation mutates the shared backend objects."""
+    from operator_vertical_reconcile_classified import FailureClassifyingTrustedRecoveringVerticalExecutor
+    bundle = responses.operator_bundle
+    previous = bundle.executor
+    require(isinstance(previous, FailureClassifyingTrustedRecoveringVerticalExecutor),
+            "graph fixture lacks the real production recovering executor")
+    runtime = responses.runtime
+    collections = (bundle.backends, bundle.vertical_bundle.api_backends,
+                   responses.backends, responses.adapter.backends)
+    return {
+        "responses": responses, "bundle": bundle, "vertical": bundle.vertical_bundle,
+        "write_bundle": bundle.write_bundle, "read_bundle": bundle.write_bundle.read_bundle,
+        "previous": previous, "base": previous.base, "runtime": runtime,
+        "backend": runtime.backend, "protection_verifier": runtime.protection_verifier,
+        "plan_guard": runtime.plan_guard, "persist_gateway": previous.base.persist_gateway,
+        "dispatch_gateway": previous.base.dispatch_gateway, "feature_gateway": previous.base.feature_gateway,
+        "config": previous.base.config, "resolution_policy_verifier": previous.base.resolution_policy_verifier,
+        "callback_coordinator": bundle.callback_coordinator,
+        "decision_coordinator": bundle.decision_notification_coordinator,
+        "content_loader": previous.content_loader, "trusted_role_policy": previous.trusted_role_policy,
+        "collector_namespace_policy": previous.collector_namespace_policy,
+        "registration": responses.registration, "journal": responses.journal, "adapter": responses.adapter,
+        "backend_collections": tuple((collection, dict(collection)) for collection in collections),
+        "executor_backends": tuple((backend, getattr(backend, "executor", None))
+                                  for collection in collections for backend in collection.values()),
+    }
+
+
+def assert_post_handoff_authority_graph(before, responses, policy_authority, *, predecessor_events=None):
+    """Identity proof; exact-history callers also assert unfiltered immutable history."""
+    from dataclasses import is_dataclass
+    from operator_store_model import operation_events
+    from v03_dogfood_full_composition import DogfoodPostHandoffRecoveringExecutor, RECOVERY_OPERATION_ID
+    bundle = responses.operator_bundle
+    executor = bundle.executor
+    require(isinstance(executor, DogfoodPostHandoffRecoveringExecutor), "dogfood executor was not installed")
+    require(executor is not before["previous"] and executor.base is before["base"],
+            "installer created a shadow base executor or retained the old wrapper")
+    for actual, key in (
+        (responses.runtime, "runtime"), (bundle.runtime, "runtime"),
+        (bundle.vertical_bundle.runtime, "runtime"), (executor.runtime, "runtime"),
+        (executor.runtime.backend, "backend"), (executor.runtime.protection_verifier, "protection_verifier"),
+        (executor.runtime.plan_guard, "plan_guard"), (executor.base.persist_gateway, "persist_gateway"),
+        (executor.base.dispatch_gateway, "dispatch_gateway"), (executor.base.feature_gateway, "feature_gateway"),
+        (executor.base.config, "config"), (executor.base.resolution_policy_verifier, "resolution_policy_verifier"),
+        (bundle.write_bundle, "write_bundle"), (bundle.write_bundle.read_bundle, "read_bundle"),
+        (bundle.callback_coordinator, "callback_coordinator"),
+        (bundle.decision_notification_coordinator, "decision_coordinator"),
+        (executor.content_loader, "content_loader"), (responses.registration, "registration"),
+        (responses.journal, "journal"), (responses.adapter, "adapter"),
+    ):
+        require(actual is before[key], "post-handoff installation split or replaced authority: " + key)
+    require(executor.post_handoff_policy_authority is policy_authority, "consumer policy authority was replaced")
+    require(executor.trusted_role_policy == before["trusted_role_policy"]
+            and executor.collector_namespace_policy == before["collector_namespace_policy"],
+            "installer changed callback validation policy")
+    require(bundle.callback_coordinator.executor is executor,
+            "callback coordinator retained a different recovering executor")
+    require(responses.journal.runtime is before["runtime"], "Responses journal uses a second Store")
+    require(responses.adapter.journal is responses.journal
+            and responses.adapter.registration is responses.registration,
+            "adapter stopped using its original journal or registration")
+    current_collections = (bundle.backends, bundle.vertical_bundle.api_backends,
+                           responses.backends, responses.adapter.backends)
+    for current, (original, members) in zip(current_collections, before["backend_collections"]):
+        require(current is original and set(current) == set(members),
+                "installer replaced or expanded a backend collection")
+        require(all(current[name] is backend for name, backend in members.items()),
+                "installer replaced canonical backend objects")
+    for backend, old_executor in before["executor_backends"]:
+        if old_executor is before["previous"]:
+            require(backend.executor is executor, "backend retained the old recovering wrapper")
+        elif old_executor is not None:
+            require(backend.executor is old_executor, "installer rewired an unrelated executor")
+    require(bundle.backends["operation.start"].executor is executor
+            and responses.backends["operation.start"].executor is executor
+            and responses.adapter.backends["operation.start"].executor is executor,
+            "start/Responses/adapter entrypoints do not reach one new wrapper")
+    require("operation.resume" not in responses.backends and "operation.resume" not in responses.adapter.backends,
+            "server-only resume leaked into model capabilities")
+    for value in (responses, bundle, bundle.vertical_bundle):
+        require(is_dataclass(value) and value.__dataclass_params__.frozen,
+                "installer substituted a mutable or fake production bundle")
+    require(before["responses"].operator_bundle is before["bundle"]
+            and before["bundle"].vertical_bundle is before["vertical"]
+            and before["vertical"].executor is before["previous"],
+            "installer mutated frozen predecessor bundle references")
+    if predecessor_events is not None:
+        require(len(predecessor_events) == 15, "replay identity test requires the exact fifteen-event predecessor")
+        actual = operation_events(before["runtime"].backend.read_snapshot(), RECOVERY_OPERATION_ID)
+        visible = executor._events(RECOVERY_OPERATION_ID)
+        require(visible == actual, "post-handoff wrapper hides or filters protected Operation history")
+        require(actual[:15] == predecessor_events, "post-handoff replay rewrote the frozen predecessor")
+        require(actual[13]["event_type"] == "worker.result.rejected"
+                and actual[14]["event_type"] == "loop.stable-stop"
+                and actual[14]["payload"]["status"] == "BLOCKED",
+                "original rejected observation or BLOCKED fact was hidden")
+
+
+def assemble_post_handoff_responses_graph(
+    *, runtime, base_executor, content_loader, slot, config, policy_authority,
+    decision_policy_verifier, trusted_role_policy, collector_namespace_policy,
+    reader_http_get, target_read_token="test-target-read",
+    registration_id="post-handoff-real-graph-test",
+    provider_scope_id="post-handoff-real-graph-test",
+):
+    """Assemble real canonical classes around the supplied single test runtime.
+
+    This helper is test-only composition, not a claim that a Memory backend
+    satisfies the production RemoteGit factory admission check. It neither
+    creates a second runtime nor bypasses/patches that production check.
+    Callback, start, adapter and Persist transitions execute through their
+    actual classes after the caller supplies frozen history and fake HTTP.
+    """
+    from operator_decision_backends import DecisionListBackend, NotificationListBackend, OperatorInboxBackend
+    from operator_production_runtime import (
+        BoundedTrustedContextProvider, FeatureStatusBackend, GitHubTrustedProjectFeatureReader,
+        ProjectInspectBackend, TrustedOperatorReadBundle,
+    )
+    from operator_production_store_backends import scoped_store_backends
+    from operator_production_write_bundle import extend_with_trusted_decision_writes
+    from operator_store_backends import OperatorStoreRuntime, store_backends
+    from operator_store_model import normalize_repository
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_executor import TrustedVerticalExecutor
+    from operator_vertical_reconcile_classified import FailureClassifyingTrustedRecoveringVerticalExecutor
+    from operator_vertical_callback import TrustedVerticalCallbackCoordinator
+    from operator_vertical_controller import VerticalLoopResumeBackend
+    from operator_vertical_runtime import TrustedVerticalRuntimeBundle, VerticalLoopStartBackend
+    from operator_v03_vertical_production_runtime import (
+        TrustedV03VerticalProductionBundle, _validate_decision_policy_binding,
+    )
+    from operator_openai_responses import TrustedResponsesRegistration, OpenAIResponsesOperatorAdapter
+    from operator_openai_responses_journal import StoreResponsesCallJournal
+    from operator_openai_responses_production import (
+        OpenAIResponsesProductionBundle, _responses_backends,
+        _require_shared_runtime, _require_final_runtime_types,
+    )
+    from v03_dogfood_full_composition import install_post_handoff_executor
+
+    require(isinstance(runtime, OperatorStoreRuntime) and isinstance(base_executor, TrustedVerticalExecutor),
+            "real graph requires actual supplied Store runtime and base executor")
+    require(base_executor.runtime is runtime, "graph assembler received a shadow base runtime")
+    require(normalize_repository(runtime.backend.repository) == config.store_repository
+            and runtime.backend.state_ref == config.state_ref,
+            "graph assembler Store/config identity mismatch")
+    require(config.feature_ids == frozenset({slot.feature_id})
+            and config.feature_ref(slot.feature_id) == slot.target_ref
+            and base_executor.config.target_ref == slot.target_ref,
+            "graph assembler escaped its fixed Feature/ref")
+    require(callable(content_loader) and callable(reader_http_get),
+            "graph assembler requires explicit trusted content and fake-provider loaders")
+    _validate_decision_policy_binding(config, decision_policy_verifier)
+    previous = FailureClassifyingTrustedRecoveringVerticalExecutor(
+        base_executor=base_executor, content_loader=content_loader,
+        trusted_role_policy=trusted_role_policy, collector_namespace_policy=collector_namespace_policy)
+    callbacks = TrustedVerticalCallbackCoordinator(
+        executor=previous, content_loader=content_loader,
+        trusted_role_policy=trusted_role_policy, collector_namespace_policy=collector_namespace_policy)
+    resume = VerticalLoopResumeBackend(
+        runtime=runtime, feature_gateway=base_executor.feature_gateway, executor=previous)
+    vertical_backends = store_backends(
+        runtime, operation_profile=VERTICAL_PROFILE, resume_backend=resume)
+    vertical_backends["operation.start"] = VerticalLoopStartBackend(
+        delegate=vertical_backends["operation.start"], executor=previous)
+    vertical = TrustedVerticalRuntimeBundle(
+        runtime=runtime, executor=previous, callback_coordinator=callbacks,
+        api_backends=vertical_backends)
+
+    reader = GitHubTrustedProjectFeatureReader(
+        config=config, token=target_read_token, api_base="https://api.github.com",
+        http_get=reader_http_get)
+    provider = BoundedTrustedContextProvider(config=config, adapter_id=ADAPTER_ID)
+    canonical = {
+        "project.inspect": ProjectInspectBackend(config=config, adapter_id=ADAPTER_ID, reader=reader),
+        "feature.status": FeatureStatusBackend(config=config, adapter_id=ADAPTER_ID, reader=reader),
+        "operator.inbox": OperatorInboxBackend(runtime),
+        "decision.list": DecisionListBackend(runtime),
+        "notification.list": NotificationListBackend(runtime),
+        **scoped_store_backends(
+            config=config, adapter_id=ADAPTER_ID, runtime=runtime, reader=reader,
+            operation_profile=VERTICAL_PROFILE),
+    }
+    canonical["operation.start"] = VerticalLoopStartBackend(
+        delegate=canonical["operation.start"], executor=previous)
+    read_bundle = TrustedOperatorReadBundle(
+        config=config, trusted_context_provider=provider, backends=canonical, runtime=runtime)
+    write_bundle = extend_with_trusted_decision_writes(
+        read_bundle, policy_verifier=decision_policy_verifier,
+        feature_gateway=base_executor.feature_gateway,
+        trusted_context_digest=base_executor.config.trusted_context_digest)
+    operator_bundle = TrustedV03VerticalProductionBundle(
+        write_bundle=write_bundle, vertical_bundle=vertical, feature_id=slot.feature_id)
+    # Apply the actual downstream graph/type checks. The separate production
+    # backend-admission check is intentionally not represented as passed.
+    _require_shared_runtime(operator_bundle, runtime)
+    _require_final_runtime_types(operator_bundle)
+    model_backends = _responses_backends(operator_bundle)
+    context = dict(provider.for_request(
+        {"repository": config.target_repository, "feature_id": slot.feature_id}))
+    context["trusted_context_digest"] = base_executor.config.trusted_context_digest
+    registration = TrustedResponsesRegistration(
+        registration_id=registration_id, provider_scope_id=provider_scope_id,
+        target_repository=config.target_repository, feature_refs={slot.feature_id: slot.target_ref},
+        trusted_context=context, human_principal=config.principal)
+    journal = StoreResponsesCallJournal(runtime)
+    adapter = OpenAIResponsesOperatorAdapter(
+        registration=registration, backends=model_backends, journal=journal)
+    responses = OpenAIResponsesProductionBundle(
+        operator_bundle=operator_bundle, runtime=runtime, registration=registration,
+        journal=journal, backends=model_backends, adapter=adapter)
+    captured = capture_post_handoff_authority_graph(responses)
+    installed = install_post_handoff_executor(responses, policy_authority)
+    assert_post_handoff_authority_graph(captured, installed, policy_authority)
+    return installed, captured
+
+
+def post_handoff_executor_graph_tests() -> None:
+    """Real-class installation identity only; the exact-history suite proves execution."""
+    from dataclasses import FrozenInstanceError, replace
+    from operator_store_backends import OperatorStoreRuntime, store_backends
+    from operator_store_git import MemoryStateRefBackend
+    from operator_store_model import StoreSnapshot, canonical_json
+    from operator_store_protection import StaticProtectionVerifier, PROTECTED
+    from operator_effect_rollout import EffectLineageWriteFence, VerifiedEffectLineageRollout
+    from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
+    from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
+    from operator_vertical_reconcile_classified import FailureClassifyingTrustedRecoveringVerticalExecutor
+    from operator_vertical_callback import TrustedVerticalCallbackCoordinator
+    from operator_vertical_controller import VerticalLoopResumeBackend
+    from operator_vertical_runtime import TrustedVerticalRuntimeBundle, VerticalLoopStartBackend
+    from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+    from operator_release_feature_event_gateway import build_release_decision_event_gateway
+    from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway
+    from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
+    from operator_production_runtime import TrustedOperatorReadBundle, BoundedTrustedContextProvider
+    from operator_production_write_bundle import TrustedOperatorWriteBundle
+    from operator_v03_vertical_production_runtime import TrustedV03VerticalProductionBundle
+    from operator_openai_responses import TrustedResponsesRegistration, OpenAIResponsesOperatorAdapter
+    from operator_openai_responses_journal import StoreResponsesCallJournal
+    from operator_openai_responses_production import OpenAIResponsesProductionBundle
+    from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
+    from v03_dogfood_full_composition import install_post_handoff_executor
+
+    calls = []
+    def no_provider_effect(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("executor installation must not invoke external providers")
+    slot = require_slot("happy_path")
+    config = TrustedOperatorRuntimeConfig(
+        target_repository=REPOSITORY, store_repository=REPOSITORY, installation_ref="main",
+        store_checkout=Path("."), principal="installer-graph-test",
+        feature_bindings=(TrustedFeatureBinding(slot.feature_id, slot.target_ref),))
+    backend = MemoryStateRefBackend(
+        repository=REPOSITORY, state_ref=config.state_ref,
+        snapshot=StoreSnapshot(ref_sha="a" * 40, files={}))
+    rollout = VerifiedEffectLineageRollout(
+        repository=REPOSITORY, state_ref=config.state_ref, operation_profile=VERTICAL_PROFILE,
+        effect_lineage_required=True, policy_ref="graph-policy", policy_digest="graph-policy-digest",
+        writer_capability="lineage-aware-v1", writer_fence_receipt_ref="graph-fence",
+        writer_fence_receipt_digest="graph-fence-digest", test_only=True)
+    runtime = OperatorStoreRuntime(
+        backend=backend, protection_verifier=StaticProtectionVerifier(status=PROTECTED),
+        plan_guard=EffectLineageWriteFence(rollout))
+    event_gateway = build_release_decision_event_gateway(
+        token="test-event", repository=REPOSITORY, default_branch="main",
+        feature_refs={slot.feature_id: slot.target_ref}, http_request=no_provider_effect)
+    persist = DurableVerticalFeaturePersistGateway(runtime=runtime, event_gateway=event_gateway)
+    workflows = GhAwVerticalWorkflowMap(
+        default_branch="main", developer_workflow="developer.yml",
+        reviewer_workflow="reviewer.yml", qa_workflow="qa.yml")
+    transport = GitHubActionsVerticalGhAwTransport(
+        GitHubActionsWorkflowTransportConfig(control_repository=REPOSITORY, token="test-actions",
+                                              workflows=workflows),
+        http=no_provider_effect, sleeper=no_provider_effect)
+    dispatch = StoreBackedOneShotExternalCreateGateway(
+        runtime=runtime, delegate=GhAwVerticalRoleDispatchGateway(transport=transport, workflows=workflows),
+        trusted_context_digest="graph-context", effect_lineage_required=True)
+    feature = DeferredFixtureFeatureTruthGateway()
+    resolution = ProtectedEffectResolutionPolicyVerifier(
+        repository=REPOSITORY, state_ref=config.state_ref, operation_profile=VERTICAL_PROFILE,
+        policy_loader=no_provider_effect, evidence_fact_loader=no_provider_effect)
+    base = TrustedVerticalExecutor(
+        runtime=runtime, feature_gateway=feature, persist_gateway=persist, dispatch_gateway=dispatch,
+        config=TrustedVerticalExecutorConfig(
+            target_ref=slot.target_ref, trusted_context_digest="graph-context",
+            effect_lineage_required=True, old_writers_quiesced=True,
+            rollout_policy_digest=rollout.policy_digest,
+            writer_fence_receipt_digest=rollout.writer_fence_receipt_digest),
+        resolution_policy_verifier=resolution)
+    previous = FailureClassifyingTrustedRecoveringVerticalExecutor(
+        base_executor=base, content_loader=no_provider_effect,
+        trusted_role_policy="graph-roles", collector_namespace_policy="graph-collector")
+    callbacks = TrustedVerticalCallbackCoordinator(
+        executor=previous, content_loader=no_provider_effect,
+        trusted_role_policy="graph-roles", collector_namespace_policy="graph-collector")
+    resume = VerticalLoopResumeBackend(runtime=runtime, feature_gateway=feature, executor=previous)
+    backends = store_backends(runtime, operation_profile=VERTICAL_PROFILE, resume_backend=resume)
+    backends["operation.start"] = VerticalLoopStartBackend(delegate=backends["operation.start"], executor=previous)
+    vertical = TrustedVerticalRuntimeBundle(
+        runtime=runtime, executor=previous, callback_coordinator=callbacks, api_backends=backends)
+    read = TrustedOperatorReadBundle(
+        config=config, trusted_context_provider=BoundedTrustedContextProvider(config=config, adapter_id=ADAPTER_ID),
+        backends=backends, runtime=runtime)
+    write = TrustedOperatorWriteBundle(read_bundle=read, backends=backends, decision_notification_coordinator=None)
+    bundle = TrustedV03VerticalProductionBundle(write_bundle=write, vertical_bundle=vertical, feature_id=slot.feature_id)
+    registration = TrustedResponsesRegistration(
+        registration_id="graph-registration", provider_scope_id="graph-provider", target_repository=REPOSITORY,
+        feature_refs={slot.feature_id: slot.target_ref}, trusted_context={})
+    model_backends = {name: value for name, value in backends.items() if name != "operation.resume"}
+    journal = StoreResponsesCallJournal(runtime)
+    adapter = OpenAIResponsesOperatorAdapter(registration=registration, backends=model_backends, journal=journal)
+    responses = OpenAIResponsesProductionBundle(
+        operator_bundle=bundle, runtime=runtime, registration=registration,
+        journal=journal, backends=model_backends, adapter=adapter)
+    before = capture_post_handoff_authority_graph(responses)
+    before_store = canonical_json(backend.read_snapshot().files), backend.read_snapshot().ref_sha
+    policy_authority = object()  # An identity token only; no attestation or execution is claimed here.
+    installed = install_post_handoff_executor(responses, policy_authority)
+    assert_post_handoff_authority_graph(before, installed, policy_authority)
+    require(installed is not responses and installed.operator_bundle is not bundle
+            and installed.operator_bundle.vertical_bundle is not vertical,
+            "installer failed to replace frozen outer references")
+    require(installed.operator_bundle.executor.persist_gateway.runtime is runtime
+            and installed.operator_bundle.executor.dispatch_gateway.runtime is runtime,
+            "Persist or one-shot dispatch uses another runtime")
+    for frozen in (installed, installed.operator_bundle, installed.operator_bundle.vertical_bundle):
+        try:
+            frozen.runtime = object()
+        except (FrozenInstanceError, AttributeError):
+            pass
+        else:
+            raise AssertionError("installed production bundle lost frozen semantics")
+    require(before_store == (canonical_json(backend.read_snapshot().files), backend.read_snapshot().ref_sha)
+            and not calls, "executor graph installation mutated Store or reached a provider")
+    shadow = replace(installed, runtime=OperatorStoreRuntime(
+        backend=MemoryStateRefBackend(repository=REPOSITORY, state_ref=config.state_ref),
+        protection_verifier=StaticProtectionVerifier(status=PROTECTED)))
+    try:
+        assert_post_handoff_authority_graph(before, shadow, policy_authority)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("identity assertion accepted a shadow Store runtime")
+
+
 def source_contract_tests() -> None:
     source = MODULE.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -728,6 +1077,7 @@ def early_adapter_gate_test() -> None:
 def main() -> None:
     candidate_tests()
     handoff_and_supersession_tests()
+    post_handoff_executor_graph_tests()
     source_contract_tests()
     readiness_execution_binding_test()
     execution_binding_wrapper_test()

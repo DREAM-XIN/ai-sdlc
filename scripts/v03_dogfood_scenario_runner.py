@@ -15,9 +15,10 @@ import time
 from operator_vertical_gh_aw_github_source import _current_launch_binding
 from typing import Any
 
-from operator_store_model import operation_events
+from operator_store_model import operation_events, digest_json
 from operator_vertical_store import vertical_projection
-from v03_dogfood_full_composition import recovery_route, validate_recovery_execution_seal, recovery_execution_binding
+from v03_dogfood_full_composition import (recovery_route, validate_recovery_execution_seal, recovery_execution_binding,
+    post_handoff_present, validate_post_handoff_reconciliation)
 from v03_dogfood_fixture_pool import DogfoodSlot, task_text
 from v03_dogfood_openai_host import V03DogfoodOpenAIResponsesHost, V03DogfoodResponsesTrace
 
@@ -370,6 +371,144 @@ def _verify_fresh_session_discovery(
     return matches[0]
 
 
+
+
+class _PostHandoffStatusHost(V03DogfoodOpenAIResponsesHost):
+    """Reduce only fixed reconciliation discovery before any adapter invocation."""
+    def _create(self, body):
+        restricted = dict(body)
+        restricted["tools"] = [tool for tool in body.get("tools", [])
+                               if tool.get("name") == "aisdlc_v1_operation_status"]
+        if len(restricted["tools"]) != 1:
+            raise V03DogfoodScenarioRunnerError("fixed discovery lacks exactly one status tool")
+        return super()._create(restricted)
+
+    def _function_calls(self, payload):
+        from operator_api import API_VERSION
+        calls = super()._function_calls(payload)
+        if len(calls) > 1:
+            raise V03DogfoodScenarioRunnerError("fixed discovery forbids additional function calls")
+        for call in calls:
+            try:
+                arguments = json.loads(call.get("arguments", ""))
+            except Exception as exc:
+                raise V03DogfoodScenarioRunnerError("fixed discovery arguments are malformed") from exc
+            if (call.get("name") != "aisdlc_v1_operation_status"
+                    or arguments != {"api_version": API_VERSION, "operation_id": RECOVERY_OPERATION_ID}):
+                raise V03DogfoodScenarioRunnerError("fixed discovery attempted an unauthorized tool or Operation")
+        return calls
+
+
+def _resume_post_handoff(preflight, host):
+    """Discover the existing fixed Operation, then use its original server backend."""
+    runtime = preflight.composition.runtime
+    snapshot = runtime.backend.read_snapshot()
+    attestation, _, _ = validate_post_handoff_reconciliation(snapshot,
+        consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    rows = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    if any(row.get("event_type") == "worker.result.rejected"
+           and (row.get("payload") or {}).get("callback_id") == attestation["observation_callback_id"]
+           for row in rows[16:]):
+        raise V03DogfoodScenarioRunnerError("single reconciled observation was rejected")
+    original = _projection(preflight, RECOVERY_OPERATION_ID)
+    instruction = (
+        "Read the existing authenticated Operation " + RECOVERY_OPERATION_ID + ". "
+        "Call operation.status exactly once and then return control. Do not call operation.start, "
+        "do not request a new execution, and do not choose a lifecycle action."
+    )
+    if host.adapter is not preflight.composition.responses.adapter:
+        raise V03DogfoodScenarioRunnerError("fixed discovery adapter differs from protected composition")
+    restricted_host = _PostHandoffStatusHost(config=host.config, adapter=host.adapter, http_post=host.http_post)
+    trace = restricted_host.run(scenario_instruction=instruction)
+    if (tuple(trace.function_call_names) != ("aisdlc_v1_operation_status",)
+            or len(trace.function_outputs) != 1):
+        raise V03DogfoodScenarioRunnerError("reconciliation host did not observe the exact existing Operation")
+    payload = _decode_output(trace.function_outputs[0])
+    result = payload.get("result") if payload.get("ok") is True else None
+    if result != {key: original[key] for key in ("operation_id", "generation", "status")}:
+        raise V03DogfoodScenarioRunnerError("reconciliation status observation differs from protected state")
+    bundle = preflight.composition.bundle
+    backend = bundle.vertical_bundle.api_backends["operation.resume"]
+    if backend.runtime is not runtime or backend.executor is not bundle.executor:
+        raise V03DogfoodScenarioRunnerError("reconciliation resume split the protected authority graph")
+    pending_projection = _projection(preflight, RECOVERY_OPERATION_ID)
+    requested = set(pending_projection.get("requested_persists", []))
+    linearized = set(pending_projection.get("linearized_persists", []))
+    confirmed = set(pending_projection.get("confirmed_persists", []))
+    pending = linearized - confirmed
+    if not pending.issubset(requested):
+        raise V03DogfoodScenarioRunnerError("pending reconciliation Persist lacks original request")
+    remaining = set(pending)
+    for _ in range(len(pending)):
+        before = _projection(preflight, RECOVERY_OPERATION_ID)
+        if (set(before.get("requested_persists", [])) != requested
+                or set(before.get("linearized_persists", [])) != linearized
+                or set(before.get("confirmed_persists", [])) - confirmed != pending - remaining):
+            raise V03DogfoodScenarioRunnerError("pending Persist identity changed before reconciliation")
+        progressed = bundle.executor._reconcile_persist(RECOVERY_OPERATION_ID)
+        after = _projection(preflight, RECOVERY_OPERATION_ID)
+        now = linearized - set(after.get("confirmed_persists", []))
+        if (progressed is not True or not now < remaining or len(remaining - now) != 1
+                or set(after.get("requested_persists", [])) != requested
+                or set(after.get("linearized_persists", [])) != linearized):
+            raise V03DogfoodScenarioRunnerError("exact pending Persist remains stopped or changed identity")
+        remaining = now
+    if remaining:
+        raise V03DogfoodScenarioRunnerError("exact pending Persist did not converge")
+    feature, _ = bundle.executor.feature_gateway.read_feature(operation_id=RECOVERY_OPERATION_ID)
+    resumed = backend.invoke({"context": {"operation_id": RECOVERY_OPERATION_ID,
+        "expected_feature_revision": feature.revision}},
+        preflight.composition.responses.registration.trusted_context)
+    current = _projection(preflight, RECOVERY_OPERATION_ID)
+    if (resumed.get("operation_id") != RECOVERY_OPERATION_ID or resumed.get("generation") != 1
+            or resumed.get("status") != current["status"]):
+        raise V03DogfoodScenarioRunnerError("reconciliation resume changed Operation identity")
+    return trace, RECOVERY_OPERATION_ID, str(current["status"])
+
+
+
+def _notify_completed(preflight, operation_id):
+    rows = _events(preflight, operation_id)
+    projection = _projection(preflight, operation_id)
+    completed = [row for row in rows if row.get("event_type") == "operation.done"]
+    if (projection.get("status") != "DONE" or len(completed) != 1
+            or completed[0].get("operation_generation") != projection.get("generation")
+            or not isinstance(completed[0].get("event_id"), str) or not completed[0]["event_id"]):
+        raise V03DogfoodScenarioRunnerError("completion Notification lacks one exact durable DONE event")
+    expected_id = "operation-done-" + digest_json({
+        "feature_revision": projection["expected_feature_revision"], "operation_id": operation_id,
+        "generation": projection["generation"], "event_type": "operation.done"})[:32]
+    if (completed[0]["event_id"] != expected_id
+            or (completed[0].get("payload") or {}).get("feature_revision") != projection["expected_feature_revision"]):
+        raise V03DogfoodScenarioRunnerError("completion Notification DONE identity/revision differs")
+    coordinator = preflight.composition.bundle.decision_notification_coordinator
+    if coordinator.runtime is not preflight.composition.runtime:
+        raise V03DogfoodScenarioRunnerError("completion Notification split protected runtime")
+    from operator_decisions_notifications import notification_id_for, rebuild_notification
+    from operator_store_model import notification_path
+    semantic_key = "operation.completed:" + completed[0]["event_id"]
+    notification_id = notification_id_for({
+        "notification_type": "operation.completed", "operation_id": operation_id,
+        "operation_generation": projection["generation"], "semantic_key": semantic_key})
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    created = [row for row in rows if row.get("event_type") == "notification.created"
+               and (row.get("payload") or {}).get("notification_type") == "operation.completed"]
+    if notification_path(notification_id) in snapshot.files or created:
+        if (len(created) != 1 or created[0].get("operation_generation") != projection["generation"]
+                or created[0]["payload"] != {"notification_id": notification_id,
+                    "notification_type": "operation.completed", "semantic_key": semantic_key}):
+            raise V03DogfoodScenarioRunnerError("completion Notification identity conflicts with DONE")
+        original = rebuild_notification(snapshot, notification_id)
+        if any(original.get(key) != value for key, value in {
+                "operation_id": operation_id, "operation_generation": projection["generation"],
+                "notification_type": "operation.completed", "semantic_key": semantic_key}.items()):
+            raise V03DogfoodScenarioRunnerError("completion Notification document differs from DONE")
+        return original
+    return coordinator.notify_operation(operation_id=operation_id,
+        notification_type="operation.completed", trigger_identity=completed[0]["event_id"],
+        summary="The trusted dogfood Operation completed its canonical lifecycle.")
+
+
 def run_scenario(
     *,
     preflight: Any,
@@ -383,17 +522,45 @@ def run_scenario(
     manifest = preflight.composition.feature_event_gateway.read_feature(
         feature_id=preflight.slot.feature_id,
     )
-    if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != 1:
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    reconciliation = None
+    if scenario == "happy_path" and post_handoff_present(snapshot):
+        if (preflight.slot.feature_id != "F-OPERATOR-V03-DOGFOOD-HAPPY-0001"
+                or preflight.slot.target_ref != "dogfood/v0.3-happy-path-0001"):
+            raise V03DogfoodScenarioRunnerError("fixed reconciliation escaped its happy-path slot")
+        reconciliation, _, _ = validate_post_handoff_reconciliation(snapshot,
+            consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    expected_manifest_revision = (int(_projection(preflight, RECOVERY_OPERATION_ID)["expected_feature_revision"])
+                                  if reconciliation is not None else 1)
+    if not isinstance(manifest, dict) or (reconciliation is None and int(manifest.get("revision", -1)) != expected_manifest_revision):
         raise V03DogfoodScenarioRunnerError("dogfood fixture is not the exact active revision-1 slot")
 
-    trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=1))
-    operation_id, start_status = _operation_start(trace)
+    if reconciliation is not None:
+        trace, operation_id, start_status = _resume_post_handoff(preflight, host)
+        converged = preflight.composition.feature_event_gateway.read_feature(feature_id=preflight.slot.feature_id)
+        if int(converged.get("revision", -1)) != int(_projection(preflight, operation_id)["expected_feature_revision"]):
+            raise V03DogfoodScenarioRunnerError("reconciled canonical Persist and Feature revision have not converged")
+    else:
+        trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=expected_manifest_revision))
+        operation_id, start_status = _operation_start(trace)
     projection = _projection(preflight, operation_id)
     status = str(projection.get("status") or "")
     if status != start_status:
         raise V03DogfoodScenarioRunnerError("Responses start result differs from durable Operation projection")
 
     consumed = 0
+    if reconciliation is not None:
+        events = _events(preflight, operation_id)
+        accepted = [e for e in events if e["event_type"] == "worker.result.validated"]
+        confirmed = {e["payload"]["feature_event_id"] for e in events if e["event_type"] == "persist.confirmed"}
+        translated = {e["payload"].get("callback_id"): e["payload"].get("feature_event_id")
+                      for e in events if e["event_type"] == "feature.event.translated" and e["payload"].get("callback_id")}
+        for event in accepted:
+            if translated.get(event["payload"].get("callback_id")) not in confirmed:
+                raise V03DogfoodScenarioRunnerError("accepted reconciled-prefix callback lacks canonical Persist")
+        consumed = len(accepted)
+        if consumed and accepted[0]["payload"].get("callback_id") != reconciliation["observation_callback_id"]:
+            raise V03DogfoodScenarioRunnerError("scenario consumed an unbound replacement observation")
     recovery_trace: V03DogfoodResponsesTrace | None = None
     recovery_decision_ids: tuple[str, ...] = ()
     recovery_notification_ids: tuple[str, ...] = ()
@@ -438,6 +605,7 @@ def run_scenario(
         status = str(_projection(preflight, operation_id).get("status") or "")
         if status != "DONE":
             raise V03DogfoodScenarioRunnerError(f"{scenario} did not finish DONE")
+        _notify_completed(preflight, operation_id)
 
     claims = _dispatch_rows(preflight, operation_id)
     roles = tuple(_dispatch_role(row) for row in claims)

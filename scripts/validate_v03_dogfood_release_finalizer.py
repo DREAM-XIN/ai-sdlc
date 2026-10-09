@@ -151,8 +151,10 @@ def durable_history(scenario: str):
     seq = 1
     for index, step in enumerate(steps):
         seq += 1; rows.append(event(seq, "loop.step.selected", {"step": step}))
-        seq += 1; rows.append(event(seq, "dispatch.claimed"))
-        seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
+        external_key = "dispatch-" + f"{index + 1:040x}"
+        seq += 1; rows.append(event(seq, "dispatch.claimed", {"external_dispatch_key": external_key}))
+        seq += 1; rows.append(event(seq, "dispatch.launch.authorized", {"external_dispatch_key": external_key}))
+        seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"external_dispatch_key": external_key, "lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
         if scenario != "session_recovery":
             role = {
                 "IMPLEMENTATION_WORK": "developer",
@@ -409,7 +411,7 @@ def validate_historical_runtime_bindings():
     # the production source without replaying a callback or Feature Persist.
     import v03_dogfood_post_run_finalizer as post
     from types import SimpleNamespace
-    from operator_store_model import reservation_path
+    from operator_store_model import StoreSnapshot, reservation_path
     semantic = "1"*64
     key = "dispatch-" + "a"*40
     slot = SimpleNamespace(feature_id="F-DOGFOOD", target_ref="dogfood/ref")
@@ -424,7 +426,7 @@ def validate_historical_runtime_bindings():
     preflight = SimpleNamespace(slot=slot, execution=SimpleNamespace(repository=REPO),
         candidate_pr_number=401, workflows=SimpleNamespace(workflow_for=lambda role: "reviewer.yml"),
         composition=SimpleNamespace(runtime=SimpleNamespace(backend=SimpleNamespace(
-            read_snapshot=lambda: SimpleNamespace(get=lambda path: files.get(path)))),
+            read_snapshot=lambda: StoreSnapshot(ref_sha="a" * 40, files=files))),
             result_source=SimpleNamespace(resolve=resolve, load_content=source.load_content)))
     events = [
         dict(sequence=1, event_type="dispatch.launch.authorized", operation_generation=1,

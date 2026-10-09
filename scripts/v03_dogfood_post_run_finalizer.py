@@ -27,6 +27,10 @@ from v03_dogfood_production_provenance import (
 )
 from v03_dogfood_release_finalizer import build_release_record
 from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding, recovery_route, REPLACEMENT_HISTORY_BLOBS, _recovery_document_blob, read_dogfood_handoff, V03DogfoodCompositionError
+from v03_dogfood_full_composition import (
+    post_handoff_present, validate_post_handoff_reconciliation, POST_HANDOFF_RUN,
+    POST_HANDOFF_SOURCE, POST_HANDOFF_CALLBACK, POST_HANDOFF_ADMISSION,
+)
 from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
@@ -181,12 +185,19 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
     return {"receipt_identity": receipt_identity, "workflow_run_ids": run_ids}
 
 
-def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence, recovery_run=False):
+def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence, recovery_run=False, reconciliation=None):
     """Verify the original accepted callback; never mint replacement receipts."""
     key, generation = trusted["external_dispatch_key"], trusted["operation_generation"]
     callbacks = [row for row in events if row.get("event_type") == "worker.callback.recorded"
                  and row.get("operation_generation") == generation
                  and (row.get("payload") or {}).get("external_dispatch_key") == key]
+    if reconciliation is not None:
+        if (trusted["role"] != "developer" or resolved.run.run_id != POST_HANDOFF_RUN
+                or len(callbacks) != 2
+                or [e["payload"].get("callback_id") for e in callbacks] != [
+                    POST_HANDOFF_CALLBACK, reconciliation["observation_callback_id"]]):
+            raise V03DogfoodPostRunFinalizerError("run lacks exact rejected/reconciled observation pair")
+        callbacks = callbacks[1:]
     if len(callbacks) != 1:
         raise V03DogfoodPostRunFinalizerError("run lacks one original protected callback")
     recorded = callbacks[0]
@@ -231,6 +242,8 @@ def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_
             "external_dispatch_key": key, "runtime_receipt_identity": str(resolved.run.run_id),
             "run_id": resolved.run.run_id,
         })[:24]
+    if reconciliation is not None:
+        callback_id = reconciliation["observation_callback_id"]
     if payload.get("callback_id") != callback_id:
         raise V03DogfoodPostRunFinalizerError("original callback identity differs from exact run")
     accepted = [row for row in events if row.get("event_type") == "worker.result.validated"
@@ -303,6 +316,10 @@ def _durable_run_bindings(preflight, observation, events):
     """Re-establish launches plus every trusted Developer-output candidate handoff."""
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     projection = vertical_projection(snapshot, observation["operation_id"])
+    reconciliation = None
+    if post_handoff_present(snapshot):
+        reconciliation, _, _ = validate_post_handoff_reconciliation(snapshot,
+            consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
     bindings = {}
     ordered: list[dict[str, Any]] = []
     for row in events:
@@ -403,6 +420,7 @@ def _durable_run_bindings(preflight, observation, events):
                 result_source=result_source,
                 lookup_sequence=int(row.get("sequence") or 0),
                 recovery_run=recovery_sealed or False,
+                reconciliation=reconciliation if run_id == POST_HANDOFF_RUN else None,
             )
 
         output_pr = resolved.run.candidate_pr_number
@@ -414,6 +432,13 @@ def _durable_run_bindings(preflight, observation, events):
                 and event.get("operation_generation") == row.get("operation_generation")
                 and (event.get("payload") or {}).get("external_dispatch_key") == key
             ]
+            reconciled_id = None
+            if reconciliation is not None and run_id == POST_HANDOFF_RUN:
+                if len(callbacks) != 2 or [e["payload"].get("callback_id") for e in callbacks] != [
+                        POST_HANDOFF_CALLBACK, reconciliation["observation_callback_id"]]:
+                    raise V03DogfoodPostRunFinalizerError("Developer handoff observation relation differs")
+                reconciled_id = reconciliation["observation_callback_id"]
+                callbacks = callbacks[:1]  # The actual original applied handoff, never a second PATCH.
             if len(callbacks) != 1:
                 raise V03DogfoodPostRunFinalizerError("Developer run lacks one sealed callback for candidate handoff")
             callback = callbacks[0]
@@ -426,7 +451,7 @@ def _durable_run_bindings(preflight, observation, events):
             handoff_payload, applied = fact["intent"], fact["applied"]
             validated = [event for event in events if event.get("event_type") == "worker.result.validated"
                          and event.get("operation_generation") == row.get("operation_generation")
-                         and (event.get("payload") or {}).get("callback_id") == callback_id]
+                         and (event.get("payload") or {}).get("callback_id") == (reconciled_id or callback_id)]
             if (len(validated) != 1
                     or handoff_payload["source_candidate_pr_number"] != output_pr
                     or handoff_payload["source_candidate_head_sha"] != output_head
@@ -610,6 +635,109 @@ def _persist_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(cycles, key=lambda row: row["requested_sequence"])
 
 
+
+def _canonical_persist_roles(events, cycles, accepted_callbacks, observation):
+    """Classify every real controller Event; no additional Persist is ignored."""
+    translated = [e for e in events if e.get("event_type") == "feature.event.translated"
+                  and isinstance((e.get("payload") or {}).get("feature_event"), dict)]
+    by_id = {}
+    for row in translated:
+        payload = row["payload"]
+        key = payload.get("feature_event_id")
+        if key in by_id:
+            raise V03DogfoodPostRunFinalizerError("duplicate translated Event")
+        by_id[key] = row
+    if set(by_id) != {c["feature_event_id"] for c in cycles}:
+        raise V03DogfoodPostRunFinalizerError("translated Events and complete Persist cycles differ")
+    accepted = {row["callback_id"]: row for row in accepted_callbacks}
+    callback_events = {row["payload"]["callback_id"]: row["payload"]["trusted_callback_envelope"]
+                       for row in events if row.get("event_type") == "worker.callback.recorded"}
+    primary, artifacts = {}, {}
+    for cycle in cycles:
+        row = by_id[cycle["feature_event_id"]]
+        payload, sequence = row["payload"], int(row["sequence"])
+        event = payload["feature_event"]
+        if (payload.get("feature_event_digest") != digest_json(event)
+                or event.get("id") != cycle["feature_event_id"]
+                or event.get("feature_id") != observation["feature_id"]
+                or event.get("expected_revision") != cycle["expected_revision"]
+                or payload.get("feature_revision") != cycle["expected_revision"]
+                or cycle["result_revision"] != cycle["expected_revision"] + 1
+                or payload.get("target_ref") != cycle["target_ref"]
+                or payload.get("candidate_head_sha") != cycle["candidate_head_sha"]
+                or sequence >= cycle["requested_sequence"]):
+            raise V03DogfoodPostRunFinalizerError("canonical translated/Persist binding differs")
+        callback_id = payload.get("callback_id")
+        changes = event.get("changes")
+        if not isinstance(changes, list) or not changes:
+            raise V03DogfoodPostRunFinalizerError("canonical Event lacks changes")
+        if callback_id:
+            if callback_id not in accepted or accepted[callback_id]["accepted_sequence"] >= sequence:
+                raise V03DogfoodPostRunFinalizerError("translated callback is not an accepted observation")
+            if payload.get("purpose") == "remediation_artifact_supersession":
+                envelope = callback_events[callback_id]
+                context = envelope["trusted_context"]
+                old_id, new_id = payload.get("superseded_artifact_id"), payload.get("replacement_artifact_id")
+                original, replacement = artifacts.get(old_id), artifacts.get(new_id)
+                expected_id = "EVT-" + observation["feature_id"] + "-VERTICAL-REMEDIATION-SUPERSEDE-" + digest_json({
+                    "callback_id": callback_id, "previous": old_id, "replacement": new_id,
+                    "revision": cycle["expected_revision"]})[:12].upper()
+                if (callback_id not in primary or context.get("role") != "developer"
+                        or context.get("feature_stage") != "code-review"
+                        or not original or not replacement or old_id == new_id
+                        or original.get("status", "draft") != "draft" or replacement.get("status", "draft") != "draft"
+                        or original.get("type") != "implementation" or replacement.get("type") != "implementation"
+                        or replacement.get("uri") != envelope["collected_outputs"][0]["trusted_uri"]
+                        or changes != [{"kind": "artifact", "id": old_id, "status": "superseded"}]
+                        or event["id"] != expected_id):
+                    raise V03DogfoodPostRunFinalizerError("remediation supersession differs from exact accepted artifacts")
+            elif payload.get("purpose") is not None or callback_id in primary:
+                raise V03DogfoodPostRunFinalizerError("accepted callback has extra primary Persist")
+            else:
+                primary[callback_id] = cycle
+        else:
+            selected = [e for e in events if e.get("event_type") == "loop.step.selected" and int(e["sequence"]) < sequence]
+            selected = selected[-1]["payload"] if selected else {}
+            step, stage = selected.get("step"), payload.get("feature_stage")
+            if step == "CODE_REVIEW" and stage == "code-review":
+                purpose, expected_changes = "CODE-REVIEW-START", [{"kind":"stage","id":"code-review","status":"WORKING"}]
+            elif step == "VERIFICATION_QA" and stage == "verification":
+                purpose, expected_changes = "VERIFICATION-START", [{"kind":"stage","id":"verification","status":"WORKING"}]
+            elif step == "CODE_REMEDIATION" and stage == "code-review" and len(changes) == 1:
+                purpose, expected_changes = "CODE-REMEDIATION-START", [{"kind":"task","id":changes[0].get("id"),"status":"WORKING"}]
+                if not expected_changes[0]["id"]:
+                    raise V03DogfoodPostRunFinalizerError("remediation start lacks task")
+            else:
+                raise V03DogfoodPostRunFinalizerError("Persist is not an accepted result or exact controller start")
+            expected_id = "EVT-" + observation["feature_id"] + "-VERTICAL-" + purpose + "-" + digest_json({
+                "revision": cycle["expected_revision"], "changes": expected_changes})[:12].upper()
+            if (selected.get("kind") != "persist" or selected.get("feature_revision") != cycle["expected_revision"]
+                    or changes != expected_changes or event["id"] != expected_id):
+                raise V03DogfoodPostRunFinalizerError("controller stage/task start Event differs")
+            dependents = [d for d in _selected_dispatches(events)
+                          if d["claim_sequence"] > cycle["requested_sequence"]]
+            dependent = dependents[0] if dependents else None
+            role = {"CODE_REVIEW": "reviewer", "VERIFICATION_QA": "qa", "CODE_REMEDIATION": "developer"}[step]
+            consumers = [callback_events[a["callback_id"]]["trusted_context"] for a in accepted_callbacks
+                         if a["callback_sequence"] > cycle["confirmed_sequence"]
+                         and callback_events[a["callback_id"]]["trusted_context"].get("expected_revision")
+                             == cycle["result_revision"]]
+            if (dependent is None or dependent["step"] != step
+                    or cycle["confirmed_sequence"] >= dependent["claim_sequence"]
+                    or len(consumers) != 1 or consumers[0].get("role") != role
+                    or consumers[0].get("feature_stage") != stage
+                    or consumers[0].get("target_ref") != cycle["target_ref"]
+                    or (step == "CODE_REMEDIATION" and consumers[0].get("task_id") != expected_changes[0]["id"])):
+                raise V03DogfoodPostRunFinalizerError("controller start lacks exact dependent dispatch/task")
+        for change in changes:
+            if change.get("kind") == "artifact":
+                identity = change.get("id")
+                artifacts[identity] = dict(artifacts.get(identity, {}), **change)
+    if set(primary) != set(accepted):
+        raise V03DogfoodPostRunFinalizerError("accepted callback lacks exactly one primary Persist")
+    return [primary[row["callback_id"]] for row in accepted_callbacks]
+
+
 def _reconstruct_release_authority(
     scenario: str,
     events: list[dict[str, Any]],
@@ -667,33 +795,46 @@ def _reconstruct_release_authority(
         if persist_cycles:
             raise V03DogfoodPostRunFinalizerError("session recovery unexpectedly persisted an unconsumed Worker result")
     else:
-        if len(persist_cycles) != len(validated_rows):
+        canonical = any(isinstance((row.get("payload") or {}).get("feature_event"), dict)
+                        for row in events if row.get("event_type") == "feature.event.translated")
+        result_cycles = (_canonical_persist_roles(events, persist_cycles, accepted_callbacks, observation)
+                         if canonical else persist_cycles)
+        if len(result_cycles) != len(validated_rows):
             raise V03DogfoodPostRunFinalizerError("accepted Worker results do not each have one complete Feature Persist")
         previous_revision = None
-        for index, (accepted, cycle) in enumerate(zip(validated_rows, persist_cycles)):
+        for cycle in persist_cycles:
+            if previous_revision is not None and cycle["expected_revision"] != previous_revision:
+                raise V03DogfoodPostRunFinalizerError("Feature revision chain is discontinuous across milestones")
+            previous_revision = cycle["result_revision"]
+            if cycle["target_ref"] != observation.get("target_ref"):
+                raise V03DogfoodPostRunFinalizerError("Feature Persist escaped frozen target ref")
+        for index, (accepted, cycle) in enumerate(zip(validated_rows, result_cycles)):
             accepted_sequence = int(accepted.get("sequence") or 0)
             next_claim = int(dispatches[index + 1]["claim_sequence"]) if index + 1 < len(dispatches) else None
             if cycle["requested_sequence"] <= accepted_sequence:
                 raise V03DogfoodPostRunFinalizerError("Feature Persist began before exact Worker acceptance")
             if next_claim is not None and cycle["confirmed_sequence"] >= next_claim:
                 raise V03DogfoodPostRunFinalizerError("next dispatch began before prior Feature Persist confirmation")
-            if previous_revision is not None and cycle["expected_revision"] != previous_revision:
-                raise V03DogfoodPostRunFinalizerError("Feature revision chain is discontinuous across milestones")
-            previous_revision = cycle["result_revision"]
-            if cycle["target_ref"] != observation.get("target_ref"):
-                raise V03DogfoodPostRunFinalizerError("Feature Persist escaped frozen target ref")
         done_rows = [row for row in events if row.get("event_type") == "operation.done"]
         if len(done_rows) != 1 or (done_rows[0].get("payload") or {}).get("feature_revision") != persist_cycles[-1]["result_revision"]:
             raise V03DogfoodPostRunFinalizerError("terminal DONE is not bound to final confirmed Feature revision")
     for index, seq in enumerate(validated[:-1]):
         next_claim = int(dispatches[index + 1]["claim_sequence"])
-        if not any(
-            seq < int(row.get("sequence") or 0) < next_claim
-            and row.get("event_type") == "loop.stable-stop"
-            and str((row.get("payload") or {}).get("status") or "") == "WAITING_EXTERNAL"
-            for row in events
-        ):
-            raise V03DogfoodPostRunFinalizerError("durable intermediate result lacks bounded WAITING_EXTERNAL stable stop")
+        claim = next(row for row in events if int(row["sequence"]) == next_claim)
+        key = claim["payload"]["external_dispatch_key"]
+        authorized = [row for row in events if row.get("event_type") == "dispatch.launch.authorized"
+                      and row.get("operation_generation") == claim.get("operation_generation")
+                      and (row.get("payload") or {}).get("external_dispatch_key") == key]
+        observed = [row for row in events if row.get("event_type") == "dispatch.launch.lookup-recorded"
+                    and row.get("operation_generation") == claim.get("operation_generation")
+                    and (row.get("payload") or {}).get("external_dispatch_key") == key
+                    and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"]
+        next_callback = accepted_callbacks[index + 1]["callback_sequence"]
+        if (len(authorized) != 1 or len(observed) != 1
+                or not seq < next_claim < int(authorized[0]["sequence"])
+                    < int(observed[0]["sequence"]) < next_callback
+                or not observed[0]["payload"].get("receipt_id")):
+            raise V03DogfoodPostRunFinalizerError("next dispatch lacks exact protected WAITING_EXTERNAL launch boundary")
 
     types = {str(row.get("event_type") or "") for row in events}
     if "operation.started" not in types:
@@ -861,6 +1002,15 @@ def _milestone_facts(
     ]
 
 
+def _archived_producer_source(preflight, run_id):
+    if run_id != POST_HANDOFF_RUN:
+        return preflight.execution.installation_commit_sha
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    attestation, _, _ = validate_post_handoff_reconciliation(snapshot,
+        consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    return attestation["producer_execution_binding"]["execution_source_head_sha"]
+
+
 def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: int, finalizer_run_id: int, github_token: str) -> dict[str, Any]:
     scenario = _required(observation.get("scenario"), "scenario")
     if scenario != preflight.slot.scenario:
@@ -907,6 +1057,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         runtime_receipt_resolver=lambda record: _durable_receipt(preflight, events, observation),
         runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
+        archived_producer_source_resolver=lambda run_id: _archived_producer_source(preflight, run_id),
     )
     human_interventions = 0
     if observation.get("operation_id") == RECOVERY_OPERATION_ID:
@@ -923,6 +1074,8 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
                 "https://github.com/DREAM-XIN/ai-sdlc/actions/runs/37897902667",
                 "https://github.com/DREAM-XIN/ai-sdlc/pull/574",
             ])
+    if post_handoff_present(preflight.composition.runtime.backend.read_snapshot()):
+        evidence_uris.append(POST_HANDOFF_ADMISSION["uri"])
     trusted_facts = {
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,
