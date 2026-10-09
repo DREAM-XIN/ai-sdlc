@@ -147,6 +147,7 @@ async function runCase(options, label, cap, retries) {
   const repeatCommand = "printf '%s\\n' '" + marker + "' | tee -a '" + ledger + "'";
   const verdictCommand = "printf called > '" + resultCall + "'; threat_detection_result --prompt-injection=false --secret-leak=false --malicious-patch=false";
   const state = {requests: 0, feedback: 0, expected: null, resultSent: false, fault: null};
+  let executionSummary = null;
   const provider = http.createServer((req, res) => {
     let raw = "";
     req.on("data", bytes => { raw += bytes; if (raw.length > 4 * 1024 * 1024) req.destroy(); });
@@ -225,6 +226,19 @@ async function runCase(options, label, cap, retries) {
     const terminal = [...fs.readFileSync(detectionLog, "utf8").matchAll(/THREAT_DETECTION_STATUS: reason=(result_recorded|config_error|engine_error|engine_timeout|invalid_report_exhausted|cancelled|output_write_error) exit=([0-9]+)/g)];
     ensure(terminal.length === 1 && Number(terminal[0][2]) === execution.code, "DETECTOR_TERMINAL_STATUS");
     const terminationReason = terminal[0][1];
+    const startupLog = fs.readFileSync(detectionLog, "utf8");
+    const startupClasses = [
+      ["MISSING_MODULE", /Cannot find module|MODULE_NOT_FOUND/],
+      ["MISSING_EXECUTABLE", /ENOENT|executable file not found/],
+      ["AUTHENTICATION", /No authentication information found|Authentication failed|not authenticated/i],
+      ["MODEL_UNAVAILABLE", /model.*not supported|model.*not found|no model endpoints|unresolved alias/i],
+      ["CLI_ARGUMENT", /unknown option|unknown argument|invalid choice/i],
+      ["FILESYSTEM", /EACCES|EROFS|permission denied|read-only file system/i],
+      ["CONNECTION", /ECONNREFUSED|ENETUNREACH|fetch failed/],
+      ["MISSING_PROMPT", /prompt.*missing|required.*prompt|prompt.*not found/i],
+    ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
+    executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
+      startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"]};
     const statsPromise = childMessage(proxy, "stats");
     proxy.send("stats");
     const stats = await statsPromise;
@@ -256,7 +270,7 @@ async function runCase(options, label, cap, retries) {
       detector_exit: execution.code, detector_termination_reason: terminationReason, conclusion: values.conclusion, success: values.success};
   } catch (error) {
     error.counts = {case: label, upstream_responses: state.requests, verified_tool_feedbacks: state.feedback,
-                    result_tool_sent: state.resultSent};
+                    result_tool_sent: state.resultSent, execution: executionSummary};
     throw error;
   } finally {
     proxy.kill("SIGTERM");
