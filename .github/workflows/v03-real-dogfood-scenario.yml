@@ -54,6 +54,7 @@ jobs:
           APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY }}
           APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LEGACY_APP_SECRET_PRESENT: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
           test -n "${ADMIN_TOKEN:-}"
@@ -62,6 +63,7 @@ jobs:
           case "${APP_INTEGRATION_ID:-}" in *[!0-9]*|'') exit 1 ;; esac
           test "$APP_INTEGRATION_ID" -gt 0
           test -n "${DEEPSEEK_API_KEY:-}"
+          test "${LEGACY_APP_SECRET_PRESENT:-}" = false
 
       - name: Create bounded Runtime App Feature Event token
         id: event-token
@@ -102,7 +104,7 @@ jobs:
           AI_SDLC_DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID: ${{ vars.AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID }}
           AI_SDLC_RECOVERY_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY }}
-          AI_SDLC_HISTORICAL_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}
+          AI_SDLC_LEGACY_SECRET_PRESENT: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
           AI_SDLC_DOGFOOD_OBSERVATION_PATH: evidence/v03-dogfood/${{ inputs.scenario }}-observation.json
         run: |
           set -euo pipefail
