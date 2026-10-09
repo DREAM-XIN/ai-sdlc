@@ -117,6 +117,8 @@ jobs:
             --mount "type=bind,src=$GITHUB_WORKSPACE/replay-awf,dst=/inputs/awf,readonly" \
             --mount "type=bind,src=$root/actions,dst=/inputs/actions,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/gh-aw/prompts,dst=/inputs/prompts,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/gh-aw/safeoutputs,dst=/inputs/safeoutputs,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/gh-aw/mcp-scripts,dst=/inputs/mcp-scripts,readonly" \
             --mount "type=bind,src=$root/copilot,dst=/inputs/copilot,readonly" \
             --mount "type=bind,src=$root/threat-detect,dst=/inputs/threat-detect,readonly" \
             --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/validate_v03_detector_protocol_replay.mjs,dst=/inputs/replay.mjs,readonly" \

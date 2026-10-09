@@ -135,7 +135,9 @@ async function runCase(options, label, cap, retries) {
   fs.mkdirSync(path.join(root, "home"), {recursive: true});
   fs.mkdirSync(path.join(root, "bin"), {recursive: true});
   fs.symlinkSync(actionsRoot, path.join(root, "runner", "gh-aw", "actions"));
-  fs.symlinkSync("/inputs/prompts", path.join(root, "runner", "gh-aw", "prompts"));
+  for (const name of ["prompts", "safeoutputs", "mcp-scripts"]) {
+    fs.symlinkSync("/inputs/" + name, path.join(root, "runner", "gh-aw", name));
+  }
   fs.symlinkSync(copilotBinary, path.join(root, "bin", "copilot"));
   fs.symlinkSync(detectorBinary, path.join(root, "bin", "threat-detect"));
   fs.writeFileSync(path.join(root, "artifacts", "aw-prompts", "prompt.txt"),
@@ -258,7 +260,7 @@ async function runCase(options, label, cap, retries) {
     const argumentTokens = ["copilot", "node", "--add-dir", "--log-level", "all", "--disable-builtin-mcps",
       "--no-ask-user", "--allow-all-tools", "--prompt", "--prompt-file", "--continue"];
     const syntheticMissingModuleRelative = [...new Set(missingSpecifiers)].map(specifier => {
-      for (const directory of [path.join(root, "artifacts"), path.join(root, "bin")]) {
+      for (const directory of [root]) {
         if (!specifier.startsWith(directory + "/")) continue;
         const relative = specifier.slice(directory.length + 1);
         if (/^[A-Za-z0-9_.@+\/-]{1,160}$/.test(relative) &&
@@ -302,6 +304,11 @@ async function runCase(options, label, cap, retries) {
       return "UNKNOWN_MODULE";
     });
     const missingDirectDependencies = moduleAllowlist.filter(([name]) => !fs.existsSync(path.join(actionsRoot, name))).map(([, code]) => code);
+    const firstAttempt = startupLog.match(/attempt 1 failed: exitCode=([0-9]+) failureClass=(invocation_cap_exceeded|ai_credits_exhausted|api_proxy_guard_rejected|capi_quota_exceeded|mcp_policy_blocked|model_not_supported|http_400_response_error|null_type_tool_call|no_auth_info|authentication_failed|sdk_session_idle_timeout|mcp_gateway_shutdown|permission_denied|capi_error_400|long_run_exit|partial_execution|no_output)\b/);
+    const firstProcess = startupLog.match(/attempt 1: process closed exitCode=([0-9]+) stdout=([0-9]+)B stderr=([0-9]+)B/);
+    const firstAttemptOutcome = firstAttempt ? {exit: Number(firstAttempt[1]), classification: firstAttempt[2]} : {classification: "NOT_RECORDED"};
+    if (firstProcess) Object.assign(firstAttemptOutcome, {process_exit: Number(firstProcess[1]),
+      stdout_bytes: Number(firstProcess[2]), stderr_bytes: Number(firstProcess[3])});
     const startupClasses = [
       ["MISSING_MODULE", /Cannot find module|MODULE_NOT_FOUND/],
       ["MISSING_EXECUTABLE", /ENOENT|executable file not found/],
@@ -313,7 +320,7 @@ async function runCase(options, label, cap, retries) {
       ["MISSING_PROMPT", /prompt.*missing|required.*prompt|prompt.*not found/i],
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
-      startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
+      first_attempt: firstAttemptOutcome, startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
       missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, case_module_relations: caseModuleRelations, synthetic_missing_module_relative: syntheticMissingModuleRelative, missing_direct_dependencies: missingDirectDependencies,
       official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");
