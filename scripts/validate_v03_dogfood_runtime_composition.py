@@ -110,134 +110,247 @@ def candidate_tests() -> None:
 
 
 def handoff_and_supersession_tests() -> None:
+    import hashlib
+    from copy import deepcopy
+    from operator_store import (
+        plan_operation_start, plan_dispatch_claim, plan_authorize_launch, plan_launch_lookup,
+    )
+    from operator_store_backends import OperatorStoreRuntime
+    from operator_effect_rollout import EffectLineageWriteFence, VerifiedEffectLineageRollout
+    from operator_store_git import MemoryStateRefBackend, CommitResult, CasConflict
+    from operator_store_model import StoreSnapshot, apply_plan_to_snapshot, operation_events, rebuild_projection
+    from operator_store_protection import StaticProtectionVerifier, PROTECTED
+    from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE
+    from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
+    from operator_vertical_recovery import plan_vertical_callback_record
+    from operator_vertical_store import (
+        plan_vertical_semantic_reservation, plan_vertical_persist_requested,
+        plan_vertical_persist_linearized, plan_vertical_persist_confirmed,
+    )
+    from v03_dogfood_full_composition import (
+        _handoff_paths, _handoff_binding, _plan_handoff_intent, read_dogfood_handoff,
+    )
+
     slot = require_slot("review_remediation")
-    prior = "1" * 40
-    developer = "2" * 40
-    persisted = "3" * 40
-    state = {"ref": prior, "events": [], "facts": [], "persisted": []}
+    prior, developer, persisted = "1" * 40, "2" * 40, "3" * 40
+    now = "2026-10-03T00:00:00Z"
+    uri = f"docs/features/{slot.feature_id}/worker-runs/vertical-dispatch-1/developer-pr-900-{developer}.json"
+    artifact_bytes = b'{"authenticated":"Developer-output"}'
+    receipts = [{
+        "kind": "artifact", "label": "implementation", "trusted_uri": uri,
+        "sha256": hashlib.sha256(artifact_bytes).hexdigest(), "size_bytes": len(artifact_bytes),
+    }]
 
-    def fixture_pr(head):
-        return {
-            "number": 431,
-            "state": "open",
-            "draft": False,
-            "head": {"ref": slot.target_ref, "sha": head, "repo": {"full_name": REPOSITORY}},
-            "base": {"ref": "main", "repo": {"full_name": REPOSITORY}},
-        }
+    class ShaMemoryBackend(MemoryStateRefBackend):
+        """Real protected Memory backend; only fake commit IDs use Git's SHA shape."""
+        compete_once = False
+        def commit(self, plan, receipt):
+            competing = self.compete_once and any(m.path.endswith("/intent.json") for m in plan.mutations)
+            self.compete_once = False if competing else self.compete_once
+            result = super().commit(plan, receipt)
+            sha = hashlib.sha1(("handoff-test:" + result.ref_sha).encode()).hexdigest()
+            self.snapshot = StoreSnapshot(ref_sha=sha, files=result.snapshot.files)
+            if competing:
+                raise CasConflict("another writer won the identical handoff intent")
+            return CommitResult(sha, self.read_snapshot(), result.result)
 
-    def read(url, _headers):
-        if "/pulls?" in url:
-            return 200, [fixture_pr(state["ref"])]
-        if f"/compare/{developer}...{persisted}" in url:
-            return 200, {
-                "status": "ahead", "behind_by": 0,
-                "merge_base_commit": {"sha": developer},
-            }
-        raise AssertionError("unexpected candidate read: " + url)
-
-    provider = DogfoodGitHubCandidateProvider(
-        slot=slot, repository=REPOSITORY, token="read-token", http_get=read,
-    )
-
-    def write(method, url, _headers, body):
-        if method == "GET" and url.endswith("/pulls/900"):
-            return 200, {
-                "number": 900, "state": "open", "draft": True,
-                "base": {"ref": slot.target_ref}, "head": {"sha": developer},
-            }
-        if method == "GET" and f"/compare/{prior}...{developer}" in url:
-            return 200, {
-                "status": "ahead", "ahead_by": 1, "behind_by": 0,
-                "merge_base_commit": {"sha": prior},
-            }
-        if method == "GET" and "/git/refs/heads/" in url:
-            return 200, {"object": {"sha": state["ref"]}}
-        if method == "PATCH" and "/git/refs/heads/" in url:
-            require(body == {"sha": developer, "force": False}, "handoff was not a non-force exact ref update")
-            state["ref"] = developer
-            return 200, {"object": {"sha": developer}}
-        raise AssertionError(f"unexpected handoff request: {method} {url}")
-
-    handoff = DogfoodCandidateHandoff(
-        slot=slot,
-        repository=REPOSITORY,
-        token="write-token",
-        candidate_provider=provider,
-        http_request=write,
-    )
-    context = SimpleNamespace(
-        role="developer", feature_id=slot.feature_id, target_ref=slot.target_ref,
-        candidate_head_sha=prior, operation_id="op-handoff", dispatch_id="dispatch-1",
-        task_id=slot.feature_id + "-IMPLEMENTATION",
-    )
-    uri = (
-        f"docs/features/{slot.feature_id}/worker-runs/dispatch-1/"
-        f"developer-pr-900-{developer}.json"
-    )
-    executor = SimpleNamespace(_record_fact=lambda op, typ, payload: state["facts"].append((op, typ, payload)))
-    handoff.adopt(
-        executor=executor, context=context, callback_id="callback-1",
-        receipts=[{"kind": "artifact", "trusted_uri": uri}],
-    )
-    require(state["ref"] == developer, "Developer output was not adopted onto fixed fixture ref")
-    require(
-        len(state["facts"]) == 1
-        and state["facts"][0][1] == "candidate.handoff.adopted"
-        and state["facts"][0][2]["source_candidate_head_sha"] == developer,
-        "handoff did not retain exact Developer output identity",
-    )
-
-    envelope = {
-        "trusted_context": {
-            "role": "developer", "candidate_head_sha": prior, "dispatch_id": "dispatch-1",
-        },
-        "collected_outputs": [{"kind": "artifact", "trusted_uri": uri}],
-    }
-    state["events"] = [
-        {
-            "event_type": "worker.callback.recorded",
-            "payload": {"callback_id": "callback-1", "trusted_callback_envelope": envelope},
-        },
-        {
-            "event_type": "candidate.handoff.adopted",
-            "payload": state["facts"][0][2],
-        },
-    ]
-    provider.bind_runtime(
-        SimpleNamespace(
-            backend=SimpleNamespace(
-                read_snapshot=lambda: SimpleNamespace(),
-            )
+    def fixture():
+        snapshot = StoreSnapshot(ref_sha="a" * 40)
+        sequence = 0
+        def apply(plan):
+            nonlocal snapshot, sequence
+            sequence += 1
+            snapshot = apply_plan_to_snapshot(snapshot, plan, new_ref_sha=f"{sequence:040x}")
+            return plan.result
+        start = apply(plan_operation_start(
+            snapshot, target_repository=REPOSITORY, feature_id=slot.feature_id,
+            expected_revision=10, idempotency_key="handoff-test", occurred_at=now,
+            trusted_context_digest="trusted", operation_profile=VERTICAL_PROFILE,
+        ))
+        operation_id = start["operation_id"]
+        reservation = apply(plan_vertical_semantic_reservation(
+            snapshot, operation_id=operation_id, generation=0, target_repository=REPOSITORY,
+            feature_id=slot.feature_id, expected_revision=10, current_stage="implementation",
+            task_identity="vertical:implementation:10", role="developer", candidate_head_sha=prior,
+            occurred_at=now, trusted_context_digest="trusted",
+        ))
+        effect_key = reservation["semantic_effect_key"]
+        claim = apply(plan_dispatch_claim(
+            snapshot, operation_id=operation_id, generation=0, effect_key=effect_key,
+            occurred_at=now, trusted_context_digest="trusted",
+        ))
+        apply(plan_authorize_launch(
+            snapshot, operation_id=operation_id, generation=0, claim_id=claim["claim_id"],
+            dispatch_id="vertical-dispatch-1", occurred_at=now, trusted_context_digest="trusted",
+            verified_expected_revision=10, verified_stage="implementation", verified_candidate_head_sha=prior,
+        ))
+        apply(plan_launch_lookup(
+            snapshot, operation_id=operation_id, generation=0,
+            external_dispatch_key_value=claim["external_dispatch_key"], lookup_state="LAUNCHED",
+            receipt_id="9001", occurred_at=now, trusted_context_digest="trusted",
+        ))
+        context = TrustedDispatchContext(
+            operation_id=operation_id, operation_generation=0, operation_profile=VERTICAL_PROFILE,
+            semantic_effect_key=effect_key, external_dispatch_key=claim["external_dispatch_key"],
+            dispatch_id="vertical-dispatch-1", runtime_receipt_identity="9001",
+            target_repository=REPOSITORY, target_ref=slot.target_ref, feature_id=slot.feature_id,
+            expected_revision=10, feature_stage="implementation", task_id="vertical:implementation:10",
+            role="developer", candidate_pr_number=None, candidate_head_sha=prior,
+            worker_identity="developer-worker", collector_identity="collector",
         )
-    )
-    import v03_dogfood_full_composition as composition
-    original_events = composition.operation_events
-    try:
-        composition.operation_events = lambda _snapshot, _operation_id: list(state["events"])
-        pinned = provider.current_candidate(
-            operation_id="op-handoff", repository=REPOSITORY,
+        apply(plan_vertical_callback_record(
+            snapshot, context=context, callback_id="callback-1",
+            worker_payload={"status": "COMPLETED", "summary": "done",
+                            "outputs": [{"label": "implementation", "kind": "artifact"}]},
+            receipts=receipts, occurred_at=now, trusted_context_digest="trusted",
+        ))
+        backend = ShaMemoryBackend(repository=REPOSITORY, state_ref="refs/heads/handoff-test", snapshot=snapshot)
+        runtime = OperatorStoreRuntime(
+            backend=backend, protection_verifier=StaticProtectionVerifier(status=PROTECTED), clock=lambda: now,
+            plan_guard=EffectLineageWriteFence(VerifiedEffectLineageRollout(
+                repository=REPOSITORY, state_ref=backend.state_ref, operation_profile=VERTICAL_PROFILE,
+                effect_lineage_required=True, policy_ref="fixture-policy", policy_digest="fixture-policy-digest",
+                writer_capability="lineage-aware-v1", writer_fence_receipt_ref="fixture-fence",
+                writer_fence_receipt_digest="fixture-fence-digest", test_only=True,
+            )),
+        )
+        executor = TrustedVerticalExecutor(
+            runtime=runtime, feature_gateway=None, persist_gateway=None, dispatch_gateway=None,
+            config=TrustedVerticalExecutorConfig(
+                target_ref=slot.target_ref, trusted_context_digest="trusted", legacy_compatibility_mode=True,
+            ),
+        )
+        state = {"ref": prior, "patches": 0, "ack_loss": False, "crash_after_patch": False,
+                 "post_patch_read_failure": False, "facts": [], "persisted": []}
+        provider = DogfoodGitHubCandidateProvider(
+            slot=slot, repository=REPOSITORY, token="read-token",
+            http_get=lambda _url, _headers: (200, [_pr(slot, head=state["ref"])]),
+        )
+        provider.bind_runtime(runtime)
+        def http(method, url, _headers, body):
+            if method == "GET" and url.endswith("/pulls/900"):
+                return 200, {
+                    "number": 900, "state": "open", "draft": True,
+                    "base": {"ref": slot.target_ref, "repo": {"full_name": REPOSITORY}},
+                    "head": {"sha": developer, "repo": {"full_name": REPOSITORY}},
+                }
+            if method == "GET" and f"/compare/{prior}...{developer}" in url:
+                return 200, {"status": "ahead", "ahead_by": 1, "behind_by": 0,
+                             "merge_base_commit": {"sha": prior}}
+            if method == "GET" and "/git/refs/heads/" in url:
+                if state["post_patch_read_failure"]:
+                    state["post_patch_read_failure"] = False
+                    return 0, {}
+                return 200, {"object": {"sha": state["ref"]}}
+            if method == "PATCH" and "/git/refs/heads/" in url:
+                intent_path, applied_path = _handoff_paths(operation_id, "callback-1")
+                durable = backend.read_snapshot()
+                require(durable.get(intent_path) is not None and durable.get(applied_path) is None,
+                        "PATCH preceded durable intent or repeated an applied handoff")
+                require(body == {"sha": developer, "force": False}, "handoff ref update escaped exact non-force output")
+                state["patches"] += 1
+                state["ref"] = developer
+                if state["crash_after_patch"]:
+                    state["post_patch_read_failure"] = True
+                return (0, {}) if state["ack_loss"] else (200, {"object": {"sha": developer}})
+            raise AssertionError(f"unexpected handoff request: {method} {url}")
+        handoff = DogfoodCandidateHandoff(
+            slot=slot, repository=REPOSITORY, token="write-token",
+            candidate_provider=provider, http_request=http,
+        )
+        handoff.content_loader = lambda requested: artifact_bytes if requested == uri else b"wrong"
+        return SimpleNamespace(
+            backend=backend, runtime=runtime, executor=executor, context=context, state=state,
+            handoff=handoff, provider=provider, operation_id=operation_id,
+        )
+
+    def adopt(f):
+        f.handoff.adopt(executor=f.executor, context=f.context, callback_id="callback-1", receipts=receipts)
+
+    def candidate(f):
+        return f.provider.current_candidate(
+            operation_id=f.operation_id, repository=REPOSITORY,
             feature_id=slot.feature_id, target_ref=slot.target_ref,
         )
-        require(pinned.candidate_head_sha == prior, "incomplete callback lost its pre-handoff candidate fence")
-        state["ref"] = persisted
-        state["events"].extend([
-            {
-                "event_type": "feature.event.translated",
-                "payload": {"callback_id": "callback-1", "feature_event_id": "EVT-1"},
-            },
-            {
-                "event_type": "persist.confirmed",
-                "payload": {"feature_event_id": "EVT-1"},
-            },
-        ])
-        current = provider.current_candidate(
-            operation_id="op-handoff", repository=REPOSITORY,
-            feature_id=slot.feature_id, target_ref=slot.target_ref,
-        )
-        require(current.candidate_head_sha == persisted, "confirmed handoff remained pinned to predecessor head")
-    finally:
-        composition.operation_events = original_events
 
+    def denied(action, message):
+        try:
+            action()
+        except V03DogfoodCompositionError:
+            return
+        raise AssertionError(message)
+
+    f = fixture()
+    journal_before = deepcopy(operation_events(f.backend.read_snapshot(), f.operation_id))
+    adopt(f)
+    durable = f.backend.read_snapshot()
+    fact = read_dogfood_handoff(durable, f.operation_id, "callback-1", require_applied=True)
+    require(f.state["patches"] == 1 and f.state["ref"] == developer, "handoff did not adopt exact output once")
+    require(fact["intent"]["source_candidate_head_sha"] == developer, "handoff output identity missing")
+    require(operation_events(durable, f.operation_id) == journal_before, "handoff polluted original Operation journal")
+    require(rebuild_projection(durable, f.operation_id)["status"] == "RUNNING", "real projection rejected sidecar facts")
+    require(candidate(f).candidate_head_sha == prior, "pending callback lost prior candidate view")
+    adopt(f)
+    require(f.state["patches"] == 1, "applied replay issued a second PATCH")
+
+    # Preserve original provider completion coverage using real supported Store events.
+    f.executor._record_fact(f.operation_id, "worker.result.validated",
+        {"callback_id": "callback-1", "role": "developer", "dispatch_id": "vertical-dispatch-1"})
+    f.executor._record_fact(f.operation_id, "feature.event.translated",
+        {"callback_id": "callback-1", "feature_event_id": "EVT-1"})
+    common = dict(operation_id=f.operation_id, generation=0, feature_event_id="EVT-1",
+                  expected_revision=10, target_ref=slot.target_ref, candidate_head_sha=prior,
+                  occurred_at=now, trusted_context_digest="trusted")
+    f.runtime.commit_replanned(lambda snap: plan_vertical_persist_requested(snap, **common))
+    f.runtime.commit_replanned(lambda snap: plan_vertical_persist_linearized(snap, **common))
+    f.runtime.commit_replanned(lambda snap: plan_vertical_persist_confirmed(snap, result_revision=11, **common))
+    f.state["ref"] = persisted
+    require(candidate(f).candidate_head_sha == persisted, "confirmed handoff remained pinned to prior")
+
+    ack = fixture()
+    ack.state["ack_loss"] = True
+    adopt(ack)
+    require(ack.state["patches"] == 1, "PATCH acknowledgement loss repeated mutation")
+    read_dogfood_handoff(ack.backend.read_snapshot(), ack.operation_id, "callback-1", require_applied=True)
+
+    crash = fixture()
+    crash.state["crash_after_patch"] = True
+    denied(lambda: adopt(crash), "post-PATCH read failure unexpectedly sealed application")
+    pending = read_dogfood_handoff(crash.backend.read_snapshot(), crash.operation_id, "callback-1")
+    require(pending["applied"] is None and crash.state["patches"] == 1, "ambiguous PATCH lost pending intent")
+    require(candidate(crash).candidate_head_sha == prior, "intent-only replay cannot recover provider view")
+    crash.state["crash_after_patch"] = False
+    adopt(crash)
+    require(crash.state["patches"] == 1, "source-head replay issued a second PATCH")
+    read_dogfood_handoff(crash.backend.read_snapshot(), crash.operation_id, "callback-1", require_applied=True)
+
+    prepatch = fixture()
+    prepatch.runtime.commit_replanned(lambda snap: _plan_handoff_intent(
+        snap, binding=_handoff_binding(snap, prepatch.operation_id, "callback-1", 431)))
+    denied(lambda: adopt(prepatch), "existing intent with prior ref gained retry authority")
+    require(prepatch.state["patches"] == 0, "pre-PATCH crash replay sent a PATCH")
+
+    loser = fixture()
+    loser.backend.compete_once = True
+    denied(lambda: adopt(loser), "CAS loser gained original winner mutation authority")
+    require(loser.state["patches"] == 0, "CAS loser sent a PATCH")
+
+    divergent = fixture()
+    divergent.runtime.commit_replanned(lambda snap: _plan_handoff_intent(
+        snap, binding=_handoff_binding(snap, divergent.operation_id, "callback-1", 431)))
+    divergent.state["ref"] = persisted
+    denied(lambda: adopt(divergent), "unrelated live head gained handoff authority")
+    denied(lambda: candidate(divergent), "unrelated live head was masked to prior")
+    require(divergent.state["patches"] == 0, "unrelated head triggered PATCH")
+
+    corrupt = fixture()
+    corrupt.handoff.content_loader = lambda _uri: b"corrupt"
+    denied(lambda: adopt(corrupt), "corrupt Developer artifact gained handoff authority")
+    require(corrupt.state["patches"] == 0, "corrupt artifact triggered PATCH")
+    require(read_dogfood_handoff(corrupt.backend.read_snapshot(), corrupt.operation_id, "callback-1") is None,
+            "corrupt artifact created durable intent")
+
+    state, handoff = f.state, f.handoff
     feature = SimpleNamespace(
         revision=7, current_stage="code-review", manifest_digest="manifest-digest",
         candidate_head_sha=persisted, target_ref=slot.target_ref,
@@ -273,24 +386,6 @@ def handoff_and_supersession_tests() -> None:
         "remediation supersession did not preserve exactly one approvable replacement",
     )
 
-    for broken in (
-        [fixture_pr(prior)],
-        [
-            {"kind": "artifact", "trusted_uri": uri},
-            {"kind": "artifact", "trusted_uri": uri},
-        ],
-    ):
-        if isinstance(broken[0], dict) and "head" in broken[0]:
-            continue
-        try:
-            handoff.adopt(
-                executor=executor, context=context, callback_id="callback-bad",
-                receipts=broken,
-            )
-        except V03DogfoodCompositionError:
-            pass
-        else:
-            raise AssertionError("ambiguous Developer output unexpectedly gained handoff authority")
 
 
 def source_contract_tests() -> None:
@@ -312,7 +407,8 @@ def source_contract_tests() -> None:
     require("responses: OpenAIResponsesProductionBundle" in source, "composition does not retain Responses authority")
     require("return self.responses.adapter" in source, "composition does not expose exact production adapter")
     require("operation.resume" in source, "composition lost server-only capability leak assertion")
-    require("candidate.handoff.adopted" in source, "Developer output handoff lost durable authority fact")
+    require("HANDOFF_SCHEMA" in source and "read_dogfood_handoff" in source, "Developer handoff lost immutable sidecar authority")
+    require('"candidate.handoff.adopted"' not in source, "unsupported handoff event returned to shared journal")
     require("remediation_artifact_supersession" in source, "remediation lifecycle lost explicit supersession")
 
 

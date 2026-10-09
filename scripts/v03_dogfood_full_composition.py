@@ -28,7 +28,7 @@ from operator_openai_responses_production import (
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
 from operator_store_model import canonical_json, digest_json, normalize_repository, operation_events, reservation_path, rebuild_projection, StoreMutation, StoreMutationPlan
-from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result
+from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result, validate_collected_outputs
 from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
 from operator_vertical_recovery import plan_vertical_callback_record, recover_vertical_callback, _context_payload, _task_binding_matches
@@ -142,7 +142,7 @@ def validate_recovery_continuation(snapshot):
     ):
         expected[key] = authorization[key]
     if (
-        any(continuation.get(key) != value for key, value in expected.items())
+        any(canonical_json(continuation.get(key)) != canonical_json(value) for key, value in expected.items())
         or type(continuation.get("admission_version")) is not int
         or set(continuation) != set(expected) | {
             "execution_source_head_sha", "execution_trusted_context_digest",
@@ -204,6 +204,24 @@ class V03DogfoodCompositionError(RuntimeError):
 
 
 HANDOFF_SCHEMA = "ai-sdlc.v03-dogfood-candidate-handoff/v1"
+
+class _ReadOnlyHandoffResult(RuntimeError):
+    def __init__(self, result):
+        self.result = result
+
+
+def _commit_handoff_nonempty(executor, planner):
+    def guarded(snapshot):
+        plan = planner(snapshot)
+        if not plan.mutations:
+            raise _ReadOnlyHandoffResult(plan.result)
+        return plan
+    try:
+        return executor._commit(guarded).result
+    except _ReadOnlyHandoffResult as replay:
+        return replay.result
+
+
 
 
 def _handoff_paths(operation_id, callback_id):
@@ -288,7 +306,7 @@ def _handoff_binding(snapshot, operation_id, callback_id, fixture_pr):
 def _validate_handoff_intent(snapshot, intent, *, binding):
     extras = {"schema_version", "fact_kind", "predecessor_store_commit", "observed_last_sequence", "operation_journal_digest"}
     if (not isinstance(intent, dict) or set(intent) != set(binding) | extras
-            or any(intent.get(k) != v for k, v in binding.items())
+            or any(canonical_json(intent.get(k)) != canonical_json(v) for k, v in binding.items())
             or intent.get("schema_version") != HANDOFF_SCHEMA or intent.get("fact_kind") != "intent"
             or not _SHA40.fullmatch(str(intent.get("predecessor_store_commit") or ""))):
         raise V03DogfoodCompositionError("handoff intent identity differs")
@@ -309,7 +327,7 @@ def _validate_handoff_applied(snapshot, intent, applied):
     }
     extras = {"predecessor_store_commit", "observed_last_sequence", "operation_journal_digest"}
     if (not isinstance(applied, dict) or set(applied) != set(expected) | extras
-            or any(applied.get(k) != v for k, v in expected.items())
+            or any(canonical_json(applied.get(k)) != canonical_json(v) for k, v in expected.items())
             or not _SHA40.fullmatch(str(applied.get("predecessor_store_commit") or ""))):
         raise V03DogfoodCompositionError("handoff applied identity differs")
     events = operation_events(snapshot, intent["operation_id"])
@@ -648,7 +666,7 @@ class DogfoodCandidateHandoff:
                     or binding["source_candidate_head_sha"] != source_head):
                 raise V03DogfoodCompositionError("handoff live proof differs from Store callback")
             return _plan_handoff_intent(current, binding=binding)
-        outcome = executor._commit(plan_intent).result
+        outcome = _commit_handoff_nonempty(executor, plan_intent)
         intent, fresh = outcome["intent"], outcome["created"]
         ref_path = f"/git/refs/heads/{parse.quote(self.slot.target_ref, safe='')}"
         def read_ref():
@@ -665,7 +683,7 @@ class DogfoodCandidateHandoff:
             observed = read_ref()
         if observed != source_head:
             raise V03DogfoodCompositionError("exact handoff effect not observed; lookup only")
-        executor._commit(lambda current: _plan_handoff_applied(current, intent=intent, observed_ref_sha=observed))
+        _commit_handoff_nonempty(executor, lambda current: _plan_handoff_applied(current, intent=intent, observed_ref_sha=observed))
 
 
 class DogfoodTrustedCallbackCoordinator:
@@ -784,6 +802,11 @@ class DogfoodTrustedCallbackCoordinator:
             )
         )
         if context.role == "developer":
+            feature, _ = self.executor.feature_gateway.read_feature(operation_id=context.operation_id)
+            validate_collected_outputs(
+                context=context, feature=feature, worker_payload=worker_payload,
+                receipts=receipts, content_loader=self.delegate.content_loader,
+            )
             self.candidate_handoff.adopt(
                 executor=self.executor,
                 context=context,
@@ -824,6 +847,27 @@ class DogfoodCandidateBoundActionsTransport(GitHubActionsVerticalGhAwTransport):
             raise ValueError("dogfood transport requires the fixed candidate provider")
         super().__init__(config, **kwargs)
         self.candidate_provider = candidate_provider
+
+
+    def _http(self, *, method, url, token, body=None):
+        if method == "GET" and re.fullmatch(
+            r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/jobs/[1-9][0-9]*/logs", url.lower()
+        ):
+            req = request.Request(url, method="GET", headers={
+                "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                "X-GitHub-Api-Version": self.config.api_version, "User-Agent": self.config.user_agent,
+            })
+            try:
+                with request.build_opener(_GitHubSafeRedirectHandler()).open(req, timeout=30) as response:
+                    raw = response.read(4 * 1024 * 1024 + 1)
+                    if len(raw) > 4 * 1024 * 1024:
+                        raise VerticalInvariantError("BLOCKED", "dogfood proof log exceeds bound")
+                    return int(response.status), dict(response.headers.items()), raw
+            except VerticalInvariantError:
+                raise
+            except Exception as exc:
+                raise VerticalInvariantError("BLOCKED", "dogfood proof log unavailable") from exc
+        return super()._http(method=method, url=url, token=token, body=body)
 
     def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
         if workflow != self.config.workflows.developer_workflow:
