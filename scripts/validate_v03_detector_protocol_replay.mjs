@@ -19,6 +19,13 @@ function gitBlob(file) {
   return crypto.createHash("sha1").update(Buffer.from("blob " + bytes.length + "\0")).update(bytes).digest("hex");
 }
 const forbidden = /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL/i;
+function requestFamily(req) {
+  const method = ["GET", "POST"].includes(req.method) ? req.method : "OTHER";
+  const route = /\/chat\/completions$/.test(req.url) ? "COMPLETIONS" :
+    /\/models(?:\/[^?]*)?$/.test(req.url) ? "MODELS" :
+    /\/responses$/.test(req.url) ? "RESPONSES" : "OTHER";
+  return method + "_" + route;
+}
 
 async function proxyChild() {
   const [root, targetPort, cap] = process.argv.slice(3);
@@ -34,13 +41,15 @@ async function proxyChild() {
   });
   const server = createProviderServer(adapter);
   let rejected = 0;
+  const requests = {};
   server.on("request", (_req, res) => {
+    const family = requestFamily(_req); requests[family] = (requests[family] || 0) + 1;
     res.once("finish", () => { if (res.statusCode === 429) rejected++; });
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   process.send({kind: "ready", port: server.address().port});
   process.on("message", message => {
-    if (message === "stats") process.send({kind: "stats", guard: getMaxRunsReflectState(), rejected});
+    if (message === "stats") process.send({kind: "stats", guard: getMaxRunsReflectState(), rejected, requests});
     if (message === "stop") server.close(() => process.exit(0));
   });
 }
@@ -149,9 +158,10 @@ async function runCase(options, label, cap, retries) {
   const resultCall = path.join(root, "result-tool-called");
   const repeatCommand = "printf '%s\\n' '" + marker + "' | tee -a '" + ledger + "'";
   const verdictCommand = "printf called > '" + resultCall + "'; threat_detection_result --prompt-injection=false --secret-leak=false --malicious-patch=false";
-  const state = {requests: 0, feedback: 0, expected: null, resultSent: false, fault: null};
+  const state = {requests: 0, feedback: 0, expected: null, resultSent: false, fault: null, httpFamilies: {}};
   let executionSummary = null;
   const provider = http.createServer((req, res) => {
+    const family = requestFamily(req); state.httpFamilies[family] = (state.httpFamilies[family] || 0) + 1;
     let raw = "";
     req.on("data", bytes => { raw += bytes; if (raw.length > 4 * 1024 * 1024) req.destroy(); });
     req.on("end", () => {
@@ -304,6 +314,23 @@ async function runCase(options, label, cap, retries) {
       return "UNKNOWN_MODULE";
     });
     const missingDirectDependencies = moduleAllowlist.filter(([name]) => !fs.existsSync(path.join(actionsRoot, name))).map(([, code]) => code);
+    const startMarker = startupLog.indexOf("attempt 1: process started");
+    const endMarker = startupLog.indexOf("attempt 1: process exit event", startMarker);
+    let sanitizedSyntheticCLIError = null;
+    if (startMarker >= 0 && endMarker > startMarker) {
+      const firstCLI = startupLog.slice(startMarker, endMarker);
+      for (const rawLine of firstCLI.split("\n")) {
+        const line = rawLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
+        if (!/^(?:Error|error):/.test(line) ||
+            /prompt|argument|argv|environment|credential|token|password|secret|api.?key|[A-Z_]{3,}=|Analyze this harmless/i.test(line)) continue;
+        const scrubbed = line.replace(/https?:\/\/[^\s]+/g, "[URL]")
+          .replace(/["'][^"']*["']/g, "[QUOTED]")
+          .replace(/(?:^|\s)\/[A-Za-z0-9_.@+\/-]+/g, " [PATH]");
+        if (!/^[\x20-\x7e]+$/.test(scrubbed)) continue;
+        sanitizedSyntheticCLIError = scrubbed.slice(0, 200);
+        break;
+      }
+    }
     const firstAttempt = startupLog.match(/attempt 1 failed: exitCode=([0-9]+) failureClass=(invocation_cap_exceeded|ai_credits_exhausted|api_proxy_guard_rejected|capi_quota_exceeded|mcp_policy_blocked|model_not_supported|http_400_response_error|null_type_tool_call|no_auth_info|authentication_failed|sdk_session_idle_timeout|mcp_gateway_shutdown|permission_denied|capi_error_400|long_run_exit|partial_execution|no_output)\b/);
     const firstProcess = startupLog.match(/attempt 1: process closed exitCode=([0-9]+) stdout=([0-9]+)B stderr=([0-9]+)B/);
     const firstAttemptOutcome = firstAttempt ? {exit: Number(firstAttempt[1]), classification: firstAttempt[2]} : {classification: "NOT_RECORDED"};
@@ -335,12 +362,14 @@ async function runCase(options, label, cap, retries) {
       ["MISSING_PROMPT", /prompt.*missing|required.*prompt|prompt.*not found/i],
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
-      first_attempt: firstAttemptOutcome, native_candidates: nativeCandidates, tmp_noexec: tmpNoexec, native_load_flags: nativeLoadFlags, startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
+      first_attempt: firstAttemptOutcome, sanitized_synthetic_cli_error: sanitizedSyntheticCLIError, native_candidates: nativeCandidates, tmp_noexec: tmpNoexec, native_load_flags: nativeLoadFlags, startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
       missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, case_module_relations: caseModuleRelations, synthetic_missing_module_relative: syntheticMissingModuleRelative, missing_direct_dependencies: missingDirectDependencies,
       official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");
     proxy.send("stats");
     const stats = await statsPromise;
+    executionSummary.proxy_http_families = stats.requests;
+    executionSummary.provider_http_families = state.httpFamilies;
     const concludeOutput = path.join(root, "conclude-output");
     fs.writeFileSync(concludeOutput, "");
     const conclusion = await runCaptured("/bin/bash", [path.join(actionsRoot, "conclude_threat_detection.sh"), result],
