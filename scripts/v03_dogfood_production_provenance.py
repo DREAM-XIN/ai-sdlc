@@ -92,6 +92,7 @@ class ProductionDogfoodProvenanceVerifier:
         milestone_resolver: MilestoneResolver,
         http_get: HttpGet = _default_get,
         runtime_binding_resolver=None,
+        archived_producer_source_resolver=None,
     ) -> None:
         if not callable(runtime_receipt_resolver) or not callable(milestone_resolver) or not callable(http_get):
             raise ValueError("production dogfood provenance resolvers must be callable")
@@ -100,6 +101,7 @@ class ProductionDogfoodProvenanceVerifier:
         self._milestone_resolver = milestone_resolver
         self._http_get = http_get
         self._runtime_binding_resolver = runtime_binding_resolver
+        self._archived_producer_source_resolver = archived_producer_source_resolver
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -182,7 +184,14 @@ class ProductionDogfoodProvenanceVerifier:
             role = binding.get("role")
             key = str(binding.get("external_dispatch_key") or "")
             workflow = str(payload.get("path") or "").removeprefix(".github/workflows/")
-            if (head_sha != self.config.installation_commit_sha
+            expected_source = self.config.installation_commit_sha
+            if (run_id == 37905505035 and role == "developer"
+                    and callable(self._archived_producer_source_resolver)):
+                archived = self._archived_producer_source_resolver(run_id)
+                if archived != "6e75792b8e441167cfaadab2d13667a2d80721b8":
+                    raise DogfoodProvenanceVerificationError("archived producer resolver escaped fixed successful run")
+                expected_source = archived
+            if (head_sha != expected_source
                 or payload.get("id") != run_id or payload.get("status") != "completed"
                 or payload.get("head_branch") != "main" or payload.get("run_attempt") != 1
                 or role not in {"developer", "reviewer", "qa"} or not key
@@ -201,7 +210,7 @@ class ProductionDogfoodProvenanceVerifier:
                         raise DogfoodProvenanceVerificationError("launch candidate is not final target ancestry")
             verified.append(VerifiedWorkflowRun(
                 run_id, str(record.get("repository")), "success", head_sha,
-                control_head_sha=self.config.installation_commit_sha,
+                control_head_sha=expected_source,
                 candidate_pr_number=binding["candidate_pr_number"], candidate_head_sha=candidate_head,
                 candidate_input_head_sha=stage_head, target_ref=binding["target_ref"], role=role,
             ))

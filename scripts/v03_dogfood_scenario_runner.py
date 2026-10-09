@@ -17,7 +17,8 @@ from typing import Any
 
 from operator_store_model import operation_events
 from operator_vertical_store import vertical_projection
-from v03_dogfood_full_composition import recovery_route, validate_recovery_execution_seal, recovery_execution_binding
+from v03_dogfood_full_composition import (recovery_route, validate_recovery_execution_seal, recovery_execution_binding,
+    post_handoff_present, validate_post_handoff_reconciliation)
 from v03_dogfood_fixture_pool import DogfoodSlot, task_text
 from v03_dogfood_openai_host import V03DogfoodOpenAIResponsesHost, V03DogfoodResponsesTrace
 
@@ -383,7 +384,14 @@ def run_scenario(
     manifest = preflight.composition.feature_event_gateway.read_feature(
         feature_id=preflight.slot.feature_id,
     )
-    if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != 1:
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    reconciliation = None
+    if post_handoff_present(snapshot):
+        reconciliation, _, _ = validate_post_handoff_reconciliation(snapshot,
+            consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    expected_manifest_revision = (int(_projection(preflight, RECOVERY_OPERATION_ID)["expected_feature_revision"])
+                                  if reconciliation is not None else 1)
+    if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != expected_manifest_revision:
         raise V03DogfoodScenarioRunnerError("dogfood fixture is not the exact active revision-1 slot")
 
     trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=1))
@@ -394,6 +402,18 @@ def run_scenario(
         raise V03DogfoodScenarioRunnerError("Responses start result differs from durable Operation projection")
 
     consumed = 0
+    if reconciliation is not None:
+        events = _events(preflight, operation_id)
+        accepted = [e for e in events if e["event_type"] == "worker.result.validated"]
+        confirmed = {e["payload"]["feature_event_id"] for e in events if e["event_type"] == "persist.confirmed"}
+        translated = {e["payload"].get("callback_id"): e["payload"].get("feature_event_id")
+                      for e in events if e["event_type"] == "feature.event.translated" and e["payload"].get("callback_id")}
+        for event in accepted:
+            if translated.get(event["payload"].get("callback_id")) not in confirmed:
+                raise V03DogfoodScenarioRunnerError("accepted reconciled-prefix callback lacks canonical Persist")
+        consumed = len(accepted)
+        if consumed and accepted[0]["payload"].get("callback_id") != reconciliation["observation_callback_id"]:
+            raise V03DogfoodScenarioRunnerError("scenario consumed an unbound replacement observation")
     recovery_trace: V03DogfoodResponsesTrace | None = None
     recovery_decision_ids: tuple[str, ...] = ()
     recovery_notification_ids: tuple[str, ...] = ()

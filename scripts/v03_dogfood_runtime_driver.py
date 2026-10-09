@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 from typing import Any, Mapping
-from urllib import error as urlerror, request as urlrequest
+from urllib import error as urlerror, request as urlrequest, parse
 
 from operator_external_create_attempt import external_create_attempt_path, find_external_create_attempt
 from operator_openai_responses import ADAPTER_ID as OPENAI_RESPONSES_ADAPTER_ID
@@ -1867,6 +1867,53 @@ def _replacement_prepost_old_scan(preflight, snapshot):
     gateway.transport.admit_continuation(snapshot, allow_post=True, **binding)
 
 
+def reconcile_post_handoff(preflight):
+    """Read the existing successful output; this entry has no Developer gateway."""
+    if preflight.slot.scenario != "happy_path":
+        return None
+    from v03_dogfood_full_composition import (
+        POST_HANDOFF_RUN, POST_HANDOFF_HEAD, POST_HANDOFF_SOURCE, POST_HANDOFF_PATH,
+        validate_post_handoff_predecessor, validate_post_handoff_reconciliation,
+        post_handoff_present, observe_post_handoff_pr, plan_post_handoff_reconciliation,
+    )
+    runtime = preflight.composition.runtime
+    source = preflight.composition.recovery_result_source
+    binding = recovery_execution_binding(preflight.composition.policy_authority)
+    snapshot = runtime.backend.read_snapshot()
+    sealed, events = validate_post_handoff_predecessor(snapshot)
+    source.bind_post_handoff(runtime, preflight.composition.policy_authority)
+    if post_handoff_present(snapshot):
+        attestation, _, observation = validate_post_handoff_reconciliation(snapshot, consumer_binding=binding)
+        if any(e["event_type"] == "worker.result.rejected"
+               and e["payload"].get("callback_id") == attestation["observation_callback_id"] for e in events[16:]):
+            raise V03DogfoodRuntimeDriverError("the single reconciled observation failed; no further reconsideration")
+    elif len(events) != 15:
+        raise V03DogfoodRuntimeDriverError("post-handoff admission escaped the exact stopped predecessor")
+    trusted = dict(events[12]["payload"]["trusted_callback_envelope"]["trusted_context"],
+        external_dispatch_key=sealed["recovery_dispatch_key"],
+        dispatch_id=sealed["collector_dispatch_id"],
+        execution_dispatch_id=sealed["recovery_dispatch_id"], source_head_sha=POST_HANDOFF_SOURCE)
+    resolved = source.resolve(external_dispatch_key=sealed["recovery_dispatch_key"],
+        expected_receipt_identity=str(POST_HANDOFF_RUN), trusted_context=trusted)
+    if (len(resolved.outputs) != 1 or resolved.outputs[0].trusted_uri != sealed["safe_output_uri"]
+            or resolved.run.run_id != POST_HANDOFF_RUN
+            or resolved.run.candidate_pr_number != sealed["output_candidate_pr_number"]
+            or resolved.run.candidate_head_sha != POST_HANDOFF_HEAD):
+        raise V03DogfoodRuntimeDriverError("post-handoff fresh result differs from original seal")
+    _, _, closed, historical = observe_post_handoff_pr(source, snapshot)
+    def planner(current):
+        if not post_handoff_present(current):
+            _require_recovery_execution_source(preflight, binding["execution_source_head_sha"])
+            ref = source._json(preflight.execution.repository,
+                "/git/ref/heads/" + parse.quote(sealed["target_ref"], safe=""), source.config.target_token)
+            if not isinstance(ref, dict) or (ref.get("object") or {}).get("sha") != POST_HANDOFF_HEAD:
+                raise V03DogfoodRuntimeDriverError("fixture ref differs from the exact applied handoff before reconciliation")
+        return plan_post_handoff_reconciliation(current, consumer_binding=binding,
+            closed_pr_attestation=closed, historical_open_binding=historical,
+            occurred_at=runtime.clock(), trusted_context_digest=preflight.trusted_context_digest)
+    return _commit_recovery_nonempty(runtime, planner)
+
+
 def recover_approved_replacement(preflight):
     """Exactly one approved slot. Failure/uncertainty consumes it permanently."""
     if preflight.slot.scenario != "happy_path":
@@ -2089,7 +2136,7 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))
         return 0
 
-    recovered_historical_attempt = recover_approved_replacement(preflight)
+    recovered_historical_attempt = reconcile_post_handoff(preflight)
     if recovered_historical_attempt is None:
         prepare_previous_installation_operation(preflight)
 

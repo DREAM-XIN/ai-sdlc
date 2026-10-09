@@ -27,6 +27,10 @@ from v03_dogfood_production_provenance import (
 )
 from v03_dogfood_release_finalizer import build_release_record
 from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding, recovery_route, REPLACEMENT_HISTORY_BLOBS, _recovery_document_blob, read_dogfood_handoff, V03DogfoodCompositionError
+from v03_dogfood_full_composition import (
+    post_handoff_present, validate_post_handoff_reconciliation, POST_HANDOFF_RUN,
+    POST_HANDOFF_SOURCE, POST_HANDOFF_CALLBACK, POST_HANDOFF_ADMISSION,
+)
 from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
@@ -181,12 +185,19 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
     return {"receipt_identity": receipt_identity, "workflow_run_ids": run_ids}
 
 
-def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence, recovery_run=False):
+def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_sequence, recovery_run=False, reconciliation=None):
     """Verify the original accepted callback; never mint replacement receipts."""
     key, generation = trusted["external_dispatch_key"], trusted["operation_generation"]
     callbacks = [row for row in events if row.get("event_type") == "worker.callback.recorded"
                  and row.get("operation_generation") == generation
                  and (row.get("payload") or {}).get("external_dispatch_key") == key]
+    if reconciliation is not None:
+        if (trusted["role"] != "developer" or resolved.run.run_id != POST_HANDOFF_RUN
+                or len(callbacks) != 2
+                or [e["payload"].get("callback_id") for e in callbacks] != [
+                    POST_HANDOFF_CALLBACK, reconciliation["observation_callback_id"]]):
+            raise V03DogfoodPostRunFinalizerError("run lacks exact rejected/reconciled observation pair")
+        callbacks = callbacks[1:]
     if len(callbacks) != 1:
         raise V03DogfoodPostRunFinalizerError("run lacks one original protected callback")
     recorded = callbacks[0]
@@ -231,6 +242,8 @@ def _verify_consumed_result(*, events, trusted, resolved, result_source, lookup_
             "external_dispatch_key": key, "runtime_receipt_identity": str(resolved.run.run_id),
             "run_id": resolved.run.run_id,
         })[:24]
+    if reconciliation is not None:
+        callback_id = reconciliation["observation_callback_id"]
     if payload.get("callback_id") != callback_id:
         raise V03DogfoodPostRunFinalizerError("original callback identity differs from exact run")
     accepted = [row for row in events if row.get("event_type") == "worker.result.validated"
@@ -303,6 +316,10 @@ def _durable_run_bindings(preflight, observation, events):
     """Re-establish launches plus every trusted Developer-output candidate handoff."""
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     projection = vertical_projection(snapshot, observation["operation_id"])
+    reconciliation = None
+    if post_handoff_present(snapshot):
+        reconciliation, _, _ = validate_post_handoff_reconciliation(snapshot,
+            consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
     bindings = {}
     ordered: list[dict[str, Any]] = []
     for row in events:
@@ -403,6 +420,7 @@ def _durable_run_bindings(preflight, observation, events):
                 result_source=result_source,
                 lookup_sequence=int(row.get("sequence") or 0),
                 recovery_run=recovery_sealed or False,
+                reconciliation=reconciliation if run_id == POST_HANDOFF_RUN else None,
             )
 
         output_pr = resolved.run.candidate_pr_number
@@ -414,6 +432,13 @@ def _durable_run_bindings(preflight, observation, events):
                 and event.get("operation_generation") == row.get("operation_generation")
                 and (event.get("payload") or {}).get("external_dispatch_key") == key
             ]
+            reconciled_id = None
+            if reconciliation is not None and run_id == POST_HANDOFF_RUN:
+                if len(callbacks) != 2 or [e["payload"].get("callback_id") for e in callbacks] != [
+                        POST_HANDOFF_CALLBACK, reconciliation["observation_callback_id"]]:
+                    raise V03DogfoodPostRunFinalizerError("Developer handoff observation relation differs")
+                reconciled_id = reconciliation["observation_callback_id"]
+                callbacks = callbacks[:1]  # The actual original applied handoff, never a second PATCH.
             if len(callbacks) != 1:
                 raise V03DogfoodPostRunFinalizerError("Developer run lacks one sealed callback for candidate handoff")
             callback = callbacks[0]
@@ -426,7 +451,7 @@ def _durable_run_bindings(preflight, observation, events):
             handoff_payload, applied = fact["intent"], fact["applied"]
             validated = [event for event in events if event.get("event_type") == "worker.result.validated"
                          and event.get("operation_generation") == row.get("operation_generation")
-                         and (event.get("payload") or {}).get("callback_id") == callback_id]
+                         and (event.get("payload") or {}).get("callback_id") == (reconciled_id or callback_id)]
             if (len(validated) != 1
                     or handoff_payload["source_candidate_pr_number"] != output_pr
                     or handoff_payload["source_candidate_head_sha"] != output_head
@@ -861,6 +886,15 @@ def _milestone_facts(
     ]
 
 
+def _archived_producer_source(preflight, run_id):
+    if run_id != POST_HANDOFF_RUN:
+        return preflight.execution.installation_commit_sha
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    attestation, _, _ = validate_post_handoff_reconciliation(snapshot,
+        consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    return attestation["producer_execution_binding"]["execution_source_head_sha"]
+
+
 def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: int, finalizer_run_id: int, github_token: str) -> dict[str, Any]:
     scenario = _required(observation.get("scenario"), "scenario")
     if scenario != preflight.slot.scenario:
@@ -907,6 +941,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         runtime_receipt_resolver=lambda record: _durable_receipt(preflight, events, observation),
         runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
+        archived_producer_source_resolver=lambda run_id: _archived_producer_source(preflight, run_id),
     )
     human_interventions = 0
     if observation.get("operation_id") == RECOVERY_OPERATION_ID:
@@ -923,6 +958,8 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
                 "https://github.com/DREAM-XIN/ai-sdlc/actions/runs/37897902667",
                 "https://github.com/DREAM-XIN/ai-sdlc/pull/574",
             ])
+    if post_handoff_present(preflight.composition.runtime.backend.read_snapshot()):
+        evidence_uris.append(POST_HANDOFF_ADMISSION["uri"])
     trusted_facts = {
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,
