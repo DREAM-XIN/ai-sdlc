@@ -151,8 +151,10 @@ def durable_history(scenario: str):
     seq = 1
     for index, step in enumerate(steps):
         seq += 1; rows.append(event(seq, "loop.step.selected", {"step": step}))
-        seq += 1; rows.append(event(seq, "dispatch.claimed"))
-        seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
+        external_key = "dispatch-" + f"{index + 1:040x}"
+        seq += 1; rows.append(event(seq, "dispatch.claimed", {"external_dispatch_key": external_key}))
+        seq += 1; rows.append(event(seq, "dispatch.launch.authorized", {"external_dispatch_key": external_key}))
+        seq += 1; rows.append(event(seq, "dispatch.launch.lookup-recorded", {"external_dispatch_key": external_key, "lookup_state": "LAUNCHED", "receipt_id": str(9001 + index)}))
         if scenario != "session_recovery":
             role = {
                 "IMPLEMENTATION_WORK": "developer",
