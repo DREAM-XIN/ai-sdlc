@@ -591,6 +591,8 @@ def prehttp_recovery_fence_tests():
         "historical_status": 401,
         "recovery_status": 200,
         "historical_public_key_digest": driver_subject.HISTORICAL_APP_PUBLIC_KEY_DIGEST,
+        "provider_observation_run_id": driver_subject.REVOCATION_PROBE_RUN,
+        "provider_observation_blob_sha": driver_subject.REVOCATION_OBSERVATION_BLOB,
         "recovery_public_key_digest": "sha256:" + "a" * 64,
         "observed_at": "2026-10-08T04:00:00Z",
     }
@@ -994,6 +996,138 @@ def recovery_safe_output_source_tests():
     print("- recovery Safe Output dynamically rejects duplicate/attempt2/wrong-head/stale evidence")
 
 
+
+def pinned_provider_revocation_tests():
+    """Pin successful real provider facts without retaining historical signing key."""
+    from copy import deepcopy
+    from unittest.mock import patch
+    import base64
+    import json
+    import v03_dogfood_runtime_driver as subject
+    raw = "{\n  \"baseline_run_id\": 37723691424,\n  \"baseline_source_sha\": \"0bb45670495271a4c4019bba7a7313d338de0272\",\n  \"client_id\": \"Iv23libojxnnuF43petx\",\n  \"future_attempts_fenced\": false,\n  \"historical_run_id\": 37204777409,\n  \"historical_workflow_blob_sha\": \"e618477192ef8cde47cf36a9b162aee1069f3eef\",\n  \"old_credential_identity\": \"AI_SDLC_RUNTIME_APP_PRIVATE_KEY\",\n  \"old_key\": {\n    \"app_id\": null,\n    \"app_slug\": null,\n    \"github_date\": \"Fri, 09 Oct 2026 02:59:09 GMT\",\n    \"github_request_id\": \"0BC0:126B9E:193968:53051C:6AC8587D\",\n    \"http_status\": 401,\n    \"public_key_sha256\": \"2765aa5be8fe724421236d1ff15fb6ebaccc51b7476d82c27ead7e366cb32636\"\n  },\n  \"provider_invalidation\": true,\n  \"recovery_authority\": false,\n  \"recovery_credential_identity\": \"AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY\",\n  \"recovery_key\": {\n    \"app_id\": 4576406,\n    \"app_slug\": \"dream-xin-ai-sdlc-runtime-operator\",\n    \"github_date\": \"Fri, 09 Oct 2026 02:59:09 GMT\",\n    \"github_request_id\": \"0BC1:385785:1C3E86:5C5570:6AC8587D\",\n    \"http_status\": 200,\n    \"public_key_sha256\": \"cf2341fc6c86e0a1226f9e4a5e409c4f432f3e326075be6c11425712be75e9ce\"\n  },\n  \"release_eligible\": false,\n  \"repository\": \"dream-xin/ai-sdlc\",\n  \"run_id\": 37877145475,\n  \"schema_version\": \"ai-sdlc.v03-historical-worker-key-revocation-observation/v1\",\n  \"source_sha\": \"9dce67c90df3a8b302e0509d77c9420db353836e\",\n  \"status\": \"REVOCATION_OBSERVED\"\n}\n"
+    observed = json.loads(raw)
+    source = subject.REVOCATION_PROBE_SOURCE
+    output = subject.REVOCATION_OBSERVATION_COMMIT
+    tree_sha = "a6848c33e65812c34127afe5948c8e0059610727"
+    run_id = subject.REVOCATION_PROBE_RUN
+    blob_sha = subject.REVOCATION_OBSERVATION_BLOB
+    paths = {
+        "run": "actions/runs/" + str(run_id),
+        "jobs": "actions/runs/" + str(run_id) + "/jobs?per_page=100",
+        "source": "git/commits/" + source,
+        "receipt": "git/commits/" + output,
+        "tree": "git/trees/" + tree_sha + "?recursive=1",
+        "blob": "git/blobs/" + blob_sha,
+    }
+    mock = {
+        paths["run"]: {"id": run_id, "workflow_id": subject.REVOCATION_PROBE_WORKFLOW_ID,
+                       "path": subject.REVOCATION_PROBE_WORKFLOW, "event": "push",
+                       "head_branch": subject.REVOCATION_PROBE_BRANCH,
+                       "head_sha": source, "run_attempt": 1,
+                       "status": "completed", "conclusion": "success"},
+        paths["jobs"]: {"total_count": 2, "jobs": [
+            {"name": name, "run_id": run_id, "run_attempt": 1,
+             "status": "completed", "conclusion": "success"}
+            for name in ("validate-probe", "verify-key-fence")]},
+        paths["source"]: {"sha": source, "parents": [{"sha": subject.REVOCATION_PROBE_PARENT}],
+                          "message": "dogfood: verify revoked historical Worker key"},
+        paths["receipt"]: {"sha": output, "parents": [{"sha": source}],
+                           "tree": {"sha": tree_sha},
+                           "message": "dogfood: record bounded provider key revocation observation"},
+        paths["tree"]: {"sha": tree_sha, "truncated": False, "tree": [
+            {"path": "dogfood/gh-aw-key-revocation-observation.json",
+             "mode": "100644", "type": "blob", "sha": blob_sha}]},
+        paths["blob"]: {"sha": blob_sha, "encoding": "base64",
+                        "size": len(raw.encode()),
+                        "content": base64.b64encode(raw.encode()).decode()},
+    }
+    env = {"GITHUB_REPOSITORY": "DREAM-XIN/ai-sdlc", "GITHUB_API_URL": "https://api.github.com",
+           "AI_SDLC_ACTIONS_READ_TOKEN": "read-only-test-token"}
+    def verify(facts):
+        return subject._load_pinned_revocation_observation(
+            env, read_json=lambda name: deepcopy(facts[name]),
+        )
+    expect(verify(mock) == observed, "immutable provider observation did not validate")
+    for mutate in (
+        lambda x: x[paths["run"]].update(head_sha="0"*40),
+        lambda x: x[paths["run"]].update(run_attempt=2),
+        lambda x: x[paths["jobs"]]["jobs"][1].update(conclusion="failure"),
+        lambda x: x[paths["source"]].update(parents=[{"sha": "0"*40}]),
+        lambda x: x[paths["receipt"]].update(parents=[{"sha": "0"*40}]),
+        lambda x: x[paths["tree"]]["tree"][0].update(mode="120000"),
+        lambda x: x[paths["blob"]].update(size=1),
+        lambda x: x[paths["blob"]].update(content=base64.b64encode(
+            raw.replace('"http_status": 401', '"http_status": 200').encode()).decode()),
+    ):
+        changed = deepcopy(mock)
+        mutate(changed)
+        try:
+            verify(changed)
+        except (subject.V03DogfoodRuntimeDriverError, ValueError):
+            pass
+        else:
+            raise AssertionError("tampered provider provenance passed immutable anchor")
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[1] /
+                ".github/workflows/v03-real-dogfood-scenario.yml").read_text()
+    readiness = (Path(__file__).resolve().parents[1] /
+                 ".github/workflows/v03-dogfood-readiness.yml").read_text()
+    expect("AI_SDLC_HISTORICAL_APP_PRIVATE_KEY:" not in workflow
+           and "LEGACY_APP_SECRET_PRESENT:" in workflow
+           and "AI_SDLC_LEGACY_SECRET_PRESENT:" in workflow,
+           "live recovery retains legacy signing secret or lacks pre-effect deletion gate")
+    expect("BLOCKED_LEGACY_CREDENTIAL" in readiness
+           and "_load_pinned_revocation_observation" in readiness,
+           "zero-effect readiness cannot enforce pinned provider/legacy-secret gates")
+
+    from urllib import request
+    class ProviderResponse:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self): return json.dumps({
+            "id": 4576406, "client_id": "Iv23libojxnnuF43petx",
+            "slug": "dream-xin-ai-sdlc-runtime-operator"}).encode()
+    live_env = dict(env, AI_SDLC_LEGACY_SECRET_PRESENT="false",
+                    AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID="Iv23libojxnnuF43petx",
+                    AI_SDLC_RECOVERY_APP_PRIVATE_KEY="test-placeholder")
+    calls = []
+    def fake_get(req, timeout):
+        calls.append((req.full_url, req.get_method(), timeout))
+        return ProviderResponse()
+    with (
+        patch.object(subject, "_load_pinned_revocation_observation", return_value=observed),
+        patch.object(subject, "_app_jwt_and_public_digest",
+                     return_value=("test-jwt", subject.REVOCATION_NEW_KEY_DIGEST)),
+        patch.object(subject.urlrequest, "urlopen", side_effect=fake_get),
+    ):
+        fence = subject._observe_provider_rotation(live_env)
+        replay_fence = subject._observe_provider_rotation(live_env)
+        expect(fence["fence_digest"] == replay_fence["fence_digest"],
+               "rechecked provider authentication changed frozen CAS recovery identity")
+        expect(fence["observed_at"] == observed["old_key"]["github_date"],
+               "provider fence uses a mutable local clock rather than immutable observation")
+        expect(fence["historical_status"] == 401 and fence["recovery_status"] == 200
+               and fence["provider_observation_run_id"] == run_id
+               and fence["provider_observation_blob_sha"] == blob_sha,
+               "protected fence failed to retain authenticated provider facts")
+        for patch_env in (
+            {"AI_SDLC_LEGACY_SECRET_PRESENT": "true"},
+            {"AI_SDLC_LEGACY_SECRET_PRESENT": ""},
+            {"AI_SDLC_HISTORICAL_APP_PRIVATE_KEY": "legacy-must-be-absent"},
+            {"AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID": "wrong"},
+        ):
+            try:
+                subject._observe_provider_rotation(dict(live_env, **patch_env))
+            except subject.V03DogfoodRuntimeDriverError:
+                pass
+            else:
+                raise AssertionError("unsafe key configuration passed provider fence")
+    expect(calls == [("https://api.github.com/app", "GET", 20)] * 2,
+           "two bounded new-key checks made extra or misdirected provider requests")
+    print("- pinned provider run/jobs/source/tree/blob and legacy-secret/new-key fences validated")
+
+
 def bounded_recovery_execution_tests():
     """Exercise CAS winner/replay/ack-loss and zero-POST failure behavior."""
     from copy import deepcopy
@@ -1006,6 +1140,8 @@ def bounded_recovery_execution_tests():
         "app_id": 4576406, "app_client_id": "Iv23libojxnnuF43petx",
         "installation_id": 153325330, "historical_status": 401, "recovery_status": 200,
         "historical_public_key_digest": subject.HISTORICAL_APP_PUBLIC_KEY_DIGEST,
+        "provider_observation_run_id": subject.REVOCATION_PROBE_RUN,
+        "provider_observation_blob_sha": subject.REVOCATION_OBSERVATION_BLOB,
         "recovery_public_key_digest": "sha256:" + "9" * 64,
         "recovery_authority": False, "release_eligible": False}
     fence["fence_digest"] = "sha256:" + digest_json(fence)
@@ -1248,6 +1384,7 @@ def main():
 
     installation_transition_tests()
     prehttp_recovery_fence_tests()
+    pinned_provider_revocation_tests()
     historical_worker_adoption_tests()
     historical_worker_evidence_tests()
     from pathlib import Path
