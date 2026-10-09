@@ -241,6 +241,35 @@ async function runCase(options, label, cap, retries) {
       const literals = [...new Set([...source.matchAll(/require\(\s*["']([^"'\n]+)["']\s*\)/g)].map(match => match[1]))].sort();
       for (const [literalIndex, literal] of literals.entries()) literalInventory.push({sourceIndex, literalIndex, literal});
     }
+    const bundleRoot = path.dirname(copilotBinary);
+    const bundleFiles = [];
+    function listBundle(dir, prefix = "") {
+      for (const entry of fs.readdirSync(dir, {withFileTypes: true}).sort((a,b) => a.name.localeCompare(b.name))) {
+        const relative = prefix + entry.name;
+        const filename = path.join(dir, entry.name);
+        ensure(fs.realpathSync(filename).startsWith(fs.realpathSync(bundleRoot) + "/"), "BUNDLE_INVENTORY_BOUNDARY");
+        if (entry.isDirectory()) listBundle(filename, relative + "/");
+        else { ensure(entry.isFile(), "BUNDLE_INVENTORY_TYPE"); bundleFiles.push(relative); }
+        ensure(bundleFiles.length <= 64, "BUNDLE_INVENTORY_BOUND");
+      }
+    }
+    listBundle(bundleRoot);
+    bundleFiles.sort();
+    const argumentTokens = ["copilot", "node", "--add-dir", "--log-level", "all", "--disable-builtin-mcps",
+      "--no-ask-user", "--allow-all-tools", "--prompt", "--prompt-file", "--continue"];
+    const caseModuleRelations = [...new Set(missingSpecifiers)].map(specifier => {
+      const locations = [path.join(root, "artifacts"), root, path.join(root, "bin"), path.join(root, "home")];
+      const matches = [];
+      for (const [locationIndex, directory] of locations.entries()) {
+        for (const [fileIndex, file] of bundleFiles.entries()) {
+          if (specifier === path.join(directory, file)) matches.push({kind: "BUNDLE_FILE", locationIndex, fileIndex});
+        }
+        for (const [tokenIndex, token] of argumentTokens.entries()) {
+          if (specifier === path.join(directory, token)) matches.push({kind: "FIXED_ARGUMENT", locationIndex, tokenIndex});
+        }
+      }
+      return matches.length ? matches : [{kind: "UNKNOWN_RELATION"}];
+    });
     const staticModuleMatches = [...new Set(missingSpecifiers)].map(specifier => {
       const matches = literalInventory.filter(entry => specifier === entry.literal ||
         (entry.literal.startsWith("./") && specifier === path.resolve(actionsRoot, entry.literal)));
@@ -275,7 +304,7 @@ async function runCase(options, label, cap, retries) {
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
       startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
-      missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, missing_direct_dependencies: missingDirectDependencies,
+      missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, case_module_relations: caseModuleRelations, missing_direct_dependencies: missingDirectDependencies,
       official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");
     proxy.send("stats");
