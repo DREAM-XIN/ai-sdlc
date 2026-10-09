@@ -133,6 +133,57 @@ jobs:
             F-OPERATOR-V03-DOGFOOD-HAPPY-0001:dogfood/v0.3-happy-path-0001|F-OPERATOR-V03-DOGFOOD-REMEDIATION-0001:dogfood/v0.3-review-remediation-0001|F-OPERATOR-V03-DOGFOOD-SESSION-0001:dogfood/v0.3-session-recovery-0001) ;;
             *) echo "::error::Worker identity is outside the fixed v0.3 fixture pool"; exit 1 ;;
           esac
+  conclusion:
+    permissions:
+      contents: read
+    pre-steps:
+      - name: Record non-authoritative Gate execution identity
+        env:
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}
+          SOURCE_HEAD_SHA: ${{ github.sha }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          FEATURE_ID: ${{ inputs.feature_id }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          STAGE: ${{ inputs.stage }}
+          ROLE: ${{ inputs.role }}
+          CANDIDATE_PR_NUMBER: ${{ inputs.candidate_pr_number }}
+          CANDIDATE_HEAD_SHA: ${{ inputs.candidate_head_sha }}
+          TRUSTED_TASK_ID: ${{ fromJSON(inputs.task_payload).task.id }}
+          TASK_PAYLOAD: ${{ inputs.task_payload }}
+          DISPATCH_KEY: ${{ inputs.dispatch_key }}
+          COMMENT_ID: ${{ needs.safe_outputs.outputs.comment_id }}
+          COMMENT_URL: ${{ needs.safe_outputs.outputs.comment_url }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          names = ("SOURCE_RUN_ID", "SOURCE_WORKFLOW_REF", "SOURCE_HEAD_SHA",
+                   "TARGET_REPOSITORY", "TARGET_REF", "FEATURE_ID", "EXPECTED_REVISION",
+                   "STAGE", "ROLE", "CANDIDATE_PR_NUMBER", "CANDIDATE_HEAD_SHA",
+                   "TRUSTED_TASK_ID", "TASK_PAYLOAD", "DISPATCH_KEY", "COMMENT_ID", "COMMENT_URL")
+          values = {name: os.environ[name] for name in names}
+          assert all(value and "\n" not in value and "\r" not in value for value in values.values())
+          assert values["TARGET_REPOSITORY"].lower() == "dream-xin/ai-sdlc"
+          assert values["ROLE"] == "reviewer" and values["STAGE"] == "code-review"
+          for name in ("SOURCE_RUN_ID", "CANDIDATE_PR_NUMBER", "COMMENT_ID"):
+              assert re.fullmatch(r"[1-9][0-9]*", values[name])
+          assert re.fullmatch(r"0|[1-9][0-9]*", values["EXPECTED_REVISION"])
+          for name in ("SOURCE_HEAD_SHA", "CANDIDATE_HEAD_SHA"):
+              assert re.fullmatch(r"[0-9a-f]{40}", values[name])
+          assert re.fullmatch(r"dispatch-[0-9a-f]{40}", values["DISPATCH_KEY"])
+          assert values["SOURCE_WORKFLOW_REF"].lower() == (
+              "dream-xin/ai-sdlc/.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml@refs/heads/main")
+          payload = json.loads(values["TASK_PAYLOAD"])
+          assert payload["task"]["id"] == values["TRUSTED_TASK_ID"]
+          assert re.fullmatch(
+              r"https://github.com/[Dd][Rr][Ee][Aa][Mm]-[Xx][Ii][Nn]/ai-sdlc/(pull|issues)/"
+              + re.escape(values["CANDIDATE_PR_NUMBER"]) + r"#issuecomment-"
+              + re.escape(values["COMMENT_ID"]), values["COMMENT_URL"])
+          print("Gate execution identity validated; recommendation remains non-authoritative.")
+          PY
+
 ---
 # AI-SDLC bounded autonomous Code Reviewer worker
 
