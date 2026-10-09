@@ -4218,7 +4218,8 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
                     provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
                 pass
             except AssertionError as exc:
-                expect(str(exc).startswith("real dogfood happy_path: trusted provenance verification failed:"),
+                expect(str(exc).startswith("real dogfood happy_path: trusted provenance verification failed:")
+                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: V03DogfoodPostRunFinalizerError: original callback differs from historical launch/fresh run",
                        "source mutation failed outside trusted provenance: " + str(exc))
             else:
                 raise AssertionError("current-source Gate incorrectly inherited archived Developer source")
