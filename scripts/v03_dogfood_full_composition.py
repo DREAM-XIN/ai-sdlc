@@ -162,6 +162,9 @@ def validate_recovery_continuation(snapshot):
 
 
 def recovery_execution_binding(policy_authority):
+    # Stable authority deliberately excludes the mutable preflight Store tip.
+    # execution_trusted_context_digest remains historical audit metadata after
+    # the one claim-to-POST comparison; it cannot authorize collection by itself.
     return {
         "execution_source_head_sha": policy_authority.installation_commit_sha,
         "execution_policy_bundle_digest": policy_authority.bundle_digest,
@@ -519,6 +522,10 @@ class DogfoodTrustedCallbackCoordinator:
         self.delegate = delegate
         self.executor = delegate.executor
         self.candidate_handoff = candidate_handoff
+
+    @property
+    def content_loader(self):
+        return self.delegate.content_loader
 
     @staticmethod
     def _artifact_uri(receipts: list[dict[str, Any]]) -> str:
