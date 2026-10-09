@@ -174,11 +174,15 @@ def recovery_execution_binding(policy_authority):
 
 
 def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
-    authorization, attempt, continuation = validate_recovery_continuation(snapshot)
+    route = recovery_route(snapshot)
+    authorization, attempt, continuation = route["authorization"], route["attempt"], route["bridge"]
     artifact = sealed.get("safe_output_artifact_proof") if isinstance(sealed, dict) else None
     if (
         not isinstance(sealed, dict)
         or not isinstance(artifact, dict)
+        or (route["ordinal"] == 1 and (str(sealed.get("receipt_id")) == str(REPLACEMENT_FAILED_RUN)
+            or sealed.get("output_candidate_pr_number") == REPLACEMENT_FAILED_PR
+            or sealed.get("output_candidate_head_sha") == REPLACEMENT_FAILED_HEAD))
         or artifact.get("schema_version") != "ai-sdlc.v03-recovery-safe-output-artifact/v1"
         or artifact.get("source_head_sha") != continuation["execution_source_head_sha"]
         or str(artifact.get("run_id") or "") != sealed.get("receipt_id")
@@ -197,6 +201,154 @@ def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
     ):
         raise VerticalInvariantError("POLICY_DENIED", "recovery seal lacks its exact execution-source bridge")
     return continuation
+
+
+# A separately approved, closed ordinal-one replacement. This is not a retry
+# policy and deliberately has no ordinal parameter or successor discovery.
+REPLACEMENT_BASE_PATH = RECOVERY_BASE_PATH + "/approved-replacement-1"
+REPLACEMENT_AUTHORIZATION_PATH = REPLACEMENT_BASE_PATH + "/authorization.json"
+REPLACEMENT_ATTEMPT_PATH = REPLACEMENT_BASE_PATH + "/create-claim.json"
+REPLACEMENT_RECEIPT_PATH = REPLACEMENT_BASE_PATH + "/sealed-receipt.json"
+REPLACEMENT_PATHS = (REPLACEMENT_AUTHORIZATION_PATH, REPLACEMENT_ATTEMPT_PATH, REPLACEMENT_RECEIPT_PATH)
+REPLACEMENT_HISTORY_BLOBS = ["86e43c43941b03e9721844b58479d95db93ce5c8","f26de71400211607359fb60b58e77ddbab7216ed","6741a203a62d31e81f1d619d705bb18feddc0173","1840f7cac50722dad83cb0118e441e475175d859","6f73721b7c8847ddae58e59bbee801d28cd9ef43","a11e8f98ab5a9511fe30cf22f0ba6fa0c41253d9","def317058e40c16a8b35c7390ab5847e678192c5","275a6134e086e95c72f7a8c0aa8940a9f35a67c8","09cbb9201c82d1e69bcce5b0febc8c28f8948fac","f6f793ce9725e618be0b7b25712e5abe44a55b59","ca4581772d9271f0e7d4dece22479a376504e8d5","96c43dcefda8558aa73750eb12a5e0d5af419d82"]
+REPLACEMENT_RESERVATION_BLOB = "d9e466a141f86d352b25508294e73ff226b1a314"
+REPLACEMENT_PREDECESSOR_STORE = "c78f3e730e1a3ac6cd47cd4e727d090e5f3c5378"
+REPLACEMENT_PREDECESSOR_CONTINUATION_BLOB = "e2b2edf5e50eedaacbdaee7ef1b0ae64c5f94580"
+REPLACEMENT_FAILED_SOURCE = "5acdaf7ff930d0da2ebf0fc3ecef0cb5a3362780"
+REPLACEMENT_FAILED_RUN = 37897902667
+REPLACEMENT_FAILED_PR = 574
+REPLACEMENT_FAILED_HEAD = "4c9834433e84ef1d367361894f6021e570918daf"
+REPLACEMENT_ADMISSION = {
+    "schema_version": "ai-sdlc.v03-fixed-replacement-admission/v1",
+    "ordinal": 1,
+    "operation_id": RECOVERY_OPERATION_ID,
+    "operation_generation": 1,
+    "scenario": "happy_path",
+    "approval": {"issue_comment_id": 6076638838,
+                 "body_digest": "sha256:7ee4c0b99698e4266ac7b10f24e5d74ad240cf7d21710feb99c7315e0a4024e0"},
+    "predecessor_store_commit": REPLACEMENT_PREDECESSOR_STORE,
+    "predecessor_continuation_blob": REPLACEMENT_PREDECESSOR_CONTINUATION_BLOB,
+    "failed_run_id": REPLACEMENT_FAILED_RUN,
+    "failed_run_attempt": 1,
+    "failed_source_head_sha": REPLACEMENT_FAILED_SOURCE,
+    "failed_jobs": {"activation": 113713395811, "agent": 113713524603,
+                    "detection": 113715146958, "safe_outputs": 113716999124,
+                    "conclusion": 113717117034},
+    "failed_pr_number": REPLACEMENT_FAILED_PR,
+    "failed_pr_head_sha": REPLACEMENT_FAILED_HEAD,
+    "failed_artifact_id": 11601119499,
+    "failed_artifact_digest": "sha256:18c7d55a82f07ff6edd0f1f12a168f3576aaf02655f71a6c65db9ec7d6f5efdc",
+}
+REPLACEMENT_WORKER_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.md": "28bb0bb6e72ddbe782209e0da52f7fdbb6c23f35",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-local.lock.yml": "6318bb99352fede75bb2805560fca148fbea6df5",
+}
+REPLACEMENT_FAILED_OBSERVATION = {
+    "run_id": REPLACEMENT_FAILED_RUN, "run_attempt": 1,
+    "source_head_sha": REPLACEMENT_FAILED_SOURCE, "status": "completed", "conclusion": "failure",
+    "jobs": REPLACEMENT_ADMISSION["failed_jobs"],
+    "failure_reasons": ["recorded report_incomplete", "detection timeout without successful structured verdict"],
+    "pr_number": REPLACEMENT_FAILED_PR, "pr_head_sha": REPLACEMENT_FAILED_HEAD,
+    "artifact_id": REPLACEMENT_ADMISSION["failed_artifact_id"],
+    "artifact_digest": REPLACEMENT_ADMISSION["failed_artifact_digest"],
+}
+
+
+def replacement_present(snapshot):
+    return any(path in snapshot.files for path in REPLACEMENT_PATHS)
+
+
+def validate_replacement_predecessor(snapshot):
+    original, attempt, continuation = validate_recovery_continuation(snapshot)
+    events = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    reservation = snapshot.get(reservation_path(original["semantic_effect_key"]))
+    if (len(events) < 12 or [_recovery_document_blob(row) for row in events[:12]] != REPLACEMENT_HISTORY_BLOBS
+            or not isinstance(reservation, dict) or _recovery_document_blob(reservation) != REPLACEMENT_RESERVATION_BLOB):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement frozen journal/reservation predecessor changed")
+    if (_recovery_document_blob(continuation) != REPLACEMENT_PREDECESSOR_CONTINUATION_BLOB
+            or continuation["execution_source_head_sha"] != REPLACEMENT_FAILED_SOURCE
+            or snapshot.get(RECOVERY_RECEIPT_PATH) is not None):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement predecessor is not the exact unsealed failed recovery")
+    return original, attempt, continuation
+
+
+def replacement_authorization_identity(authorization):
+    return {key: value for key, value in authorization.items()
+            if key not in {"created_at", "recovery_dispatch_key", "recovery_dispatch_id", "display_title", "task_payload_digest"}}
+
+
+def validate_replacement_chain(snapshot):
+    original, original_attempt, old_continuation = validate_replacement_predecessor(snapshot)
+    authorization = snapshot.get(REPLACEMENT_AUTHORIZATION_PATH)
+    claim = snapshot.get(REPLACEMENT_ATTEMPT_PATH)
+    if not isinstance(authorization, dict) or not isinstance(claim, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed replacement authorization/claim is incomplete")
+    expected = dict(original)
+    for key in ("created_at", "recovery_dispatch_key", "recovery_dispatch_id", "display_title",
+                "worker_blobs", "source_head_sha", "installation_commit_sha", "trusted_context_digest"):
+        expected.pop(key, None)
+    expected.update({
+        "replacement_admission": REPLACEMENT_ADMISSION,
+        "replacement_admission_digest": "sha256:" + digest_json(REPLACEMENT_ADMISSION),
+        "predecessor_authorization_digest": "sha256:" + digest_json(original),
+        "predecessor_attempt_digest": "sha256:" + digest_json(original_attempt),
+        "predecessor_continuation_digest": "sha256:" + digest_json(old_continuation),
+        "worker_blobs": REPLACEMENT_WORKER_BLOBS,
+        "collector_dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
+        "failed_observation": REPLACEMENT_FAILED_OBSERVATION,
+    })
+    variable = {"source_head_sha", "installation_commit_sha", "trusted_context_digest",
+                "execution_source_head_sha", "execution_materialization_commit_sha",
+                "execution_policy_receipt_digest", "execution_policy_bundle_digest",
+                "execution_trusted_context_digest", "created_at",
+                "recovery_dispatch_key", "recovery_dispatch_id", "display_title",
+                "task_payload_digest"}
+    if (set(authorization) != set(expected) | variable
+            or any(canonical_json(authorization.get(k)) != canonical_json(v) for k, v in expected.items())
+            or not REPLACEMENT_WORKER_BLOBS
+            or authorization.get("source_head_sha") != authorization.get("execution_source_head_sha")
+            or authorization.get("installation_commit_sha") != authorization.get("execution_source_head_sha")
+            or authorization.get("execution_source_head_sha") in {ARMED_RECOVERY_SOURCE, REPLACEMENT_FAILED_SOURCE}
+            or authorization.get("trusted_context_digest") != authorization.get("execution_trusted_context_digest")
+            or any(not _SHA40.fullmatch(str(authorization.get(k) or "")) for k in
+                   ("execution_source_head_sha", "execution_materialization_commit_sha"))
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(authorization.get(k) or "")) for k in
+                   ("execution_trusted_context_digest", "execution_policy_receipt_digest", "execution_policy_bundle_digest"))
+            or not str(authorization.get("created_at") or "")):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed replacement authorization scope drifted")
+    identity = replacement_authorization_identity(authorization)
+    key = "dispatch-" + digest_json(identity)[:40]
+    dispatch_id = "replacement-1-" + digest_json(identity)[:32]
+    if (authorization["recovery_dispatch_key"] != key
+            or authorization["recovery_dispatch_id"] != dispatch_id
+            or authorization["display_title"] != "AI-SDLC gh-aw " + key):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement deterministic identity drifted")
+    dispatch = dict(authorization, external_dispatch_key=key, dispatch_id=dispatch_id,
+                    operation_profile=VERTICAL_PROFILE)
+    if authorization["task_payload_digest"] != "sha256:" + digest_json(json.loads(
+            GhAwVerticalRoleDispatchGateway._task_payload(dispatch))):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement exact task payload drifted")
+    expected_claim = dict(authorization, authorization_digest="sha256:" + digest_json(authorization),
+                          attempt_id="replacement-1-claim-" + digest_json(authorization)[:32], status="ARMED")
+    if canonical_json(claim) != canonical_json(expected_claim):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement immutable claim drifted")
+    return authorization, claim, claim
+
+
+def recovery_route(snapshot):
+    # Any partial/corrupt replacement sidecar locks the route. Never rescue it
+    # using an old receipt, and never enumerate arbitrary successor directories.
+    if replacement_present(snapshot):
+        authorization, claim, bridge = validate_replacement_chain(snapshot)
+        return {"ordinal": 1, "authorization_path": REPLACEMENT_AUTHORIZATION_PATH,
+                "attempt_path": REPLACEMENT_ATTEMPT_PATH, "receipt_path": REPLACEMENT_RECEIPT_PATH,
+                "authorization": authorization, "attempt": claim, "bridge": bridge}
+    authorization, attempt, bridge = validate_recovery_continuation(snapshot)
+    return {"ordinal": 0, "authorization_path": RECOVERY_AUTHORIZATION_PATH,
+            "attempt_path": RECOVERY_ATTEMPT_PATH, "receipt_path": RECOVERY_RECEIPT_PATH,
+            "authorization": authorization, "attempt": attempt, "bridge": bridge}
 
 
 class V03DogfoodCompositionError(RuntimeError):
@@ -955,7 +1107,8 @@ class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
     def admit_continuation(self, snapshot, *, allow_post=False, execution_source_head_sha, execution_trusted_context_digest,
                            execution_materialization_commit_sha, execution_policy_receipt_digest,
                            execution_policy_bundle_digest):
-        _, _, continuation = validate_recovery_continuation(snapshot)
+        route = recovery_route(snapshot)
+        continuation = route["bridge"]
         if allow_post and (
             continuation["execution_source_head_sha"] != execution_source_head_sha
             or continuation["execution_trusted_context_digest"] != execution_trusted_context_digest
@@ -972,12 +1125,13 @@ class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
     def _admitted(self):
         if self._continuation_snapshot is None:
             raise VerticalInvariantError("POLICY_DENIED", "recovery transport has no protected admission")
-        return validate_recovery_continuation(self._continuation_snapshot)
+        route = recovery_route(self._continuation_snapshot)
+        return route["authorization"], route["attempt"], route["bridge"]
 
     def _validate_lookup_identity(self, *, workflow, ref, dispatch_key):
-        self._admitted()
+        authorization, _, _ = self._admitted()
         if (
-            dispatch_key != ARMED_RECOVERY_KEY
+            dispatch_key != authorization["recovery_dispatch_key"]
             or workflow not in self._trusted_workflows
             or ref != "main" or ref != self.config.workflows.default_branch
             or self.config.workflows.developer_workflow != RECOVERY_DEVELOPER_WORKFLOW
@@ -1302,6 +1456,27 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
         ):
             raise VerticalInvariantError("BLOCKED", "recovery Safe Outputs job is not one exact successful first attempt")
 
+        if external_dispatch_key != ARMED_RECOVERY_KEY:
+            if (run_id == REPLACEMENT_FAILED_RUN or before["head_sha"] == REPLACEMENT_FAILED_SOURCE
+                    or type(jobs_before.get("total_count")) is not int
+                    or jobs_before["total_count"] != len(rows) or len(rows) > 100):
+                raise VerticalInvariantError("POLICY_DENIED", "replacement requires complete fresh first-attempt jobs")
+            for name in ("agent", "detection", "safe_outputs", "conclusion"):
+                matching = [row for row in rows if row.get("name") == name]
+                if (len(matching) != 1 or matching[0].get("status") != "completed"
+                        or matching[0].get("conclusion") != "success"
+                        or type(matching[0].get("run_attempt")) is not int or matching[0]["run_attempt"] != 1
+                        or matching[0].get("run_id") != run_id or matching[0].get("head_sha") != before["head_sha"]):
+                    raise VerticalInvariantError("BLOCKED", "replacement jobs lack exact terminal success")
+                guard_name = {"agent": "Reject rerun before model execution",
+                              "safe_outputs": "Require first attempt and affirmative detection before Safe Outputs effects"}.get(name)
+                if guard_name:
+                    steps = matching[0].get("steps")
+                    guards = [step for step in steps or [] if step.get("name") == guard_name]
+                    if (not isinstance(steps, list) or len(guards) != 1
+                            or guards[0].get("status") != "completed" or guards[0].get("conclusion") != "success"):
+                        raise VerticalInvariantError("BLOCKED", "replacement affirmative safety/first-attempt guard did not succeed")
+
         feature_id = str(trusted_context.get("feature_id") or "")
         expected_revision = int(trusted_context.get("expected_revision") or 0)
         target_ref = str(trusted_context.get("target_ref") or "")
@@ -1330,6 +1505,7 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
             not isinstance(pr, dict)
             or int(pr.get("number") or 0) != number
             or number < 1
+            or (external_dispatch_key != ARMED_RECOVERY_KEY and (number == REPLACEMENT_FAILED_PR or head_sha == REPLACEMENT_FAILED_HEAD))
             or pr.get("state") != "open"
             or pr.get("draft") is not True
             or str((pr.get("base") or {}).get("ref") or "") != target_ref
@@ -1402,11 +1578,15 @@ class DogfoodRecoveryBoundContentLoader:
 
     def __call__(self, uri):
         match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
-        if match and match.group("key") == ARMED_RECOVERY_KEY:
+        snapshot = self.runtime.backend.read_snapshot() if self.runtime is not None else None
+        route = recovery_route(snapshot) if snapshot is not None and replacement_present(snapshot) else None
+        if match and (match.group("key") == ARMED_RECOVERY_KEY
+                      or (route is not None and match.group("key") == route["authorization"]["recovery_dispatch_key"])):
             if self.runtime is None:
                 raise VerticalInvariantError("POLICY_DENIED", "recovery content lacks protected runtime")
             snapshot = self.runtime.backend.read_snapshot()
-            sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+            route = recovery_route(snapshot)
+            sealed = snapshot.get(route["receipt_path"])
             validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
                 self.policy_authority,
             ))
@@ -1429,6 +1609,24 @@ class DogfoodRecoveryBoundContentLoader:
 
 
 
+def _recovery_launch_task_matches(snapshot, launch, authorization):
+    if launch.get("task_id") == authorization.get("task_id"):
+        return True
+    # The frozen producer omitted task_id. Only its exact event and exact
+    # reservation may use the already-defined shared task-identity matcher.
+    events = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    exact = [row for row in events if row.get("sequence") == 10]
+    reservation = snapshot.get(reservation_path(str(authorization.get("semantic_effect_key") or "")))
+    return (
+        "task_id" not in launch and len(exact) == 1
+        and _recovery_document_blob(exact[0]) == "f6f793ce9725e618be0b7b25712e5abe44a55b59"
+        and exact[0].get("payload") == launch
+        and isinstance(reservation, dict)
+        and _recovery_document_blob(reservation) == REPLACEMENT_RESERVATION_BLOB
+        and _task_binding_matches(str(reservation.get("task_identity") or ""), str(authorization.get("task_id") or ""))
+    )
+
+
 class DogfoodRecoveryCollector:
     """Collect only the one sealed recovery run, then reuse the closed callback path."""
 
@@ -1445,9 +1643,9 @@ class DogfoodRecoveryCollector:
             raise VerticalInvariantError("POLICY_DENIED", "recovery collector escaped frozen Operation")
         executor = self.callback_coordinator.executor
         snapshot = executor.runtime.backend.read_snapshot()
-        sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
-        authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
-        attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+        route = recovery_route(snapshot)
+        sealed = snapshot.get(route["receipt_path"])
+        authorization, attempt = route["authorization"], route["attempt"]
         if not isinstance(authorization, dict) or not isinstance(attempt, dict) or not isinstance(sealed, dict):
             raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks complete immutable fact chain")
         continuation = validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
@@ -1519,7 +1717,7 @@ class DogfoodRecoveryCollector:
             or authorization.get("stage") != launch.get("stage")
             or authorization.get("role") != launch.get("role")
             or authorization.get("candidate_head_sha") != launch.get("candidate_head_sha")
-            or authorization.get("task_id") != launch.get("task_id")
+            or not _recovery_launch_task_matches(snapshot, launch, authorization)
             or normalize_repository(str(authorization.get("target_repository") or "")) != normalize_repository(str(projection["target_repository"]))
             or authorization.get("target_ref") != executor.config.target_ref
         ):
