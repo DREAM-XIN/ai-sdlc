@@ -850,93 +850,113 @@ def source_contract_tests() -> None:
     require("remediation_artifact_supersession" in source, "remediation lifecycle lost explicit supersession")
 
 
+def _current_execution_fixture(scenario="happy_path"):
+    """Use the production selector and map, rather than fabricate incomplete rows."""
+    from gh_aw_provider_registry import load_registry
+    from v03_dogfood_execution_bindings import credential_identities
+    from v03_dogfood_live_gate import resolve_current_dogfood_bindings
+    from v03_dogfood_runtime_preflight import _workflow_map
+    require_slot(scenario)
+    presence = {identity: identity == "DEEPSEEK_API_KEY"
+                for identity in credential_identities(load_registry())}
+    rows = resolve_current_dogfood_bindings(presence)
+    gate = SimpleNamespace(scenario=scenario, bindings=rows)
+    workflows = _workflow_map(gate)
+    return gate, workflows, _execution_bindings(gate, workflows)
+
+
 def readiness_execution_binding_test() -> None:
-    workflows = GhAwVerticalWorkflowMap(
-        default_branch="main",
-        developer_workflow="ai-sdlc-gh-aw-worker.lock.yml",
-        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
-        qa_workflow="ai-sdlc-gh-aw-qa-gemini.lock.yml",
+    from dataclasses import replace
+    from v03_dogfood_live_gate import (
+        ALLOWED_SCENARIOS, CURRENT_DOGFOOD_POLICY, CURRENT_DOGFOOD_WORKFLOWS,
+        V03DogfoodLiveGateError, resolve_current_dogfood_bindings,
     )
-    rows = (
-        SimpleNamespace(
-            role="developer", stage="implementation", selected_profile="copilot",
-            worker_workflow=workflows.developer_workflow, specialized_role_worker=False,
-            accepted_credential_identities=("COPILOT_GITHUB_TOKEN",),
-        ),
-        SimpleNamespace(
-            role="reviewer", stage="code-review", selected_profile="deepseek",
-            worker_workflow=workflows.reviewer_workflow, specialized_role_worker=True,
-            accepted_credential_identities=("DEEPSEEK_API_KEY",),
-        ),
-        SimpleNamespace(
-            role="qa", stage="verification", selected_profile="gemini",
-            worker_workflow=workflows.qa_workflow, specialized_role_worker=True,
-            accepted_credential_identities=("GEMINI_API_KEY",),
-        ),
+    from v03_dogfood_runtime_preflight import V03DogfoodRuntimePreflightError
+
+    for scenario in sorted(ALLOWED_SCENARIOS):
+        gate, workflows, bindings = _current_execution_fixture(scenario)
+        require(set(bindings) == {"developer", "reviewer", "qa"},
+                "readiness lost a production role in " + scenario)
+        for row in gate.bindings:
+            role = row.role
+            binding = bindings[role]
+            require(row.rule_id == CURRENT_DOGFOOD_POLICY
+                    and row.candidate_order == ("deepseek",)
+                    and row.selected_profile == "deepseek" and row.fallback is False,
+                    "current route was relabeled as a historical shared policy")
+            require(binding == {
+                "worker_id": CURRENT_DOGFOOD_WORKFLOWS[role].removesuffix(".lock.yml"),
+                "role": role, "profile": "deepseek",
+                "workflow_file": CURRENT_DOGFOOD_WORKFLOWS[role],
+                "selection_policy_id": CURRENT_DOGFOOD_POLICY, "default_branch": "main",
+                "credential_name": "DEEPSEEK_API_KEY",
+            }, "resolved current execution identity drifted for " + scenario + "/" + role)
+            require(workflows.workflow_for(role) == row.worker_workflow,
+                    "actual workflow map differs from selected source/lock")
+        require(len({binding["workflow_file"] for binding in bindings.values()}) == 3,
+                "current execution workflows are not role-separated")
+
+    for unavailable in (False, None, "true"):
+        try:
+            resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": unavailable})
+        except V03DogfoodLiveGateError:
+            pass
+        else:
+            raise AssertionError("missing or non-boolean paid credential gained execution authority")
+
+    gate, workflows, _ = _current_execution_fixture()
+    rows = gate.bindings
+    mutations = (
+        ("historical policy", {"rule_id": "v03-frozen-vertical-workflow-map/v1"}),
+        ("wrong profile", {"selected_profile": "gemini"}),
+        ("shared provider order", {"candidate_order": ("claude", "deepseek")}),
+        ("fallback", {"fallback": True}),
+        ("wrong accepted credential", {"accepted_credential_identities": ("GEMINI_API_KEY",)}),
+        ("missing present credential", {"present_credential_identities": ()}),
+        ("legacy workflow", {"worker_workflow": "ai-sdlc-gh-aw-qa-gemini.lock.yml"}),
     )
-    bindings = _execution_bindings(SimpleNamespace(bindings=rows), workflows)
-    require(bindings["developer"]["worker_id"] == "ai-sdlc-gh-aw-worker", "Copilot Developer worker id drifted")
-    require(bindings["developer"]["profile"] == "copilot", "Copilot Developer profile drifted")
-    require(bindings["reviewer"]["worker_id"] == "code-review-reviewer-deepseek", "DeepSeek Reviewer worker id drifted")
-    require(bindings["reviewer"]["credential_name"] == "DEEPSEEK_API_KEY", "DeepSeek Reviewer credential drifted")
-    require(bindings["qa"]["worker_id"] == "verification-qa-gemini", "Gemini QA worker id drifted")
-    require(
-        {bindings[role]["workflow_file"] for role in bindings}
-        == {workflows.developer_workflow, workflows.reviewer_workflow, workflows.qa_workflow},
-        "readiness execution binding workflow set drifted",
-    )
+    for label, changes in mutations:
+        changed = tuple(replace(row, **changes) if row.role == "qa" else row for row in rows)
+        try:
+            _execution_bindings(SimpleNamespace(bindings=changed), workflows)
+        except V03DogfoodRuntimePreflightError:
+            pass
+        else:
+            raise AssertionError(label + " escaped current execution binding fence")
+    try:
+        _execution_bindings(SimpleNamespace(bindings=rows[:-1]), workflows)
+    except V03DogfoodRuntimePreflightError:
+        pass
+    else:
+        raise AssertionError("missing role escaped current execution binding fence")
 
 
 def execution_binding_wrapper_test() -> None:
-    workflows = GhAwVerticalWorkflowMap(
-        default_branch="main",
-        developer_workflow="ai-sdlc-gh-aw-worker.lock.yml",
-        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek.lock.yml",
-        qa_workflow="ai-sdlc-gh-aw-qa-gemini.lock.yml",
-    )
+    _gate, workflows, bindings = _current_execution_fixture()
     raw = __import__("operator_vertical_gh_aw").GhAwVerticalRoleDispatchGateway(
         transport=object(), workflows=workflows,
     )
-    bindings = {
-        "developer": {
-            "worker_id": "ai-sdlc-gh-aw-worker",
-            "role": "developer",
-            "profile": "copilot",
-            "workflow_file": workflows.developer_workflow,
-            "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
-            "default_branch": "main",
-        },
-        "reviewer": {
-            "worker_id": "code-review-reviewer-deepseek",
-            "role": "reviewer",
-            "profile": "deepseek",
-            "workflow_file": workflows.reviewer_workflow,
-            "selection_policy_id": "v03-frozen-reviewer-provider-order/v2",
-            "default_branch": "main",
-            "credential_name": "DEEPSEEK_API_KEY",
-        },
-        "qa": {
-            "worker_id": "verification-qa-gemini",
-            "role": "qa",
-            "profile": "gemini",
-            "workflow_file": workflows.qa_workflow,
-            "selection_policy_id": "v03-frozen-vertical-workflow-map/v1",
-            "default_branch": "main",
-        },
-    }
     bound = DogfoodExecutionBoundDispatchGateway(delegate=raw, execution_bindings=bindings)
-    require(bound.transport is raw.transport and bound.workflows is workflows, "dogfood wrapper replaced production transport")
-    require(
-        bound.execution_binding(dispatch={"role": "developer"}) == bindings["developer"],
-        "Copilot Developer execution binding drifted",
-    )
+    require(bound.transport is raw.transport and bound.workflows is workflows,
+            "dogfood wrapper replaced production transport")
+    for role in ("developer", "reviewer", "qa"):
+        require(bound.execution_binding(dispatch={"role": role}) == bindings[role],
+                "production-selected execution binding drifted for " + role)
     try:
         bound.execution_binding(dispatch={"role": "product"})
     except Exception:
         pass
     else:
         raise AssertionError("unknown dogfood role escaped exact execution binding set")
-
+    for field, value in (("workflow_file", workflows.developer_workflow), ("default_branch", "other")):
+        broken = {role: dict(binding) for role, binding in bindings.items()}
+        broken["qa"][field] = value
+        try:
+            DogfoodExecutionBoundDispatchGateway(delegate=raw, execution_bindings=broken)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("wrapper accepted drifted " + field)
 
 
 def developer_candidate_transport_tests() -> None:

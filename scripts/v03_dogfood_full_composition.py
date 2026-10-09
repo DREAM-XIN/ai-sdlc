@@ -882,7 +882,9 @@ def validate_reviewer_authorization(snapshot, *, consumer_binding=None):
         "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
         "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md",
         RECOVERY_DEVELOPER_WORKFLOW, RECOVERY_DEVELOPER_WORKFLOW.replace(".lock.yml", ".md"))}
-    if (not isinstance(blobs, dict) or set(blobs) != required
+    from v03_dogfood_live_gate import CURRENT_DOGFOOD_BLOBS
+    if (blobs != {".github/workflows/" + name: blob for name, blob in CURRENT_DOGFOOD_BLOBS.items()}
+            or not isinstance(blobs, dict) or set(blobs) != required
             or any(not _SHA40.fullmatch(str(v)) for v in blobs.values())):
         raise VerticalInvariantError("POLICY_DENIED", "Reviewer replacement selected Worker pins differ")
     callbacks = [e for e in events[30:] if e["event_type"] == "worker.callback.recorded"

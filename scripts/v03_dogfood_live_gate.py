@@ -330,6 +330,14 @@ def verify_issue_221_closed(
 
 
 
+CURRENT_DOGFOOD_BLOBS = {
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md": "6fd4ca9735a87d081748c482dab4faa7f9d89a57",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml": "a396437cb918d942dc0be9b6ade3a38f3c724ff2",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md": "4f2b84208cf61bc2e620e5db9e96fa1e179ac952",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml": "3ce8f0513e2a79dbfbac4ad496584aade054175b"
+}
 CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-local/v1"
 CURRENT_DOGFOOD_WORKFLOWS = {
     "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
@@ -353,6 +361,11 @@ def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[Do
         source = root / workflow.replace(".lock.yml", ".md")
         if any(not p.is_file() or p.is_symlink() for p in (source, lock)):
             raise V03DogfoodLiveGateError("selected dogfood source/lock is missing or nonregular")
+        for path in (source, lock):
+            raw = path.read_bytes()
+            blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
+            if blob != CURRENT_DOGFOOD_BLOBS[path.name]:
+                raise V03DogfoodLiveGateError("selected reviewed dogfood Worker bytes changed")
         source_text = source.read_text(encoding="utf-8")
         lock_text = lock.read_text(encoding="utf-8")
         import re

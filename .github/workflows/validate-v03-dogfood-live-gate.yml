@@ -94,6 +94,7 @@ jobs:
           )
           PY
       - name: Validate trusted-main dogfood runtime driver
+        if: ${{ !cancelled() }}
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
