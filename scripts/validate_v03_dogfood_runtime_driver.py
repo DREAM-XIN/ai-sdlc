@@ -5859,7 +5859,10 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
             except AssertionError as exc:
                 expect(str(exc).startswith("real dogfood happy_path: trusted provenance verification failed:")
                        or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: V03DogfoodPostRunFinalizerError: original callback differs from historical launch/fresh run"
-                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: VerticalInvariantError: Reviewer replacement producer source differs",
+                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: VerticalInvariantError: " + (
+                           "Reviewer replacement producer source differs" if run["path"].endswith(
+                               "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml")
+                           else "local Gate execution differs from current selected source"),
                        "source mutation failed outside trusted provenance: " + str(exc))
             else:
                 raise AssertionError("current-source Gate incorrectly inherited archived Developer source")
