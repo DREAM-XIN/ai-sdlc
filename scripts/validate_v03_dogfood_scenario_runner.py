@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 
 import v03_dogfood_scenario_runner as runner
-from operator_store_model import StoreSnapshot
+from operator_store_model import StoreSnapshot, digest_json
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_openai_host import V03DogfoodResponsesTrace
 
@@ -83,8 +83,11 @@ def fake_preflight(scenario):
     )
 
 
-def run_case(scenario, statuses, roles, *, recovery=True):
+def run_case(scenario, statuses, roles, *, recovery=True, store_files=None):
     preflight = fake_preflight(scenario)
+    if store_files is not None:
+        from copy import deepcopy
+        preflight.composition.runtime.backend.read_snapshot().files.update(deepcopy(store_files))
     host = FakeHost(status=statuses[0])
     recovery_host = FakeRecoveryHost() if scenario == "session_recovery" and recovery else None
     old_projection = runner._projection
@@ -100,14 +103,15 @@ def run_case(scenario, statuses, roles, *, recovery=True):
         state["index"] = 1
         return {"decision_id": "decision-1", "status": "PENDING"}
     preflight.composition.bundle = SimpleNamespace(
-        decision_notification_coordinator=SimpleNamespace(request_decision=request_decision))
+        decision_notification_coordinator=SimpleNamespace(request_decision=request_decision,
+            runtime=preflight.composition.runtime, notify_operation=lambda **kwargs: {"notification_id": "fixture-completed"}))
     rows = [
         {"_dogfood_role": role, "payload": {"external_dispatch_key": f"key-{index}"}}
         for index, role in enumerate(roles, start=1)
     ]
     try:
         runner._wait_current_dispatch = lambda *args: None
-        runner._projection = lambda p, op: {"status": statuses[state["index"]]}
+        runner._projection = lambda p, op: {"status": statuses[state["index"]], "generation": 0, "expected_feature_revision": 1}
         def collect(p, op, consumed):
             expect(consumed == state["consumed"], "runner consumed cursor drifted")
             state["consumed"] += 1
@@ -117,7 +121,9 @@ def run_case(scenario, statuses, roles, *, recovery=True):
         runner._collect_next = collect
         runner._dispatch_rows = lambda p, op: rows[: state["consumed"] or 1]
         runner._launch_receipts = lambda p, op: (tuple(range(1001, 1001 + len(roles))), str(1000 + len(roles)))
-        runner._events = lambda p, op: [{"event_type": "operation.started", "sequence": 1}]
+        runner._events = lambda p, op: [{"event_type": "operation.started", "sequence": 1}] + ([
+            {"event_type": "operation.done", "sequence": 2, "operation_generation": 0, "event_id": "operation-done-" + digest_json({"feature_revision": 1, "operation_id": op, "generation": 0, "event_type": "operation.done"})[:32], "payload": {"feature_revision": 1}}
+        ] if statuses[state["index"]] == "DONE" else [])
         result = runner.run_scenario(preflight=preflight, host=host, recovery_host=recovery_host)
     finally:
         runner._projection = old_projection

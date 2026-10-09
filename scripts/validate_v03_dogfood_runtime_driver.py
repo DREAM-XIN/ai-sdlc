@@ -3983,6 +3983,36 @@ def assert_post_handoff_reconciled_callback(preflight, callback, *, coordinator,
     return result
 
 
+def assert_post_handoff_done_replay(preflight, *, adapter, feature_fixture, gate_fixture, effect_counts):
+    """Replay actual status/resume after DONE; completion notification stays unique."""
+    from copy import deepcopy
+    import v03_dogfood_scenario_runner as runner
+    from operator_store_model import operation_events
+    from operator_vertical_store import vertical_projection
+    operation_id = driver_subject.HISTORICAL_PREHTTP_RECOVERY["operation_id"]
+    runtime = preflight.composition.runtime
+    before = deepcopy(operation_events(runtime.backend.read_snapshot(), operation_id))
+    done = [row for row in before if row["event_type"] == "operation.done"]
+    notifications = [row for row in before if row["event_type"] == "notification.created"]
+    expect(len(done) == len(notifications) == 1
+           and done[0]["sequence"] < notifications[0]["sequence"],
+           "actual DONE lacks one later immutable completion notification")
+    effects = dict(effect_counts())
+    puts, applied, posts = feature_fixture.state["puts"], feature_fixture.state["applied"], len(gate_fixture.state["posts"])
+    host = build_post_handoff_responses_host(preflight, adapter=adapter,
+        expected_revision=feature_fixture.state["manifest"]["revision"], session_label="completed-replay")
+    replay = runner.run_scenario(preflight=preflight, host=host.host)
+    expect(replay.operation_id == operation_id and replay.final_status == "DONE"
+           and replay.worker_results_consumed == 3
+           and vertical_projection(runtime.backend.read_snapshot(), operation_id)["generation"] == 1,
+           "completed replay changed Operation identity or lifecycle")
+    expect(operation_events(runtime.backend.read_snapshot(), operation_id) == before,
+           "completed replay duplicated completion notification or lifecycle facts")
+    expect(feature_fixture.state["puts"] == puts and feature_fixture.state["applied"] == applied
+           and len(gate_fixture.state["posts"]) == posts and effect_counts() == effects,
+           "completed replay repeated Persist or external effects")
+
+
 def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixture,
                                        read_ref, effect_counts, adapter):
     """Continue real scenario collection through Reviewer/QA and real finalizer.
@@ -4050,10 +4080,28 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
            and scenario.dispatch_roles == ("developer", "reviewer", "qa"),
            "actual host/status/resume/scenario entry failed to consume the reconciled prefix exactly once")
     consumed = scenario.worker_results_consumed
+    assert_post_handoff_done_replay(preflight, adapter=adapter, feature_fixture=feature_fixture,
+        gate_fixture=gate_fixture, effect_counts=effect_counts)
     projection = vertical_projection(runtime.backend.read_snapshot(), operation_id)
     expect(projection["status"] == "DONE" and consumed == 3,
            "actual Reviewer/QA callback and lifecycle paths did not finish DONE")
+    runner._notify_completed(preflight, operation_id)
     events = operation_events(runtime.backend.read_snapshot(), operation_id)
+    completed_notifications = [e for e in events if e["event_type"] == "notification.created"
+                               and e["payload"].get("notification_type") == "operation.completed"]
+    expect(len(completed_notifications) == 1, "completion replay duplicated standard Notification")
+    done_event = next(e for e in events if e["event_type"] == "operation.done")
+    original_done_id = done_event["event_id"]
+    done_event["event_id"] = "forged-done"
+    try:
+        runner._notify_completed(preflight, operation_id)
+    except runner.V03DogfoodScenarioRunnerError:
+        pass
+    else:
+        raise AssertionError("completion Notification accepted a forged DONE identity")
+    finally:
+        done_event["event_id"] = original_done_id
+
     expect(events[:len(progressed_prefix)] == progressed_prefix,
            "fresh actual host rewrote or replayed the confirmed Developer prefix")
     expect(feature_fixture.state["puts"] > progressed_puts,
@@ -4634,6 +4682,14 @@ def post_handoff_full_pipeline_tests(*, crash_before_confirmation=False):
         adapter=pf.composition.responses.adapter)
     assert_post_handoff_authority_graph(pf.composition.graph_before, pf.composition.responses,
         pf.composition.policy_authority, predecessor_events=pf.composition.predecessor_events)
+    from validate_v03_dogfood_scenario_runner import run_case
+    shared_files = pf.composition.runtime.backend.read_snapshot().files
+    run_case("review_remediation",
+        ["WAITING_EXTERNAL"] * 5 + ["DONE"], ["developer", "reviewer", "developer", "reviewer", "qa"],
+        store_files=shared_files)
+    run_case("session_recovery", ["WAITING_EXTERNAL", "NEEDS_USER"], ["developer"],
+        store_files=shared_files)
+
 
 def post_handoff_reconciliation_negative_tests():
     from copy import deepcopy
