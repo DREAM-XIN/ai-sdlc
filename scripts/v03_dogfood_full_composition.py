@@ -2135,6 +2135,25 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
 class DogfoodHandoffAwareResultSource(FirstAttemptDigestBoundGhAwResultSource):
     """Read-only revalidation of an output changed only by its recorded handoff."""
 
+    def _http(self, *, method, url, token):
+        if re.fullmatch(r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/artifacts/[1-9][0-9]*/zip", url.lower()):
+            req = request.Request(url, method=method, headers={
+                "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                "X-GitHub-Api-Version": self.config.api_version, "User-Agent": self.config.user_agent,
+            })
+            try:
+                with request.build_opener(_GitHubSafeRedirectHandler()).open(req, timeout=30) as response:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive exceeds bound")
+                    return int(response.status), dict(response.headers.items()), raw
+            except VerticalInvariantError:
+                raise
+            except Exception as exc:
+                raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive unavailable") from exc
+        return FirstAttemptDigestBoundGhAwResultSource._http(self, method=method, url=url, token=token)
+
+
     def bind_handoff(self, runtime, persist_gateway):
         self.handoff_runtime = runtime
         self.handoff_persist_gateway = persist_gateway

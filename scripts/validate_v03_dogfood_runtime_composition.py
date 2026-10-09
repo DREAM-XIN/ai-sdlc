@@ -577,6 +577,124 @@ def assert_post_handoff_authority_graph(before, responses, policy_authority, *, 
                 "original rejected observation or BLOCKED fact was hidden")
 
 
+def assemble_post_handoff_responses_graph(
+    *, runtime, base_executor, content_loader, slot, config, policy_authority,
+    decision_policy_verifier, trusted_role_policy, collector_namespace_policy,
+    reader_http_get, target_read_token="test-target-read",
+    registration_id="post-handoff-real-graph-test",
+    provider_scope_id="post-handoff-real-graph-test",
+):
+    """Assemble real canonical classes around the supplied single test runtime.
+
+    This helper is test-only composition, not a claim that a Memory backend
+    satisfies the production RemoteGit factory admission check. It neither
+    creates a second runtime nor bypasses/patches that production check.
+    Callback, start, adapter and Persist transitions execute through their
+    actual classes after the caller supplies frozen history and fake HTTP.
+    """
+    from operator_decision_backends import DecisionListBackend, NotificationListBackend, OperatorInboxBackend
+    from operator_production_runtime import (
+        BoundedTrustedContextProvider, FeatureStatusBackend, GitHubTrustedProjectFeatureReader,
+        ProjectInspectBackend, TrustedOperatorReadBundle,
+    )
+    from operator_production_store_backends import scoped_store_backends
+    from operator_production_write_bundle import extend_with_trusted_decision_writes
+    from operator_store_backends import OperatorStoreRuntime, store_backends
+    from operator_store_model import normalize_repository
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_executor import TrustedVerticalExecutor
+    from operator_vertical_reconcile_classified import FailureClassifyingTrustedRecoveringVerticalExecutor
+    from operator_vertical_callback import TrustedVerticalCallbackCoordinator
+    from operator_vertical_controller import VerticalLoopResumeBackend
+    from operator_vertical_runtime import TrustedVerticalRuntimeBundle, VerticalLoopStartBackend
+    from operator_v03_vertical_production_runtime import (
+        TrustedV03VerticalProductionBundle, _validate_decision_policy_binding,
+    )
+    from operator_openai_responses import TrustedResponsesRegistration, OpenAIResponsesOperatorAdapter
+    from operator_openai_responses_journal import StoreResponsesCallJournal
+    from operator_openai_responses_production import (
+        OpenAIResponsesProductionBundle, _responses_backends,
+        _require_shared_runtime, _require_final_runtime_types,
+    )
+    from v03_dogfood_full_composition import install_post_handoff_executor
+
+    require(isinstance(runtime, OperatorStoreRuntime) and isinstance(base_executor, TrustedVerticalExecutor),
+            "real graph requires actual supplied Store runtime and base executor")
+    require(base_executor.runtime is runtime, "graph assembler received a shadow base runtime")
+    require(normalize_repository(runtime.backend.repository) == config.store_repository
+            and runtime.backend.state_ref == config.state_ref,
+            "graph assembler Store/config identity mismatch")
+    require(config.feature_ids == frozenset({slot.feature_id})
+            and config.feature_ref(slot.feature_id) == slot.target_ref
+            and base_executor.config.target_ref == slot.target_ref,
+            "graph assembler escaped its fixed Feature/ref")
+    require(callable(content_loader) and callable(reader_http_get),
+            "graph assembler requires explicit trusted content and fake-provider loaders")
+    _validate_decision_policy_binding(config, decision_policy_verifier)
+    previous = FailureClassifyingTrustedRecoveringVerticalExecutor(
+        base_executor=base_executor, content_loader=content_loader,
+        trusted_role_policy=trusted_role_policy, collector_namespace_policy=collector_namespace_policy)
+    callbacks = TrustedVerticalCallbackCoordinator(
+        executor=previous, content_loader=content_loader,
+        trusted_role_policy=trusted_role_policy, collector_namespace_policy=collector_namespace_policy)
+    resume = VerticalLoopResumeBackend(
+        runtime=runtime, feature_gateway=base_executor.feature_gateway, executor=previous)
+    vertical_backends = store_backends(
+        runtime, operation_profile=VERTICAL_PROFILE, resume_backend=resume)
+    vertical_backends["operation.start"] = VerticalLoopStartBackend(
+        delegate=vertical_backends["operation.start"], executor=previous)
+    vertical = TrustedVerticalRuntimeBundle(
+        runtime=runtime, executor=previous, callback_coordinator=callbacks,
+        api_backends=vertical_backends)
+
+    reader = GitHubTrustedProjectFeatureReader(
+        config=config, token=target_read_token, api_base="https://api.github.com",
+        http_get=reader_http_get)
+    provider = BoundedTrustedContextProvider(config=config, adapter_id=ADAPTER_ID)
+    canonical = {
+        "project.inspect": ProjectInspectBackend(config=config, adapter_id=ADAPTER_ID, reader=reader),
+        "feature.status": FeatureStatusBackend(config=config, adapter_id=ADAPTER_ID, reader=reader),
+        "operator.inbox": OperatorInboxBackend(runtime),
+        "decision.list": DecisionListBackend(runtime),
+        "notification.list": NotificationListBackend(runtime),
+        **scoped_store_backends(
+            config=config, adapter_id=ADAPTER_ID, runtime=runtime, reader=reader,
+            operation_profile=VERTICAL_PROFILE),
+    }
+    canonical["operation.start"] = VerticalLoopStartBackend(
+        delegate=canonical["operation.start"], executor=previous)
+    read_bundle = TrustedOperatorReadBundle(
+        config=config, trusted_context_provider=provider, backends=canonical, runtime=runtime)
+    write_bundle = extend_with_trusted_decision_writes(
+        read_bundle, policy_verifier=decision_policy_verifier,
+        feature_gateway=base_executor.feature_gateway,
+        trusted_context_digest=base_executor.config.trusted_context_digest)
+    operator_bundle = TrustedV03VerticalProductionBundle(
+        write_bundle=write_bundle, vertical_bundle=vertical, feature_id=slot.feature_id)
+    # Apply the actual downstream graph/type checks. The separate production
+    # backend-admission check is intentionally not represented as passed.
+    _require_shared_runtime(operator_bundle, runtime)
+    _require_final_runtime_types(operator_bundle)
+    model_backends = _responses_backends(operator_bundle)
+    context = dict(provider.for_request(
+        {"repository": config.target_repository, "feature_id": slot.feature_id}))
+    context["trusted_context_digest"] = base_executor.config.trusted_context_digest
+    registration = TrustedResponsesRegistration(
+        registration_id=registration_id, provider_scope_id=provider_scope_id,
+        target_repository=config.target_repository, feature_refs={slot.feature_id: slot.target_ref},
+        trusted_context=context, human_principal=config.principal)
+    journal = StoreResponsesCallJournal(runtime)
+    adapter = OpenAIResponsesOperatorAdapter(
+        registration=registration, backends=model_backends, journal=journal)
+    responses = OpenAIResponsesProductionBundle(
+        operator_bundle=operator_bundle, runtime=runtime, registration=registration,
+        journal=journal, backends=model_backends, adapter=adapter)
+    captured = capture_post_handoff_authority_graph(responses)
+    installed = install_post_handoff_executor(responses, policy_authority)
+    assert_post_handoff_authority_graph(captured, installed, policy_authority)
+    return installed, captured
+
+
 def post_handoff_executor_graph_tests() -> None:
     """Real-class installation identity only; the exact-history suite proves execution."""
     from dataclasses import FrozenInstanceError, replace
