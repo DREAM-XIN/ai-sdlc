@@ -1216,7 +1216,7 @@ def recovery_safe_output_source_tests():
         COLLECTOR_IDENTITY, RECOVERY_DEVELOPER_WORKFLOW, RecoverySafeOutputGhAwResultSource,
     )
     run_id = 40000000001
-    key = "recovery-test-key"
+    key = "dispatch-" + "a" * 40
     source_head = "1" * 40
     candidate_head = "2" * 40
     feature = "F-OPERATOR-V03-DOGFOOD-HAPPY-0001"
@@ -1230,10 +1230,15 @@ def recovery_safe_output_source_tests():
         "head_branch": "main", "head_sha": source_head,
         "status": "completed", "conclusion": "success",
     }
-    jobs = {"jobs": [{
-        "id": 9001, "name": "safe_outputs", "run_id": run_id, "run_attempt": 1,
-        "head_sha": source_head, "status": "completed", "conclusion": "success",
-    }]}
+    jobs = {"total_count": 4, "jobs": [
+        {"id": 9001 + index, "name": name, "run_id": run_id, "run_attempt": 1,
+         "head_sha": source_head, "status": "completed", "conclusion": "success",
+         "steps": ([{"name": "Require first attempt and affirmative detection before Safe Outputs effects",
+                    "status": "completed", "conclusion": "success"}] if name == "safe_outputs" else
+                   [{"name": "Reject rerun before model execution",
+                     "status": "completed", "conclusion": "success"}] if name == "agent" else [])}
+        for index, name in enumerate(("safe_outputs", "agent", "detection", "conclusion"))
+    ]}
     pr = {
         "number": 901, "id": 1901, "node_id": "PR_test_901",
         "user": {"login": "github-actions[bot]", "type": "Bot"},
@@ -1304,6 +1309,8 @@ def recovery_safe_output_source_tests():
     must_reject(lambda s: s["run"].update(run_attempt=2))
     must_reject(lambda s: s.update(prs=[s["pr"], dict(s["pr"], number=902)]))
     must_reject(lambda s: s["jobs"]["jobs"][0].update(conclusion="failure"))
+    must_reject(lambda s: s["jobs"].update(total_count=3))
+    must_reject(lambda s: s["jobs"]["jobs"][0].update(steps=[]))
     must_reject(lambda s: s["pr"]["head"].update(sha="bad"))
     must_reject(lambda s: s["artifacts"].update(total_count=0, artifacts=[]))
     must_reject(lambda s: s["artifacts"].update(total_count=2, artifacts=s["artifacts"]["artifacts"] * 2))
@@ -2513,14 +2520,17 @@ def fixed_replacement_fixture():
     subject = driver_subject
     root = Path(__file__).resolve().parents[1]
     commit = composition.REPLACEMENT_PREDECESSOR_STORE
-    listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "state/operator/v1"],
-                            cwd=root, check=True, capture_output=True, text=True).stdout.splitlines()
-    files = {}
-    for path in listed:
-        if path.endswith(".json"):
-            files[path] = json.loads(subprocess.run(["git", "show", f"{commit}:{path}"],
-                cwd=root, check=True, capture_output=True).stdout)
-    frozen = StoreSnapshot(commit, files)
+    if not hasattr(fixed_replacement_fixture, "_frozen_files"):
+        listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "state/operator/v1"],
+                                cwd=root, check=True, capture_output=True, text=True).stdout.splitlines()
+        files = {}
+        for path in listed:
+            if path.endswith(".json"):
+                files[path] = json.loads(subprocess.run(["git", "show", f"{commit}:{path}"],
+                    cwd=root, check=True, capture_output=True).stdout)
+        fixed_replacement_fixture._frozen_files = deepcopy(files)
+    # Each test gets an independent deep copy of the same immutable commit.
+    frozen = StoreSnapshot(commit, deepcopy(fixed_replacement_fixture._frozen_files))
     composition.validate_replacement_predecessor(frozen)
     class Backend(MemoryStateRefBackend):
         def __init__(self):
@@ -3496,22 +3506,42 @@ def main():
     rejected(mode=RUN, scenario="unknown", event_name="workflow_dispatch", ref="refs/heads/main")
     rejected(mode="unsafe", scenario="happy_path", event_name="pull_request", ref="refs/pull/348/merge")
 
-    installation_transition_tests()
-    prehttp_recovery_fence_tests()
-    pinned_provider_revocation_tests()
-    historical_worker_adoption_tests()
-    historical_worker_evidence_tests()
     from pathlib import Path
+    import traceback
     validation_root = Path(__file__).resolve().parents[1]
-    recovery_lock_transform_tests(validation_root)
-    recovery_worker_preparation_contract_tests(validation_root)
-    recovery_safe_output_source_tests()
-    armed_recovery_source_proof_tests()
-    recovery_continuation_cas_tests()
-    bounded_recovery_execution_tests()
-    replacement_pf, replacement_seal, _ = fixed_replacement_admission_tests()
-    fixed_replacement_route_lock_tests(replacement_pf, replacement_seal)
-    fixed_replacement_collector_pipeline_tests(replacement_pf, replacement_seal, expected_human_interventions=4)
+    def replacement_pipeline():
+        preflight, http, _state, _frozen = fixed_replacement_fixture()
+        sealed = driver_subject.recover_approved_replacement(preflight)
+        expect(http.posts == 1, "fresh replacement pipeline must launch exactly once")
+        fixed_replacement_route_lock_tests(preflight, sealed)
+        fixed_replacement_collector_pipeline_tests(preflight, sealed, expected_human_interventions=4)
+    failures = []
+    # Independent diagnostics continue, but no failing group can become a pass.
+    # In particular, a CAS negative failure cannot hide the fresh full pipeline.
+    groups = (
+        ("installation transition", installation_transition_tests),
+        ("pre-HTTP recovery fence", prehttp_recovery_fence_tests),
+        ("provider revocation", pinned_provider_revocation_tests),
+        ("historical adoption", historical_worker_adoption_tests),
+        ("historical Worker evidence", historical_worker_evidence_tests),
+        ("strict lock transform", lambda: recovery_lock_transform_tests(validation_root)),
+        ("Worker preparation guards", lambda: recovery_worker_preparation_contract_tests(validation_root)),
+        ("Safe Output source", recovery_safe_output_source_tests),
+        ("immutable source proof", armed_recovery_source_proof_tests),
+        ("archival continuation CAS", recovery_continuation_cas_tests),
+        ("archival bounded full pipeline", bounded_recovery_execution_tests),
+        ("fixed replacement admission and negatives", fixed_replacement_admission_tests),
+        ("fixed replacement full pipeline", replacement_pipeline),
+    )
+    for name, execute in groups:
+        try:
+            execute()
+        except Exception:
+            failures.append(name)
+            print("FAILED regression group: " + name, flush=True)
+            traceback.print_exc()
+    if failures:
+        raise AssertionError("v0.3 regression groups failed: " + ", ".join(failures))
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
