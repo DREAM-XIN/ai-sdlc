@@ -26,6 +26,8 @@ from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceVerifier,
 )
 from v03_dogfood_release_finalizer import build_release_record
+from v03_dogfood_full_composition import validate_recovery_execution_seal
+from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
 from validate_v03_dogfood_evidence import SCENARIO_PROFILES
@@ -72,6 +74,10 @@ def _validated_recovery_chain(snapshot: Any) -> dict[str, Any]:
     sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
     if not all(isinstance(row, dict) for row in (authorization, attempt, sealed)):
         raise V03DogfoodPostRunFinalizerError("finalizer lacks complete recovery fact chain")
+    try:
+        validate_recovery_execution_seal(snapshot, sealed)
+    except VerticalInvariantError as exc:
+        raise V03DogfoodPostRunFinalizerError("finalizer recovery continuation/source bridge drifted") from exc
     authorization_digest = "sha256:" + digest_json(authorization)
     attempt_digest = "sha256:" + digest_json(attempt)
     exact = {
@@ -338,7 +344,7 @@ def _durable_run_bindings(preflight, observation, events):
             resolve_trusted["external_dispatch_key"] = resolve_key
             resolve_trusted["dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
             resolve_trusted["task_id"] = str(recovery_sealed["task_id"])
-            resolve_trusted["source_head_sha"] = str(recovery_sealed["source_head_sha"])
+            resolve_trusted["source_head_sha"] = str(recovery_sealed["execution_source_head_sha"])
         resolved = result_source.resolve(
             external_dispatch_key=resolve_key,
             expected_receipt_identity=str(run_id),

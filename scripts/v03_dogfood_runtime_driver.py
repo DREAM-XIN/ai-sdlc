@@ -26,6 +26,14 @@ from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
 from operator_vertical_recovery import plan_vertical_takeover
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport
+from v03_dogfood_full_composition import (
+    ARMED_RECOVERY_SOURCE, ARMED_RECOVERY_STORE, ARMED_RECOVERY_KEY,
+    ARMED_RECOVERY_SOURCE_BLOBS, ARMED_RECOVERY_AUTHORIZATION_BLOB,
+    ARMED_RECOVERY_ATTEMPT_BLOB, ARMED_RECOVERY_NO_HTTP_PROOF,
+    RECOVERY_CONTINUATION_PATH, RECOVERY_CONTINUATION_SCHEMA,
+    validate_armed_recovery_pair, validate_recovery_continuation,
+    validate_recovery_execution_seal,
+)
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_live_gate import ALLOWED_SCENARIOS, assemble_dogfood_live_gate
 from v03_dogfood_openai_host import V03DogfoodOpenAIHostConfig, V03DogfoodOpenAIResponsesHost
@@ -1231,21 +1239,6 @@ def _bounded_recovery_identity(snapshot: Any, preflight: Any) -> tuple[dict[str,
     return projection, reservation
 
 
-def _recovery_dispatch_identity(preflight: Any) -> tuple[str, str]:
-    h = HISTORICAL_PREHTTP_RECOVERY
-    material = {
-        "schema_version": RECOVERY_SCHEMA,
-        "operation_id": h["operation_id"],
-        "semantic_effect_key": h["semantic_effect_key"],
-        "historical_external_dispatch_key": h["external_dispatch_key"],
-        "installation_commit_sha": preflight.execution.installation_commit_sha,
-        "workflow_file": RECOVERY_WORKFLOW,
-        "candidate_head_sha": h["candidate_head_sha"],
-    }
-    digest = digest_json(material)
-    return "recovery-" + digest[:40], "recovery-dispatch-" + digest[40:64]
-
-
 def _recovery_worker_blobs() -> dict[str, str]:
     root = Path(__file__).resolve().parents[1]
     paths = (
@@ -1282,58 +1275,126 @@ def _validate_recovery_pair(snapshot: Any, expected: Mapping[str, Any]) -> bool:
     return True
 
 
-def _plan_bounded_recovery(snapshot: Any, *, preflight: Any, fence: Mapping[str, Any]) -> StoreMutationPlan:
+
+def _observe_armed_recovery_no_http(preflight: Any) -> dict[str, Any]:
+    """Authenticate an exact immutable rejecting program, not absence of runs.
+
+    The pinned driver always calls lookup before launch; both production lookup
+    and dispatch reject its fixed recovery-* key before HTTP. The pinned
+    workflow checks checkout HEAD == GITHUB_SHA. Thus an old checked-out runner
+    remains rejecting, while an old workflow rerun after main advances cannot
+    reach the driver. Terminal run/log observations supplement that source proof.
+    """
+    proof = ARMED_RECOVERY_NO_HTTP_PROOF
+    def get(suffix):
+        return _github_json(preflight, suffix)
+    def source(path, ref, sha):
+        document = get("/contents/" + path + "?ref=" + ref)
+        if (
+            document.get("type") != "file" or document.get("path") != path
+            or document.get("encoding") != "base64" or document.get("sha") != sha
+        ):
+            raise V03DogfoodRuntimeDriverError("armed recovery proof source identity drifted")
+        try:
+            raw = base64.b64decode("".join(str(document["content"]).split()), validate=True)
+        except (KeyError, ValueError) as exc:
+            raise V03DogfoodRuntimeDriverError("armed recovery proof bytes unavailable") from exc
+        actual = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw).hexdigest()
+        if actual != sha:
+            raise V03DogfoodRuntimeDriverError("armed recovery proof source bytes drifted")
+    def run():
+        value = get("/actions/runs/37892560162")
+        expected = {
+            "id": 37892560162, "run_attempt": 1, "workflow_id": 342691463,
+            "head_sha": ARMED_RECOVERY_SOURCE, "head_branch": "main",
+            "path": ".github/workflows/v03-real-dogfood-scenario.yml",
+            "event": "workflow_dispatch", "status": "completed", "conclusion": "failure",
+        }
+        if (
+            any(value.get(k) != v for k, v in expected.items())
+            or str((value.get("repository") or {}).get("full_name") or "").lower()
+               != "dream-xin/ai-sdlc"
+            or not value.get("updated_at")
+        ):
+            raise V03DogfoodRuntimeDriverError("armed recovery failed run/attempt drifted")
+        return {**expected, "updated_at": value["updated_at"]}
+    before = run()
+    for path, sha in ARMED_RECOVERY_SOURCE_BLOBS.items():
+        source(path, ARMED_RECOVERY_SOURCE, sha)
+    source(RECOVERY_AUTHORIZATION_PATH, ARMED_RECOVERY_STORE, ARMED_RECOVERY_AUTHORIZATION_BLOB)
+    source(RECOVERY_ATTEMPT_PATH, ARMED_RECOVERY_STORE, ARMED_RECOVERY_ATTEMPT_BLOB)
+    job = get("/actions/jobs/113696529763")
+    expected_job = {
+        "id": 113696529763, "run_id": 37892560162, "run_attempt": 1,
+        "head_sha": ARMED_RECOVERY_SOURCE, "status": "completed", "conclusion": "failure",
+        "name": "dogfood",
+    }
+    if any(job.get(k) != v for k, v in expected_job.items()):
+        raise V03DogfoodRuntimeDriverError("armed recovery failed job identity drifted")
+    transport = preflight.composition.actions_transport
+    status, _, raw = transport.http(
+        method="GET", url=transport._api("/actions/jobs/113696529763/logs"),
+        token=transport.config.token, body=None,
+    )
+    if status != 200:
+        raise V03DogfoodRuntimeDriverError("armed recovery traceback observation unavailable")
+    try:
+        log = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise V03DogfoodRuntimeDriverError("armed recovery traceback is malformed") from exc
+    required = (
+        'v03_dogfood_runtime_driver.py", line 1543, in recover_historical_prehttp_attempt',
+        "before = preflight.composition.recovery_dispatch_gateway.lookup(",
+        'operator_vertical_gh_aw_actions_transport.py", line 132, in _validate_lookup_identity',
+        "operator_vertical.VerticalInvariantError: invalid stable external dispatch key",
+    )
+    if any(marker not in log for marker in required) or before != run():
+        raise V03DogfoodRuntimeDriverError("armed recovery source-bound pre-HTTP traceback drifted")
+    return json.loads(canonical_json(proof))
+
+def _plan_bounded_recovery(snapshot: Any, *, preflight: Any, fence: Mapping[str, Any], proof: Mapping[str, Any]) -> StoreMutationPlan:
     _bounded_recovery_identity(snapshot, preflight)
-    h = HISTORICAL_PREHTTP_RECOVERY
-    recovery_key, recovery_dispatch_id = _recovery_dispatch_identity(preflight)
-    expected = {
-        "schema_version": RECOVERY_SCHEMA,
-        "operation_id": h["operation_id"],
-        "operation_generation": h["generation"],
-        "semantic_effect_key": h["semantic_effect_key"],
-        "external_dispatch_key": h["external_dispatch_key"],
-        "historical_attempt_id": h["attempt_id"],
-        "historical_runtime_receipt_identity": HISTORICAL_WORKER_RECEIPT,
-        "historical_observation_digest": RECOVERY_OBSERVATION_DIGEST,
-        "provider_fence_digest": fence["fence_digest"],
-        "recovery_dispatch_key": recovery_key,
-        "recovery_dispatch_id": recovery_dispatch_id,
-        "workflow_file": RECOVERY_WORKFLOW,
-        "installation_commit_sha": preflight.execution.installation_commit_sha,
-        "source_head_sha": preflight.execution.installation_commit_sha,
-        "target_repository": normalize_repository(preflight.execution.repository),
-        "head_branch": "main",
-        "event": "workflow_dispatch",
-        "trusted_context_digest": preflight.trusted_context_digest,
-        "feature_id": h["feature_id"],
-        "target_ref": h["target_ref"],
-        "task_id": h["task_id"],
-        "task_identity": h["task_identity"],
-        "stage": h["stage"],
-        "role": h["role"],
-        "expected_revision": 1,
-        "candidate_pr_number": h["candidate_pr_number"],
-        "candidate_head_sha": h["candidate_head_sha"],
-        "display_title": "AI-SDLC gh-aw " + recovery_key,
-        "worker_blobs": _recovery_worker_blobs(),
+    authorization, attempt = validate_armed_recovery_pair(snapshot)
+    if (
+        proof != ARMED_RECOVERY_NO_HTTP_PROOF
+        or fence["fence_digest"] != authorization["provider_fence_digest"]
+        or _recovery_worker_blobs() != authorization["worker_blobs"]
+    ):
+        raise V03DogfoodRuntimeDriverError("armed recovery continuation proof/fence/worker bytes drifted")
+    existing = snapshot.get(RECOVERY_CONTINUATION_PATH)
+    if existing is not None:
+        _, _, continuation = validate_recovery_continuation(snapshot)
+        return StoreMutationPlan(snapshot.ref_sha, tuple(), {
+            "acquired": False, "authorization": authorization, "continuation": continuation,
+        })
+    if snapshot.get(RECOVERY_RECEIPT_PATH) is not None:
+        raise V03DogfoodRuntimeDriverError("recovery receipt exists without a continuation")
+    continuation = {
+        "schema_version": RECOVERY_CONTINUATION_SCHEMA, "admission_version": 1, "status": "ARMED",
+        "authorization_digest": "sha256:" + digest_json(authorization),
+        "create_attempt_digest": "sha256:" + digest_json(attempt),
+        "original_source_head_sha": ARMED_RECOVERY_SOURCE,
+        "no_http_proof": dict(proof),
+        "no_http_proof_digest": "sha256:" + digest_json(proof),
+        "execution_source_head_sha": preflight.execution.installation_commit_sha,
+        "execution_trusted_context_digest": preflight.trusted_context_digest,
         "created_at": preflight.composition.runtime.clock(),
     }
-    if _validate_recovery_pair(snapshot, expected):
-        return StoreMutationPlan(snapshot.ref_sha, tuple(), {"acquired": False, "authorization": snapshot.get(RECOVERY_AUTHORIZATION_PATH)})
-    attempt = dict(expected)
-    attempt.update({
-        "authorization_digest": "sha256:" + digest_json(expected),
-        "attempt_id": "recovery-create-attempt-" + digest_json(expected)[:32],
-        "status": "ARMED",
-    })
-    return StoreMutationPlan(
-        snapshot.ref_sha,
-        (
-            StoreMutation("create_immutable", RECOVERY_AUTHORIZATION_PATH, expected),
-            StoreMutation("create_immutable", RECOVERY_ATTEMPT_PATH, attempt),
-        ),
-        {"acquired": True, "authorization": expected},
-    )
+    for key in (
+        "operation_id", "operation_generation", "semantic_effect_key", "external_dispatch_key",
+        "recovery_dispatch_key", "recovery_dispatch_id", "workflow_file", "feature_id",
+        "target_repository", "target_ref", "task_id", "task_identity", "stage", "role",
+        "expected_revision", "candidate_pr_number", "candidate_head_sha",
+        "provider_fence_digest", "historical_observation_digest", "worker_blobs",
+    ):
+        continuation[key] = authorization[key]
+    from copy import deepcopy
+    proposed = deepcopy(snapshot)
+    proposed.files[RECOVERY_CONTINUATION_PATH] = continuation
+    validate_recovery_continuation(proposed)
+    return StoreMutationPlan(snapshot.ref_sha, (
+        StoreMutation("create_immutable", RECOVERY_CONTINUATION_PATH, continuation),
+    ), {"acquired": True, "authorization": authorization, "continuation": continuation})
 
 
 def _bounded_recovery_dispatch(preflight: Any, authorization: Mapping[str, Any]) -> dict[str, Any]:
@@ -1380,18 +1441,20 @@ def _recovery_trusted_context(authorization: Mapping[str, Any]) -> dict[str, Any
 
 def _resolve_recovery_run_for_seal(preflight: Any, *, authorization: Mapping[str, Any], receipt_id: str) -> Any:
     source = preflight.composition.recovery_result_source
+    _, _, continuation = validate_recovery_continuation(preflight.composition.runtime.backend.read_snapshot())
+    execution_source = continuation["execution_source_head_sha"]
     key = str(authorization["recovery_dispatch_key"])
     for _poll in range(121):
         readiness = source.seal_readiness(
             external_dispatch_key=key,
             expected_receipt_identity=receipt_id,
-            source_head_sha=str(authorization["source_head_sha"]),
+            source_head_sha=execution_source,
         )
         if readiness == "READY":
             resolved = source.resolve(
                 external_dispatch_key=key,
                 expected_receipt_identity=receipt_id,
-                trusted_context=_recovery_trusted_context(authorization),
+                trusted_context={**_recovery_trusted_context(authorization), "source_head_sha": execution_source},
             )
             if (
                 resolved.run.run_id != int(receipt_id)
@@ -1406,7 +1469,7 @@ def _resolve_recovery_run_for_seal(preflight: Any, *, authorization: Mapping[str
                 or resolved.run.role != authorization["role"]
                 or resolved.run.task_id != authorization["task_id"]
                 or resolved.run.worker_identity
-                   != f"gh-aw:{RECOVERY_WORKFLOW}@{authorization['source_head_sha']}"
+                   != f"gh-aw:{RECOVERY_WORKFLOW}@{execution_source}"
                 or not isinstance(resolved.run.candidate_pr_number, int)
                 or resolved.run.candidate_pr_number < 1
                 or not str(resolved.run.candidate_head_sha or "")
@@ -1432,6 +1495,7 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
         raise V03DogfoodRuntimeDriverError("bounded recovery lacks one exact successful launched receipt")
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     _validate_recovery_pair(snapshot, authorization)
+    _, _, continuation = validate_recovery_continuation(snapshot)
     attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
     if not isinstance(attempt, dict):
         raise V03DogfoodRuntimeDriverError("bounded recovery create-attempt disappeared before seal")
@@ -1491,11 +1555,15 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
             "candidate_pr_number": resolved.run.candidate_pr_number,
             "candidate_head_sha": resolved.run.candidate_head_sha,
         }),
+        "continuation_digest": "sha256:" + digest_json(continuation),
+        "execution_source_head_sha": continuation["execution_source_head_sha"],
+        "execution_trusted_context_digest": continuation["execution_trusted_context_digest"],
         "sealed_at": preflight.composition.runtime.clock(),
     }
     def plan(snapshot: Any) -> StoreMutationPlan:
         _bounded_recovery_identity(snapshot, preflight)
         _validate_recovery_pair(snapshot, authorization)
+        validate_recovery_execution_seal(snapshot, expected)
         existing = snapshot.get(RECOVERY_RECEIPT_PATH)
         if existing is not None:
             stable = {key: value for key, value in expected.items() if key != "sealed_at"}
@@ -1521,15 +1589,23 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
     if observation.get("observation_digest") != RECOVERY_OBSERVATION_DIGEST:
         raise V03DogfoodRuntimeDriverError("historical immutable observation digest drifted")
     fence = _observe_provider_rotation(os.environ)
+    proof = _observe_armed_recovery_no_http(preflight)
     result = preflight.composition.runtime.commit_replanned(
-        lambda snapshot: _plan_bounded_recovery(snapshot, preflight=preflight, fence=fence)
+        lambda snapshot: _plan_bounded_recovery(snapshot, preflight=preflight, fence=fence, proof=proof)
     ).result
     authorization = result["authorization"]
     key = str(authorization["recovery_dispatch_key"])
-    existing = preflight.composition.runtime.backend.read_snapshot().get(RECOVERY_RECEIPT_PATH)
+    admitted_snapshot = preflight.composition.runtime.backend.read_snapshot()
+    preflight.composition.recovery_dispatch_gateway.transport.admit_continuation(
+        admitted_snapshot, allow_post=result.get("acquired") is True,
+        execution_source_head_sha=preflight.execution.installation_commit_sha,
+        execution_trusted_context_digest=preflight.trusted_context_digest,
+    )
+    existing = admitted_snapshot.get(RECOVERY_RECEIPT_PATH)
     if existing is not None:
         if not isinstance(existing, dict) or not str(existing.get("receipt_id") or "").isdigit():
             raise V03DogfoodRuntimeDriverError("existing recovery receipt is malformed before model execution")
+        validate_recovery_execution_seal(admitted_snapshot, existing)
         resolved = _resolve_recovery_run_for_seal(
             preflight, authorization=authorization, receipt_id=str(existing["receipt_id"])
         )

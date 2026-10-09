@@ -10,6 +10,7 @@ no second Store, Persist, callback or dispatch authority is constructed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 from typing import Any, Callable
@@ -55,6 +56,108 @@ RECOVERY_AUTHORIZATION_PATH = RECOVERY_BASE_PATH + "/authorization.json"
 RECOVERY_ATTEMPT_PATH = RECOVERY_BASE_PATH + "/create-attempt.json"
 RECOVERY_RECEIPT_PATH = RECOVERY_BASE_PATH + "/sealed-receipt.json"
 RECOVERY_OBSERVATION_DIGEST = "sha256:a86b7ead37bf96abe9b6e43098b7873b821833c6d93c720ed7409835af18916f"
+
+# Exact, already-armed pre-HTTP failure. These bytes remain immutable forever.
+RECOVERY_CONTINUATION_PATH = RECOVERY_BASE_PATH + "/transport-continuation.json"
+RECOVERY_CONTINUATION_SCHEMA = "ai-sdlc.v03-dogfood-transport-continuation/v1"
+ARMED_RECOVERY_SOURCE = "0b5f0a69db9b3cbc4388e8318948f87ba0a92fea"
+ARMED_RECOVERY_STORE = "42df69c5bf3dc85fec9b30d318e2651335d74552"
+ARMED_RECOVERY_KEY = "recovery-935ad236772d508dfd7e57da6370243dcce4555e"
+ARMED_RECOVERY_AUTHORIZATION_BLOB = "d344fca61af21038c929897bc3fd636d4297ee17"
+ARMED_RECOVERY_ATTEMPT_BLOB = "db183bc850c8e9add5abad38ced5728325192aba"
+ARMED_RECOVERY_SOURCE_BLOBS = {
+    ".github/workflows/v03-real-dogfood-scenario.yml": "4beb772c801233ff9907f70ca6cfc9b2fab0bdce",
+    "scripts/v03_dogfood_runtime_driver.py": "ad9f7f9a8e8c34132682c4ebd0d09917bfbc5eb7",
+    "scripts/v03_dogfood_full_composition.py": "c61dde6e441dcb62e813ef3bafa172e633dbc741",
+    "scripts/operator_vertical_gh_aw.py": "8f0181f31d17d7a81c831b19a68bf63c83a72392",
+    "scripts/operator_vertical_gh_aw_actions_transport.py": "ec9ea44f81cda1a052cd984cd345f1572c4903e7",
+}
+ARMED_RECOVERY_NO_HTTP_PROOF = {
+    "schema_version": RECOVERY_CONTINUATION_SCHEMA,
+    "proof_kind": "exact-source-rejects-identity-before-http",
+    "store_commit": ARMED_RECOVERY_STORE,
+    "authorization_blob": ARMED_RECOVERY_AUTHORIZATION_BLOB,
+    "create_attempt_blob": ARMED_RECOVERY_ATTEMPT_BLOB,
+    "source_head_sha": ARMED_RECOVERY_SOURCE,
+    "source_blobs": ARMED_RECOVERY_SOURCE_BLOBS,
+    "run_id": 37892560162,
+    "run_attempt": 1,
+    "job_id": 113696529763,
+    "workflow_file": "v03-real-dogfood-scenario.yml",
+    "workflow_id": 342691463,
+    "dispatch_key": ARMED_RECOVERY_KEY,
+    "exception": "invalid stable external dispatch key",
+}
+
+
+def _recovery_document_blob(document):
+    raw = (canonical_json(document) + "\n").encode("utf-8")
+    return hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw).hexdigest()
+
+
+def validate_armed_recovery_pair(snapshot):
+    """Validate historical bytes, never reconstruct or replace their identity."""
+    authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
+    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+    if (
+        not isinstance(authorization, dict) or not isinstance(attempt, dict)
+        or _recovery_document_blob(authorization) != ARMED_RECOVERY_AUTHORIZATION_BLOB
+        or _recovery_document_blob(attempt) != ARMED_RECOVERY_ATTEMPT_BLOB
+        or attempt.get("authorization_digest") != "sha256:" + digest_json(authorization)
+    ):
+        raise VerticalInvariantError("POLICY_DENIED", "exact armed recovery predecessor bytes are required")
+    return authorization, attempt
+
+
+def validate_recovery_continuation(snapshot):
+    authorization, attempt = validate_armed_recovery_pair(snapshot)
+    continuation = snapshot.get(RECOVERY_CONTINUATION_PATH)
+    if not isinstance(continuation, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery transport continuation is missing")
+    expected = {
+        "schema_version": RECOVERY_CONTINUATION_SCHEMA,
+        "admission_version": 1,
+        "status": "ARMED",
+        "authorization_digest": "sha256:" + digest_json(authorization),
+        "create_attempt_digest": "sha256:" + digest_json(attempt),
+        "original_source_head_sha": ARMED_RECOVERY_SOURCE,
+        "no_http_proof": ARMED_RECOVERY_NO_HTTP_PROOF,
+        "no_http_proof_digest": "sha256:" + digest_json(ARMED_RECOVERY_NO_HTTP_PROOF),
+    }
+    for key in (
+        "operation_id", "operation_generation", "semantic_effect_key", "external_dispatch_key",
+        "recovery_dispatch_key", "recovery_dispatch_id", "workflow_file", "feature_id",
+        "target_repository", "target_ref", "task_id", "task_identity", "stage", "role",
+        "expected_revision", "candidate_pr_number", "candidate_head_sha",
+        "provider_fence_digest", "historical_observation_digest", "worker_blobs",
+    ):
+        expected[key] = authorization[key]
+    if (
+        any(continuation.get(key) != value for key, value in expected.items())
+        or set(continuation) != set(expected) | {
+            "execution_source_head_sha", "execution_trusted_context_digest", "created_at"
+        }
+        or not _SHA40.fullmatch(str(continuation.get("execution_source_head_sha") or ""))
+        or continuation["execution_source_head_sha"] == ARMED_RECOVERY_SOURCE
+        or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_trusted_context_digest") or ""))
+        or not str(continuation.get("created_at") or "")
+    ):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery transport continuation binding drifted")
+    return authorization, attempt, continuation
+
+
+def validate_recovery_execution_seal(snapshot, sealed):
+    authorization, attempt, continuation = validate_recovery_continuation(snapshot)
+    if (
+        not isinstance(sealed, dict)
+        or sealed.get("continuation_digest") != "sha256:" + digest_json(continuation)
+        or sealed.get("execution_source_head_sha") != continuation["execution_source_head_sha"]
+        or sealed.get("execution_trusted_context_digest") != continuation["execution_trusted_context_digest"]
+        or sealed.get("source_head_sha") != authorization["source_head_sha"]
+        or sealed.get("installation_commit_sha") != authorization["installation_commit_sha"]
+    ):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery seal lacks its exact execution-source bridge")
+    return continuation
 
 
 class V03DogfoodCompositionError(RuntimeError):
@@ -545,6 +648,100 @@ class DogfoodCandidateBoundActionsTransport(GitHubActionsVerticalGhAwTransport):
         return key
 
 
+class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
+    """One exact legacy key, admitted only by its immutable protected bridge.
+
+    The shared transport's lookup pagination, global collision checks, input
+    validation and single-POST acknowledgement semantics remain unchanged.
+    """
+
+    def __init__(self, config, *, candidate_provider, **kwargs):
+        super().__init__(config, candidate_provider=candidate_provider, **kwargs)
+        self._continuation_snapshot = None
+        self._allow_post = False
+
+    def admit_continuation(self, snapshot, *, allow_post=False, execution_source_head_sha, execution_trusted_context_digest):
+        _, _, continuation = validate_recovery_continuation(snapshot)
+        if allow_post and (
+            continuation["execution_source_head_sha"] != execution_source_head_sha
+            or continuation["execution_trusted_context_digest"] != execution_trusted_context_digest
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "continuation POST escaped current trusted installation/context")
+        # Detach from a caller's mutable snapshot after validating the full chain.
+        from copy import deepcopy
+        self._continuation_snapshot = deepcopy(snapshot)
+        self._allow_post = allow_post is True
+
+    def _admitted(self):
+        if self._continuation_snapshot is None:
+            raise VerticalInvariantError("POLICY_DENIED", "recovery transport has no protected admission")
+        return validate_recovery_continuation(self._continuation_snapshot)
+
+    def _validate_lookup_identity(self, *, workflow, ref, dispatch_key):
+        self._admitted()
+        if (
+            dispatch_key != ARMED_RECOVERY_KEY
+            or workflow not in self._trusted_workflows
+            or ref != "main" or ref != self.config.workflows.default_branch
+            or self.config.workflows.developer_workflow != RECOVERY_DEVELOPER_WORKFLOW
+            or self.config.control_repository != "dream-xin/ai-sdlc"
+            or self.config.api_url != "https://api.github.com"
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery lookup escaped exact admitted identity")
+        # All three configured trusted workflows must be scanned for collisions.
+        # No substitute dispatch key is passed to validation or to HTTP.
+        return self._role_for_workflow(workflow)
+
+    def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
+        authorization, _, _ = self._admitted()
+        if workflow != RECOVERY_DEVELOPER_WORKFLOW:
+            raise VerticalInvariantError("POLICY_DENIED", "recovery POST is Developer-only")
+        key = super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
+        payload = json.loads(inputs["task_payload"])
+        task, vertical = payload["task"], payload["feature_context"]["vertical"]
+        expected_vertical = {
+            "profile": VERTICAL_PROFILE,
+            "operation_id": authorization["operation_id"],
+            "operation_generation": authorization["operation_generation"],
+            "semantic_effect_key": authorization["semantic_effect_key"],
+            "external_dispatch_key": authorization["recovery_dispatch_key"],
+            "dispatch_id": authorization["recovery_dispatch_id"],
+            "expected_revision": authorization["expected_revision"],
+            "candidate_head_sha": authorization["candidate_head_sha"],
+        }
+        if (
+            vertical != expected_vertical
+            or task.get("id") != authorization["task_id"]
+            or task.get("role") != authorization["role"]
+            or inputs.get("feature_id") != authorization["feature_id"]
+            or inputs.get("target_repository") != authorization["target_repository"]
+            or inputs.get("target_ref") != authorization["target_ref"]
+            or inputs.get("stage") != authorization["stage"]
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery POST lost full original task binding")
+        return key
+
+    def dispatch(self, *, workflow, ref, inputs):
+        self._admitted()
+        if not self._allow_post:
+            raise VerticalInvariantError("POLICY_DENIED", "continuation replay is lookup-only")
+        # Consume even on validation/lookup failure. Never retry a process-local
+        # create or reinterpret absence after an ambiguous acknowledgement.
+        self._allow_post = False
+        return super().dispatch(workflow=workflow, ref=ref, inputs=inputs)
+
+
+class DogfoodRecoveryDispatchGateway(GhAwVerticalRoleDispatchGateway):
+    def lookup(self, *, external_dispatch_key):
+        # Ignore the parent's per-process role cache. UNKNOWN in any role wins,
+        # and a positive match in a different role is not an adoptable receipt.
+        return self.transport._global_preflight(
+            selected_workflow=RECOVERY_DEVELOPER_WORKFLOW,
+            ref=self.workflows.default_branch,
+            dispatch_key=external_dispatch_key,
+        )
+
+
 class DogfoodExecutionBoundDispatchGateway:
     """Dogfood-only adapter exposing exact readiness-resolved execution identity."""
 
@@ -777,6 +974,7 @@ class DogfoodRecoveryCollector:
         attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
         if not isinstance(authorization, dict) or not isinstance(attempt, dict) or not isinstance(sealed, dict):
             raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks complete immutable fact chain")
+        continuation = validate_recovery_execution_seal(snapshot, sealed)
         authorization_digest = "sha256:" + digest_json(authorization)
         attempt_digest = "sha256:" + digest_json(attempt)
         sealed_bindings = {
@@ -868,7 +1066,7 @@ class DogfoodRecoveryCollector:
             "role": "developer",
             "task_id": str(sealed["task_id"]),
             "launch_candidate_head_sha": launch.get("candidate_head_sha"),
-            "source_head_sha": str(sealed["source_head_sha"]),
+            "source_head_sha": str(sealed["execution_source_head_sha"]),
         }
         resolved = self.result_source.resolve(
             external_dispatch_key=recovery_key,
@@ -891,7 +1089,7 @@ class DogfoodRecoveryCollector:
             or resolved.run.external_dispatch_key != sealed["recovery_dispatch_key"]
             or resolved.run.task_id != sealed["task_id"]
             or resolved.run.role != sealed["role"]
-            or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['source_head_sha']}"
+            or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['execution_source_head_sha']}"
             or resolved.run.candidate_pr_number != sealed.get("output_candidate_pr_number")
             or resolved.run.candidate_head_sha != sealed.get("output_candidate_head_sha")
             or len(resolved.outputs) != 1
@@ -1080,7 +1278,7 @@ def build_v03_dogfood_full_composition(
         recovery_source_config,
         target_repository=config.target_repository,
     )
-    recovery_transport = DogfoodCandidateBoundActionsTransport(
+    recovery_transport = DogfoodRecoveryActionsTransport(
         GitHubActionsWorkflowTransportConfig(
             control_repository=control_repository,
             token=actions_token,
@@ -1089,7 +1287,7 @@ def build_v03_dogfood_full_composition(
         ),
         candidate_provider=candidate_provider,
     )
-    recovery_dispatch_gateway = GhAwVerticalRoleDispatchGateway(
+    recovery_dispatch_gateway = DogfoodRecoveryDispatchGateway(
         transport=recovery_transport,
         workflows=recovery_workflows,
     )
