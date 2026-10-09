@@ -145,7 +145,8 @@ def fetch_fixed_inputs(read_token):
                     require(name == expected or not name.endswith("/" + expected), "ambiguous_consumed_path")
                 if name not in FILES:
                     continue
-                require(entry.file_size == FILES[name], "consumed_size")
+                require(entry.file_size == FILES[name], "consumed_size:" + name + ":artifact=" + str(artifact_id)
+                        + ":expected=" + str(FILES[name]) + ":declared=" + str(entry.file_size))
                 value = archive.read(entry)
                 require(len(value) == FILES[name], "consumed_length")
                 require(name not in contents or contents[name] == value, "consumed_overlap_mismatch")
