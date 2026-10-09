@@ -360,7 +360,7 @@ jobs:
       - name: Export mechanically hardened release Gate lock
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, os, subprocess
+          import base64, hashlib, json, os, re, subprocess
           from pathlib import Path
           role = os.environ["GATE_ROLE"]
           assert role in {"reviewer", "qa"}
@@ -375,7 +375,10 @@ jobs:
           assert "GH_AW_CI_TRIGGER_TOKEN" not in upstream
           # Inspected compiler input text, never a checkout setting in this workflow.
           old_persist_scalar = "persist-credentials: " + str(True).lower()
-          replacements = [(old_persist_scalar, "persist-credentials: false", 2)]
+          assert old_persist_scalar not in upstream
+          checkout_scalars = re.findall(r"(?m)^\s+persist-credentials: ([^\n]+)$", upstream)
+          assert checkout_scalars and all(value == "false" for value in checkout_scalars)
+          replacements = []
           hardened = upstream
           for old, new, count in replacements:
               assert hardened.count(old) == count, (old, hardened.count(old), count)
@@ -386,7 +389,7 @@ jobs:
           proof = {
               "schema": "ai-sdlc.v03-release-gate-lock-transform/v1",
               "compiler": "gh-aw-v0.89.21-strict", "upstream_blob_sha": upstream_blob,
-              "persist_credentials_false": 2, "removed_trigger_lines": 0,
+              "persist_credentials_false": 0, "removed_trigger_lines": 0,
               "removed_trigger_references": 0,
               "body_hash_from": body_hash, "body_hash_to": body_hash,
           }
