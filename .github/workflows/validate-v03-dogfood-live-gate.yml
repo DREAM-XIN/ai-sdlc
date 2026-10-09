@@ -73,6 +73,24 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_scenario_runner.py
       - name: Validate trusted-main dogfood runtime driver
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
+      - name: Setup pinned detector conclusion scripts
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-detector-test-actions
+      - name: Validate pinned detector semantic failures before Safe Outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/v03-detector-test-actions/install_threat_detect_binary.sh" v0.5.2 --artifact-base-url https://github.com/github/gh-aw-threat-detection/releases/download --sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9 --sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904 --rootless
+          PYTHONPATH=scripts python - <<'PY'
+          import os
+          from pathlib import Path
+          from validate_v03_dogfood_runtime_driver import recovery_pinned_detector_semantic_tests
+          recovery_pinned_detector_semantic_tests(
+              Path('.'), Path.home() / '.local/bin/threat-detect',
+              Path(os.environ['RUNNER_TEMP']) / 'v03-detector-test-actions/conclude_threat_detection.sh',
+          )
+          PY
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -260,7 +278,7 @@ jobs:
       - name: Export mechanically hardened recovery lock
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json
+          import base64, hashlib, json, subprocess
           from pathlib import Path
           path = Path(".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml")
           raw = path.read_bytes()
@@ -271,18 +289,20 @@ jobs:
           body_hash = hashlib.sha256(source.split("\n---\n", 1)[1].rstrip("\n").encode()).hexdigest()
           assert metadata["body_hash"] == body_hash
           trigger = "          GH_AW_CI_TRIGGER_TOKEN: $" + "{{ secrets.GH_AW_CI_TRIGGER_TOKEN }}\n"
+          # Inspected compiler input text, never a checkout setting in this workflow.
+          old_persist_scalar = "persist-credentials: " + str(True).lower()
           replacements = [
               (',"GH_AW_CI_TRIGGER_TOKEN"', "", 1),
               ("#   - GH_AW_CI_TRIGGER_TOKEN\n", "", 1),
               (trigger, "", 1),
-              ("persist-credentials: true", "persist-credentials: false", 2),
+              (old_persist_scalar, "persist-credentials: false", 2),
           ]
           hardened = upstream
           for old, new, count in replacements:
               assert hardened.count(old) == count, (old, hardened.count(old), count)
               hardened = hardened.replace(old, new)
           assert "GH_AW_CI_TRIGGER_TOKEN" not in hardened
-          assert "persist-credentials: true" not in hardened
+          assert old_persist_scalar not in hardened
           upstream_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
           proof = {
               "schema": "ai-sdlc.v03-recovery-lock-transform/v1",
@@ -300,6 +320,8 @@ jobs:
           Path("evidence/recovery-developer-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
           print("RECOVERY_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
           print("RECOVERY_LOCK_BASE64=" + base64.b64encode(hardened).decode())
+          checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
+          assert checked_in == hardened, "checked-in recovery lock differs from strict compiled hardening"
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

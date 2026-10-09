@@ -837,12 +837,12 @@ def recovery_lock_transform_tests(root):
     expect(provenance == {
         "schema": "ai-sdlc.v03-recovery-lock-transform/v1",
         "compiler": "gh-aw-v0.89.21-strict",
-        "upstream_blob_sha": "a7ce0bf9d4f1b309f938afbda66cacc9d0d399a1",
+        "upstream_blob_sha": "9de8b30b827c956f18f4c65c1a77e3eac3f173e3",
         "persist_credentials_false": 2,
         "removed_trigger_lines": 3,
         "removed_trigger_references": 4,
-        "body_hash_from": "40961d116883db65077e5ae5bd58b487c3cc9b5852dfa630e7951d2aaae4a2bf",
-        "body_hash_to": "40b451fd769aa24683aedfee3a4ad5ab2fed5510ad248c95227a87b6a6b583b3",
+        "body_hash_from": "2402c641e84ed7201f98975e08d7eacbe1c40a7bdfcd862df1648d638f0026cc",
+        "body_hash_to": "2402c641e84ed7201f98975e08d7eacbe1c40a7bdfcd862df1648d638f0026cc",
     }, "recovery lock transform provenance drifted")
     body = "".join(lines[:1] + lines[2:])
     expect("GH_AW_CI_TRIGGER_TOKEN" not in body and "persist-credentials: true" not in body,
@@ -897,6 +897,262 @@ def recovery_lock_transform_tests(root):
     expect(transformed == body, "declared recovery lock transform is not deterministic/reversible")
     print("- recovery Developer lock is an exact reversible hardening of gh-aw v0.89.21 strict output")
 
+
+
+def _recovery_worker_preparation_contract(source, body, compiled):
+    """Check the parsed production workflow, not a second detector implementation."""
+    from copy import deepcopy
+    import subprocess
+    import os
+    safe = source["safe-outputs"]
+    threat = safe["threat-detection"]
+    expect(threat.get("enabled") is True and threat.get("continue-on-error") is False,
+           "Developer source permits absent or advisory-only threat detection")
+    prompt = str(threat.get("prompt") or "")
+    for fragment in (
+        "full security analysis", "every built-in threat criterion and verdict rule",
+        "Do not repeat an identical failed inspection command",
+        "Missing or uninspectable required evidence is not evidence of safety",
+        "never invent a clean verdict or suppress a finding",
+    ):
+        expect(fragment in prompt, "bounded detector prompt lost: " + fragment)
+    expect(source["engine"]["id"] == "copilot" and source["engine"]["model"] == "deepseek-chat",
+           "preparation changed the frozen Developer engine/model")
+    select = body.index('cd "$GITHUB_WORKSPACE/ai-sdlc"')
+    inspect = body.index("1. Decode and inspect")
+    expect(select < inspect and "git rev-parse --show-toplevel" in body[:inspect],
+           "Developer inspects the outer checkout before proving exact nested workspace")
+    for fragment in (
+        "wait for every inspection command already started and inspect its result",
+        "Do not emit a failure report while a filesystem search or other inspection is still pending",
+        "call `report_incomplete` once and terminate the task immediately",
+        "no later edits, branch creation, `create_pull_request`, or completion report",
+        "Do not fetch, change credentials, or disable TLS verification",
+        "Do not pass or waive any Gate. Do not merge or release.",
+    ):
+        expect(fragment in body, "Developer terminal/workspace contract lost: " + fragment)
+
+    jobs = compiled["jobs"]
+    detection = jobs["detection"]
+    detect_steps = detection["steps"]
+    setup = next(step for step in detect_steps if step.get("name") == "Setup threat detection")
+    execution = next(step for step in detect_steps if step.get("id") == "detection_agentic_execution")
+    conclude = next(step for step in detect_steps if step.get("id") == "detection_conclusion")
+    install = next(step for step in detect_steps if step.get("id") == "threat_detect_install")
+    for step in (setup, conclude):
+        expect(step.get("env", {}).get("GH_AW_DETECTION_CONTINUE_ON_ERROR") == "false",
+               "compiled detector strict-mode environment drifted")
+    expect(conclude.get("continue-on-error", False) is False and conclude.get("if") == "always()",
+           "compiled detector conclusion can swallow failure or skip error handling")
+    expect("conclude_threat_detection.sh" in conclude["run"],
+           "compiled detector no longer uses the pinned semantic conclusion parser")
+    expect(execution.get("env", {}).get("CUSTOM_PROMPT", "").strip() == prompt.strip(),
+           "bounded prompt never reaches the actual external detector engine")
+    expect(detection.get("timeout-minutes") == 10 and execution.get("timeout-minutes") == 10,
+           "preparation changed the surrounding detector job/step budget")
+    expect("--engine-timeout" not in execution["run"]
+           and "--prompt-template" not in execution["run"]
+           and "THREAT_DETECTION_ENGINE_TIMEOUT" not in execution.get("env", {}),
+           "preparation replaced full safety template or pinned five-minute engine budget")
+    expect("install_threat_detect_binary.sh\" v0.5.2 " in install["run"]
+           and "--sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9" in install["run"]
+           and "--sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904" in install["run"],
+           "preparation changed the detector release or compiler-pinned binary bytes")
+    expect(detection["outputs"].get("detection_success") ==
+           "${{ steps.detection_conclusion.outputs.success }}"
+           and detection["outputs"].get("detection_conclusion") ==
+           "${{ steps.detection_conclusion.outputs.conclusion }}",
+           "Safe Outputs semantic verdict is not wired to the actual conclude step")
+
+    name = "Require first attempt and affirmative detection before Safe Outputs effects"
+    expected_env = {
+        "RUN_ATTEMPT": "${{ github.run_attempt }}",
+        "DETECTION_SUCCESS": "${{ needs.detection.outputs.detection_success }}",
+        "DETECTION_CONCLUSION": "${{ needs.detection.outputs.detection_conclusion }}",
+    }
+    source_guards = [step for step in safe.get("steps", []) if step.get("name") == name]
+    safe_job = jobs["safe_outputs"]
+    expect("detection" in safe_job["needs"] and "needs.detection.result == 'success'" in safe_job["if"],
+           "Safe Outputs no longer requires the detector job to succeed")
+    safe_steps = safe_job["steps"]
+    guards = [step for step in safe_steps if step.get("name") == name]
+    expect(len(source_guards) == len(guards) == 1, "one exact source/compiled before-effect guard is required")
+    guard = guards[0]
+    expect(guard.get("env") == expected_env and source_guards[0].get("env") == expected_env,
+           "before-effect guard accepts caller-selected detector or attempt evidence")
+    expect(guard["run"].strip() == source_guards[0]["run"].strip()
+           and guard.get("continue-on-error", False) is False and not guard.get("if"),
+           "compiled before-effect guard can skip, swallow failure, or diverge from source")
+    process_index = next(i for i, step in enumerate(safe_steps) if step.get("id") == "process_safe_outputs")
+    expect(safe_steps.index(guard) < process_index, "semantic verdict checked only after Safe Outputs effects")
+
+    # Run exactly the checked-in shell guard against semantic output combinations.
+    for attempt in ("1", "2", "", "0"):
+        for success in ("true", "false", "", "unknown"):
+            for conclusion in ("success", "failure", "warning", "skipped", "", "unknown"):
+                env = {"PATH": os.defpath, "RUN_ATTEMPT": attempt,
+                       "DETECTION_SUCCESS": success, "DETECTION_CONCLUSION": conclusion}
+                result = subprocess.run(["bash", "-c", guard["run"]], env=env,
+                                        capture_output=True, text=True, timeout=5)
+                expect((result.returncode == 0) == (
+                    attempt == "1" and success == "true" and conclusion == "success"),
+                    "actual Safe Outputs guard accepted unknown/failed/skipped/absent verdict or rerun")
+    agent_steps = jobs["agent"]["steps"]
+    attempt_guard = next(step for step in agent_steps if step.get("name") == "Reject rerun before model execution")
+    engine_index = next(i for i, step in enumerate(agent_steps) if step.get("id") == "agentic_execution")
+    expect(agent_steps.index(attempt_guard) < engine_index
+           and attempt_guard.get("env") == {"RUN_ATTEMPT": "${{ github.run_attempt }}"}
+           and attempt_guard.get("continue-on-error", False) is False and not attempt_guard.get("if"),
+           "rerun can reach model execution before exact first-attempt check")
+    for attempt in ("1", "2", "", "0"):
+        result = subprocess.run(["bash", "-c", attempt_guard["run"]],
+            env={"PATH": os.defpath, "RUN_ATTEMPT": attempt}, capture_output=True, timeout=5)
+        expect((result.returncode == 0) == (attempt == "1"), "actual model guard admitted a rerun")
+    return guard, conclude
+
+
+def recovery_worker_preparation_contract_tests(root):
+    from copy import deepcopy
+    import yaml
+    source_text = (root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md").read_text()
+    _, frontmatter, body = source_text.split("---\n", 2)
+    source = yaml.safe_load(frontmatter)
+    compiled = yaml.safe_load((root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml").read_text())
+    _recovery_worker_preparation_contract(source, body, compiled)
+    def step(document, job, name):
+        return next(row for row in document["jobs"][job]["steps"] if row.get("name") == name)
+    mutations = (
+        ("warn-mode source", lambda s, c: s["safe-outputs"]["threat-detection"].update({"continue-on-error": True})),
+        ("conclude swallows failure", lambda s, c: step(c, "detection", "Conclude threat detection").update({"continue-on-error": True})),
+        ("conclude skips failure", lambda s, c: step(c, "detection", "Conclude threat detection").update({"if": "success()"})),
+        ("conclude warn-mode env", lambda s, c: step(c, "detection", "Conclude threat detection")["env"].update(GH_AW_DETECTION_CONTINUE_ON_ERROR="true")),
+        ("execution loses bounded prompt", lambda s, c: step(c, "detection", "Execute threat detection with AWF")["env"].pop("CUSTOM_PROMPT", None)),
+        ("execution disables budget", lambda s, c: step(c, "detection", "Execute threat detection with AWF")["env"].update(THREAT_DETECTION_ENGINE_TIMEOUT="0")),
+        ("guard swallows failure", lambda s, c: step(c, "safe_outputs", "Require first attempt and affirmative detection before Safe Outputs effects").update({"continue-on-error": True})),
+        ("guard skips effects", lambda s, c: step(c, "safe_outputs", "Require first attempt and affirmative detection before Safe Outputs effects").update({"if": "false"})),
+        ("guard literal success", lambda s, c: step(c, "safe_outputs", "Require first attempt and affirmative detection before Safe Outputs effects")["env"].update(DETECTION_SUCCESS="true")),
+        ("output wire drift", lambda s, c: c["jobs"]["detection"]["outputs"].update(detection_success="true")),
+    )
+    for label, mutate in mutations:
+        s, c = deepcopy(source), deepcopy(compiled)
+        mutate(s, c)
+        try:
+            _recovery_worker_preparation_contract(s, body, c)
+        except (AssertionError, ValueError, KeyError, StopIteration):
+            pass
+        else:
+            raise AssertionError("preparation regression missed " + label)
+    for fragment in ('cd "$GITHUB_WORKSPACE/ai-sdlc"',
+                     "wait for every inspection command already started and inspect its result",
+                     "call `report_incomplete` once and terminate the task immediately"):
+        try:
+            _recovery_worker_preparation_contract(source, body.replace(fragment, "", 1), compiled)
+        except (AssertionError, ValueError):
+            pass
+        else:
+            raise AssertionError("preparation regression missed missing Worker guidance")
+    # Corrupt both source and compiled guard identically: source/lock parity alone
+    # must not pass when either semantic predicate or the attempt fence disappears.
+    for line in ('test "$RUN_ATTEMPT" = 1', 'test "$DETECTION_SUCCESS" = true',
+                 'test "$DETECTION_CONCLUSION" = success'):
+        s, c = deepcopy(source), deepcopy(compiled)
+        source_guard = s["safe-outputs"]["steps"][0]
+        compiled_guard = step(c, "safe_outputs", source_guard["name"])
+        source_guard["run"] = source_guard["run"].replace(line, ":")
+        compiled_guard["run"] = compiled_guard["run"].replace(line, ":")
+        try:
+            _recovery_worker_preparation_contract(s, body, c)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("real shell truth table missed removed semantic fence")
+    print("- Developer source/compiled workspace, terminal report, strict detector and pre-effect guards validated")
+
+
+def recovery_pinned_detector_semantic_tests(root, binary_path, conclude_script_path):
+    """Hosted CI only: execute pinned real parser; never execute a model or Worker."""
+    import hashlib
+    import json
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    import yaml
+    binary_path, conclude_script_path = Path(binary_path).resolve(), Path(conclude_script_path).resolve()
+    pins = {
+        "b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9",
+        "f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904",
+    }
+    expect(binary_path.name == "threat-detect" and hashlib.sha256(binary_path.read_bytes()).hexdigest() in pins,
+           "semantic tests require actual compiler-pinned threat-detect v0.5.2 bytes")
+    wrapper = conclude_script_path.read_bytes()
+    expect(hashlib.sha1(b"blob " + str(len(wrapper)).encode() + b"\0" + wrapper).hexdigest() ==
+           "c72df00b31d59b67968c6e578bf069c616b0421e",
+           "semantic tests require exact official conclude wrapper from setup924af5")
+    compiled = yaml.safe_load((root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml").read_text())
+    conclusion_step = next(step for step in compiled["jobs"]["detection"]["steps"]
+                           if step.get("id") == "detection_conclusion")
+    guard = next(step for step in compiled["jobs"]["safe_outputs"]["steps"]
+                 if step.get("name") == "Require first attempt and affirmative detection before Safe Outputs effects")
+    strict = conclusion_step["env"]["GH_AW_DETECTION_CONTINUE_ON_ERROR"]
+    expect(strict == "false" and conclusion_step.get("continue-on-error", False) is False,
+           "hosted semantic tests must use compiled strict-mode controls")
+    safe = {"prompt_injection": False, "secret_leak": False, "malicious_patch": False, "reasons": []}
+    cases = [
+        ("affirmative", json.dumps(safe), "true", "success", "success", None, True),
+        ("missing-verdict", None, "true", "success", "success", None, False),
+        ("empty-verdict", "", "true", "success", "success", None, False),
+        ("malformed-verdict", "{not-json", "true", "success", "success", None, False),
+        ("missing-semantic-fields", "{}", "true", "success", "success", None, False),
+        ("unknown-verdict", json.dumps(dict(safe, prompt_injection="unknown")), "true", "success", "success", None, False),
+        ("null-verdict", json.dumps(dict(safe, secret_leak=None)), "true", "success", "success", None, False),
+        ("detector-timeout", None, "true", "failure", "success",
+         "THREAT_DETECTION_STATUS: status=error reason=engine_timeout\n", False),
+        ("detector-cancelled", None, "true", "cancelled", "success", None, False),
+        ("install-failure", json.dumps(safe), "true", "skipped", "failure", None, False),
+        ("skipped-detector", None, "false", "skipped", "skipped", None, False),
+        ("missing-run-detection", None, "", "skipped", "skipped", None, False),
+    ]
+    for category in ("prompt_injection", "secret_leak", "malicious_patch"):
+        cases.append((category, json.dumps(dict(safe, **{category: True})),
+                      "true", "success", "success", None, False))
+    with tempfile.TemporaryDirectory(prefix="v03-detector-semantics-") as temp:
+        base = Path(temp)
+        for index, (label, content, required, outcome, installed, log, permit) in enumerate(cases):
+            case = base / str(index)
+            case.mkdir()
+            result = case / "detection_result.json"
+            if content is not None:
+                result.write_text(content)
+            if log is not None:
+                (case / "detection.log").write_text(log)
+            output, environment, summary = case / "output", case / "env", case / "summary"
+            for path in (output, environment, summary):
+                path.write_text("")
+            env = {"PATH": str(binary_path.parent) + os.pathsep + os.defpath, "HOME": str(case),
+                "RUN_DETECTION": required, "DETECTION_AGENTIC_EXECUTION_OUTCOME": outcome,
+                "THREAT_DETECT_INSTALL_OUTCOME": installed,
+                "GH_AW_DETECTION_CONTINUE_ON_ERROR": strict,
+                "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(environment),
+                "GITHUB_STEP_SUMMARY": str(summary)}
+            completed = subprocess.run(["bash", str(conclude_script_path), str(result)],
+                                       env=env, capture_output=True, text=True, timeout=20)
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
+            guarded = subprocess.run(["bash", "-c", guard["run"]], env={
+                "PATH": os.defpath, "RUN_ATTEMPT": "1",
+                "DETECTION_SUCCESS": values.get("success", ""),
+                "DETECTION_CONCLUSION": values.get("conclusion", ""),
+            }, capture_output=True, text=True, timeout=5)
+            expect((guarded.returncode == 0) is permit, "real parser-to-Safe-Outputs guard admitted " + label)
+            if permit:
+                expect(completed.returncode == 0 and values.get("success") == "true"
+                       and values.get("conclusion") == "success", "actual safe verdict did not complete")
+            elif required == "true":
+                expect(completed.returncode != 0 and values.get("success") == "false"
+                       and values.get("conclusion") == "failure", "strict real parser failed open: " + label)
+            else:
+                expect(values.get("conclusion") == "skipped", "real skipped verdict contract changed")
+    print("- pinned real threat-detect parser fails closed for absent/unknown/timeout/threat verdicts before Safe Outputs")
 
 
 def recovery_safe_output_artifact_fixture(*, run_id, source_head, pr):
@@ -2591,6 +2847,7 @@ def main():
     from pathlib import Path
     validation_root = Path(__file__).resolve().parents[1]
     recovery_lock_transform_tests(validation_root)
+    recovery_worker_preparation_contract_tests(validation_root)
     recovery_safe_output_source_tests()
     armed_recovery_source_proof_tests()
     recovery_continuation_cas_tests()
