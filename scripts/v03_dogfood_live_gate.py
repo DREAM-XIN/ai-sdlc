@@ -333,10 +333,10 @@ def verify_issue_221_closed(
 CURRENT_DOGFOOD_BLOBS = {
     "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
     "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
-    "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md": "6fd4ca9735a87d081748c482dab4faa7f9d89a57",
-    "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml": "a396437cb918d942dc0be9b6ade3a38f3c724ff2",
-    "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md": "4f2b84208cf61bc2e620e5db9e96fa1e179ac952",
-    "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml": "3ce8f0513e2a79dbfbac4ad496584aade054175b"
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md": "f0774cacba7b4e357317d5014149bccb4fb6edc7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml": "5687bd6377cf5f449b444328b659f23738ca1f3a",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md": "e8727e4e063e91e68373951fb9aa7059ed5de2ba",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml": "41f8d6dc29a76221ac86ccf5bc11e170bc24ddaa"
 }
 CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-local/v1"
 CURRENT_DOGFOOD_WORKFLOWS = {

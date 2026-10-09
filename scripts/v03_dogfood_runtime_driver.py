@@ -1981,10 +1981,10 @@ def recover_reviewer_pre_model(preflight):
         return None
     runtime = preflight.composition.runtime
     binding = recovery_execution_binding(preflight.composition.policy_authority)
-    source = preflight.composition.result_source
-    source.bind_reviewer(runtime, preflight.composition.policy_authority)
     snapshot = runtime.backend.read_snapshot()
     old, events = validate_reviewer_predecessor(snapshot)
+    source = preflight.composition.result_source
+    source.bind_reviewer(runtime, preflight.composition.policy_authority)
     if reviewer_replacement_present(snapshot):
         auth, _ = validate_reviewer_authorization(snapshot, consumer_binding=binding)
         if (_observe_reviewer_pre_model_failure(preflight) != auth["pre_model_failure_proof"]

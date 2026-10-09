@@ -794,7 +794,8 @@ def validate_reviewer_predecessor(snapshot, *, fresh=False):
     if old["consumer_execution_binding"]["execution_source_head_sha"] != REVIEWER_PREDECESSOR_SOURCE:
         raise VerticalInvariantError("POLICY_DENIED", "fixed Reviewer predecessor controller differs")
     if fresh:
-        projection = rebuild_projection(snapshot, RECOVERY_OPERATION_ID)
+        from operator_vertical_store import vertical_projection
+        projection = vertical_projection(snapshot, RECOVERY_OPERATION_ID)
         if (projection["generation"] != 1 or projection["status"] != "WAITING_EXTERNAL"
                 or projection["expected_feature_revision"] != 3):
             raise VerticalInvariantError("POLICY_DENIED", "fixed Reviewer predecessor is no longer pending")
@@ -891,6 +892,32 @@ def validate_reviewer_authorization(snapshot, *, consumer_binding=None):
                  and e["payload"].get("external_dispatch_key") == REVIEWER_OLD_KEY]
     if len(callbacks) > 1:
         raise VerticalInvariantError("POLICY_DENIED", "Reviewer replacement has conflicting observations")
+    if callbacks:
+        sealed = snapshot.get(REVIEWER_SEAL_PATH)
+        payload = callbacks[0]["payload"]
+        envelope = payload.get("trusted_callback_envelope")
+        context = envelope.get("trusted_context") if isinstance(envelope, dict) else None
+        if not isinstance(sealed, dict) or not isinstance(context, dict):
+            raise VerticalInvariantError("POLICY_DENIED", "Reviewer callback predates its sealed replacement")
+        expected_id = "gh-aw-callback-" + digest_json({
+            "operation_id": RECOVERY_OPERATION_ID, "generation": 1, "external_dispatch_key": REVIEWER_OLD_KEY,
+            "runtime_receipt_identity": str(sealed.get("run_id")), "run_id": sealed.get("run_id")})[:24]
+        expected_context = {"operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+            "external_dispatch_key": REVIEWER_OLD_KEY, "dispatch_id": REVIEWER_LOGICAL_DISPATCH,
+            "runtime_receipt_identity": str(sealed.get("run_id")), "role": "reviewer", "task_id": REVIEWER_TASK,
+            "candidate_pr_number": 552, "candidate_head_sha": REVIEWER_CANDIDATE, "expected_revision": 3,
+            "worker_identity": f"gh-aw:{REVIEWER_NEW_WORKFLOW}@{binding['execution_source_head_sha']}"}
+        if (payload.get("callback_id") != expected_id
+                or any(context.get(k) != v for k,v in expected_context.items())
+                or digest_json(envelope) != payload.get("trusted_callback_envelope_digest")
+                or "sha256:" + digest_json(envelope.get("worker_payload")) != sealed.get("role_payload_digest")
+                or len(envelope.get("collected_outputs") or []) != 1
+                or any(envelope["collected_outputs"][0].get(k) != v for k,v in {
+                    "trusted_uri": sealed.get("trusted_uri"), "sha256": sealed.get("content_sha256"),
+                    "size_bytes": sealed.get("content_size")}.items())
+                or any(e["event_type"] == "worker.result.rejected" and e["payload"].get("callback_id") == expected_id
+                       for e in events[30:])):
+            raise VerticalInvariantError("POLICY_DENIED", "Reviewer callback conflicts with sealed physical execution")
     return auth, claim
 
 
@@ -910,7 +937,7 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
             raise VerticalInvariantError("POLICY_DENIED", "Reviewer replacement sealed execution differs")
         expected_fields = {"schema_version", "ordinal", "authorization_digest", "claim_digest",
             "logical_key", "physical_key", "run_id", "run_attempt", "conclusion", "workflow_file",
-            "execution_binding", "resolved_digest", "safe_output_proof", "trusted_uri", "content_sha256", "content_size"}
+            "execution_binding", "resolved_digest", "role_payload_digest", "safe_output_proof", "trusted_uri", "content_sha256", "content_size"}
         match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(sealed.get("trusted_uri") or ""))
         if (set(sealed) != expected_fields or sealed.get("ordinal") != 1
                 or sealed.get("schema_version") != auth["schema_version"]
@@ -2680,6 +2707,14 @@ def reviewer_trusted_context(authorization):
 
 
 class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
+    def _json(self, repository, path, token):
+        value = super()._json(repository, path, token)
+        match = re.fullmatch(r"/actions/runs/([1-9][0-9]*)", path)
+        if match and (not isinstance(value, dict) or type(value.get("id")) is not int
+                or value["id"] != int(match.group(1)) or type(value.get("run_attempt")) is not int):
+            raise VerticalInvariantError("POLICY_DENIED", "local Gate run id/attempt is not an exact integer")
+        return value
+
     def bind_reviewer(self, runtime, policy_authority):
         self.reviewer_runtime = runtime
         self.reviewer_policy_authority = policy_authority
@@ -2853,7 +2888,7 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
             raise VerticalInvariantError("BLOCKED", "local Gate proof changed while resolving")
         self._reviewer_proofs = getattr(self, "_reviewer_proofs", {})
         self._reviewer_proofs[resolved.run.run_id] = {
-            "resolved_digest": reviewer_resolution_digest(resolved), "safe_output_proof": proof,
+            "resolved_digest": reviewer_resolution_digest(resolved), "role_payload_digest": "sha256:" + digest_json(resolved.role_payload), "safe_output_proof": proof,
             "trusted_uri": uri, "content_sha256": hashlib.sha256(content).hexdigest(), "content_size": len(content)}
         return resolved
 

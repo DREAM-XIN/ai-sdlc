@@ -4916,8 +4916,22 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
                and nested[0]["with"].get("ref") == ref and nested[0]["with"].get("fetch-depth") == 0,
                "selected compiled checkout escaped exact nested candidate")
         engine = unique_step(compiled, "agent", step_id="agentic_execution")
-        expect(steps.index(nested[0]) < steps.index(engine) and engine.get("working-directory") == "ai-sdlc",
-               "selected model starts before/in wrong candidate checkout")
+        expect(steps.index(nested[0]) < steps.index(engine)
+               and engine.get("working-directory") is None
+               and '--container-workdir "${GITHUB_WORKSPACE}"' in engine["run"],
+               "selected compiler workspace behavior or checkout-before-model order drifted")
+        manifest_step = unique_step(compiled, "agent", name="Build checkout manifest for safe-outputs handlers")
+        expect(steps.index(nested[0]) < steps.index(manifest_step) < steps.index(engine)
+               and manifest_step["env"]["GH_AW_CHECKOUT_MANIFEST_COUNT"] == "1"
+               and manifest_step["env"]["GH_AW_CHECKOUT_REPO_0"] == "dream-xin/ai-sdlc"
+               and manifest_step["env"]["GH_AW_CHECKOUT_PATH_0"] == "ai-sdlc"
+               and manifest_step["env"]["GH_AW_CHECKOUT_TOKEN_0"] == "${{ secrets.GITHUB_TOKEN }}",
+               "actual compiled nested checkout manifest differs from candidate checkout")
+        expect("$GITHUB_WORKSPACE/ai-sdlc" in body,
+               "selected Worker prompt fails to distinguish nested candidate from outer control checkout")
+        if role != "developer":
+            expect("${{ inputs.candidate_head_sha }}" in body and "read-only" in body,
+                   "Gate workspace guidance lost immutable candidate/read-only contract")
         expect(not engine.get("if"), "selected model can bypass failed preconditions")
         for key, value in expected_model_env.items():
             expect(engine.get("env", {}).get(key) == value, "compiled selected model provider differs: " + key)
@@ -5089,11 +5103,15 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
                     ("effect bypass", lambda c: unique_step(c, "safe_outputs", step_id="process_safe_outputs").update({"if": "always()"})),
                     ("candidate checkout", lambda c: next(s for s in c["jobs"]["agent"]["steps"]
                         if s.get("with", {}).get("repository") == "dream-xin/ai-sdlc")["with"].update(ref="main")),
+                    ("checkout manifest location", lambda c: unique_step(c, "agent",
+                        name="Build checkout manifest for safe-outputs handlers")["env"].update(GH_AW_CHECKOUT_PATH_0="outer")),
                     ("model credential", lambda c: unique_step(c, "agent", step_id="agentic_execution")["env"].update(COPILOT_PROVIDER_API_KEY="${{ secrets.GEMINI_API_KEY }}")),
                 ):
                     bad = deepcopy(compiled)
                     mutate(bad)
                     reject(label, lambda: check(role, source, body, bad, source_text, lock_text))
+                reject("missing nested candidate guidance", lambda: check(role, source,
+                    body.replace("$GITHUB_WORKSPACE/ai-sdlc", ""), compiled, source_text, lock_text))
                 if role != "developer":
                     bad = deepcopy(compiled)
                     bad["jobs"]["conclusion"]["steps"].remove(unique_step(bad, "conclusion",
@@ -5151,7 +5169,6 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
                "scenario Developer task kinds do not cover admitted normal/remediation grammar")
     expect(len(seen) == 3, "frozen scenarios do not use the same explicit three selected role Workers")
     print("- actual selected 3x3 dogfood Worker source/compiled contracts validated")
-
 
 def build_selected_dogfood_gate_fixture(preflight, *, read_ref, fallback_http):
     """Actual Actions transport/source; fake successful Reviewer/QA HTTP results.
@@ -5806,7 +5823,7 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
         controller_rows = [row for row in events if row["event_type"] == "feature.event.translated"
                            and not row["payload"].get("callback_id")]
         expect(controller_rows, "full lifecycle omitted controller stage-start events")
-        changed = controller_rows[0]
+        changed = controller_rows[-1]
         original_payload = deepcopy(changed["payload"])
         for label in ("orphan-persist", "forged-stage-start"):
             if label == "orphan-persist":
@@ -5965,6 +5982,12 @@ def reviewer_replacement_admission_tests():
     pf, provider, feature, gates, _ = reviewer_runtime_fixture()
     runtime = pf.composition.runtime
     original = deepcopy(runtime.backend.read_snapshot())
+    from operator_store_model import rebuild_projection
+    from operator_vertical_store import vertical_projection
+    expect(rebuild_projection(original, c.RECOVERY_OPERATION_ID)["expected_feature_revision"] == 1
+           and vertical_projection(original, c.RECOVERY_OPERATION_ID)["expected_feature_revision"] == 3,
+           "frozen predecessor fixture does not expose canonical Persist revision overlay")
+    c.validate_reviewer_predecessor(original, fresh=True)
     proof = d._observe_reviewer_pre_model_failure(pf)
     binding = c.recovery_execution_binding(pf.composition.policy_authority)
     def planner(snapshot):
@@ -5991,6 +6014,10 @@ def reviewer_replacement_admission_tests():
     d.recover_reviewer_pre_model(pf)
     expect(before == (pf.composition.runtime.backend.commit_count,len(gates.state["posts"])),
            "Reviewer sealed replay changed Store or POST count")
+    for bad in (True, "1", 2):
+        gates.state["runs"][0]["run_attempt"] = bad
+        reject(pf,gates,feature,"malformed or repeated replacement attempt")
+    gates.state["runs"][0]["run_attempt"] = 1
     gates.state["runs"][0]["conclusion"] = "failure"
     reject(pf,gates,feature,"subsequently failed replacement")
     pf, provider, feature, gates, _ = reviewer_runtime_fixture()
@@ -6005,6 +6032,67 @@ def reviewer_replacement_admission_tests():
     gates.transport.http = lost_ack
     d.recover_reviewer_pre_model(pf)
     expect(len(gates.state["posts"]) == 1,"Reviewer acknowledgement loss retried POST")
+
+
+    pf,provider,feature,gates,_=reviewer_runtime_fixture()
+    d.recover_reviewer_pre_model(pf)
+    snapshot=pf.composition.runtime.backend.read_snapshot()
+    auth,_=c.validate_reviewer_authorization(snapshot)
+    sealed=c.reviewer_replacement_route(snapshot)["sealed"]
+    resolved=pf.composition.result_source.resolve(external_dispatch_key=auth["physical_key"],
+        expected_receipt_identity=str(sealed["run_id"]),trusted_context=c.reviewer_trusted_context(auth))
+    from dataclasses import fields
+    from operator_vertical import TrustedDispatchContext
+    from operator_vertical_recovery import plan_vertical_callback_record
+    material=c.reviewer_dispatch(auth,physical=False)
+    material.update(runtime_receipt_identity=str(c.REVIEWER_FAILED_RUN),
+        worker_identity=resolved.run.worker_identity,collector_identity=resolved.run.collector_identity)
+    context=TrustedDispatchContext(**{field.name:material[field.name] for field in fields(TrustedDispatchContext)})
+    runtime=pf.composition.runtime
+    runtime.commit_replanned(lambda snap:plan_vertical_callback_record(snap,context=context,
+        callback_id="foreign-reviewer-observation",worker_payload=resolved.role_payload,receipts=[],
+        occurred_at=runtime.clock(),trusted_context_digest=pf.trusted_context_digest))
+    before=(canonical_json(runtime.backend.snapshot.files),runtime.backend.commit_count,len(gates.state["posts"]))
+    try: pf.composition.collector.handle(operation_id=c.RECOVERY_OPERATION_ID,external_dispatch_key=c.REVIEWER_OLD_KEY)
+    except errors: pass
+    else: raise AssertionError("Reviewer collector accepted a foreign same-logical-key callback")
+    expect(before==(canonical_json(runtime.backend.snapshot.files),runtime.backend.commit_count,len(gates.state["posts"])),
+           "conflicting Reviewer callback reached another Store or provider effect")
+
+    for label in ("duplicate retired run", "pagination unknown"):
+        pf,provider,feature,gates,_=reviewer_runtime_fixture()
+        if label == "duplicate retired run":
+            extra=deepcopy(provider.state["reviewer_observed"]["run"])
+            extra["id"] += 1
+            pf.historical_gate_runs.append(extra)
+        else:
+            original_http=gates.transport.http
+            def broken_lookup(**kwargs):
+                if "/actions/workflows/" in kwargs["url"] and kwargs["method"]=="GET":
+                    return 503,{},b"{}"
+                return original_http(**kwargs)
+            gates.transport.http=broken_lookup
+        reject(pf,gates,feature,label)
+    for failed_step in ("Execute threat detection with AWF",
+                        "Require first attempt and affirmative detection before Safe Outputs effects"):
+        pf,provider,feature,gates,_=reviewer_runtime_fixture()
+        original_http=gates.transport.http
+        def skipped_guard(**kwargs):
+            result=original_http(**kwargs)
+            if kwargs["method"]=="POST":
+                run=gates.state["runs"][0]
+                doc=gates.state["routes"][f"/actions/runs/{run['id']}/attempts/1/jobs"]
+                found=[step for job in doc["jobs"] for step in job["steps"] if step["name"]==failed_step]
+                expect(len(found)==1,"selected compiled safety step is missing")
+                found[0]["conclusion"]="skipped"
+            return result
+        gates.transport.http=skipped_guard
+        try: d.recover_reviewer_pre_model(pf)
+        except errors: pass
+        else: raise AssertionError("Reviewer sealed a skipped safety execution")
+        expect(len(gates.state["posts"])==1 and c.REVIEWER_SEAL_PATH not in pf.composition.runtime.backend.snapshot.files,
+               "failed safety result acquired a seal or duplicate execution")
+        reject(pf,gates,feature,"failed safety slot replay")
     print("- Reviewer fixed CAS, pre-model proof, partial routes, replay and acknowledgement loss fail closed")
 
 
