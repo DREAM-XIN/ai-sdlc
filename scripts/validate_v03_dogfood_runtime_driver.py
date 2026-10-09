@@ -933,6 +933,17 @@ def _recovery_worker_preparation_contract(source, body, compiled):
         expect(fragment in body, "Developer terminal/workspace contract lost: " + fragment)
 
     jobs = compiled["jobs"]
+    checkouts = [step for job in jobs.values() for step in job.get("steps", [])
+                 if str(step.get("uses") or "").startswith("actions/checkout@")]
+    expect(len(checkouts) == 6 and all(step.get("with", {}).get("persist-credentials") is False
+                                      for step in checkouts),
+           "every generated checkout must explicitly disable credential persistence as boolean false")
+    nested = [step for step in jobs["agent"]["steps"]
+              if step.get("with", {}).get("repository") == "dream-xin/ai-sdlc"]
+    expect(len(nested) == 1 and nested[0]["with"].get("path") == "ai-sdlc"
+           and nested[0]["with"].get("ref") == "${{ inputs.target_ref }}"
+           and nested[0]["with"].get("fetch-depth") == 0,
+           "actual Developer nested checkout lost exact target ref/full ancestry")
     detection = jobs["detection"]
     detect_steps = detection["steps"]
     setup = next(step for step in detect_steps if step.get("name") == "Setup threat detection")
@@ -1022,6 +1033,8 @@ def recovery_worker_preparation_contract_tests(root):
     def step(document, job, name):
         return next(row for row in document["jobs"][job]["steps"] if row.get("name") == name)
     mutations = (
+        ("checkout retains credentials", lambda s, c: step(c, "agent", "Checkout repository")["with"].update({"persist-credentials": True})),
+        ("nested checkout path", lambda s, c: step(c, "agent", "Checkout dream-xin/ai-sdlc into ai-sdlc")["with"].update(path="outer")),
         ("warn-mode source", lambda s, c: s["safe-outputs"]["threat-detection"].update({"continue-on-error": True})),
         ("conclude swallows failure", lambda s, c: step(c, "detection", "Conclude threat detection").update({"continue-on-error": True})),
         ("conclude skips failure", lambda s, c: step(c, "detection", "Conclude threat detection").update({"if": "success()"})),
@@ -1490,6 +1503,24 @@ def armed_recovery_fixture():
     return snapshot, deepcopy(ARMED_RECOVERY_NO_HTTP_PROOF), fence
 
 
+def historical_recovery_worker_blobs():
+    """Read exact frozen Worker bytes, never substitute new preparation sources."""
+    import hashlib
+    import subprocess
+    from pathlib import Path
+    from v03_dogfood_full_composition import ARMED_RECOVERY_SOURCE
+    snapshot, _, _ = armed_recovery_fixture()
+    expected = snapshot.get(driver_subject.RECOVERY_AUTHORIZATION_PATH)["worker_blobs"]
+    root = Path(__file__).resolve().parents[1]
+    observed = {}
+    for path, pinned in expected.items():
+        raw = subprocess.run(["git", "show", f"{ARMED_RECOVERY_SOURCE}:{path}"],
+                             cwd=root, check=True, capture_output=True).stdout
+        observed[path] = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        expect(observed[path] == pinned, "frozen historical Worker bytes changed: " + path)
+    return observed
+
+
 def recovery_actions_transport_tests(*, create_only=False):
     """Exercise production gateway and Actions transport; fake HTTP only."""
     import json
@@ -1599,7 +1630,8 @@ def recovery_actions_transport_tests(*, create_only=False):
             composition=SimpleNamespace(runtime=SimpleNamespace(
                 clock=lambda: "2026-10-09T07:00:00Z"),
                 policy_authority=recovery_policy_fixture(), recovery_dispatch_gateway=gateway))
-        with patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})):
+        with (patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})),
+              patch.object(subject, "_recovery_worker_blobs", return_value=historical_recovery_worker_blobs())):
             plan = subject._plan_bounded_recovery(
                 snapshot, preflight=pf, fence=fence, proof=proof)
         snapshot = apply_plan_to_snapshot(snapshot, plan, new_ref_sha="continuation")
@@ -2488,6 +2520,7 @@ def bounded_recovery_execution_tests():
                 actions_transport=gateway.transport, policy_authority=recovery_policy_fixture(),
                 result_source=ResultSource(), recovery_result_source=ResultSource()))
     patches = (
+        patch.object(subject, "_recovery_worker_blobs", return_value=historical_recovery_worker_blobs()),
         patch.object(subject, "observe_historical_worker_for_review",
                      return_value={"observation_digest": subject.RECOVERY_OBSERVATION_DIGEST}),
         patch.object(subject, "_observe_provider_rotation", return_value=fence),
