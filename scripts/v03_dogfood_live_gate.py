@@ -329,6 +329,79 @@ def verify_issue_221_closed(
     )
 
 
+
+CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-local/v1"
+CURRENT_DOGFOOD_WORKFLOWS = {
+    "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+}
+
+
+def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[DogfoodExecutionBinding, ...]:
+    """Explicit current dogfood choice, separate from the frozen shared routing policy."""
+    from pathlib import Path
+    registry = load_registry()
+    profile = next((p for p in registry.profiles if p.profile_id == "deepseek"), None)
+    if profile is None or presence.get("DEEPSEEK_API_KEY") is not True:
+        raise V03DogfoodLiveGateError("current dogfood requires the existing paid DeepSeek credential")
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    result = []
+    for role, stage in (("developer", "implementation"), ("reviewer", "code-review"), ("qa", "verification")):
+        workflow = CURRENT_DOGFOOD_WORKFLOWS[role]
+        lock = root / workflow
+        source = root / workflow.replace(".lock.yml", ".md")
+        if any(not p.is_file() or p.is_symlink() for p in (source, lock)):
+            raise V03DogfoodLiveGateError("selected dogfood source/lock is missing or nonregular")
+        source_text = source.read_text(encoding="utf-8")
+        lock_text = lock.read_text(encoding="utf-8")
+        import re
+        # These sources deliberately use only the existing same-repository job token
+        # and one existing model secret. Compiler-owned optional fallback aliases are
+        # not mandatory credentials; no source-owned App/trigger dependency is allowed.
+        if (set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", source_text))
+                != {"DEEPSEEK_API_KEY", "GITHUB_TOKEN"}
+                or re.search(r"vars\.[A-Za-z_]", source_text)
+                or "AI_SDLC_RUNTIME_APP_PRIVATE_KEY" in lock_text
+                or "GH_AW_CI_TRIGGER_TOKEN" in lock_text
+                or "actions/create-github-app-token" in lock_text):
+            raise V03DogfoodLiveGateError("selected dogfood credential dependency closure differs")
+        try:
+            def header(prefix):
+                rows = [line[len(prefix):] for line in lock_text.splitlines() if line.startswith(prefix)]
+                if len(rows) != 1:
+                    raise ValueError("compiler header must be unique")
+                return json.loads(rows[0])
+            metadata = header("# gh-aw-metadata: ")
+            manifest = header("# gh-aw-manifest: ")
+            proof_kind = "recovery" if role == "developer" else "release-gate"
+            proof = header(f"# ai-sdlc-{proof_kind}-lock-transform: ")
+            if (proof.get("schema") != f"ai-sdlc.v03-{proof_kind}-lock-transform/v1"
+                    or proof.get("compiler") != "gh-aw-v0.89.21-strict"
+                    or proof.get("body_hash_to") != metadata.get("body_hash")
+                    or not re.fullmatch(r"[0-9a-f]{40}", str(proof.get("upstream_blob_sha") or ""))):
+                raise ValueError("compiler transform proof differs")
+        except Exception as exc:
+            raise V03DogfoodLiveGateError("selected dogfood compiler proof is malformed") from exc
+        if (metadata.get("schema_version") != "v4" or metadata.get("strict") is not True
+                or metadata.get("compiler_version") != "v0.89.21"
+                or metadata.get("agent_id") != profile.engine
+                or "DEEPSEEK_API_KEY" not in manifest.get("secrets", [])
+                or 'model: "deepseek-chat"' not in source_text):
+            raise V03DogfoodLiveGateError("selected dogfood provider/compiler identity differs")
+        result.append(DogfoodExecutionBinding(
+            role=role, stage=stage, rule_id=CURRENT_DOGFOOD_POLICY,
+            candidate_order=("deepseek",), selected_profile="deepseek",
+            engine=profile.engine, provider=profile.provider, protocol=profile.protocol,
+            model=profile.model, worker_workflow=workflow,
+            credential_source=profile.credential_source,
+            accepted_credential_identities=("DEEPSEEK_API_KEY",),
+            present_credential_identities=("DEEPSEEK_API_KEY",),
+            fallback=False, fallback_reason=None, specialized_role_worker=False,
+        ))
+    return tuple(result)
+
+
 def assemble_dogfood_live_gate(
     *,
     scenario: str,
@@ -359,7 +432,7 @@ def assemble_dogfood_live_gate(
 
     registry = load_registry()
     presence = presence_from_environment(registry, env)
-    bindings = resolve_dogfood_execution_bindings(presence)
+    bindings = resolve_current_dogfood_bindings(presence)
     if len(bindings) != 3:
         raise V03DogfoodLiveGateError("production dogfood execution binding set is incomplete")
     return DogfoodLiveGate(

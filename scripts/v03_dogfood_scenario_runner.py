@@ -197,6 +197,11 @@ def _sealed_recovery_receipt(preflight, snapshot):
     return sealed
 
 
+def _reviewer_route(preflight, snapshot):
+    from v03_dogfood_full_composition import reviewer_replacement_route, recovery_execution_binding
+    return reviewer_replacement_route(snapshot, consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+
+
 def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...], str]:
     rows = [row for row in _events(preflight, operation_id) if row.get("event_type") == "dispatch.launch.lookup-recorded"]
     run_ids: list[int] = []
@@ -211,6 +216,11 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
             if receipt != "37204777409":
                 raise V03DogfoodScenarioRunnerError("historical launch receipt identity drifted")
             continue
+        from v03_dogfood_full_composition import REVIEWER_OLD_KEY, REVIEWER_FAILED_RUN
+        if operation_id == RECOVERY_OPERATION_ID and external_key == REVIEWER_OLD_KEY:
+            if receipt != str(REVIEWER_FAILED_RUN):
+                raise V03DogfoodScenarioRunnerError("Reviewer historical receipt changed")
+            receipt = _reviewer_route(preflight, preflight.composition.runtime.backend.read_snapshot())["receipt_id"]
         if not receipt.isdigit() or int(receipt) < 1:
             raise V03DogfoodScenarioRunnerError("LAUNCHED dispatch lacks exact Actions receipt")
         run_ids.append(int(receipt))
@@ -265,6 +275,11 @@ def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
     source = preflight.composition.result_source
     workflow = preflight.workflows.workflow_for(str(launch["role"]))
     lookup_key = external_dispatch_key
+    from v03_dogfood_full_composition import REVIEWER_OLD_KEY
+    if operation_id == RECOVERY_OPERATION_ID and external_dispatch_key == REVIEWER_OLD_KEY:
+        reviewer = _reviewer_route(preflight, snapshot)
+        receipt, lookup_key = reviewer["receipt_id"], reviewer["physical_key"]
+        workflow = reviewer["authorization"]["workflow_file"]
     if operation_id == RECOVERY_OPERATION_ID and external_dispatch_key == RECOVERY_EXTERNAL_KEY:
         sealed = _sealed_recovery_receipt(preflight, snapshot)
         if (
