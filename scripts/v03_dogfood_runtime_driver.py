@@ -2065,8 +2065,11 @@ def recover_reviewer_pre_model(preflight):
             if existing != expected:
                 raise V03DogfoodRuntimeDriverError("Reviewer seal replay changed")
             return StoreMutationPlan(current.ref_sha, (), {"sealed": existing})
-        return StoreMutationPlan(current.ref_sha,
+        from operator_store_model import apply_plan_to_snapshot
+        plan = StoreMutationPlan(current.ref_sha,
             (StoreMutation("create_immutable", REVIEWER_SEAL_PATH, expected),), {"sealed": expected})
+        reviewer_replacement_route(apply_plan_to_snapshot(current, plan), consumer_binding=binding)
+        return plan
     return _commit_recovery_nonempty(runtime, seal)
 
 

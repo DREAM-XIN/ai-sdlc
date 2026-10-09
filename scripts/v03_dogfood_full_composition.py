@@ -946,6 +946,7 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
                 or match.group("head") != auth["consumer_execution_binding"]["execution_source_head_sha"]
                 or not match.group("base").startswith("docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/worker-runs/" + REVIEWER_LOGICAL_DISPATCH + "/reviewer-comment-")
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(sealed.get("resolved_digest") or ""))
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(sealed.get("role_payload_digest") or ""))
                 or not re.fullmatch(r"[0-9a-f]{64}", str(sealed.get("content_sha256") or ""))
                 or type(sealed.get("content_size")) is not int or sealed["content_size"] <= 0
                 or not isinstance(sealed.get("safe_output_proof"), dict)):
@@ -2947,7 +2948,8 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
         comment = self._json(self.target_repository, "/issues/comments/" + match.group(1), self.config.target_token)
         proof = self._run_owned_gate_comment(run_id=run_id, source_head_sha=before["head_sha"], comment=comment, candidate_pr_number=552)
         content = super().load_content(uri)
-        seal_material = {"resolved_digest": reviewer_resolution_digest(resolved), "safe_output_proof": proof,
+        seal_material = {"resolved_digest": reviewer_resolution_digest(resolved),
+                         "role_payload_digest": "sha256:" + digest_json(resolved.role_payload), "safe_output_proof": proof,
                          "trusted_uri": uri, "content_sha256": hashlib.sha256(content).hexdigest(),
                          "content_size": len(content)}
         if (self._reviewer_jobs(run_id, before["head_sha"]) != jobs
