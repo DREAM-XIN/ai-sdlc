@@ -208,7 +208,11 @@ async function runCase(options, label, cap, retries) {
       }
     });
   });
-  await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    provider.once("error", error => reject(new Error(error.code === "EACCES" || error.code === "EPERM"
+      ? "LOOPBACK_PORT_80_PERMISSION" : "LOOPBACK_PORT_80_BIND")));
+    provider.listen(80, "127.0.0.1", resolve);
+  });
   const proxyLog = path.join(root, "proxy.log");
   const proxyFd = fs.openSync(proxyLog, "w", 0o600);
   const baseEnv = {PATH: path.join(root, "bin") + ":/usr/local/bin:/usr/bin:/bin",
@@ -430,7 +434,11 @@ async function directProxyBudget(options, cap) {
         usage: {prompt_tokens: 10, completion_tokens: 1, total_tokens: 11, prompt_tokens_details: {cached_tokens: 10}}}));
     });
   });
-  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    upstream.once("error", error => reject(new Error(error.code === "EACCES" || error.code === "EPERM"
+      ? "LOOPBACK_PORT_80_PERMISSION" : "LOOPBACK_PORT_80_BIND")));
+    upstream.listen(80, "127.0.0.1", resolve);
+  });
   const fd = fs.openSync(path.join(root, "proxy.log"), "w", 0o600);
   const proxy = fork(self, ["--proxy", options.proxyRoot, String(upstream.address().port), String(cap)], {
     env: {PATH: "/usr/local/bin:/usr/bin:/bin", HOME: root, AWF_MAX_RUNS: String(cap), AWF_MAX_CACHE_MISSES: "20"},
