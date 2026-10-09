@@ -39,5 +39,12 @@
   "native_config_git_blob": "966b092676b2528f741d8f9f74457f93cc3d85b9",
   "compiled_native_max_runs": 500,
   "authored_native_max_runs": 50,
-  "execution_origin": "Separately authored diagnostic wrapper: exact compiled run body except config printf replaced by fixed reviewed native config copy; generated lock remains maxRuns500."
+  "execution_origin": "Separately authored diagnostic wrapper: exact compiled run body except config printf replaced by fixed reviewed native config copy; generated lock remains maxRuns500.",
+  "copilot_cli": {
+    "version": "1.0.90",
+    "archive_url": "https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz",
+    "archive_size_bytes": 109207184,
+    "archive_sha256": "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6",
+    "installed_bytes_requirement": "exact equality to authenticated archive copilot entry before admission"
+  }
 }

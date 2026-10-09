@@ -50,6 +50,186 @@ permissions:
   actions: read
 
 jobs:
+  fixed-reviewer-detector-diagnostic:
+    name: Fixed failed Reviewer detector diagnostic
+    needs: [manifest-fixed-detector-inputs, compile-detector-budget-probe]
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      GH_AW_RUNTIME_FEATURES: ""
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup pinned detector scripts
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/gh-aw/actions
+          job-name: ${{ github.job }}
+      - name: Materialize authenticated original inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/gh-aw/actions
+        run: python scripts/v03_detector_diagnostic_admission.py prepare
+      - name: Clear inherited MCP configuration for isolated detection
+        run: |
+          rm -f "$RUNNER_TEMP/gh-aw/mcp-config/mcp-servers.json"
+          rm -f "$HOME/.copilot/mcp-config.json"
+          rm -f "$GITHUB_WORKSPACE/.gemini/settings.json"
+      - name: Prepare original inputs through pinned official script privately
+        run: |
+          set -euo pipefail
+          umask 077
+          bash "$RUNNER_TEMP/gh-aw/actions/prepare_threat_detection_files.sh" > /tmp/v03-fixed-detector-diagnostic/prepare-private.log 2>&1
+      - name: Setup threat detection privately
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          WORKFLOW_NAME: "AI-SDLC gh-aw Code Reviewer (deepseek v0.3 release local)"
+          WORKFLOW_DESCRIPTION: "No description provided"
+          HAS_PATCH: "false"
+          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"
+          CUSTOM_PROMPT: "Complete the full security analysis of the original instructions, agent output,\npatch and bundle. Preserve every built-in threat criterion and verdict rule.\nDo not repeat an identical failed inspection command. Inspect its error once,\nuse a different bounded read-only inspection if necessary, and stop that path\nwhen it cannot provide new evidence. A Git bundle includes a header and may\nrequire prerequisite objects; do not repeatedly feed the entire bundle to\ngit index-pack as though it were a standalone pack file.\nMissing or uninspectable required evidence is not evidence of safety. If a\ncomplete verdict cannot be established, fail closed through the detector's\nexisting result protocol; never invent a clean verdict or suppress a finding.\nTrack which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
+          GH_AW_DETECTION_SKIP_PROMPT_SUMMARY: "true"
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const root='/tmp/v03-fixed-detector-diagnostic';
+            fs.mkdirSync(root,{recursive:true,mode:0o700});
+            for (const name of ['GITHUB_OUTPUT','GITHUB_ENV','GITHUB_STEP_SUMMARY','GITHUB_PATH','GITHUB_STATE']) {
+              const file=path.join(root,'setup-'+name.toLowerCase());
+              fs.closeSync(fs.openSync(file,'wx',0o600));
+              process.env[name]=file;
+            }
+            const fd=fs.openSync(path.join(root,'setup-private.log'),'wx',0o600);
+            const out=process.stdout.write, err=process.stderr.write;
+            const capture=(chunk,encoding,callback)=>{fs.writeSync(fd,chunk); const done=typeof encoding==='function'?encoding:callback; if(done)done(); return true;};
+            let failed=false;
+            try {
+              process.stdout.write=capture; process.stderr.write=capture;
+              const actionsDir=path.join(process.env.RUNNER_TEMP,'gh-aw','actions');
+              const {setupGlobals}=require(path.join(actionsDir,'setup_globals.cjs'));
+              setupGlobals(core,github,context,exec,io,getOctokit);
+              const {main}=require(path.join(actionsDir,'setup_threat_detection.cjs'));
+              await main();
+            } catch (_) {failed=true;}
+            finally {process.stdout.write=out;process.stderr.write=err;fs.closeSync(fd);}
+            if(failed)throw new Error('private detector setup failed');
+      - name: Initialize empty diagnostic execution evidence
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p /tmp/gh-aw/threat-detection
+          printf '{"version":1,"component":"detection","run_id":%s,"run_attempt":%s,"state":"not_started"}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > /tmp/gh-aw/threat-detection/execution.json
+          test ! -e /tmp/gh-aw/threat-detection/detection.log
+          touch /tmp/gh-aw/threat-detection/detection.log
+      - name: Download pinned detector container images
+        run: bash "$RUNNER_TEMP/gh-aw/actions/download_docker_images.sh" ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64 ghcr.io/github/gh-aw-firewall/squid:0.28.23@sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0
+      - name: Install pinned AWF
+        run: bash "$RUNNER_TEMP/gh-aw/actions/install_awf_binary.sh" v0.28.23 --rootless
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install exact observed Copilot CLI
+        env:
+          GH_HOST: github.com
+          GH_AW_COMPILED_VERSION: v0.89.21
+        run: bash "$RUNNER_TEMP/gh-aw/actions/install_copilot_cli.sh" 1.0.90
+      - name: Verify CLI bytes against authenticated official archive
+        run: |
+          python - <<'PY'
+          import hashlib, io, os, shutil, stat, subprocess, tarfile, urllib.request
+          url = "https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz"
+          with urllib.request.urlopen(url, timeout=60) as response:
+              archive = response.read(109207185)
+          assert len(archive) == 109207184
+          assert hashlib.sha256(archive).hexdigest() == "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6"
+          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+              members = tar.getmembers()
+              assert len(members) <= 64 and sum(m.size for m in members) <= 524288000
+              assert all(m.isfile() or m.isdir() for m in members)
+              assert all(not m.name.startswith("/") and chr(92) not in m.name and ".." not in m.name.split("/") for m in members)
+              candidates = [m for m in members if m.name in ("copilot", "./copilot") and m.isfile()]
+              assert len(candidates) == 1 and candidates[0].size <= 314572800
+              source = tar.extractfile(candidates[0])
+              expected = hashlib.file_digest(source, "sha256").hexdigest()
+          installed = shutil.which("copilot")
+          assert installed and os.path.isfile(installed)
+          with open(installed, "rb") as source:
+              assert hashlib.file_digest(source, "sha256").hexdigest() == expected
+          version = subprocess.check_output([installed, "--version"], text=True, timeout=15)
+          assert "1.0.90" in version
+          print("PASS: installed Copilot CLI matches authenticated official 1.0.90 archive")
+          PY
+      - name: Install pinned threat detector
+        id: threat_detect_install
+        run: bash "$RUNNER_TEMP/gh-aw/actions/install_threat_detect_binary.sh" v0.5.2 --artifact-base-url https://github.com/github/gh-aw-threat-detection/releases/download --sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9 --sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904
+      - name: Wait for one exact assistant-issued diagnostic admission
+        id: admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/gh-aw/actions
+        run: python scripts/v03_detector_diagnostic_admission.py wait
+      - name: Invoke admitted detector once with private output
+        id: scanner
+        timeout-minutes: 10
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/gh-aw/actions
+          AWF_REFLECT_ENABLED: 1
+          COPILOT_AGENT_RUNNER_TYPE: STANDALONE
+          COPILOT_DUMMY_BYOK: dummy-byok-key-for-offline-mode
+          COPILOT_MODEL: deepseek-chat
+          COPILOT_PROVIDER_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          COPILOT_PROVIDER_BASE_URL: https://api.deepseek.com
+          COPILOT_PROVIDER_TYPE: openai
+          COPILOT_PROVIDER_WIRE_API: completions
+          GH_AW_HARNESS_BACKOFF_MULTIPLIER: 2
+          GH_AW_HARNESS_INITIAL_DELAY_MS: 10000
+          GH_AW_HARNESS_MAX_DELAY_MS: 120000
+          GH_AW_HARNESS_MAX_RETRIES: 0
+          GH_AW_LLM_PROVIDER: github
+          GH_AW_MAX_AI_CREDITS: "400"
+          GH_AW_MAX_TURNS: 50
+          GH_AW_PHASE: detection
+          GH_AW_PROMPT: /tmp/gh-aw/aw-prompts/prompt.txt
+          GH_AW_TIMEOUT_MINUTES: 10
+          GH_AW_VERSION: v0.89.21
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_AW: true
+          GITHUB_COPILOT_INTEGRATION_ID: agentic-workflows
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_STEP_SUMMARY: /tmp/gh-aw/agent-step-summary.md
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          RUNNER_TEMP: ${{ runner.temp }}
+          TRACEPARENT: ""
+          WORKFLOW_NAME: "AI-SDLC gh-aw Code Reviewer (deepseek v0.3 release local)"
+          WORKFLOW_DESCRIPTION: "No description provided"
+          HAS_PATCH: "false"
+          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"
+          CUSTOM_PROMPT: "Complete the full security analysis of the original instructions, agent output,\npatch and bundle. Preserve every built-in threat criterion and verdict rule.\nDo not repeat an identical failed inspection command. Inspect its error once,\nuse a different bounded read-only inspection if necessary, and stop that path\nwhen it cannot provide new evidence. A Git bundle includes a header and may\nrequire prerequisite objects; do not repeatedly feed the entire bundle to\ngit index-pack as though it were a standalone pack file.\nMissing or uninspectable required evidence is not evidence of safety. If a\ncomplete verdict cannot be established, fail closed through the detector's\nexisting result protocol; never invent a clean verdict or suppress a finding.\nTrack which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
+        run: python scripts/v03_detector_diagnostic_admission.py invoke
+      - name: Parse pinned verdict privately and report bounded diagnostic result
+        if: always() && steps.scanner.outcome != 'skipped'
+        env:
+          SCANNER_OUTCOME: ${{ steps.scanner.outcome }}
+          INSTALL_OUTCOME: ${{ steps.threat_detect_install.outcome }}
+        run: python scripts/v03_detector_diagnostic_admission.py summarize
   manifest-fixed-detector-inputs:
     name: Manifest fixed detector inputs (read-only, no model)
     runs-on: ubuntu-latest
@@ -69,6 +249,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/v03-manifest-actions
         run: python scripts/v03_detector_input_manifest.py
+      - name: Emit public source bindings for later run-specific admission
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          paths = [".github/workflows/validate-v03-dogfood-live-gate.yml",
+                   "scripts/v03_detector_diagnostic_admission.py",
+                   "scripts/v03_detector_input_manifest.py",
+                   "scripts/v03_detector_diagnostic_config.json",
+                   "scripts/v03_detector_diagnostic_execution.sh",
+                   "scripts/v03_detector_awf_config.json"]
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          checkout = git("rev-parse", "HEAD")
+          assert checkout == os.environ["GITHUB_SHA"]
+          print(json.dumps({"schema":"v03-detector-preflight-source/v1",
+              "checkout_sha":checkout, "checkout_tree":git("rev-parse", "HEAD^{tree}"),
+              "workflow_sha":os.environ["GITHUB_WORKFLOW_SHA"],
+              "run_id":int(os.environ["GITHUB_RUN_ID"]), "run_attempt":int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "source_blobs":{path:git("rev-parse", "HEAD:"+path) for path in paths},
+              "config_sha256":hashlib.sha256(json.dumps(json.loads(Path(paths[3]).read_text()),
+                  sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()},sort_keys=True))
+          PY
   replay-pinned-detector-protocol:
     name: Replay pinned detector protocol (offline, no model)
     runs-on: ubuntu-latest

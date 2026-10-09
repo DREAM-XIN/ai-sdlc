@@ -225,7 +225,7 @@ def wait():
     identity = source_identity()
     manifest, _, _ = inspect_inputs()
     started = time.time()
-    deadline = min(started + 1200, timestamp(identity["job_started_at"]) + 1500)
+    deadline = timestamp(identity["job_started_at"]) + 1200
     if deadline <= started:
         raise ValueError("job lacks admission window")
     print(json.dumps({"schema":"v03-detector-admission-request/v1", "identity":identity,
@@ -305,7 +305,7 @@ def invoke():
         env[variable]=str(path)
     capture = os.open(ROOT/"scanner-private.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.dup2(capture, 1); os.dup2(capture, 2); os.close(capture)
-    os.execve("/bin/bash", ["bash", EXECUTION], env)
+    os.execve("/bin/bash", ["bash", "-e", "-o", "pipefail", EXECUTION], env)
 
 def summarize():
     result = Path("/tmp/gh-aw/threat-detection/detection_result.json")
@@ -314,6 +314,8 @@ def summarize():
               "invocation_consumed":(ROOT/"consumed").is_file(),
               "scanner_outcome":os.environ.get("SCANNER_OUTCOME", "unknown"),
               "verdict_valid":False, "diagnostic_success":False}
+    if status["scanner_outcome"] not in {"success","failure","skipped","cancelled","unknown"}:
+        raise ValueError("runner scanner outcome differs")
     if not status["invocation_consumed"]:
         print(json.dumps(status,sort_keys=True))
         raise SystemExit(1)
@@ -347,6 +349,8 @@ def summarize():
         outputs[key]=value
     if set(outputs)!={"success","conclusion","reason"}:
         raise ValueError("official conclusion outputs incomplete")
+    if outputs["success"] not in {"true","false"} or outputs["conclusion"] not in {"success","failure","warning","skipped"}:
+        raise ValueError("unknown official conclusion value")
     status["parser_exit_code"]=completed.returncode
     status["conclusion"]=outputs["conclusion"] if outputs["conclusion"] in {
         "success","failure","warning","skipped"} else "unknown"

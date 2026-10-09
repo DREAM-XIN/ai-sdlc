@@ -60,11 +60,14 @@ def main():
     expect(a.validate_execution_script()==actual,"native 50 config rejected")
     with tempfile.TemporaryDirectory() as directory:
         config_path=Path(directory)/"native.json"
-        for cap in (500,51,0,True,"50"):
+        for cap in (500,5000,51,0,50.0,True,"50"):
             bad=copy.deepcopy(actual);bad["apiProxy"]["maxRuns"]=cap
             config_path.write_text(json.dumps(bad))
             with patch.object(a,"NATIVE_CONFIG",str(config_path)):
                 reject(a.validate_execution_script,"native cap "+str(cap))
+        config_path.write_text('{"apiProxy":{"maxRuns":50,"maxRuns":500}}\n')
+        with patch.object(a,"NATIVE_CONFIG",str(config_path)):
+            reject(a.validate_execution_script,"duplicate native maxRuns")
         bad=copy.deepcopy(actual);bad["apiProxy"]["maxTurns"]=500
         config_path.write_text(json.dumps(bad))
         with patch.object(a,"NATIVE_CONFIG",str(config_path)):
@@ -177,7 +180,9 @@ def main():
                 try: a.invoke()
                 except InvocationObserved: pass
                 else: raise AssertionError("valid admission never reached mocked execution boundary")
-                expect(len(invoked)==1 and invoked[0][0]=="/bin/bash","valid invocation mismatch")
+                expect(len(invoked)==1 and invoked[0][0]=="/bin/bash"
+                       and invoked[0][1]==["bash","-e","-o","pipefail",a.EXECUTION],
+                       "valid invocation did not preserve runner bash -e semantics")
                 passed=invoked[0][2]
                 expect("GH_TOKEN" not in passed,"read token entered scanner")
                 for key in ("GITHUB_OUTPUT","GITHUB_ENV","GITHUB_STEP_SUMMARY","GITHUB_PATH","GITHUB_STATE"):
