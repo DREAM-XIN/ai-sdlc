@@ -50,6 +50,80 @@ permissions:
   actions: read
 
 jobs:
+  replay-pinned-detector-protocol:
+    name: Replay pinned detector protocol (offline, no model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: github/gh-aw-firewall
+          ref: 744bd7387c4ae8a6c2d38200f6f63a781804e892
+          path: replay-awf
+          persist-credentials: false
+      - uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-detector-replay/actions
+      - name: Install exact official offline inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/v03-detector-replay"
+          mkdir -p "$root/copilot"
+          test "$(git -C replay-awf rev-parse HEAD)" = 744bd7387c4ae8a6c2d38200f6f63a781804e892
+          npm ci --ignore-scripts --omit=dev --prefix replay-awf/containers/api-proxy
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz \
+            -o "$root/copilot.tar.gz"
+          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $root/copilot.tar.gz" | sha256sum --check --status
+          python - <<'PY'
+          import os, tarfile
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "v03-detector-replay"
+          with tarfile.open(root / "copilot.tar.gz", "r:gz") as archive:
+              members = archive.getmembers()
+              assert len(members) <= 64 and sum(m.size for m in members) <= 524288000
+              for member in members:
+                  assert member.isfile() or member.isdir()
+                  assert not member.name.startswith("/") and chr(92) not in member.name
+                  assert ".." not in member.name.split("/") and member.size <= 314572800
+              archive.extractall(root / "copilot", filter="data")
+          PY
+          test -x "$root/copilot/copilot"
+          bash "$root/actions/install_threat_detect_binary.sh" v0.5.2 \
+            --artifact-base-url https://github.com/github/gh-aw-threat-detection/releases/download \
+            --sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9 \
+            --sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904 --rootless
+          cp "$HOME/.local/bin/threat-detect" "$root/threat-detect"
+          test -x "$root/threat-detect"
+          echo "b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9  $root/threat-detect" | sha256sum --check --status
+          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
+      - name: Run real pinned protocol with loopback-only synthetic provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/v03-detector-replay"
+          name="v03-detector-replay-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
+          timeout --signal=TERM --kill-after=10s 700s docker run --rm --init \
+            --name "$name" --network none --cap-drop ALL --workdir /tmp \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" --read-only \
+            --tmpfs "/tmp:rw,nosuid,nodev,uid=$(id -u),gid=$(id -g),mode=700" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/replay-awf,dst=/inputs/awf,readonly" \
+            --mount "type=bind,src=$root/actions,dst=/inputs/actions,readonly" \
+            --mount "type=bind,src=$root/copilot,dst=/inputs/copilot,readonly" \
+            --mount "type=bind,src=$root/threat-detect,dst=/inputs/threat-detect,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/validate_v03_detector_protocol_replay.mjs,dst=/inputs/replay.mjs,readonly" \
+            --env HOME=/tmp/home --env PATH=/inputs/copilot:/usr/local/bin:/usr/bin:/bin \
+            --entrypoint /usr/local/bin/node \
+            ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 \
+            /inputs/replay.mjs /inputs/awf/containers/api-proxy /inputs/actions \
+            /inputs/threat-detect /inputs/copilot/copilot /tmp/replay
   compile-detector-budget-probe:
     name: Compile fixed detector budget probe (no model)
     runs-on: ubuntu-latest
