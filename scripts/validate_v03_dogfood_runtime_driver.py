@@ -996,6 +996,8 @@ def _recovery_worker_preparation_contract(source, body, compiled):
            "compiled before-effect guard can skip, swallow failure, or diverge from source")
     process_index = next(i for i, step in enumerate(safe_steps) if step.get("id") == "process_safe_outputs")
     expect(safe_steps.index(guard) < process_index, "semantic verdict checked only after Safe Outputs effects")
+    expect(not safe_steps[process_index].get("if"),
+           "Safe Outputs effects can bypass a failed semantic guard")
 
     # Run exactly the checked-in shell guard against semantic output combinations.
     for attempt in ("1", "2", "", "0"):
@@ -1011,6 +1013,7 @@ def _recovery_worker_preparation_contract(source, body, compiled):
     agent_steps = jobs["agent"]["steps"]
     attempt_guard = next(step for step in agent_steps if step.get("name") == "Reject rerun before model execution")
     engine_index = next(i for i, step in enumerate(agent_steps) if step.get("id") == "agentic_execution")
+    expect(not agent_steps[engine_index].get("if"), "model execution can bypass a failed attempt guard")
     expect(agent_steps.index(attempt_guard) < engine_index
            and attempt_guard.get("env") == {"RUN_ATTEMPT": "${{ github.run_attempt }}"}
            and attempt_guard.get("continue-on-error", False) is False and not attempt_guard.get("if"),
@@ -1033,6 +1036,8 @@ def recovery_worker_preparation_contract_tests(root):
     def step(document, job, name):
         return next(row for row in document["jobs"][job]["steps"] if row.get("name") == name)
     mutations = (
+        ("model bypasses attempt guard", lambda s, c: next(row for row in c["jobs"]["agent"]["steps"] if row.get("id") == "agentic_execution").update({"if": "always()"})),
+        ("effects bypass semantic guard", lambda s, c: next(row for row in c["jobs"]["safe_outputs"]["steps"] if row.get("id") == "process_safe_outputs").update({"if": "always()"})),
         ("checkout retains credentials", lambda s, c: step(c, "agent", "Checkout repository")["with"].update({"persist-credentials": True})),
         ("nested checkout path", lambda s, c: step(c, "agent", "Checkout dream-xin/ai-sdlc into ai-sdlc")["with"].update(path="outer")),
         ("warn-mode source", lambda s, c: s["safe-outputs"]["threat-detection"].update({"continue-on-error": True})),
