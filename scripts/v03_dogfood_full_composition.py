@@ -177,6 +177,18 @@ def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
     route = recovery_route(snapshot)
     authorization, attempt, continuation = route["authorization"], route["attempt"], route["bridge"]
     artifact = sealed.get("safe_output_artifact_proof") if isinstance(sealed, dict) else None
+    uri = str(sealed.get("safe_output_uri") or "") if isinstance(sealed, dict) else ""
+    location = _DEVELOPER_PR_URI.fullmatch(uri)
+    if (not location or not location.group("binding") or not location.group("lease")
+            or any(location.group(key) != value for key, value in {
+                "feature": authorization["feature_id"], "dispatch": RECOVERY_COLLECTOR_DISPATCH_ID,
+                "key": authorization["recovery_dispatch_key"], "run": str(sealed.get("receipt_id") or ""),
+                "run_head": continuation["execution_source_head_sha"],
+                "pr": str(sealed.get("output_candidate_pr_number") or ""),
+                "head": str(sealed.get("output_candidate_head_sha") or ""),
+            }.items())
+            or sealed.get("safe_output_digest") != "sha256:" + digest_json({"trusted_uri": uri})):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery seal output location differs from its exact route")
     if (
         not isinstance(sealed, dict)
         or not isinstance(artifact, dict)
