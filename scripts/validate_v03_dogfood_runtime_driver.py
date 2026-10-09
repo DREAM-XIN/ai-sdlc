@@ -665,7 +665,9 @@ def historical_worker_adoption_tests():
     runner_collect = inspect.getsource(runner._collect_next)
     finalizer_bindings = inspect.getsource(finalizer._durable_run_bindings)
     expect(
-        "RECOVERY_RECEIPT_PATH" in collector_source
+        'route = recovery_route(snapshot)' in collector_source
+        and 'snapshot.get(route["receipt_path"])' in collector_source
+        and "validate_recovery_execution_seal" in collector_source
         and "recovery_dispatch_key" in collector_source
         and "37204777409" in collector_source
         and "gh-aw-recovery-callback-" in collector_source,
@@ -2112,8 +2114,8 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
         "base": {"ref": h["target_ref"], "sha": old_head, "repo": {"full_name": repository}},
     }
     if replacement:
-        expect(type(expected_human_interventions) is int and expected_human_interventions >= 1,
-               "replacement test needs an independently reviewed explicit intervention ledger count")
+        expect(type(expected_human_interventions) is int and expected_human_interventions == 4,
+               "replacement test needs the reviewed observed-intervention ledger count of four")
         expect(len(initial_events) == 12
                and initial_events[-1]["event_type"] == "dispatch.launch.lookup-recorded"
                and initial_events[-1]["payload"]["receipt_id"] == "37204777409",
@@ -2406,6 +2408,7 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
                     f"https://github.com/{repository}/actions/runs/{REPLACEMENT_FAILED_RUN}",
                     f"https://github.com/{repository}/pull/{REPLACEMENT_FAILED_PR}",
                     "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076638838",
+                    "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076882835",
                 }
                 expect({uri.lower() for uri in required_disclosure}
                        <= {uri.lower() for uri in record["evidence_uris"]},
@@ -2470,6 +2473,19 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
                 raise AssertionError("actual finalizer accepted forged leased Developer URI")
             finally:
                 dev_event["payload"] = original_payload
+            if replacement:
+                frozen_lookup = next(row for row in operation_events(runtime.backend.snapshot, operation_id)
+                                     if row["sequence"] == 5)
+                old_payload = deepcopy(frozen_lookup["payload"])
+                frozen_lookup["payload"].update(lookup_state="LAUNCHED", receipt_id="37204777409")
+                try:
+                    finalize()
+                except (finalizer.V03DogfoodPostRunFinalizerError, VerticalInvariantError):
+                    pass
+                else:
+                    raise AssertionError("finalizer hid consumption in a superseded generation")
+                finally:
+                    frozen_lookup["payload"] = old_payload
             expect(finalize()["verdict"] == "PASS", "restored production happy-path did not reverify")
     finally:
         runtime.backend.snapshot = saved_snapshot
@@ -2609,7 +2625,7 @@ def fixed_replacement_fixture():
         GitHubActionsGhAwResultSourceConfig(control_repository="dream-xin/ai-sdlc",
             control_token="read", target_token="read", collector_identity=composition.COLLECTOR_IDENTITY,
             workflows=gateway.workflows), target_repository="dream-xin/ai-sdlc", http=source_http)
-    pf = SimpleNamespace(slot=require_slot("happy_path"),
+    pf = SimpleNamespace(slot=require_slot("happy_path"), workflows=gateway.workflows,
         execution=SimpleNamespace(repository="dream-xin/ai-sdlc", installation_commit_sha="5" * 40),
         trusted_context_digest="6" * 64, composition=SimpleNamespace(runtime=runtime,
             policy_authority=recovery_policy_fixture(), actions_transport=transport,
@@ -2713,9 +2729,11 @@ def fixed_replacement_admission_tests():
                 f"state/operator/v1/operations/{subject.HISTORICAL_PREHTTP_RECOVERY['operation_id']}/dogfood-candidate-handoffs/foreign/intent.json"] = {}
         reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, label)
     # A successful POST still consumes the sole claim when result evidence fails.
-    for label in ("attempt2", "failed-run", "missing-safety-guard", "failed-safety-guard", "old-output"):
+    for label in ("attempt2", "boolean-attempt", "string-attempt", "failed-run", "missing-safety-guard", "failed-safety-guard", "old-output"):
         pf_bad, http_bad, st, _ = fixed_replacement_fixture()
         if label == "attempt2": st["run_patch"]["run_attempt"] = 2
+        elif label == "boolean-attempt": st["run_patch"]["run_attempt"] = True
+        elif label == "string-attempt": st["run_patch"]["run_attempt"] = "1"
         elif label == "failed-run": st["run_patch"]["conclusion"] = "failure"
         elif label == "missing-safety-guard":
             st["job_patch"][(False, "safe_outputs")] = {"steps": []}
@@ -2826,6 +2844,12 @@ def fixed_replacement_collector_pipeline_tests(preflight, sealed, *, expected_hu
         control_repository=preflight.execution.repository, clock=runtime.clock,
         policy_authority=preflight.composition.policy_authority)
     before = canonical_json(original.files)
+    import v03_dogfood_scenario_runner as runner
+    run = runner._wait_current_dispatch(preflight, h["operation_id"], h["external_dispatch_key"])
+    expect(run["id"] == int(sealed["receipt_id"]), "scenario wait selected the failed predecessor")
+    expect(runner._launch_receipts(preflight, h["operation_id"]) ==
+           ((int(sealed["receipt_id"]),), sealed["receipt_id"]),
+           "scenario receipt mapping selected the old recovery route")
     expect(collector.handle(operation_id=h["operation_id"],
         external_dispatch_key=h["external_dispatch_key"]) == {"status": "COLLECTED"},
         "real fixed replacement collector failed before callback validation")
@@ -2848,6 +2872,13 @@ def fixed_replacement_collector_pipeline_tests(preflight, sealed, *, expected_hu
         runtime.backend.snapshot = snapshot
         count = len(calls)
         state = canonical_json(snapshot.files)
+        for read in (
+            lambda: runner._wait_current_dispatch(preflight, h["operation_id"], h["external_dispatch_key"]),
+            lambda: runner._launch_receipts(preflight, h["operation_id"]),
+        ):
+            try: read()
+            except (VerticalInvariantError, runner.V03DogfoodScenarioRunnerError): pass
+            else: raise AssertionError("scenario selected corrupt replacement: " + label)
         try:
             collector.handle(operation_id=h["operation_id"], external_dispatch_key=h["external_dispatch_key"])
         except VerticalInvariantError:

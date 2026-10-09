@@ -17,6 +17,7 @@ from typing import Any
 
 from operator_store_model import operation_events
 from operator_vertical_store import vertical_projection
+from v03_dogfood_full_composition import recovery_route, validate_recovery_execution_seal, recovery_execution_binding
 from v03_dogfood_fixture_pool import DogfoodSlot, task_text
 from v03_dogfood_openai_host import V03DogfoodOpenAIResponsesHost, V03DogfoodResponsesTrace
 
@@ -187,6 +188,14 @@ def _external_key(row: dict[str, Any]) -> str:
     return value
 
 
+def _sealed_recovery_receipt(preflight, snapshot):
+    route = recovery_route(snapshot)
+    sealed = snapshot.get(route["receipt_path"])
+    validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
+        preflight.composition.policy_authority))
+    return sealed
+
+
 def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...], str]:
     rows = [row for row in _events(preflight, operation_id) if row.get("event_type") == "dispatch.launch.lookup-recorded"]
     run_ids: list[int] = []
@@ -206,7 +215,7 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
         run_ids.append(int(receipt))
         receipts.append(receipt)
     if operation_id == RECOVERY_OPERATION_ID:
-        sealed = preflight.composition.runtime.backend.read_snapshot().get(RECOVERY_RECEIPT_PATH)
+        sealed = _sealed_recovery_receipt(preflight, preflight.composition.runtime.backend.read_snapshot())
         if (
             not isinstance(sealed, dict)
             or sealed.get("schema_version") != RECOVERY_SCHEMA
@@ -256,7 +265,7 @@ def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
     workflow = preflight.workflows.workflow_for(str(launch["role"]))
     lookup_key = external_dispatch_key
     if operation_id == RECOVERY_OPERATION_ID and external_dispatch_key == RECOVERY_EXTERNAL_KEY:
-        sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+        sealed = _sealed_recovery_receipt(preflight, snapshot)
         if (
             not isinstance(sealed, dict)
             or sealed.get("schema_version") != RECOVERY_SCHEMA

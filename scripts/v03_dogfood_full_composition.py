@@ -1307,6 +1307,17 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
     """
 
 
+    def _json(self, repository, path, token):
+        value = super()._json(repository, path, token)
+        match = re.fullmatch(r"/actions/runs/([1-9][0-9]*)", path)
+        if match and (
+            not isinstance(value, dict) or type(value.get("id")) is not int
+            or value["id"] != int(match.group(1))
+            or type(value.get("run_attempt")) is not int
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery raw run id/attempt is not an exact integer")
+        return value
+
     def _http(self, *, method, url, token):
         if re.fullmatch(r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/artifacts/[1-9][0-9]*/zip", url.lower()):
             req = request.Request(url, method=method, headers={
