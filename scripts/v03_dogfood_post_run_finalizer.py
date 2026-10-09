@@ -26,7 +26,7 @@ from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceVerifier,
 )
 from v03_dogfood_release_finalizer import build_release_record
-from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding, read_dogfood_handoff, V03DogfoodCompositionError
+from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding, recovery_route, REPLACEMENT_HISTORY_BLOBS, _recovery_document_blob, read_dogfood_handoff, V03DogfoodCompositionError
 from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
@@ -69,9 +69,12 @@ def _run_uri(repository: str, run_id: int) -> str:
 
 
 def _validated_recovery_chain(snapshot: Any, *, execution_binding) -> dict[str, Any]:
-    authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
-    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
-    sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+    try:
+        route = recovery_route(snapshot)
+    except VerticalInvariantError as exc:
+        raise V03DogfoodPostRunFinalizerError("fixed recovery route is incomplete or corrupt") from exc
+    authorization, attempt = route["authorization"], route["attempt"]
+    sealed = snapshot.get(route["receipt_path"])
     if not all(isinstance(row, dict) for row in (authorization, attempt, sealed)):
         raise V03DogfoodPostRunFinalizerError("finalizer lacks complete recovery fact chain")
     try:
@@ -485,6 +488,13 @@ def _durable_run_bindings(preflight, observation, events):
 def _selected_dispatches(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     selected: dict[str, Any] | None = None
     result: list[dict[str, Any]] = []
+    inherited_claim = "dispatch-claimed-687520874a948a5c4534e4e30d97b366"
+    inherited = any(row.get("event_id") == inherited_claim for row in events)
+    if inherited and (
+        len(events) < 7
+        or [_recovery_document_blob(row) for row in events[:7]] != REPLACEMENT_HISTORY_BLOBS[:7]
+    ):
+        raise V03DogfoodPostRunFinalizerError("frozen inherited-generation journal changed")
     for row in events:
         event_type = str(row.get("event_type") or "")
         sequence = int(row.get("sequence") or 0)
@@ -497,7 +507,11 @@ def _selected_dispatches(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if selected is None or int(selected["selected_sequence"]) >= sequence:
             raise V03DogfoodPostRunFinalizerError("durable dispatch claim lacks preceding trusted role-bearing selected step")
-        result.append({**selected, "claim_sequence": sequence})
+        # Generation zero reserved the same logical task/key. Its exact frozen
+        # NOT_LAUNCHED/superseded prefix is retained as history, not counted as
+        # a second successfully executed Developer role.
+        if not (inherited and row.get("event_id") == inherited_claim):
+            result.append({**selected, "claim_sequence": sequence})
         selected = None
     return result
 
@@ -894,10 +908,25 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
     )
+    human_interventions = 0
+    if observation.get("operation_id") == RECOVERY_OPERATION_ID:
+        route = recovery_route(preflight.composition.runtime.backend.read_snapshot())
+        if route["ordinal"] == 1:
+            accounting = route["authorization"]["observed_accounting"]
+            human_interventions = accounting["human_interventions"]
+            # This count covers the explicit observed ledger, not all historical
+            # chat. The evidence URI carries that limitation. Runtime measured
+            # repeated_continue_messages remains unchanged and separately gated.
+            evidence_uris.extend([
+                route["authorization"]["observed_accounting_uri"],
+                "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076638838",
+                "https://github.com/DREAM-XIN/ai-sdlc/actions/runs/37897902667",
+                "https://github.com/DREAM-XIN/ai-sdlc/pull/574",
+            ])
     trusted_facts = {
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,
-        "human_interventions": 0,
+        "human_interventions": human_interventions,
         "milestones": _milestone_facts(
             scenario, repository, source_run_id, finalizer_run_id, worker_run_ids, categories
         ),

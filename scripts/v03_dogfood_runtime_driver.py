@@ -31,6 +31,13 @@ from v03_dogfood_full_composition import (
     ARMED_RECOVERY_SOURCE_BLOBS, ARMED_RECOVERY_AUTHORIZATION_BLOB,
     ARMED_RECOVERY_ATTEMPT_BLOB, ARMED_RECOVERY_NO_HTTP_PROOF,
     RECOVERY_CONTINUATION_PATH, RECOVERY_CONTINUATION_SCHEMA,
+    REPLACEMENT_AUTHORIZATION_PATH, REPLACEMENT_ATTEMPT_PATH, REPLACEMENT_RECEIPT_PATH,
+    REPLACEMENT_ADMISSION, REPLACEMENT_FAILED_SOURCE, REPLACEMENT_FAILED_RUN,
+    REPLACEMENT_FAILED_PR, REPLACEMENT_FAILED_HEAD, REPLACEMENT_WORKER_BLOBS,
+    REPLACEMENT_FAILED_OBSERVATION, REPLACEMENT_PATHS,
+    REPLACEMENT_ACCOUNTING, REPLACEMENT_ACCOUNTING_DIGEST, REPLACEMENT_ACCOUNTING_URI,
+    replacement_present, validate_replacement_predecessor, validate_replacement_chain,
+    replacement_authorization_identity, recovery_route,
     validate_armed_recovery_pair, validate_recovery_continuation,
     validate_recovery_execution_seal, recovery_execution_binding, RECOVERY_COLLECTOR_DISPATCH_ID,
 )
@@ -1254,8 +1261,11 @@ def _recovery_worker_blobs() -> dict[str, str]:
 
 
 def _validate_recovery_pair(snapshot: Any, expected: Mapping[str, Any]) -> bool:
-    authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
-    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+    if replacement_present(snapshot):
+        authorization, attempt, _ = validate_replacement_chain(snapshot)
+    else:
+        authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
+        attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
     if authorization is None and attempt is None:
         return False
     if not isinstance(authorization, dict) or not isinstance(attempt, dict):
@@ -1267,7 +1277,7 @@ def _validate_recovery_pair(snapshot: Any, expected: Mapping[str, Any]) -> bool:
     expected_attempt = dict(authorization)
     expected_attempt.update({
         "authorization_digest": authorization_digest,
-        "attempt_id": "recovery-create-attempt-" + digest_json(authorization)[:32],
+        "attempt_id": ("replacement-1-claim-" if replacement_present(snapshot) else "recovery-create-attempt-") + digest_json(authorization)[:32],
         "status": "ARMED",
     })
     if canonical_json(attempt) != canonical_json(expected_attempt):
@@ -1475,7 +1485,7 @@ def _recovery_trusted_context(authorization: Mapping[str, Any]) -> dict[str, Any
 
 def _resolve_recovery_run_for_seal(preflight: Any, *, authorization: Mapping[str, Any], receipt_id: str) -> Any:
     source = preflight.composition.recovery_result_source
-    _, _, continuation = validate_recovery_continuation(preflight.composition.runtime.backend.read_snapshot())
+    continuation = recovery_route(preflight.composition.runtime.backend.read_snapshot())["bridge"]
     if any(continuation.get(k) != v for k, v in recovery_execution_binding(
         preflight.composition.policy_authority,
     ).items()):
@@ -1535,8 +1545,8 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
         raise V03DogfoodRuntimeDriverError("bounded recovery lacks one exact successful launched receipt")
     snapshot = preflight.composition.runtime.backend.read_snapshot()
     _validate_recovery_pair(snapshot, authorization)
-    _, _, continuation = validate_recovery_continuation(snapshot)
-    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+    route = recovery_route(snapshot)
+    continuation, attempt = route["bridge"], route["attempt"]
     if not isinstance(attempt, dict):
         raise V03DogfoodRuntimeDriverError("bounded recovery create-attempt disappeared before seal")
     expected = {
@@ -1609,7 +1619,7 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
         validate_recovery_execution_seal(snapshot, expected, execution_binding=recovery_execution_binding(
             preflight.composition.policy_authority,
         ))
-        existing = snapshot.get(RECOVERY_RECEIPT_PATH)
+        existing = snapshot.get(route["receipt_path"])
         if existing is not None:
             stable = {key: value for key, value in expected.items() if key != "sealed_at"}
             if not isinstance(existing, dict) or any(existing.get(key) != value for key, value in stable.items()):
@@ -1617,7 +1627,7 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
             return StoreMutationPlan(snapshot.ref_sha, tuple(), {"receipt": existing})
         return StoreMutationPlan(
             snapshot.ref_sha,
-            (StoreMutation("create_immutable", RECOVERY_RECEIPT_PATH, expected),),
+            (StoreMutation("create_immutable", route["receipt_path"], expected),),
             {"receipt": expected},
         )
     return _commit_recovery_nonempty(preflight.composition.runtime, plan)["receipt"]
@@ -1705,6 +1715,189 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
     return _seal_recovery_receipt(
         preflight, authorization=authorization, receipt=receipt, resolved=resolved
     )
+
+
+def _observe_failed_replacement_predecessor(preflight):
+    """Fresh, bracketed read-only observation; failure is never success evidence."""
+    expected = REPLACEMENT_ADMISSION
+    path = f"/actions/runs/{REPLACEMENT_FAILED_RUN}"
+    def run():
+        row = _github_json(preflight, path)
+        exact = {"id": REPLACEMENT_FAILED_RUN, "run_attempt": 1,
+                 "head_sha": REPLACEMENT_FAILED_SOURCE, "head_branch": "main",
+                 "event": "workflow_dispatch", "status": "completed", "conclusion": "failure",
+                 "display_title": "AI-SDLC gh-aw " + ARMED_RECOVERY_KEY,
+                 "path": ".github/workflows/" + RECOVERY_WORKFLOW}
+        if (any(row.get(k) != v for k, v in exact.items())
+                or type(row.get("id")) is not int or type(row.get("run_attempt")) is not int
+                or str((row.get("repository") or {}).get("full_name") or "").lower() != "dream-xin/ai-sdlc"):
+            raise V03DogfoodRuntimeDriverError("replacement predecessor is no longer exact terminal failed attempt one")
+        return row
+    before = run()
+    jobs = _github_json(preflight, path + "/attempts/1/jobs?per_page=100")
+    rows = jobs.get("jobs")
+    if (not isinstance(rows, list) or type(jobs.get("total_count")) is not int
+            or jobs["total_count"] != len(rows) or len(rows) != len(expected["failed_jobs"])):
+        raise V03DogfoodRuntimeDriverError("replacement predecessor jobs are not exhaustive")
+    for name, job_id in expected["failed_jobs"].items():
+        matches = [row for row in rows if isinstance(row, dict) and row.get("name") == name]
+        if (len(matches) != 1 or matches[0].get("id") != job_id
+                or type(matches[0].get("id")) is not int
+                or type(matches[0].get("run_attempt")) is not int or matches[0]["run_attempt"] != 1
+                or matches[0].get("run_id") != REPLACEMENT_FAILED_RUN
+                or matches[0].get("head_sha") != REPLACEMENT_FAILED_SOURCE
+                or matches[0].get("status") != "completed"
+                or matches[0].get("conclusion") != ("failure" if name == "conclusion" else "success")):
+            raise V03DogfoodRuntimeDriverError("replacement predecessor job identity/terminal state drifted")
+    pr = _github_json(preflight, f"/pulls/{REPLACEMENT_FAILED_PR}")
+    if (pr.get("number") != REPLACEMENT_FAILED_PR or pr.get("state") != "open" or pr.get("draft") is not True
+            or (pr.get("head") or {}).get("sha") != REPLACEMENT_FAILED_HEAD
+            or (pr.get("head") or {}).get("ref") != "gh-aw/F-OPERATOR-V03-DOGFOOD-HAPPY-0001-37897902667-v1-c1a21d03a1e716db"
+            or (pr.get("base") or {}).get("sha") != HISTORICAL_PREHTTP_RECOVERY["candidate_head_sha"]
+            or (pr.get("base") or {}).get("ref") != HISTORICAL_PREHTTP_RECOVERY["target_ref"]
+            or any(str(((pr.get(side) or {}).get("repo") or {}).get("full_name") or "").lower() != "dream-xin/ai-sdlc"
+                   for side in ("head", "base"))):
+        raise V03DogfoodRuntimeDriverError("retained failed-origin draft PR changed")
+    listing = _github_json(preflight, path + "/artifacts?per_page=100")
+    artifacts = listing.get("artifacts")
+    if (not isinstance(artifacts, list) or type(listing.get("total_count")) is not int
+            or listing["total_count"] != len(artifacts) or len(artifacts) > 100):
+        raise V03DogfoodRuntimeDriverError("failed-origin artifact listing is incomplete")
+    matches = [row for row in artifacts if isinstance(row, dict) and row.get("name") == "safe-outputs-items"]
+    if len(matches) != 1:
+        raise V03DogfoodRuntimeDriverError("failed-origin artifact is missing or ambiguous")
+    artifact = matches[0]
+    if (type(artifact.get("id")) is not int or artifact["id"] != expected["failed_artifact_id"]
+            or artifact.get("digest") != expected["failed_artifact_digest"] or artifact.get("expired") is not False
+            or any((artifact.get("workflow_run") or {}).get(k) != v for k, v in {
+                "id": REPLACEMENT_FAILED_RUN, "head_sha": REPLACEMENT_FAILED_SOURCE, "head_branch": "main",
+                "repository_id": 1326302284, "head_repository_id": 1326302284}.items())):
+        raise V03DogfoodRuntimeDriverError("failed-origin Safe Output artifact changed")
+    if canonical_json(before) != canonical_json(run()):
+        raise V03DogfoodRuntimeDriverError("failed predecessor changed while inspected")
+    return dict(REPLACEMENT_FAILED_OBSERVATION)
+
+
+def _replacement_authorization(snapshot, preflight):
+    original, attempt, continuation = validate_replacement_predecessor(snapshot)
+    binding = recovery_execution_binding(preflight.composition.policy_authority)
+    authorization = dict(original,
+        replacement_admission=REPLACEMENT_ADMISSION,
+        replacement_admission_digest="sha256:" + digest_json(REPLACEMENT_ADMISSION),
+        predecessor_authorization_digest="sha256:" + digest_json(original),
+        predecessor_attempt_digest="sha256:" + digest_json(attempt),
+        predecessor_continuation_digest="sha256:" + digest_json(continuation),
+        worker_blobs=REPLACEMENT_WORKER_BLOBS,
+        collector_dispatch_id=RECOVERY_COLLECTOR_DISPATCH_ID,
+        failed_observation=REPLACEMENT_FAILED_OBSERVATION,
+        observed_accounting=REPLACEMENT_ACCOUNTING, observed_accounting_digest=REPLACEMENT_ACCOUNTING_DIGEST,
+        observed_accounting_uri=REPLACEMENT_ACCOUNTING_URI,
+        source_head_sha=binding["execution_source_head_sha"],
+        installation_commit_sha=binding["execution_source_head_sha"],
+        trusted_context_digest=preflight.trusted_context_digest,
+        execution_trusted_context_digest=preflight.trusted_context_digest,
+        created_at=preflight.composition.runtime.clock(),
+        **binding)
+    identity = replacement_authorization_identity(authorization)
+    authorization["recovery_dispatch_key"] = "dispatch-" + digest_json(identity)[:40]
+    authorization["recovery_dispatch_id"] = "replacement-1-" + digest_json(identity)[:32]
+    authorization["display_title"] = "AI-SDLC gh-aw " + authorization["recovery_dispatch_key"]
+    dispatch = _bounded_recovery_dispatch(preflight, authorization)
+    authorization["task_payload_digest"] = "sha256:" + digest_json(json.loads(
+        GhAwVerticalRoleDispatchGateway._task_payload(dispatch)))
+    return authorization
+
+
+def _plan_fixed_replacement(snapshot, *, preflight):
+    from copy import deepcopy
+    if replacement_present(snapshot):
+        authorization, claim, _ = validate_replacement_chain(snapshot)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"acquired": False, "authorization": authorization, "continuation": claim})
+    _bounded_recovery_identity(snapshot, preflight)
+    validate_replacement_predecessor(snapshot)
+    prefix = f"state/operator/v1/operations/{HISTORICAL_PREHTTP_RECOVERY['operation_id']}/dogfood-candidate-handoffs/"
+    if any(path.startswith(prefix) for path in snapshot.files):
+        raise V03DogfoodRuntimeDriverError("replacement cannot follow any candidate handoff")
+    if _recovery_worker_blobs() != REPLACEMENT_WORKER_BLOBS:
+        raise V03DogfoodRuntimeDriverError("replacement Worker bytes differ from exact reviewed source")
+    gateway = preflight.composition.recovery_dispatch_gateway
+    binding = dict(recovery_execution_binding(preflight.composition.policy_authority),
+                   execution_trusted_context_digest=preflight.trusted_context_digest)
+    gateway.transport.admit_continuation(snapshot, allow_post=False, **binding)
+    gateway.transport._validate_lookup_identity(workflow=RECOVERY_WORKFLOW, ref="main", dispatch_key=ARMED_RECOVERY_KEY)
+    _require_recovery_execution_source(preflight, preflight.execution.installation_commit_sha)
+    if _observe_failed_replacement_predecessor(preflight) != REPLACEMENT_FAILED_OBSERVATION:
+        raise V03DogfoodRuntimeDriverError("replacement failed observation drifted")
+    old = gateway.lookup(external_dispatch_key=ARMED_RECOVERY_KEY)
+    if old.get("lookup_state") != "LAUNCHED" or str(old.get("receipt_id")) != str(REPLACEMENT_FAILED_RUN):
+        raise V03DogfoodRuntimeDriverError("replacement predecessor global scan is not uniquely terminal")
+    authorization = _replacement_authorization(snapshot, preflight)
+    claim = dict(authorization, authorization_digest="sha256:" + digest_json(authorization),
+                 attempt_id="replacement-1-claim-" + digest_json(authorization)[:32], status="ARMED")
+    proposed = deepcopy(snapshot)
+    proposed.files[REPLACEMENT_AUTHORIZATION_PATH] = authorization
+    proposed.files[REPLACEMENT_ATTEMPT_PATH] = claim
+    validate_replacement_chain(proposed)
+    gateway.transport.admit_continuation(proposed, allow_post=False, **binding)
+    dispatch = _bounded_recovery_dispatch(preflight, authorization)
+    gateway.transport._validate_dispatch_inputs(workflow=RECOVERY_WORKFLOW, ref="main", inputs=gateway._inputs(dispatch))
+    observed = gateway.lookup(external_dispatch_key=authorization["recovery_dispatch_key"])
+    if observed.get("lookup_state") != "NOT_LAUNCHED":
+        raise V03DogfoodRuntimeDriverError("replacement preclaim scan is not exhaustive absence")
+    return StoreMutationPlan(snapshot.ref_sha, (
+        StoreMutation("create_immutable", REPLACEMENT_AUTHORIZATION_PATH, authorization),
+        StoreMutation("create_immutable", REPLACEMENT_ATTEMPT_PATH, claim),
+    ), {"acquired": True, "authorization": authorization, "continuation": claim})
+
+
+def _replacement_prepost_old_scan(preflight, snapshot):
+    from copy import deepcopy
+    gateway = preflight.composition.recovery_dispatch_gateway
+    historical = deepcopy(snapshot)
+    for path in REPLACEMENT_PATHS:
+        historical.files.pop(path, None)
+    binding = dict(recovery_execution_binding(preflight.composition.policy_authority),
+                   execution_trusted_context_digest=preflight.trusted_context_digest)
+    gateway.transport.admit_continuation(historical, allow_post=False, **binding)
+    old = gateway.lookup(external_dispatch_key=ARMED_RECOVERY_KEY)
+    if old.get("lookup_state") != "LAUNCHED" or str(old.get("receipt_id")) != str(REPLACEMENT_FAILED_RUN):
+        raise V03DogfoodRuntimeDriverError("replacement final predecessor scan is ambiguous")
+    _observe_failed_replacement_predecessor(preflight)
+    # Restoring the already-won process-local capability is not a new claim.
+    gateway.transport.admit_continuation(snapshot, allow_post=True, **binding)
+
+
+def recover_approved_replacement(preflight):
+    """Exactly one approved slot. Failure/uncertainty consumes it permanently."""
+    if preflight.slot.scenario != "happy_path":
+        return None
+    runtime = preflight.composition.runtime
+    result = _commit_recovery_nonempty(runtime, lambda snapshot: _plan_fixed_replacement(snapshot, preflight=preflight))
+    authorization = result["authorization"]
+    snapshot = runtime.backend.read_snapshot()
+    route = recovery_route(snapshot)
+    gateway = preflight.composition.recovery_dispatch_gateway
+    gateway.transport.admit_continuation(snapshot, allow_post=result["acquired"] is True,
+        **recovery_execution_binding(preflight.composition.policy_authority),
+        execution_trusted_context_digest=preflight.trusted_context_digest)
+    sealed = snapshot.get(route["receipt_path"])
+    if sealed is not None:
+        validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        receipt = {"lookup_state": "LAUNCHED", "receipt_id": sealed["receipt_id"]}
+    else:
+        receipt = gateway.lookup(external_dispatch_key=authorization["recovery_dispatch_key"])
+        if result["acquired"] is True:
+            if receipt.get("lookup_state") != "NOT_LAUNCHED":
+                raise V03DogfoodRuntimeDriverError("replacement winner lost exhaustive absence")
+            _replacement_prepost_old_scan(preflight, snapshot)
+            _require_recovery_execution_source(preflight, authorization["execution_source_head_sha"])
+            receipt = gateway.launch(dispatch=_bounded_recovery_dispatch(preflight, authorization))
+        elif receipt.get("lookup_state") != "LAUNCHED":
+            raise V03DogfoodRuntimeDriverError("replacement claim consumed; absence or uncertainty forbids another POST")
+    if not isinstance(receipt, dict) or receipt.get("lookup_state") != "LAUNCHED":
+        raise V03DogfoodRuntimeDriverError("replacement result remains uncertain; no additional create")
+    resolved = _resolve_recovery_run_for_seal(preflight, authorization=authorization, receipt_id=str(receipt.get("receipt_id") or ""))
+    return _seal_recovery_receipt(preflight, authorization=authorization, receipt=receipt, resolved=resolved)
 
 
 _SAFE_INSTALLATION_TRANSITION_EVENTS = (
@@ -1896,7 +2089,7 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))
         return 0
 
-    recovered_historical_attempt = recover_historical_prehttp_attempt(preflight)
+    recovered_historical_attempt = recover_approved_replacement(preflight)
     if recovered_historical_attempt is None:
         prepare_previous_installation_operation(preflight)
 

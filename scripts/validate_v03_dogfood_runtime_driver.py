@@ -640,7 +640,8 @@ def prehttp_recovery_fence_tests():
         "recovery replay does not remain lookup-only and one-shot",
     )
     expect(
-        'StoreMutation("create_immutable", RECOVERY_RECEIPT_PATH' in seal_source,
+        'StoreMutation("create_immutable", route["receipt_path"]' in seal_source
+        and 'route = recovery_route(snapshot)' in seal_source,
         "recovery run is not sealed by immutable receipt",
     )
     expect(
@@ -664,7 +665,9 @@ def historical_worker_adoption_tests():
     runner_collect = inspect.getsource(runner._collect_next)
     finalizer_bindings = inspect.getsource(finalizer._durable_run_bindings)
     expect(
-        "RECOVERY_RECEIPT_PATH" in collector_source
+        'route = recovery_route(snapshot)' in collector_source
+        and 'snapshot.get(route["receipt_path"])' in collector_source
+        and "validate_recovery_execution_seal" in collector_source
         and "recovery_dispatch_key" in collector_source
         and "37204777409" in collector_source
         and "gh-aw-recovery-callback-" in collector_source,
@@ -837,12 +840,12 @@ def recovery_lock_transform_tests(root):
     expect(provenance == {
         "schema": "ai-sdlc.v03-recovery-lock-transform/v1",
         "compiler": "gh-aw-v0.89.21-strict",
-        "upstream_blob_sha": "a7ce0bf9d4f1b309f938afbda66cacc9d0d399a1",
+        "upstream_blob_sha": "9de8b30b827c956f18f4c65c1a77e3eac3f173e3",
         "persist_credentials_false": 2,
         "removed_trigger_lines": 3,
         "removed_trigger_references": 4,
-        "body_hash_from": "40961d116883db65077e5ae5bd58b487c3cc9b5852dfa630e7951d2aaae4a2bf",
-        "body_hash_to": "40b451fd769aa24683aedfee3a4ad5ab2fed5510ad248c95227a87b6a6b583b3",
+        "body_hash_from": "2402c641e84ed7201f98975e08d7eacbe1c40a7bdfcd862df1648d638f0026cc",
+        "body_hash_to": "2402c641e84ed7201f98975e08d7eacbe1c40a7bdfcd862df1648d638f0026cc",
     }, "recovery lock transform provenance drifted")
     body = "".join(lines[:1] + lines[2:])
     expect("GH_AW_CI_TRIGGER_TOKEN" not in body and "persist-credentials: true" not in body,
@@ -899,6 +902,280 @@ def recovery_lock_transform_tests(root):
 
 
 
+def _recovery_worker_preparation_contract(source, body, compiled):
+    """Check the parsed production workflow, not a second detector implementation."""
+    from copy import deepcopy
+    import subprocess
+    import os
+    safe = source["safe-outputs"]
+    threat = safe["threat-detection"]
+    expect(threat.get("enabled") is True and threat.get("continue-on-error") is False,
+           "Developer source permits absent or advisory-only threat detection")
+    prompt = str(threat.get("prompt") or "")
+    for fragment in (
+        "full security analysis", "every built-in threat criterion and verdict rule",
+        "Do not repeat an identical failed inspection command",
+        "Missing or uninspectable required evidence is not evidence of safety",
+        "never invent a clean verdict or suppress a finding",
+    ):
+        expect(fragment in prompt, "bounded detector prompt lost: " + fragment)
+    expect(source["engine"]["id"] == "copilot" and source["engine"]["model"] == "deepseek-chat",
+           "preparation changed the frozen Developer engine/model")
+    select = body.index('cd "$GITHUB_WORKSPACE/ai-sdlc"')
+    inspect = body.index("1. Decode and inspect")
+    expect(select < inspect and "git rev-parse --show-toplevel" in body[:inspect],
+           "Developer inspects the outer checkout before proving exact nested workspace")
+    for fragment in (
+        "wait for every inspection command already started and inspect its result",
+        "Do not emit a failure report while a filesystem search or other inspection is still pending",
+        "call `report_incomplete` once and terminate the task immediately",
+        "no later edits, branch creation, `create_pull_request`, or completion report",
+        "Do not fetch, change credentials, or disable TLS verification",
+        "Do not pass or waive any Gate. Do not merge or release.",
+    ):
+        expect(fragment in body, "Developer terminal/workspace contract lost: " + fragment)
+
+    jobs = compiled["jobs"]
+    checkouts = [step for job in jobs.values() for step in job.get("steps", [])
+                 if str(step.get("uses") or "").startswith("actions/checkout@")]
+    expect(len(checkouts) == 6 and all(step.get("with", {}).get("persist-credentials") is False
+                                      for step in checkouts),
+           "every generated checkout must explicitly disable credential persistence as boolean false")
+    nested = [step for step in jobs["agent"]["steps"]
+              if step.get("with", {}).get("repository") == "dream-xin/ai-sdlc"]
+    expect(len(nested) == 1 and nested[0]["with"].get("path") == "ai-sdlc"
+           and nested[0]["with"].get("ref") == "${{ inputs.target_ref }}"
+           and nested[0]["with"].get("fetch-depth") == 0,
+           "actual Developer nested checkout lost exact target ref/full ancestry")
+    detection = jobs["detection"]
+    detect_steps = detection["steps"]
+    setup = next(step for step in detect_steps if step.get("name") == "Setup threat detection")
+    execution = next(step for step in detect_steps if step.get("id") == "detection_agentic_execution")
+    conclude = next(step for step in detect_steps if step.get("id") == "detection_conclusion")
+    install = next(step for step in detect_steps if step.get("id") == "threat_detect_install")
+    for step in (setup, conclude):
+        expect(step.get("env", {}).get("GH_AW_DETECTION_CONTINUE_ON_ERROR") == "false",
+               "compiled detector strict-mode environment drifted")
+    expect(conclude.get("continue-on-error", False) is False and conclude.get("if") == "always()",
+           "compiled detector conclusion can swallow failure or skip error handling")
+    expect("conclude_threat_detection.sh" in conclude["run"],
+           "compiled detector no longer uses the pinned semantic conclusion parser")
+    expect(execution.get("env", {}).get("CUSTOM_PROMPT", "").strip() == prompt.strip(),
+           "bounded prompt never reaches the actual external detector engine")
+    expect(detection.get("timeout-minutes") == 10 and execution.get("timeout-minutes") == 10,
+           "preparation changed the surrounding detector job/step budget")
+    expect("--engine-timeout" not in execution["run"]
+           and "--prompt-template" not in execution["run"]
+           and "THREAT_DETECTION_ENGINE_TIMEOUT" not in execution.get("env", {}),
+           "preparation replaced full safety template or pinned five-minute engine budget")
+    expect("install_threat_detect_binary.sh\" v0.5.2 " in install["run"]
+           and "--sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9" in install["run"]
+           and "--sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904" in install["run"],
+           "preparation changed the detector release or compiler-pinned binary bytes")
+    expect(detection["outputs"].get("detection_success") ==
+           "${{ steps.detection_conclusion.outputs.success }}"
+           and detection["outputs"].get("detection_conclusion") ==
+           "${{ steps.detection_conclusion.outputs.conclusion }}",
+           "Safe Outputs semantic verdict is not wired to the actual conclude step")
+
+    name = "Require first attempt and affirmative detection before Safe Outputs effects"
+    expected_env = {
+        "RUN_ATTEMPT": "${{ github.run_attempt }}",
+        "DETECTION_SUCCESS": "${{ needs.detection.outputs.detection_success }}",
+        "DETECTION_CONCLUSION": "${{ needs.detection.outputs.detection_conclusion }}",
+    }
+    source_guards = [step for step in safe.get("steps", []) if step.get("name") == name]
+    safe_job = jobs["safe_outputs"]
+    expect("detection" in safe_job["needs"] and "needs.detection.result == 'success'" in safe_job["if"],
+           "Safe Outputs no longer requires the detector job to succeed")
+    safe_steps = safe_job["steps"]
+    guards = [step for step in safe_steps if step.get("name") == name]
+    expect(len(source_guards) == len(guards) == 1, "one exact source/compiled before-effect guard is required")
+    guard = guards[0]
+    expect(guard.get("env") == expected_env and source_guards[0].get("env") == expected_env,
+           "before-effect guard accepts caller-selected detector or attempt evidence")
+    expect(guard["run"].strip() == source_guards[0]["run"].strip()
+           and guard.get("continue-on-error", False) is False and not guard.get("if"),
+           "compiled before-effect guard can skip, swallow failure, or diverge from source")
+    process_index = next(i for i, step in enumerate(safe_steps) if step.get("id") == "process_safe_outputs")
+    expect(safe_steps.index(guard) < process_index, "semantic verdict checked only after Safe Outputs effects")
+    expect(not safe_steps[process_index].get("if"),
+           "Safe Outputs effects can bypass a failed semantic guard")
+
+    # Run exactly the checked-in shell guard against semantic output combinations.
+    for attempt in ("1", "2", "", "0"):
+        for success in ("true", "false", "", "unknown"):
+            for conclusion in ("success", "failure", "warning", "skipped", "", "unknown"):
+                env = {"PATH": os.defpath, "RUN_ATTEMPT": attempt,
+                       "DETECTION_SUCCESS": success, "DETECTION_CONCLUSION": conclusion}
+                result = subprocess.run(["bash", "-c", guard["run"]], env=env,
+                                        capture_output=True, text=True, timeout=5)
+                expect((result.returncode == 0) == (
+                    attempt == "1" and success == "true" and conclusion == "success"),
+                    "actual Safe Outputs guard accepted unknown/failed/skipped/absent verdict or rerun")
+    agent_steps = jobs["agent"]["steps"]
+    attempt_guard = next(step for step in agent_steps if step.get("name") == "Reject rerun before model execution")
+    engine_index = next(i for i, step in enumerate(agent_steps) if step.get("id") == "agentic_execution")
+    expect(not agent_steps[engine_index].get("if"), "model execution can bypass a failed attempt guard")
+    expect(agent_steps.index(attempt_guard) < engine_index
+           and attempt_guard.get("env") == {"RUN_ATTEMPT": "${{ github.run_attempt }}"}
+           and attempt_guard.get("continue-on-error", False) is False and not attempt_guard.get("if"),
+           "rerun can reach model execution before exact first-attempt check")
+    for attempt in ("1", "2", "", "0"):
+        result = subprocess.run(["bash", "-c", attempt_guard["run"]],
+            env={"PATH": os.defpath, "RUN_ATTEMPT": attempt}, capture_output=True, timeout=5)
+        expect((result.returncode == 0) == (attempt == "1"), "actual model guard admitted a rerun")
+    return guard, conclude
+
+
+def recovery_worker_preparation_contract_tests(root):
+    from copy import deepcopy
+    import yaml
+    source_text = (root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md").read_text()
+    _, frontmatter, body = source_text.split("---\n", 2)
+    source = yaml.safe_load(frontmatter)
+    compiled = yaml.safe_load((root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml").read_text())
+    _recovery_worker_preparation_contract(source, body, compiled)
+    def step(document, job, name):
+        return next(row for row in document["jobs"][job]["steps"] if row.get("name") == name)
+    mutations = (
+        ("model bypasses attempt guard", lambda s, c: next(row for row in c["jobs"]["agent"]["steps"] if row.get("id") == "agentic_execution").update({"if": "always()"})),
+        ("effects bypass semantic guard", lambda s, c: next(row for row in c["jobs"]["safe_outputs"]["steps"] if row.get("id") == "process_safe_outputs").update({"if": "always()"})),
+        ("checkout retains credentials", lambda s, c: step(c, "agent", "Checkout repository")["with"].update({"persist-credentials": True})),
+        ("nested checkout path", lambda s, c: step(c, "agent", "Checkout dream-xin/ai-sdlc into ai-sdlc")["with"].update(path="outer")),
+        ("warn-mode source", lambda s, c: s["safe-outputs"]["threat-detection"].update({"continue-on-error": True})),
+        ("conclude swallows failure", lambda s, c: step(c, "detection", "Conclude threat detection").update({"continue-on-error": True})),
+        ("conclude skips failure", lambda s, c: step(c, "detection", "Conclude threat detection").update({"if": "success()"})),
+        ("conclude warn-mode env", lambda s, c: step(c, "detection", "Conclude threat detection")["env"].update(GH_AW_DETECTION_CONTINUE_ON_ERROR="true")),
+        ("execution loses bounded prompt", lambda s, c: step(c, "detection", "Execute threat detection with AWF")["env"].pop("CUSTOM_PROMPT", None)),
+        ("execution disables budget", lambda s, c: step(c, "detection", "Execute threat detection with AWF")["env"].update(THREAT_DETECTION_ENGINE_TIMEOUT="0")),
+        ("guard swallows failure", lambda s, c: step(c, "safe_outputs", "Require first attempt and affirmative detection before Safe Outputs effects").update({"continue-on-error": True})),
+        ("guard skips effects", lambda s, c: step(c, "safe_outputs", "Require first attempt and affirmative detection before Safe Outputs effects").update({"if": "false"})),
+        ("guard literal success", lambda s, c: step(c, "safe_outputs", "Require first attempt and affirmative detection before Safe Outputs effects")["env"].update(DETECTION_SUCCESS="true")),
+        ("output wire drift", lambda s, c: c["jobs"]["detection"]["outputs"].update(detection_success="true")),
+    )
+    for label, mutate in mutations:
+        s, c = deepcopy(source), deepcopy(compiled)
+        mutate(s, c)
+        try:
+            _recovery_worker_preparation_contract(s, body, c)
+        except (AssertionError, ValueError, KeyError, StopIteration):
+            pass
+        else:
+            raise AssertionError("preparation regression missed " + label)
+    for fragment in ('cd "$GITHUB_WORKSPACE/ai-sdlc"',
+                     "wait for every inspection command already started and inspect its result",
+                     "call `report_incomplete` once and terminate the task immediately"):
+        try:
+            _recovery_worker_preparation_contract(source, body.replace(fragment, "", 1), compiled)
+        except (AssertionError, ValueError):
+            pass
+        else:
+            raise AssertionError("preparation regression missed missing Worker guidance")
+    # Corrupt both source and compiled guard identically: source/lock parity alone
+    # must not pass when either semantic predicate or the attempt fence disappears.
+    for line in ('test "$RUN_ATTEMPT" = 1', 'test "$DETECTION_SUCCESS" = true',
+                 'test "$DETECTION_CONCLUSION" = success'):
+        s, c = deepcopy(source), deepcopy(compiled)
+        source_guard = s["safe-outputs"]["steps"][0]
+        compiled_guard = step(c, "safe_outputs", source_guard["name"])
+        source_guard["run"] = source_guard["run"].replace(line, ":")
+        compiled_guard["run"] = compiled_guard["run"].replace(line, ":")
+        try:
+            _recovery_worker_preparation_contract(s, body, c)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("real shell truth table missed removed semantic fence")
+    print("- Developer source/compiled workspace, terminal report, strict detector and pre-effect guards validated")
+
+
+def recovery_pinned_detector_semantic_tests(root, binary_path, conclude_script_path):
+    """Hosted CI only: execute pinned real parser; never execute a model or Worker."""
+    import hashlib
+    import json
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    import yaml
+    binary_path, conclude_script_path = Path(binary_path).resolve(), Path(conclude_script_path).resolve()
+    pins = {
+        "b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9",
+        "f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904",
+    }
+    expect(binary_path.name == "threat-detect" and hashlib.sha256(binary_path.read_bytes()).hexdigest() in pins,
+           "semantic tests require actual compiler-pinned threat-detect v0.5.2 bytes")
+    wrapper = conclude_script_path.read_bytes()
+    expect(hashlib.sha1(b"blob " + str(len(wrapper)).encode() + b"\0" + wrapper).hexdigest() ==
+           "c72df00b31d59b67968c6e578bf069c616b0421e",
+           "semantic tests require exact official conclude wrapper from setup924af5")
+    compiled = yaml.safe_load((root / ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml").read_text())
+    conclusion_step = next(step for step in compiled["jobs"]["detection"]["steps"]
+                           if step.get("id") == "detection_conclusion")
+    guard = next(step for step in compiled["jobs"]["safe_outputs"]["steps"]
+                 if step.get("name") == "Require first attempt and affirmative detection before Safe Outputs effects")
+    strict = conclusion_step["env"]["GH_AW_DETECTION_CONTINUE_ON_ERROR"]
+    expect(strict == "false" and conclusion_step.get("continue-on-error", False) is False,
+           "hosted semantic tests must use compiled strict-mode controls")
+    safe = {"prompt_injection": False, "secret_leak": False, "malicious_patch": False, "reasons": []}
+    cases = [
+        ("affirmative", json.dumps(safe), "true", "success", "success", None, True),
+        ("missing-verdict", None, "true", "success", "success", None, False),
+        ("empty-verdict", "", "true", "success", "success", None, False),
+        ("malformed-verdict", "{not-json", "true", "success", "success", None, False),
+        ("missing-semantic-fields", "{}", "true", "success", "success", None, False),
+        ("unknown-verdict", json.dumps(dict(safe, prompt_injection="unknown")), "true", "success", "success", None, False),
+        ("null-verdict", json.dumps(dict(safe, secret_leak=None)), "true", "success", "success", None, False),
+        ("detector-timeout", None, "true", "failure", "success",
+         "THREAT_DETECTION_STATUS: status=error reason=engine_timeout\n", False),
+        ("detector-cancelled", None, "true", "cancelled", "success", None, False),
+        ("install-failure", json.dumps(safe), "true", "skipped", "failure", None, False),
+        ("skipped-detector", None, "false", "skipped", "skipped", None, False),
+        ("missing-run-detection", None, "", "skipped", "skipped", None, False),
+    ]
+    for category in ("prompt_injection", "secret_leak", "malicious_patch"):
+        cases.append((category, json.dumps(dict(safe, **{category: True})),
+                      "true", "success", "success", None, False))
+    with tempfile.TemporaryDirectory(prefix="v03-detector-semantics-") as temp:
+        base = Path(temp)
+        for index, (label, content, required, outcome, installed, log, permit) in enumerate(cases):
+            case = base / str(index)
+            case.mkdir()
+            result = case / "detection_result.json"
+            if content is not None:
+                result.write_text(content)
+            if log is not None:
+                (case / "detection.log").write_text(log)
+            output, environment, summary = case / "output", case / "env", case / "summary"
+            for path in (output, environment, summary):
+                path.write_text("")
+            env = {"PATH": str(binary_path.parent) + os.pathsep + os.defpath, "HOME": str(case),
+                "RUN_DETECTION": required, "DETECTION_AGENTIC_EXECUTION_OUTCOME": outcome,
+                "THREAT_DETECT_INSTALL_OUTCOME": installed,
+                "GH_AW_DETECTION_CONTINUE_ON_ERROR": strict,
+                "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(environment),
+                "GITHUB_STEP_SUMMARY": str(summary)}
+            completed = subprocess.run(["bash", str(conclude_script_path), str(result)],
+                                       env=env, capture_output=True, text=True, timeout=20)
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
+            guarded = subprocess.run(["bash", "-c", guard["run"]], env={
+                "PATH": os.defpath, "RUN_ATTEMPT": "1",
+                "DETECTION_SUCCESS": values.get("success", ""),
+                "DETECTION_CONCLUSION": values.get("conclusion", ""),
+            }, capture_output=True, text=True, timeout=5)
+            expect((guarded.returncode == 0) is permit, "real parser-to-Safe-Outputs guard admitted " + label)
+            if permit:
+                expect(completed.returncode == 0 and values.get("success") == "true"
+                       and values.get("conclusion") == "success", "actual safe verdict did not complete")
+            elif required == "true":
+                expect(completed.returncode != 0 and values.get("success") == "false"
+                       and values.get("conclusion") == "failure", "strict real parser failed open: " + label)
+            else:
+                expect(values.get("conclusion") == "skipped", "real skipped verdict contract changed")
+    print("- pinned real threat-detect parser fails closed for absent/unknown/timeout/threat verdicts before Safe Outputs")
+
+
 def recovery_safe_output_artifact_fixture(*, run_id, source_head, pr):
     """A real ZIP/JSONL safe-output artifact carried only by fake HTTP."""
     import hashlib
@@ -939,7 +1216,7 @@ def recovery_safe_output_source_tests():
         COLLECTOR_IDENTITY, RECOVERY_DEVELOPER_WORKFLOW, RecoverySafeOutputGhAwResultSource,
     )
     run_id = 40000000001
-    key = "recovery-test-key"
+    key = "dispatch-" + "a" * 40
     source_head = "1" * 40
     candidate_head = "2" * 40
     feature = "F-OPERATOR-V03-DOGFOOD-HAPPY-0001"
@@ -953,10 +1230,15 @@ def recovery_safe_output_source_tests():
         "head_branch": "main", "head_sha": source_head,
         "status": "completed", "conclusion": "success",
     }
-    jobs = {"jobs": [{
-        "id": 9001, "name": "safe_outputs", "run_id": run_id, "run_attempt": 1,
-        "head_sha": source_head, "status": "completed", "conclusion": "success",
-    }]}
+    jobs = {"total_count": 4, "jobs": [
+        {"id": 9001 + index, "name": name, "run_id": run_id, "run_attempt": 1,
+         "head_sha": source_head, "status": "completed", "conclusion": "success",
+         "steps": ([{"name": "Require first attempt and affirmative detection before Safe Outputs effects",
+                    "status": "completed", "conclusion": "success"}] if name == "safe_outputs" else
+                   [{"name": "Reject rerun before model execution",
+                     "status": "completed", "conclusion": "success"}] if name == "agent" else [])}
+        for index, name in enumerate(("safe_outputs", "agent", "detection", "conclusion"))
+    ]}
     pr = {
         "number": 901, "id": 1901, "node_id": "PR_test_901",
         "user": {"login": "github-actions[bot]", "type": "Bot"},
@@ -1027,6 +1309,8 @@ def recovery_safe_output_source_tests():
     must_reject(lambda s: s["run"].update(run_attempt=2))
     must_reject(lambda s: s.update(prs=[s["pr"], dict(s["pr"], number=902)]))
     must_reject(lambda s: s["jobs"]["jobs"][0].update(conclusion="failure"))
+    must_reject(lambda s: s["jobs"].update(total_count=3))
+    must_reject(lambda s: s["jobs"]["jobs"][0].update(steps=[]))
     must_reject(lambda s: s["pr"]["head"].update(sha="bad"))
     must_reject(lambda s: s["artifacts"].update(total_count=0, artifacts=[]))
     must_reject(lambda s: s["artifacts"].update(total_count=2, artifacts=s["artifacts"]["artifacts"] * 2))
@@ -1234,6 +1518,24 @@ def armed_recovery_fixture():
     return snapshot, deepcopy(ARMED_RECOVERY_NO_HTTP_PROOF), fence
 
 
+def historical_recovery_worker_blobs():
+    """Read exact frozen Worker bytes, never substitute new preparation sources."""
+    import hashlib
+    import subprocess
+    from pathlib import Path
+    from v03_dogfood_full_composition import ARMED_RECOVERY_SOURCE
+    snapshot, _, _ = armed_recovery_fixture()
+    expected = snapshot.get(driver_subject.RECOVERY_AUTHORIZATION_PATH)["worker_blobs"]
+    root = Path(__file__).resolve().parents[1]
+    observed = {}
+    for path, pinned in expected.items():
+        raw = subprocess.run(["git", "show", f"{ARMED_RECOVERY_SOURCE}:{path}"],
+                             cwd=root, check=True, capture_output=True).stdout
+        observed[path] = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        expect(observed[path] == pinned, "frozen historical Worker bytes changed: " + path)
+    return observed
+
+
 def recovery_actions_transport_tests(*, create_only=False):
     """Exercise production gateway and Actions transport; fake HTTP only."""
     import json
@@ -1262,13 +1564,14 @@ def recovery_actions_transport_tests(*, create_only=False):
     class HTTP:
         def __init__(self):
             self.calls = []
+            self.key = key
             self.rows = {workflow: [] for workflow in roles}
             self.fail = set()
             self.ack_loss = False
             self.visible = True
             self.main_sources = ["5" * 40]
         def row(self, workflow, run_id):
-            return {"id": run_id, "display_title": "AI-SDLC gh-aw " + key,
+            return {"id": run_id, "display_title": "AI-SDLC gh-aw " + self.key,
                     "event": "workflow_dispatch", "head_branch": "main",
                     "path": ".github/workflows/" + workflow}
         def __call__(self, *, method, url, token, body=None):
@@ -1291,10 +1594,10 @@ def recovery_actions_transport_tests(*, create_only=False):
                 expect(action == "dispatches" and workflow == subject.RECOVERY_WORKFLOW,
                        "recovery key POST escaped exact Developer workflow")
                 payload = json.loads(body)
-                expect(payload["inputs"]["dispatch_key"] == key and payload["ref"] == "main",
+                expect(payload["inputs"]["dispatch_key"] == self.key and payload["ref"] == "main",
                        "recovery POST renamed key or changed trusted ref")
                 if self.visible:
-                    self.rows[workflow] = [self.row(workflow, 40000000002)]
+                    self.rows[workflow].append(self.row(workflow, 40000000002))
                 if self.ack_loss:
                     raise OSError("acknowledgement lost after remote accept")
                 return 204, {}, b""
@@ -1343,7 +1646,8 @@ def recovery_actions_transport_tests(*, create_only=False):
             composition=SimpleNamespace(runtime=SimpleNamespace(
                 clock=lambda: "2026-10-09T07:00:00Z"),
                 policy_authority=recovery_policy_fixture(), recovery_dispatch_gateway=gateway))
-        with patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})):
+        with (patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})),
+              patch.object(subject, "_recovery_worker_blobs", return_value=historical_recovery_worker_blobs())):
             plan = subject._plan_bounded_recovery(
                 snapshot, preflight=pf, fence=fence, proof=proof)
         snapshot = apply_plan_to_snapshot(snapshot, plan, new_ref_sha="continuation")
@@ -1656,7 +1960,8 @@ def recovery_continuation_cas_tests():
         else: raise AssertionError("recovery accepted " + reason)
         expect(canonical_json(backend.read_snapshot().files) == before,
                "rejected " + reason + " changed Store")
-    with patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})):
+    with (patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})),
+          patch.object(subject, "_recovery_worker_blobs", return_value=historical_recovery_worker_blobs())):
         # Two distinct planners observe the same ref; only one CAS can commit.
         first, second = planner(backend.read_snapshot()), planner(backend.read_snapshot())
         expect(first.result["acquired"] is True and second.result["acquired"] is True,
@@ -1770,7 +2075,7 @@ def recovery_callback_validation_fence_tests(runtime, executor, callback, conten
         executor.feature_gateway = saved_gateway
 
 
-def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback):
+def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback, *, expected_human_interventions=None):
     """Real finalizer/provenance/source pipeline over HTTP and Store fixtures only."""
     from copy import deepcopy
     from dataclasses import asdict, replace
@@ -1781,7 +2086,7 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
     import v03_dogfood_runtime_driver as driver
     import v03_dogfood_post_run_finalizer as finalizer
     import v03_dogfood_production_provenance as provenance
-    from operator_store_model import digest_json, event_path, make_event, operation_events, reservation_path
+    from operator_store_model import digest_json, event_path, make_event, operation_events, reservation_path, projection_path
     from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
     from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
     from operator_vertical_store import vertical_projection
@@ -1790,7 +2095,9 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
     from operator_vertical_gh_aw_github_source import _GATE_START, _GATE_END
     from operator_vertical_gh_aw_collector import _build_receipts
     from v03_dogfood_full_composition import (
-        DogfoodGitHubCandidateProvider, DogfoodCandidateHandoff, DogfoodRecoveryBoundContentLoader)
+        DogfoodGitHubCandidateProvider, DogfoodCandidateHandoff, DogfoodRecoveryBoundContentLoader,
+        recovery_route, REPLACEMENT_FAILED_RUN, REPLACEMENT_FAILED_PR, REPLACEMENT_FAILED_HEAD,
+        REPLACEMENT_FAILED_SOURCE, ARMED_RECOVERY_KEY)
 
     runtime = preflight.composition.runtime
     saved_snapshot = runtime.backend.snapshot
@@ -1802,6 +2109,30 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
     source_sha, run_id = preflight.execution.installation_commit_sha, int(sealed["receipt_id"])
     original_auth = deepcopy(snapshot.get(driver.RECOVERY_AUTHORIZATION_PATH))
     original_attempt = deepcopy(snapshot.get(driver.RECOVERY_ATTEMPT_PATH))
+    route = recovery_route(snapshot)
+    replacement = route["ordinal"] == 1
+    frozen_predecessor = {path: deepcopy(value) for path, value in snapshot.files.items()
+                          if path != projection_path(operation_id)}
+    initial_events = deepcopy(operation_events(snapshot, operation_id))
+    retained_failed_pr = {
+        "number": REPLACEMENT_FAILED_PR, "state": "open", "draft": True,
+        "html_url": f"https://github.com/{repository}/pull/{REPLACEMENT_FAILED_PR}",
+        "head": {"sha": REPLACEMENT_FAILED_HEAD, "repo": {"full_name": repository}},
+        "base": {"ref": h["target_ref"], "sha": old_head, "repo": {"full_name": repository}},
+    }
+    if replacement:
+        expect(type(expected_human_interventions) is int and expected_human_interventions == 4,
+               "replacement test needs the reviewed observed-intervention ledger count of four")
+        expect(len(initial_events) == 12
+               and initial_events[-1]["event_type"] == "dispatch.launch.lookup-recorded"
+               and initial_events[-1]["payload"]["receipt_id"] == "37204777409",
+               "replacement fixture must preserve the complete actual historical twelve-event prefix")
+        expect(run_id != REPLACEMENT_FAILED_RUN
+               and sealed["output_candidate_pr_number"] != REPLACEMENT_FAILED_PR
+               and new_head != REPLACEMENT_FAILED_HEAD
+               and sealed["recovery_dispatch_key"] not in {ARMED_RECOVERY_KEY, h["external_dispatch_key"]}
+               and source_sha != REPLACEMENT_FAILED_SOURCE,
+               "replacement reused failed execution/output or historical dispatch authority")
     recovery_source = preflight.composition.recovery_result_source
     workflows = recovery_source.config.workflows
     slot = SimpleNamespace(scenario="happy_path", feature_id=h["feature_id"], target_ref=h["target_ref"])
@@ -1816,7 +2147,9 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
 
     def external_json(path):
         if path == "/pulls":
-            return [candidate()]
+            return [candidate(), deepcopy(retained_failed_pr)] if replacement else [candidate()]
+        if replacement and path == f"/pulls/{REPLACEMENT_FAILED_PR}":
+            return deepcopy(retained_failed_pr)
         if path == f"/pulls/{h['candidate_pr_number']}":
             return candidate()
         if path == f"/compare/{old_head}...{new_head}":
@@ -1929,19 +2262,25 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
             emit("loop.stable-stop", {"status": "WAITING_EXTERNAL"})
 
     try:
-        expect(not operation_events(snapshot, operation_id), "happy fixture expected frozen recovery sidecars only")
-        emit("operation.started", {"operation_profile": VERTICAL_PROFILE,
-            "target_repository": repository, "feature_id": h["feature_id"], "expected_revision": 1})
-        # Preserve original authorization/receipt positions at sequences 11/12.
-        emit("loop.step.selected", {"step": "IMPLEMENTATION_WORK"})
-        emit("dispatch.claimed", {"external_dispatch_key": h["external_dispatch_key"]})
-        for _ in range(7):
-            emit("feature.event.translated", {"purpose": "historical-fixture-prefix"})
         dev_context = developer_callback["context"]
-        reserve_and_authorize(dev_context, h["task_identity"])
-        emit("dispatch.launch.lookup-recorded", {
-            "external_dispatch_key": h["external_dispatch_key"], "lookup_state": "LAUNCHED",
-            "receipt_id": "37204777409"})
+        if not replacement:
+            expect(not operation_events(snapshot, operation_id), "happy fixture expected frozen recovery sidecars only")
+            emit("operation.started", {"operation_profile": VERTICAL_PROFILE,
+                "target_repository": repository, "feature_id": h["feature_id"], "expected_revision": 1})
+            # Preserve original authorization/receipt positions at sequences 11/12.
+            emit("loop.step.selected", {"step": "IMPLEMENTATION_WORK"})
+            emit("dispatch.claimed", {"external_dispatch_key": h["external_dispatch_key"]})
+            for _ in range(7):
+                emit("feature.event.translated", {"purpose": "historical-fixture-prefix"})
+            reserve_and_authorize(dev_context, h["task_identity"])
+            emit("dispatch.launch.lookup-recorded", {
+                "external_dispatch_key": h["external_dispatch_key"], "lookup_state": "LAUNCHED",
+                "receipt_id": "37204777409"})
+        else:
+            expect(dev_context.external_dispatch_key == h["external_dispatch_key"]
+                   and dev_context.dispatch_id == h["dispatch_id"]
+                   and dev_context.candidate_head_sha == old_head,
+                   "replacement collector changed original semantic callback authority")
         record_callback(deepcopy(developer_callback))
         provider = DogfoodGitHubCandidateProvider(slot=slot, repository=repository,
             token="fixture", http_get=get_json)
@@ -2066,8 +2405,29 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
                    "happy-path finalization rewrote frozen ARMED authorization history")
             expect(original_auth["source_head_sha"] != source_sha
                    and sealed["execution_source_head_sha"] == source_sha
-                   and sealed["recovery_dispatch_key"].startswith("recovery-"),
-                   "fixture failed to exercise real recovery key and old/new source separation")
+                   and (sealed["recovery_dispatch_key"].startswith("dispatch-") if replacement
+                        else sealed["recovery_dispatch_key"].startswith("recovery-")),
+                   "fixture failed to exercise distinct real execution key and old/new source separation")
+            if replacement:
+                expect(record["counts"]["human_interventions"] == expected_human_interventions,
+                       "replacement finalizer omitted or invented owner intervention history")
+                required_disclosure = {
+                    f"https://github.com/{repository}/actions/runs/{REPLACEMENT_FAILED_RUN}",
+                    f"https://github.com/{repository}/pull/{REPLACEMENT_FAILED_PR}",
+                    "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076638838",
+                    "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076882835",
+                }
+                expect({uri.lower() for uri in required_disclosure}
+                       <= {uri.lower() for uri in record["evidence_uris"]},
+                       "replacement finalizer omitted failed run/output/admission evidence")
+                expect(all(runtime.backend.snapshot.get(path) == value
+                           for path, value in frozen_predecessor.items()),
+                       "replacement pipeline rewrote predecessor or immutable replacement records")
+                expect(operation_events(runtime.backend.snapshot, operation_id)[:12] == initial_events,
+                       "replacement pipeline rewrote the original twelve-event logical launch history")
+                expect(external_json(f"/pulls/{REPLACEMENT_FAILED_PR}") == retained_failed_pr
+                       and state["patches"] == 1,
+                       "replacement closed/adopted failed PR or repeated fixture fast-forward")
             for label, mutate, restore in (
                 ("execution-source", lambda: state["run_patch"].update(head_sha=original_auth["source_head_sha"]),
                  lambda: state["run_patch"].clear()),
@@ -2120,10 +2480,576 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
                 raise AssertionError("actual finalizer accepted forged leased Developer URI")
             finally:
                 dev_event["payload"] = original_payload
+            if replacement:
+                frozen_lookup = next(row for row in operation_events(runtime.backend.snapshot, operation_id)
+                                     if row["sequence"] == 5)
+                old_payload = deepcopy(frozen_lookup["payload"])
+                frozen_lookup["payload"].update(lookup_state="LAUNCHED", receipt_id="37204777409")
+                try:
+                    finalize()
+                except (finalizer.V03DogfoodPostRunFinalizerError, VerticalInvariantError):
+                    pass
+                else:
+                    raise AssertionError("finalizer hid consumption in a superseded generation")
+                finally:
+                    frozen_lookup["payload"] = old_payload
             expect(finalize()["verdict"] == "PASS", "restored production happy-path did not reverify")
     finally:
         runtime.backend.snapshot = saved_snapshot
     print("- real recovery Developer/Reviewer/QA finalizer verifies leased callbacks, handoff and provenance")
+
+
+
+
+
+def fixed_replacement_fixture():
+    """Complete frozen Store and production transport/source; fake external HTTP."""
+    import json
+    import subprocess
+    from copy import deepcopy
+    from pathlib import Path
+    from types import SimpleNamespace
+    from urllib.parse import urlparse
+    from operator_store_git import MemoryStateRefBackend, CommitResult
+    from operator_store_backends import OperatorStoreRuntime
+    from operator_store_model import StoreSnapshot
+    from operator_store_protection import PROTECTED, StaticProtectionVerifier
+    from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig
+    from v03_dogfood_fixture_pool import require_slot
+    import v03_dogfood_full_composition as composition
+    subject = driver_subject
+    root = Path(__file__).resolve().parents[1]
+    commit = composition.REPLACEMENT_PREDECESSOR_STORE
+    if not hasattr(fixed_replacement_fixture, "_frozen_files"):
+        listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "state/operator/v1"],
+                                cwd=root, check=True, capture_output=True, text=True).stdout.splitlines()
+        files = {}
+        for path in listed:
+            if path.endswith(".json"):
+                files[path] = json.loads(subprocess.run(["git", "show", f"{commit}:{path}"],
+                    cwd=root, check=True, capture_output=True).stdout)
+        fixed_replacement_fixture._frozen_files = deepcopy(files)
+    # Each test gets an independent deep copy of the same immutable commit.
+    frozen = StoreSnapshot(commit, deepcopy(fixed_replacement_fixture._frozen_files))
+    composition.validate_replacement_predecessor(frozen)
+    class Backend(MemoryStateRefBackend):
+        def __init__(self):
+            super().__init__(repository="dream-xin/ai-sdlc", state_ref="refs/heads/ai-sdlc-operator-state",
+                             snapshot=deepcopy(frozen))
+            self.commit_count = 0
+        def commit(self, plan, receipt):
+            self.commit_count += 1
+            result = super().commit(plan, receipt)
+            self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
+            return CommitResult(self.snapshot.ref_sha, self.read_snapshot(), result.result)
+    runtime = OperatorStoreRuntime(backend=Backend(),
+        protection_verifier=StaticProtectionVerifier(status=PROTECTED), clock=lambda: "2026-10-09T08:00:00Z")
+    http, transport, gateway, _ = recovery_actions_transport_tests(create_only=True)()
+    h = subject.HISTORICAL_PREHTTP_RECOVERY
+    state = {"run_patch": {}, "old_run_patch": {}, "job_patch": {}, "artifact_patch": {},
+             "pr_patch": {}, "route_fail": None, "old_visible": True, "unknown": False}
+    new_run = 40000000002
+    def pr(number):
+        old = number == composition.REPLACEMENT_FAILED_PR
+        run = composition.REPLACEMENT_FAILED_RUN if old else new_run
+        return {"number": number, "id": 1900 + number, "node_id": f"PR_fixture_{number}",
+                "html_url": f"https://github.com/dream-xin/ai-sdlc/pull/{number}",
+                "state": "open", "draft": True, "title": "[ai-sdlc gh-aw] bounded implementation",
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+                "head": {"ref": (f"gh-aw/{h['feature_id']}-{run}-v1-c1a21d03a1e716db" if old else
+                                  f"gh-aw/{h['feature_id']}-{run}-v1-fixed"),
+                         "sha": composition.REPLACEMENT_FAILED_HEAD if old else "7" * 40,
+                         "repo": {"full_name": "dream-xin/ai-sdlc"}},
+                "base": {"ref": h["target_ref"], "sha": h["candidate_head_sha"],
+                         "repo": {"full_name": "dream-xin/ai-sdlc"}}}
+    def run_row(run):
+        old = run == composition.REPLACEMENT_FAILED_RUN
+        return dict({
+            "id": run, "run_attempt": 1, "repository": {"full_name": "dream-xin/ai-sdlc"},
+            "html_url": f"https://github.com/dream-xin/ai-sdlc/actions/runs/{run}",
+            "path": ".github/workflows/" + subject.RECOVERY_WORKFLOW,
+            "display_title": "AI-SDLC gh-aw " + (composition.ARMED_RECOVERY_KEY if old else http.key),
+            "event": "workflow_dispatch", "head_branch": "main",
+            "head_sha": composition.REPLACEMENT_FAILED_SOURCE if old else "5" * 40,
+            "status": "completed", "conclusion": "failure" if old else "success",
+        }, **state["old_run_patch" if old else "run_patch"])
+    def job_rows(run):
+        old = run == composition.REPLACEMENT_FAILED_RUN
+        ids = composition.REPLACEMENT_ADMISSION["failed_jobs"] if old else {
+            "activation": 9000, "agent": 9001, "detection": 9002, "safe_outputs": 9003, "conclusion": 9004}
+        rows = []
+        for name, job_id in ids.items():
+            row = {"id": job_id, "name": name, "run_id": run, "run_attempt": 1,
+                   "head_sha": composition.REPLACEMENT_FAILED_SOURCE if old else "5" * 40,
+                   "status": "completed", "conclusion": "failure" if old and name == "conclusion" else "success",
+                   "steps": []}
+            if not old and name in {"agent", "safe_outputs"}:
+                row["steps"] = [{"name": "Reject rerun before model execution" if name == "agent" else
+                     "Require first attempt and affirmative detection before Safe Outputs effects",
+                     "status": "completed", "conclusion": "success"}]
+            if (old, name) in state["job_patch"]:
+                row.update(state["job_patch"][(old, name)])
+            rows.append(row)
+        return {"total_count": len(rows), "jobs": rows}
+    def external(path):
+        if path == f"/actions/runs/{composition.REPLACEMENT_FAILED_RUN}":
+            return run_row(composition.REPLACEMENT_FAILED_RUN)
+        if path == f"/actions/runs/{new_run}":
+            return run_row(new_run)
+        for run in (composition.REPLACEMENT_FAILED_RUN, new_run):
+            if path == f"/actions/runs/{run}/attempts/1/jobs":
+                return job_rows(run)
+        if path == "/pulls":
+            return [pr(composition.REPLACEMENT_FAILED_PR), dict(pr(901), **state["pr_patch"])]
+        if path in ("/pulls/574", "/pulls/901"):
+            return dict(pr(int(path.rsplit("/", 1)[1])), **state["pr_patch"])
+        if path == f"/actions/runs/{composition.REPLACEMENT_FAILED_RUN}/artifacts":
+            return {"total_count": 1, "artifacts": [dict({
+                "id": composition.REPLACEMENT_ADMISSION["failed_artifact_id"], "name": "safe-outputs-items",
+                "expired": False, "digest": composition.REPLACEMENT_ADMISSION["failed_artifact_digest"],
+                "workflow_run": {"id": composition.REPLACEMENT_FAILED_RUN,
+                    "head_sha": composition.REPLACEMENT_FAILED_SOURCE, "head_branch": "main",
+                    "repository_id": 1326302284, "head_repository_id": 1326302284},
+            }, **state["artifact_patch"])]}
+        if path == f"/actions/runs/{new_run}/artifacts":
+            value, _ = recovery_safe_output_artifact_fixture(run_id=new_run, source_head="5" * 40, pr=pr(901))
+            return value
+        if path == f"/actions/artifacts/{new_run + 100}/zip":
+            _, archive = recovery_safe_output_artifact_fixture(run_id=new_run, source_head="5" * 40, pr=pr(901))
+            return archive
+        raise AssertionError("replacement HTTP escaped fixed inventory: " + path)
+    old_http = http.__call__
+    def action_http(*, method, url, token, body=None):
+        suffix = urlparse(url).path.split("/repos/dream-xin/ai-sdlc", 1)[1]
+        if suffix.startswith("/actions/workflows/") or suffix == "/git/ref/heads/main":
+            return old_http(method=method, url=url, token=token, body=body)
+        expect(method == "GET" and body is None, "replacement proof attempted mutation")
+        if suffix == state["route_fail"]:
+            return 503, {}, b"unavailable"
+        value = external(suffix)
+        return 200, {}, value if isinstance(value, bytes) else json.dumps(value).encode()
+    transport._transport_http = action_http
+    def source_http(*, method, url, token):
+        return action_http(method=method, url=url, token=token)
+    source = composition.RecoverySafeOutputGhAwResultSource(
+        GitHubActionsGhAwResultSourceConfig(control_repository="dream-xin/ai-sdlc",
+            control_token="read", target_token="read", collector_identity=composition.COLLECTOR_IDENTITY,
+            workflows=gateway.workflows), target_repository="dream-xin/ai-sdlc", http=source_http)
+    pf = SimpleNamespace(slot=require_slot("happy_path"), workflows=gateway.workflows,
+        execution=SimpleNamespace(repository="dream-xin/ai-sdlc", installation_commit_sha="5" * 40),
+        trusted_context_digest="6" * 64, composition=SimpleNamespace(runtime=runtime,
+            policy_authority=recovery_policy_fixture(), actions_transport=transport,
+            recovery_dispatch_gateway=gateway, candidate_provider=transport.candidate_provider,
+            result_source=source, recovery_result_source=source))
+    authorization = subject._replacement_authorization(frozen, pf)
+    http.key = authorization["recovery_dispatch_key"]
+    http.rows[subject.RECOVERY_WORKFLOW] = [run_row(composition.REPLACEMENT_FAILED_RUN)]
+    return pf, http, state, frozen
+
+
+def fixed_replacement_admission_tests():
+    from copy import deepcopy
+    from unittest.mock import patch
+    from operator_store_git import CasConflict
+    from operator_vertical import VerticalInvariantError
+    from operator_store_model import canonical_json
+    import v03_dogfood_full_composition as composition
+    subject = driver_subject
+    def reject(action, pf, http, message):
+        before = canonical_json(pf.composition.runtime.backend.read_snapshot().files)
+        writes, posts = pf.composition.runtime.backend.commit_count, http.posts
+        try: action()
+        except (VerticalInvariantError, V03DogfoodRuntimeDriverError, composition.V03DogfoodCompositionError):
+            pass
+        else: raise AssertionError("replacement accepted " + message)
+        expect(pf.composition.runtime.backend.commit_count == writes and http.posts == posts
+               and canonical_json(pf.composition.runtime.backend.read_snapshot().files) == before,
+               "rejected replacement changed protected Store or dispatched: " + message)
+    pf, http, state, frozen = fixed_replacement_fixture()
+    subject._bounded_recovery_identity(frozen, pf)
+    first = subject._plan_fixed_replacement(frozen, preflight=pf)
+    second = subject._plan_fixed_replacement(frozen, preflight=pf)
+    expect(first.result["authorization"]["recovery_dispatch_key"] == second.result["authorization"]["recovery_dispatch_key"]
+           and first.result["acquired"] is True and len(first.mutations) == 2 and http.posts == 0,
+           "fixed replacement identity is not deterministic/prevalidated before CAS")
+    runtime = pf.composition.runtime
+    runtime.backend.commit(first, runtime.protected_receipt())
+    try: runtime.backend.commit(second, runtime.protected_receipt())
+    except CasConflict: pass
+    else: raise AssertionError("two fixed replacement CAS contenders committed")
+    writes = runtime.backend.commit_count
+    replay = subject._commit_recovery_nonempty(runtime, lambda snapshot:
+        subject._plan_fixed_replacement(snapshot, preflight=pf))
+    expect(replay["acquired"] is False and runtime.backend.commit_count == writes,
+           "replacement replay minted another claim or empty Store commit")
+    reject(lambda: subject.recover_approved_replacement(pf), pf, http, "crash-after-claim empty lookup")
+    for path, value in frozen.files.items():
+        expect(runtime.backend.snapshot.get(path) == value, "replacement rewrote frozen predecessor")
+    changed = deepcopy(runtime.backend.snapshot)
+    changed.files[composition.REPLACEMENT_AUTHORIZATION_PATH]["observed_accounting"]["human_interventions"] = 0
+    reject(lambda: composition.validate_replacement_chain(changed), pf, http, "rewritten observed accounting")
+    for path in composition.REPLACEMENT_PATHS:
+        for value in (None, {}, {"ordinal": 2}):
+            bad = deepcopy(frozen); bad.files[path] = value
+            reject(lambda: subject._plan_fixed_replacement(bad, preflight=pf), pf, http, "partial/null route " + path)
+    for label, mutate in (
+        ("old attempt2", lambda pf, st: st["old_run_patch"].update(run_attempt=2)),
+        ("old active", lambda pf, st: st["old_run_patch"].update(status="in_progress", conclusion=None)),
+        ("old moved source", lambda pf, st: st["old_run_patch"].update(head_sha="0" * 40)),
+        ("old active job", lambda pf, st: st["job_patch"].update({(True, "safe_outputs"): {"status": "in_progress"}})),
+        ("old archive digest", lambda pf, st: st["artifact_patch"].update(digest="sha256:" + "0" * 64)),
+        ("retained draft closed", lambda pf, st: st["pr_patch"].update(state="closed")),
+        ("provider unavailable", lambda pf, st: st.update(route_fail=f"/actions/runs/{composition.REPLACEMENT_FAILED_RUN}")),
+    ):
+        pf_bad, http_bad, bad_state, _ = fixed_replacement_fixture()
+        mutate(pf_bad, bad_state)
+        reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, label)
+    pf_bad, http_bad, _, _ = fixed_replacement_fixture()
+    http_bad.main_sources = ["0" * 40]
+    reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, "stale main")
+    pf_bad, http_bad, _, _ = fixed_replacement_fixture()
+    with patch.object(subject, "_recovery_worker_blobs", return_value={}):
+        reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, "Worker source drift")
+    for role in ("reviewer", "qa"):
+        pf_bad, http_bad, _, _ = fixed_replacement_fixture()
+        workflow = pf_bad.composition.recovery_dispatch_gateway.workflows.workflow_for(role)
+        old = deepcopy(http_bad.rows[subject.RECOVERY_WORKFLOW][0]); old["path"] = ".github/workflows/" + workflow
+        http_bad.rows[workflow] = [old]
+        reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, "old cross-role collision")
+    # Fail before the claim on incomplete global scans, duplicates, stale
+    # candidate/payload binding, or any existing handoff for this logical task.
+    for label in ("page-failure", "new-duplicate", "candidate-drift", "prior-handoff"):
+        pf_bad, http_bad, _, frozen_bad = fixed_replacement_fixture()
+        if label == "page-failure":
+            http_bad.fail.add(pf_bad.composition.recovery_dispatch_gateway.workflows.qa_workflow)
+        elif label == "new-duplicate":
+            http_bad.rows[subject.RECOVERY_WORKFLOW].extend([
+                http_bad.row(subject.RECOVERY_WORKFLOW, 40000000002),
+                http_bad.row(subject.RECOVERY_WORKFLOW, 40000000003)])
+        elif label == "candidate-drift":
+            provider = pf_bad.composition.candidate_provider
+            original_get = provider.http_get
+            def moved_candidate(url, headers):
+                status, rows = original_get(url, headers)
+                rows = deepcopy(rows); rows[0]["head"]["sha"] = "0" * 40
+                return status, rows
+            provider.http_get = moved_candidate
+        else:
+            pf_bad.composition.runtime.backend.snapshot.files[
+                f"state/operator/v1/operations/{subject.HISTORICAL_PREHTTP_RECOVERY['operation_id']}/dogfood-candidate-handoffs/foreign/intent.json"] = {}
+        reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, label)
+    # A successful POST still consumes the sole claim when result evidence fails.
+    for label in ("attempt2", "boolean-attempt", "string-attempt", "failed-run", "missing-safety-guard", "failed-safety-guard", "old-output"):
+        pf_bad, http_bad, st, _ = fixed_replacement_fixture()
+        if label == "attempt2": st["run_patch"]["run_attempt"] = 2
+        elif label == "boolean-attempt": st["run_patch"]["run_attempt"] = True
+        elif label == "string-attempt": st["run_patch"]["run_attempt"] = "1"
+        elif label == "failed-run": st["run_patch"]["conclusion"] = "failure"
+        elif label == "missing-safety-guard":
+            st["job_patch"][(False, "safe_outputs")] = {"steps": []}
+        elif label == "failed-safety-guard":
+            st["job_patch"][(False, "safe_outputs")] = {"steps": [{
+                "name": "Require first attempt and affirmative detection before Safe Outputs effects",
+                "status": "completed", "conclusion": "failure"}]}
+        else: st["pr_patch"]["number"] = composition.REPLACEMENT_FAILED_PR
+        for replay_index in range(2):
+            try: subject.recover_approved_replacement(pf_bad)
+            except (VerticalInvariantError, V03DogfoodRuntimeDriverError): pass
+            else: raise AssertionError("replacement sealed rejected " + label)
+            expect(http_bad.posts == 1
+                   and composition.REPLACEMENT_ATTEMPT_PATH in pf_bad.composition.runtime.backend.snapshot.files
+                   and composition.REPLACEMENT_RECEIPT_PATH not in pf_bad.composition.runtime.backend.snapshot.files,
+                   "failed/uncertain replacement regained creation right: " + label)
+    for label in ("prefix", "reservation", "extra-claim", "historical-consumption", "null-historical-seal"):
+
+        pf_bad, http_bad, _, _ = fixed_replacement_fixture()
+        from operator_store_model import operation_events, reservation_path, event_path, make_event
+        snapshot = pf_bad.composition.runtime.backend.snapshot
+        events = operation_events(snapshot, subject.HISTORICAL_PREHTTP_RECOVERY["operation_id"])
+        if label == "null-historical-seal":
+            snapshot.files[composition.RECOVERY_RECEIPT_PATH] = None
+        elif label == "prefix":
+            events[0]["occurred_at"] = "changed"
+        elif label == "reservation":
+            snapshot.files[reservation_path(subject.HISTORICAL_PREHTTP_RECOVERY["semantic_effect_key"])]["task_identity"] = "foreign"
+        elif label == "historical-consumption":
+            events[4]["payload"].update(lookup_state="LAUNCHED", receipt_id="37204777409")
+        else:
+            event = make_event(operation_id=subject.HISTORICAL_PREHTTP_RECOVERY["operation_id"], generation=1,
+                sequence=13, event_id="unexpected-claim", event_type="dispatch.claimed",
+                occurred_at=pf_bad.composition.runtime.clock(), payload={},
+                trusted_context_digest=pf_bad.trusted_context_digest)
+            snapshot.files[event_path(event["operation_id"], 13, "unexpected-claim")] = event
+        reject(lambda: subject.recover_approved_replacement(pf_bad), pf_bad, http_bad, label)
+    # Real prehost entry must reject corrupt partial replacement with zero effects.
+    for path in composition.REPLACEMENT_PATHS:
+        pf_bad, http_bad, _, _ = fixed_replacement_fixture()
+        pf_bad.composition.runtime.backend.snapshot.files[path] = None
+        with (patch.object(subject, "assemble_preflight", return_value=pf_bad),
+              patch.object(subject, "_head", return_value="5" * 40),
+              patch.object(subject, "V03DogfoodOpenAIResponsesHost") as host):
+            reject(lambda: subject._execute_live(mode=subject.RUN, scenario="happy_path"),
+                   pf_bad, http_bad, "prehost null replacement")
+            expect(not host.called, "corrupt replacement constructed a model host")
+    pf_retry, http_retry, _, _ = fixed_replacement_fixture()
+    pf_retry.composition.runtime.backend.inject_conflict_once()
+    expect(subject.recover_approved_replacement(pf_retry)["receipt_id"] == "40000000002"
+           and http_retry.posts == 1, "CAS retry lost fixed identity or duplicated POST")
+    pf, http, state, frozen = fixed_replacement_fixture()
+    sealed = subject.recover_approved_replacement(pf)
+    expect(http.posts == 1 and sealed["receipt_id"] == "40000000002"
+           and sealed["output_candidate_pr_number"] == 901
+           and sealed["recovery_dispatch_key"].startswith("dispatch-"),
+           "actual fixed replacement transport/source did not seal one distinct output")
+    expect(subject.recover_approved_replacement(pf) == sealed and http.posts == 1,
+           "fixed replacement replay attempted another create")
+    for path, value in frozen.files.items():
+        expect(pf.composition.runtime.backend.snapshot.get(path) == value, "replacement altered old history")
+    pf_lost, http_lost, _, _ = fixed_replacement_fixture()
+    http_lost.ack_loss = True
+    expect(subject.recover_approved_replacement(pf_lost)["receipt_id"] == "40000000002"
+           and http_lost.posts == 1, "replacement ack-loss failed lookup-only convergence")
+    print("- fixed replacement actual protected CAS/transport/source preserves old failure and permits one new create")
+    return pf, sealed, frozen
+
+
+def fixed_replacement_collector_pipeline_tests(preflight, sealed, *, expected_human_interventions):
+    """Collect the sealed new run through the real launch, lease, receipt and content paths."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    import v03_dogfood_full_composition as composition
+    import v03_dogfood_runtime_driver as driver
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical import FeatureSnapshot, VerticalInvariantError, validate_collected_outputs
+
+    runtime = preflight.composition.runtime
+    original = runtime.backend.snapshot
+    h = driver.HISTORICAL_PREHTTP_RECOVERY
+    source = preflight.composition.recovery_result_source
+    bound_loader = composition.DogfoodRecoveryBoundContentLoader(
+        result_source=preflight.composition.result_source,
+        recovery_result_source=source, policy_authority=preflight.composition.policy_authority)
+    bound_loader.bind_runtime(runtime)
+    calls = []
+
+    def receive(**callback):
+        context = callback["context"]
+        feature = FeatureSnapshot(
+            repository=context.target_repository, feature_id=context.feature_id,
+            target_ref=context.target_ref, revision=1, manifest_digest="",
+            current_stage="implementation", stages={}, gates={}, remediation_tasks=(), artifacts=(),
+            candidate_pr_number=h["candidate_pr_number"], candidate_head_sha=h["candidate_head_sha"])
+        validate_collected_outputs(context=context, feature=feature,
+            worker_payload=callback["worker_payload"], receipts=callback["receipts"],
+            content_loader=bound_loader)
+        calls.append(deepcopy(callback))
+        return {"status": "COLLECTED"}
+
+    coordinator = SimpleNamespace(
+        executor=SimpleNamespace(runtime=runtime, config=SimpleNamespace(target_ref=h["target_ref"])),
+        content_loader=bound_loader, handle=receive)
+    collector = composition.DogfoodRecoveryCollector(
+        callback_coordinator=coordinator, result_source=source,
+        workflows=preflight.composition.recovery_dispatch_gateway.workflows,
+        control_repository=preflight.execution.repository, clock=runtime.clock,
+        policy_authority=preflight.composition.policy_authority)
+    before = canonical_json(original.files)
+    import v03_dogfood_scenario_runner as runner
+    run = runner._wait_current_dispatch(preflight, h["operation_id"], h["external_dispatch_key"])
+    expect(run["id"] == int(sealed["receipt_id"]), "scenario wait selected the failed predecessor")
+    expect(runner._launch_receipts(preflight, h["operation_id"]) ==
+           ((int(sealed["receipt_id"]),), sealed["receipt_id"]),
+           "scenario receipt mapping selected the old recovery route")
+    expect(collector.handle(operation_id=h["operation_id"],
+        external_dispatch_key=h["external_dispatch_key"]) == {"status": "COLLECTED"},
+        "real fixed replacement collector failed before callback validation")
+    expect(len(calls) == 1 and canonical_json(runtime.backend.snapshot.files) == before,
+           "replacement collection changed frozen Store before its actual callback planner")
+    callback = calls[0]
+    context = callback["context"]
+    expect(context.runtime_receipt_identity == sealed["receipt_id"]
+           and context.external_dispatch_key == h["external_dispatch_key"]
+           and context.dispatch_id == h["dispatch_id"]
+           and context.worker_identity.endswith("@" + sealed["execution_source_head_sha"]),
+           "replacement collector conflated original semantic identity and new execution provenance")
+    expect(len(callback["receipts"]) == 1
+           and callback["receipts"][0]["trusted_uri"] == sealed["safe_output_uri"]
+           and "--first-attempt--key-" + sealed["recovery_dispatch_key"] in sealed["safe_output_uri"]
+           and "--run-" + sealed["receipt_id"] in sealed["safe_output_uri"],
+           "replacement receipt did not carry the distinct real run/key lease")
+
+    def reject_collector(snapshot, label):
+        runtime.backend.snapshot = snapshot
+        count = len(calls)
+        state = canonical_json(snapshot.files)
+        for read in (
+            lambda: runner._wait_current_dispatch(preflight, h["operation_id"], h["external_dispatch_key"]),
+            lambda: runner._launch_receipts(preflight, h["operation_id"]),
+        ):
+            try: read()
+            except (VerticalInvariantError, runner.V03DogfoodScenarioRunnerError): pass
+            else: raise AssertionError("scenario selected corrupt replacement: " + label)
+        try:
+            collector.handle(operation_id=h["operation_id"], external_dispatch_key=h["external_dispatch_key"])
+        except VerticalInvariantError:
+            pass
+        else:
+            raise AssertionError("real replacement collector admitted " + label)
+        expect(len(calls) == count and canonical_json(snapshot.files) == state,
+               "rejected replacement reached callback or mutated protected state")
+
+    try:
+        for path in composition.REPLACEMENT_PATHS:
+            snapshot = deepcopy(original)
+            snapshot.files[path] = None
+            reject_collector(snapshot, "null fixed-path document " + path)
+        for field, value in (
+            ("receipt_id", str(composition.REPLACEMENT_FAILED_RUN)),
+            ("output_candidate_pr_number", composition.REPLACEMENT_FAILED_PR),
+            ("execution_source_head_sha", composition.REPLACEMENT_FAILED_SOURCE),
+            ("safe_output_uri", sealed["safe_output_uri"].replace(
+                sealed["recovery_dispatch_key"], composition.ARMED_RECOVERY_KEY, 1)),
+            ("collector_dispatch_id", "foreign-semantic-namespace"),
+        ):
+            snapshot = deepcopy(original)
+            snapshot.files[composition.REPLACEMENT_RECEIPT_PATH][field] = value
+            if field == "safe_output_uri":
+                from operator_store_model import digest_json
+                snapshot.files[composition.REPLACEMENT_RECEIPT_PATH]["safe_output_digest"] = (
+                    "sha256:" + digest_json({"trusted_uri": value}))
+            reject_collector(snapshot, field)
+        runtime.backend.snapshot = original
+        expect(isinstance(bound_loader(sealed["safe_output_uri"]), bytes),
+               "real replacement loader did not reauthenticate sealed output bytes")
+        old_uri = sealed["safe_output_uri"].replace(
+            sealed["recovery_dispatch_key"], composition.ARMED_RECOVERY_KEY, 1).replace(
+            "--run-" + sealed["receipt_id"], "--run-" + str(composition.REPLACEMENT_FAILED_RUN), 1)
+        try:
+            bound_loader(old_uri)
+        except VerticalInvariantError:
+            pass
+        else:
+            raise AssertionError("replacement content loader adopted the failed predecessor URI")
+        snapshot = deepcopy(original)
+        snapshot.files[composition.REPLACEMENT_AUTHORIZATION_PATH] = None
+        runtime.backend.snapshot = snapshot
+        try:
+            bound_loader(sealed["safe_output_uri"])
+        except VerticalInvariantError:
+            pass
+        else:
+            raise AssertionError("replacement loader fell back after null protected authorization")
+        runtime.backend.snapshot = original
+        expect(operation_events(original, h["operation_id"])[-1]["sequence"] == 12,
+               "replacement fixture callback was consumed before finalizer pipeline")
+        # This helper owns actual callback persistence, trusted candidate handoff,
+        # production Reviewer/QA resolution and finalizer/provenance verification.
+        happy_path_recovery_finalization_tests(preflight, sealed, callback,
+            expected_human_interventions=expected_human_interventions)
+        expect(canonical_json(original.files) == before,
+               "isolated full pipeline modified its frozen predecessor fixture")
+    finally:
+        runtime.backend.snapshot = original
+    print("- fixed replacement crosses real collector/content/Store callback/handoff/full-finalizer boundaries")
+
+
+def fixed_replacement_route_lock_tests(preflight, sealed):
+    """Presence locks the fixed route; malformed replacement state never falls back."""
+    from copy import deepcopy
+    from dataclasses import replace
+    from unittest.mock import patch
+    import v03_dogfood_full_composition as composition
+    import v03_dogfood_post_run_finalizer as finalizer
+    from operator_vertical import VerticalInvariantError
+    from operator_store_model import canonical_json
+
+    runtime = preflight.composition.runtime
+    original = runtime.backend.snapshot
+    binding = composition.recovery_execution_binding(preflight.composition.policy_authority)
+    route = composition.recovery_route(original)
+    expect(route["ordinal"] == 1 and route["receipt_path"] == composition.REPLACEMENT_RECEIPT_PATH,
+           "replacement fixture did not select the one closed ordinal-one route")
+    expect(finalizer._validated_recovery_chain(original, execution_binding=binding) == sealed,
+           "replacement sealed chain failed real finalizer revalidation")
+    expect(str(sealed["receipt_id"]) != str(composition.REPLACEMENT_FAILED_RUN)
+           and sealed["output_candidate_pr_number"] != composition.REPLACEMENT_FAILED_PR
+           and sealed["output_candidate_head_sha"] != composition.REPLACEMENT_FAILED_HEAD,
+           "successful replacement reused the failed predecessor run or output")
+    frozen_paths = (composition.RECOVERY_AUTHORIZATION_PATH, composition.RECOVERY_ATTEMPT_PATH,
+                    composition.RECOVERY_CONTINUATION_PATH)
+    frozen = {path: canonical_json(original.get(path)) for path in frozen_paths}
+    historical = deepcopy(original)
+    for path in composition.REPLACEMENT_PATHS:
+        historical.files.pop(path, None)
+    expect(composition.recovery_route(historical)["ordinal"] == 0,
+           "valid historical fallback fixture is not available for route-lock tests")
+
+    def reject(snapshot, label):
+        runtime.backend.snapshot = snapshot
+        before = canonical_json(snapshot.files)
+        try:
+            finalizer._validated_recovery_chain(snapshot, execution_binding=binding)
+        except (finalizer.V03DogfoodPostRunFinalizerError, VerticalInvariantError):
+            pass
+        else:
+            raise AssertionError("finalizer accepted malformed fixed replacement " + label)
+        expect(canonical_json(snapshot.files) == before, "replacement validation mutated protected facts")
+        expect({path: canonical_json(snapshot.get(path)) for path in frozen_paths} == frozen,
+               "replacement rejection rewrote immutable predecessor facts")
+
+    try:
+        # Test null as actual document presence, not only truthy dictionaries.
+        for path in composition.REPLACEMENT_PATHS:
+            for value in (None, {}, "malformed", []):
+                snapshot = deepcopy(historical)
+                snapshot.files[path] = value
+                expect(composition.replacement_present(snapshot) is True,
+                       "present malformed replacement document unlocked the old route: " + path)
+                try:
+                    composition.recovery_route(snapshot)
+                except VerticalInvariantError:
+                    pass
+                else:
+                    raise AssertionError("partial replacement fell back to historical authority: " + path)
+                reject(snapshot, path)
+        for missing in composition.REPLACEMENT_PATHS:
+            snapshot = deepcopy(original)
+            del snapshot.files[missing]
+            reject(snapshot, "missing " + missing)
+
+        # Preserve all digests except the selected receipt field: each boundary
+        # independently needs the new execution, new output and materialization.
+        for field, value in (
+            ("receipt_id", str(composition.REPLACEMENT_FAILED_RUN)),
+            ("output_candidate_pr_number", composition.REPLACEMENT_FAILED_PR),
+            ("output_candidate_head_sha", composition.REPLACEMENT_FAILED_HEAD),
+            ("execution_source_head_sha", composition.REPLACEMENT_FAILED_SOURCE),
+            ("execution_materialization_commit_sha", "0" * 40),
+            ("execution_policy_receipt_digest", "0" * 64),
+            ("execution_policy_bundle_digest", "0" * 64),
+            ("recovery_dispatch_key", composition.ARMED_RECOVERY_KEY),
+            ("collector_dispatch_id", "foreign-dispatch"),
+            ("task_id", "foreign-task"),
+        ):
+            snapshot = deepcopy(original)
+            snapshot.files[composition.REPLACEMENT_RECEIPT_PATH][field] = value
+            reject(snapshot, field)
+        # A fresh verifier authority must match current materialized source/bundle,
+        # not just the source values self-described by the replacement receipt.
+        for field in binding:
+            changed = dict(binding)
+            changed[field] = "0" * len(str(binding[field]))
+            try:
+                finalizer._validated_recovery_chain(original, execution_binding=changed)
+            except (finalizer.V03DogfoodPostRunFinalizerError, VerticalInvariantError):
+                pass
+            else:
+                raise AssertionError("replacement accepted foreign independent execution authority: " + field)
+        expect(finalizer._validated_recovery_chain(original, execution_binding=binding) == sealed,
+               "restored fixed replacement no longer verifies")
+    finally:
+        runtime.backend.snapshot = original
+    print("- replacement presence/null/partial evidence locks routing and rejects old run/output/source authority")
 
 
 def bounded_recovery_execution_tests():
@@ -2232,6 +3158,7 @@ def bounded_recovery_execution_tests():
                 actions_transport=gateway.transport, policy_authority=recovery_policy_fixture(),
                 result_source=ResultSource(), recovery_result_source=ResultSource()))
     patches = (
+        patch.object(subject, "_recovery_worker_blobs", return_value=historical_recovery_worker_blobs()),
         patch.object(subject, "observe_historical_worker_for_review",
                      return_value={"observation_digest": subject.RECOVERY_OBSERVATION_DIGEST}),
         patch.object(subject, "_observe_provider_rotation", return_value=fence),
@@ -2583,18 +3510,42 @@ def main():
     rejected(mode=RUN, scenario="unknown", event_name="workflow_dispatch", ref="refs/heads/main")
     rejected(mode="unsafe", scenario="happy_path", event_name="pull_request", ref="refs/pull/348/merge")
 
-    installation_transition_tests()
-    prehttp_recovery_fence_tests()
-    pinned_provider_revocation_tests()
-    historical_worker_adoption_tests()
-    historical_worker_evidence_tests()
     from pathlib import Path
+    import traceback
     validation_root = Path(__file__).resolve().parents[1]
-    recovery_lock_transform_tests(validation_root)
-    recovery_safe_output_source_tests()
-    armed_recovery_source_proof_tests()
-    recovery_continuation_cas_tests()
-    bounded_recovery_execution_tests()
+    def replacement_pipeline():
+        preflight, http, _state, _frozen = fixed_replacement_fixture()
+        sealed = driver_subject.recover_approved_replacement(preflight)
+        expect(http.posts == 1, "fresh replacement pipeline must launch exactly once")
+        fixed_replacement_route_lock_tests(preflight, sealed)
+        fixed_replacement_collector_pipeline_tests(preflight, sealed, expected_human_interventions=4)
+    failures = []
+    # Independent diagnostics continue, but no failing group can become a pass.
+    # In particular, a CAS negative failure cannot hide the fresh full pipeline.
+    groups = (
+        ("installation transition", installation_transition_tests),
+        ("pre-HTTP recovery fence", prehttp_recovery_fence_tests),
+        ("provider revocation", pinned_provider_revocation_tests),
+        ("historical adoption", historical_worker_adoption_tests),
+        ("historical Worker evidence", historical_worker_evidence_tests),
+        ("strict lock transform", lambda: recovery_lock_transform_tests(validation_root)),
+        ("Worker preparation guards", lambda: recovery_worker_preparation_contract_tests(validation_root)),
+        ("Safe Output source", recovery_safe_output_source_tests),
+        ("immutable source proof", armed_recovery_source_proof_tests),
+        ("archival continuation CAS", recovery_continuation_cas_tests),
+        ("archival bounded full pipeline", bounded_recovery_execution_tests),
+        ("fixed replacement admission and negatives", fixed_replacement_admission_tests),
+        ("fixed replacement full pipeline", replacement_pipeline),
+    )
+    for name, execute in groups:
+        try:
+            execute()
+        except Exception:
+            failures.append(name)
+            print("FAILED regression group: " + name, flush=True)
+            traceback.print_exc()
+    if failures:
+        raise AssertionError("v0.3 regression groups failed: " + ", ".join(failures))
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
