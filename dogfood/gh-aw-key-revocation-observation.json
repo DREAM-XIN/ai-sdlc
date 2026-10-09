@@ -1,0 +1,34 @@
+{
+  "baseline_run_id": 37723691424,
+  "baseline_source_sha": "0bb45670495271a4c4019bba7a7313d338de0272",
+  "client_id": "Iv23libojxnnuF43petx",
+  "future_attempts_fenced": false,
+  "historical_run_id": 37204777409,
+  "historical_workflow_blob_sha": "e618477192ef8cde47cf36a9b162aee1069f3eef",
+  "old_credential_identity": "AI_SDLC_RUNTIME_APP_PRIVATE_KEY",
+  "old_key": {
+    "app_id": null,
+    "app_slug": null,
+    "github_date": "Fri, 09 Oct 2026 02:59:09 GMT",
+    "github_request_id": "0BC0:126B9E:193968:53051C:6AC8587D",
+    "http_status": 401,
+    "public_key_sha256": "2765aa5be8fe724421236d1ff15fb6ebaccc51b7476d82c27ead7e366cb32636"
+  },
+  "provider_invalidation": true,
+  "recovery_authority": false,
+  "recovery_credential_identity": "AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY",
+  "recovery_key": {
+    "app_id": 4576406,
+    "app_slug": "dream-xin-ai-sdlc-runtime-operator",
+    "github_date": "Fri, 09 Oct 2026 02:59:09 GMT",
+    "github_request_id": "0BC1:385785:1C3E86:5C5570:6AC8587D",
+    "http_status": 200,
+    "public_key_sha256": "cf2341fc6c86e0a1226f9e4a5e409c4f432f3e326075be6c11425712be75e9ce"
+  },
+  "release_eligible": false,
+  "repository": "dream-xin/ai-sdlc",
+  "run_id": 37877145475,
+  "schema_version": "ai-sdlc.v03-historical-worker-key-revocation-observation/v1",
+  "source_sha": "9dce67c90df3a8b302e0509d77c9420db353836e",
+  "status": "REVOCATION_OBSERVED"
+}
