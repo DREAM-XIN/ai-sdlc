@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import v03_dogfood_scenario_runner as runner
+from operator_store_model import StoreSnapshot
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_openai_host import V03DogfoodResponsesTrace
 
@@ -72,7 +73,9 @@ class FakeRecoveryHost:
 def fake_preflight(scenario):
     slot = require_slot(scenario)
     gateway = SimpleNamespace(read_feature=lambda **kwargs: {"revision": 1})
-    composition = SimpleNamespace(feature_event_gateway=gateway, collector=SimpleNamespace(handle=lambda **kwargs: None))
+    snapshot = StoreSnapshot(ref_sha="a" * 40, files={})
+    runtime = SimpleNamespace(backend=SimpleNamespace(read_snapshot=lambda: snapshot))
+    composition = SimpleNamespace(feature_event_gateway=gateway, collector=SimpleNamespace(handle=lambda **kwargs: None), runtime=runtime)
     return SimpleNamespace(
         slot=slot,
         execution=SimpleNamespace(repository="dream-xin/ai-sdlc"),
