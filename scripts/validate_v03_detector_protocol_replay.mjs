@@ -227,6 +227,16 @@ async function runCase(options, label, cap, retries) {
     ensure(terminal.length === 1 && Number(terminal[0][2]) === execution.code, "DETECTOR_TERMINAL_STATUS");
     const terminationReason = terminal[0][1];
     const startupLog = fs.readFileSync(detectionLog, "utf8");
+    const moduleAllowlist = [["shim.cjs","HARNESS_DEP_01"],["error_helpers.cjs","HARNESS_DEP_02"],["actions_secret_masking.cjs","HARNESS_DEP_03"],["messages_core.cjs","HARNESS_DEP_04"],["process_runner.cjs","HARNESS_DEP_05"],["copilot_sdk_sidecar.cjs","HARNESS_DEP_06"],["harness_retry_config.cjs","HARNESS_DEP_07"],["harness_retry_runner.cjs","HARNESS_DEP_08"],["awf_reflect.cjs","HARNESS_DEP_09"],["safeoutputs_cli.cjs","HARNESS_DEP_10"],["permission_denied_helpers.cjs","HARNESS_DEP_11"],["harness_retry_guard.cjs","HARNESS_DEP_12"],["harness_crash_signals.cjs","HARNESS_DEP_13"],["detect_agent_errors.cjs","HARNESS_DEP_14"],["model_fallback.cjs","HARNESS_DEP_15"],["model_costs.cjs","HARNESS_DEP_16"],["resolve_model_alias.cjs","HARNESS_DEP_17"],["ai_credits_context.cjs","HARNESS_DEP_18"]];
+    const missingSpecifiers = [...startupLog.matchAll(/Cannot find module ['"]([^'"]+)['"]/g)].map(match => match[1]);
+    const moduleClasses = missingSpecifiers.map(specifier => {
+      const entry = moduleAllowlist.find(([name]) => specifier === "./" + name || specifier === path.join(actionsRoot, name));
+      if (entry) return entry[1];
+      if (specifier === path.join(root, "runner", "gh-aw", "actions", "copilot_harness.cjs")) return "HARNESS_ENTRY";
+      if (specifier === copilotBinary || specifier === path.join(root, "bin", "copilot")) return "CLI_ENTRY";
+      return "UNKNOWN_MODULE";
+    });
+    const missingDirectDependencies = moduleAllowlist.filter(([name]) => !fs.existsSync(path.join(actionsRoot, name))).map(([, code]) => code);
     const startupClasses = [
       ["MISSING_MODULE", /Cannot find module|MODULE_NOT_FOUND/],
       ["MISSING_EXECUTABLE", /ENOENT|executable file not found/],
@@ -238,7 +248,9 @@ async function runCase(options, label, cap, retries) {
       ["MISSING_PROMPT", /prompt.*missing|required.*prompt|prompt.*not found/i],
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
-      startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"]};
+      startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
+      missing_module_classes: moduleClasses, missing_direct_dependencies: missingDirectDependencies,
+      official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");
     proxy.send("stats");
     const stats = await statsPromise;
