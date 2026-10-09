@@ -2154,6 +2154,55 @@ class DogfoodHandoffAwareResultSource(FirstAttemptDigestBoundGhAwResultSource):
         return FirstAttemptDigestBoundGhAwResultSource._http(self, method=method, url=url, token=token)
 
 
+
+    def _developer_observation(self, *, values, run_id, external_dispatch_key, trusted):
+        if trusted.get("feature_stage") != "code-review":
+            return super()._developer_observation(values=values, run_id=run_id,
+                external_dispatch_key=external_dispatch_key, trusted=trusted)
+        runtime = getattr(self, "handoff_runtime", None)
+        if runtime is None or trusted.get("role") != "developer":
+            raise VerticalInvariantError("POLICY_DENIED", "remediation source lacks protected runtime")
+        snapshot = runtime.backend.read_snapshot()
+        rows = [e for e in operation_events(snapshot, trusted["operation_id"])
+                if e["operation_generation"] == trusted["operation_generation"]]
+        launches = [e["payload"] for e in rows if e["event_type"] == "dispatch.launch.authorized"
+                    and e["payload"].get("external_dispatch_key") == external_dispatch_key]
+        lookups = [e["payload"] for e in rows if e["event_type"] == "dispatch.launch.lookup-recorded"
+                   and e["payload"].get("external_dispatch_key") == external_dispatch_key]
+        reservation = snapshot.get(reservation_path(trusted["semantic_effect_key"]))
+        if (len(launches) != 1 or not isinstance(reservation, dict) or not lookups
+                or lookups[-1].get("lookup_state") != "LAUNCHED"
+                or {str(p.get("receipt_id")) for p in lookups if p.get("lookup_state") == "LAUNCHED"} != {str(run_id)}
+                or any(launches[0].get(k) != v for k, v in {
+                    "stage": "code-review", "role": "developer", "dispatch_id": trusted["dispatch_id"],
+                    "semantic_effect_key": trusted["semantic_effect_key"],
+                    "candidate_head_sha": trusted["launch_candidate_head_sha"]}.items())
+                or any(reservation.get(k) != v for k,v in {
+                    "external_dispatch_key": external_dispatch_key, "feature_id": trusted["feature_id"],
+                    "expected_revision": trusted["expected_revision"], "current_stage": "code-review",
+                    "role": "developer"}.items())):
+            raise VerticalInvariantError("POLICY_DENIED", "remediation wire mapping lacks exact launch/reservation")
+        try:
+            payload = json.loads(self._one(values, "TASK_PAYLOAD"))
+            task_id = payload["task"]["id"]
+        except Exception as exc:
+            raise VerticalInvariantError("POLICY_DENIED", "remediation task payload is malformed") from exc
+        identity = str(reservation.get("task_identity") or "")
+        if (not identity.startswith("vertical:code-remediation:")
+                or not _task_binding_matches(identity, task_id)
+                or payload["task"].get("kind") != "remediation"
+                or self._one(values, "STAGE") != "implementation"):
+            raise VerticalInvariantError("POLICY_DENIED", "remediation task/wire stage is not the pinned Worker contract")
+        dispatch = dict(trusted, task_id=task_id, task_identity=identity,
+                        candidate_head_sha=trusted["launch_candidate_head_sha"])
+        if payload != json.loads(GhAwVerticalRoleDispatchGateway._task_payload(dispatch)):
+            raise VerticalInvariantError("POLICY_DENIED", "remediation logged task differs from protected dispatch")
+        # The immutable workflow wire stage is implementation; the Feature remains
+        # code-review. Only this independently bound remediation observation maps it.
+        return super()._developer_observation(values=values, run_id=run_id,
+            external_dispatch_key=external_dispatch_key,
+            trusted=dict(trusted, feature_stage="implementation"))
+
     def bind_handoff(self, runtime, persist_gateway):
         self.handoff_runtime = runtime
         self.handoff_persist_gateway = persist_gateway

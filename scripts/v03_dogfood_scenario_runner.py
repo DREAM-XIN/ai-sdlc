@@ -394,7 +394,7 @@ def run_scenario(
     if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != expected_manifest_revision:
         raise V03DogfoodScenarioRunnerError("dogfood fixture is not the exact active revision-1 slot")
 
-    trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=1))
+    trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=expected_manifest_revision))
     operation_id, start_status = _operation_start(trace)
     projection = _projection(preflight, operation_id)
     status = str(projection.get("status") or "")

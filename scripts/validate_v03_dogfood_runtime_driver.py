@@ -3857,7 +3857,7 @@ def build_post_handoff_gate_fixture(preflight, *, read_ref, fallback_http):
                            result_source=source, state=state, http=http)
 
 
-def build_post_handoff_responses_host(preflight, *, adapter, expected_revision):
+def build_post_handoff_responses_host(preflight, *, adapter, expected_revision, session_label="resume"):
     """Real Responses host and adapter; only OpenAI HTTP replies are fake."""
     import json
     from copy import deepcopy
@@ -3870,15 +3870,16 @@ def build_post_handoff_responses_host(preflight, *, adapter, expected_revision):
            "post-handoff entrypoint test requires the actual Responses adapter")
     expect(type(expected_revision) is int and expected_revision >= 1,
            "post-handoff start needs actual trusted Feature revision")
-    call_id = "post-handoff-reobserve-operation-start"
+    call_id = "post-handoff-" + session_label + "-revision-" + str(expected_revision)
+    response_prefix = "resp_" + session_label + "_" + str(expected_revision)
     responses = [
-        {"id": "resp_post_handoff_start", "status": "completed", "output": [{
+        {"id": response_prefix + "_start", "status": "completed", "output": [{
             "type": "function_call", "id": "fc_post_handoff_start", "call_id": call_id,
             "name": "aisdlc_v1_operation_start", "status": "completed",
             "arguments": json.dumps({"api_version": API_VERSION,
                 "feature_id": preflight.slot.feature_id,
                 "expected_feature_revision": expected_revision, "mode": "ASSISTED"})}]},
-        {"id": "resp_post_handoff_waiting", "status": "completed", "output": [{
+        {"id": response_prefix + "_waiting", "status": "completed", "output": [{
             "type": "message", "id": "msg_post_handoff_waiting", "role": "assistant",
             "content": [{"type": "output_text", "text": "The trusted operation reached its durable boundary."}]}]},
     ]
@@ -3901,7 +3902,7 @@ def build_post_handoff_responses_host(preflight, *, adapter, expected_revision):
         config=V03DogfoodOpenAIHostConfig(api_key="fixture-openai", model="fixture-model",
             api_base="https://openai.fixture/v1", max_tool_turns=2),
         adapter=adapter, http_post=post)
-    return SimpleNamespace(host=host, requests=requests)
+    return SimpleNamespace(host=host, requests=requests, call_id=call_id)
 
 
 def assert_post_handoff_reconciled_callback(preflight, callback, *, coordinator,
@@ -4001,7 +4002,7 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
     import v03_dogfood_scenario_runner as runner
     import v03_dogfood_post_run_finalizer as finalizer
     import v03_dogfood_production_provenance as provenance
-    from operator_store_model import operation_events
+    from operator_store_model import operation_events, digest_json
     from operator_vertical import VerticalInvariantError
     from operator_vertical_store import vertical_projection
 
@@ -4010,13 +4011,28 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
     operation_id = h["operation_id"]
     frozen_prefix = deepcopy(operation_events(runtime.backend.read_snapshot(), operation_id)[:15])
     before_effects = dict(effect_counts())
+    first_host = build_post_handoff_responses_host(
+        preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
+        session_label="first-observation")
+    first_trace = first_host.host.run(scenario_instruction=runner.scenario_instruction(
+        preflight.slot, expected_revision=feature_fixture.state["manifest"]["revision"]))
+    first_operation, first_status = runner._operation_start(first_trace)
+    expect(first_operation == operation_id and first_status == "WAITING_EXTERNAL"
+           and len(first_host.requests) == 2
+           and feature_fixture.state["manifest"]["revision"] > 1
+           and [row["role"] for row in gate_fixture.state["inputs"]] == ["reviewer"],
+           "first actual host did not persist Developer and stop at one Reviewer")
+    progressed_prefix = deepcopy(operation_events(runtime.backend.read_snapshot(), operation_id))
+    progressed_puts = feature_fixture.state["puts"]
     host_fixture = build_post_handoff_responses_host(
-        preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"])
+        preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
+        session_label="fresh-post-persist")
+
     scenario = runner.run_scenario(preflight=preflight, host=host_fixture.host)
     expect(len(host_fixture.requests) == 2
            and scenario.operation_id == operation_id
            and scenario.worker_results_consumed == 3
-           and scenario.function_call_ids == ("post-handoff-reobserve-operation-start",)
+           and scenario.function_call_ids == (host_fixture.call_id,)
            and scenario.dispatch_roles == ("developer", "reviewer", "qa"),
            "actual host/start/scenario entry failed to consume the reconciled prefix exactly once")
     consumed = scenario.worker_results_consumed
@@ -4024,6 +4040,10 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
     expect(projection["status"] == "DONE" and consumed == 3,
            "actual Reviewer/QA callback and lifecycle paths did not finish DONE")
     events = operation_events(runtime.backend.read_snapshot(), operation_id)
+    expect(events[:len(progressed_prefix)] == progressed_prefix,
+           "fresh actual host rewrote or replayed the confirmed Developer prefix")
+    expect(feature_fixture.state["puts"] > progressed_puts,
+           "fresh actual host did not continue actual downstream Persist")
     expect(events[:15] == frozen_prefix, "downstream lifecycle rewrote original blocked history")
     claims = runner._dispatch_rows(preflight, operation_id)
     expect(tuple(runner._dispatch_role(row) for row in claims) == ("developer", "reviewer", "qa"),
@@ -4086,6 +4106,36 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
                and record["counts"]["human_interventions"] == 4
                and record["runtime"]["workflow_run_ids"] == list(run_ids),
                "real post-handoff full pipeline failed final provenance/release validation")
+        # Controller-generated stage-start Persist cycles are not arbitrary
+        # extra Worker confirmations. Rehash a forged semantic change so the
+        # finalizer must authenticate its exact trusted transition.
+        controller_rows = [row for row in events if row["event_type"] == "feature.event.translated"
+                           and not row["payload"].get("callback_id")]
+        expect(controller_rows, "full lifecycle omitted controller stage-start events")
+        changed = controller_rows[0]
+        original_payload = deepcopy(changed["payload"])
+        for label in ("orphan-persist", "forged-stage-start"):
+            if label == "orphan-persist":
+                changed["payload"]["feature_event_id"] += "-UNBOUND"
+            else:
+                event_body = changed["payload"]["feature_event"]
+                stage_changes = [item for item in event_body["changes"] if item.get("kind") == "stage"]
+                expect(stage_changes, "controller event did not contain a stage transition")
+                stage_changes[0]["status"] = "DONE"
+                changed["payload"]["feature_event_digest"] = digest_json(event_body)
+            try:
+                finalize()
+            except (finalizer.V03DogfoodPostRunFinalizerError,
+                    provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
+                pass
+            except AssertionError as exc:
+                expect(str(exc).startswith("real dogfood happy_path: trusted provenance "),
+                       "controller-cycle negative failed outside finalizer: " + str(exc))
+            else:
+                raise AssertionError("finalizer accepted " + label)
+            finally:
+                changed["payload"] = deepcopy(original_payload)
+        expect(finalize()["verdict"] == "PASS", "restored controller lifecycle did not reverify")
         # Only the exact Developer may retain its archived execution source.
         for run in gate_fixture.state["runs"]:
             original = run["head_sha"]
@@ -4540,6 +4590,91 @@ def post_handoff_full_pipeline_tests():
     assert_post_handoff_authority_graph(pf.composition.graph_before, pf.composition.responses,
         pf.composition.policy_authority, predecessor_events=pf.composition.predecessor_events)
 
+def post_handoff_reconciliation_negative_tests():
+    from copy import deepcopy
+    from operator_store import StoreCommandError
+    from operator_store_git import CasConflict
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical import VerticalInvariantError
+    from v03_dogfood_runtime_driver import reconcile_post_handoff, V03DogfoodRuntimeDriverError
+    import v03_dogfood_full_composition as c
+    errors = (StoreCommandError, VerticalInvariantError, V03DogfoodRuntimeDriverError, c.V03DogfoodCompositionError, ValueError)
+    def reject(pf, provider, label):
+        runtime = pf.composition.runtime
+        before = (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files))
+        effects = provider.effect_counts()
+        try:
+            reconcile_post_handoff(pf)
+        except errors:
+            pass
+        else:
+            raise AssertionError("post-handoff reconciliation accepted " + label)
+        expect(before == (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files)),
+               "rejected reconciliation wrote Store: " + label)
+        expect(provider.effect_counts() == effects, "rejected reconciliation caused forbidden effects: " + label)
+    for label, mutate in (
+        ("run attempt2", lambda p,s: p.state["observed"]["run"].update(run_attempt=2)),
+        ("producer source", lambda p,s: p.state["observed"]["run"].update(head_sha="9"*40)),
+        ("run failure", lambda p,s: p.state["observed"]["run"].update(conclusion="failure")),
+        ("unmerged", lambda p,s: p.state["observed"]["pr"].update(merged=False)),
+        ("merge commit", lambda p,s: p.state["observed"]["pr"].update(merge_commit_sha="9"*40)),
+        ("merger", lambda p,s: p.state["observed"]["pr"]["merged_by"].update(id=1)),
+        ("output content", lambda p,s: p.state["observed"]["pr"]["head"].update(sha="9"*40)),
+        ("fixture ref", lambda p,s: p.state.update(head="9"*40)),
+        ("consumer source", lambda p,s: p.state.update(controller_source="9"*40)),
+    ):
+        pf, provider, _, _, _ = post_handoff_runtime_fixture()
+        mutate(provider, pf.composition.runtime.backend.snapshot)
+        reject(pf, provider, label)
+    for index in (12,13,14):
+        pf, provider, _, _, _ = post_handoff_runtime_fixture()
+        operation_events(pf.composition.runtime.backend.snapshot, c.RECOVERY_OPERATION_ID)[index]["payload"]["tampered"] = True
+        reject(pf, provider, "frozen event " + str(index+1))
+    for value in (None, {}, {"ordinal": 2}):
+        pf, provider, _, _, _ = post_handoff_runtime_fixture()
+        pf.composition.runtime.backend.snapshot.files[c.POST_HANDOFF_PATH] = value
+        reject(pf, provider, "partial/corrupt attestation")
+    for field in c.recovery_execution_binding_fields():
+        pf, provider, _, _, _ = post_handoff_runtime_fixture()
+        reconcile_post_handoff(pf)
+        attestation = pf.composition.runtime.backend.snapshot.files[c.POST_HANDOFF_PATH]
+        attestation["consumer_execution_binding"][field] = "9" * (40 if field.endswith("sha") else 64)
+        reject(pf, provider, "consumer binding " + field)
+    pf, provider, _, _, _ = post_handoff_runtime_fixture()
+    runtime = pf.composition.runtime
+    snapshot = runtime.backend.read_snapshot()
+    _, _, closed, historical = c.observe_post_handoff_pr(pf.composition.recovery_result_source, snapshot)
+    def planner(snap):
+        return c.plan_post_handoff_reconciliation(snap,
+            consumer_binding=c.recovery_execution_binding(pf.composition.policy_authority),
+            closed_pr_attestation=closed, historical_open_binding=historical,
+            occurred_at=runtime.clock(), trusted_context_digest=pf.trusted_context_digest)
+    first, second = planner(snapshot), planner(snapshot)
+    runtime.backend.commit(first, runtime.protected_receipt())
+    try:
+        runtime.backend.commit(second, runtime.protected_receipt())
+    except CasConflict:
+        pass
+    else:
+        raise AssertionError("two post-handoff CAS contenders committed")
+    expect(reconcile_post_handoff(pf)["acquired"] is False,
+           "CAS loser obtained another observation after winner/crash")
+    pf2, provider2, _, _, _ = post_handoff_runtime_fixture()
+    pf2.composition.runtime.backend.inject_conflict_once()
+    result = reconcile_post_handoff(pf2)
+    expect(result["acquired"] is True, "safe post-handoff CAS retry failed")
+    observation_id = result["attestation"]["observation_callback_id"]
+    executor = pf2.composition.bundle.executor
+    executor.base._record_fact(c.RECOVERY_OPERATION_ID, "worker.result.rejected",
+        {"callback_id": observation_id, "code": "BLOCKED", "reason": "fixture authenticated observation rejection"})
+    executor.base._stable_stop(c.RECOVERY_OPERATION_ID, status="BLOCKED", reason="fixture observation failed")
+    reject(pf2, provider2, "failed single reconciled observation")
+    expect(provider.effect_counts() == provider2.effect_counts() ==
+           {"developer_posts":0, "created_prs":0, "fixture_patches":0},
+           "CAS/crash/failure replay spent another external effect")
+    print("- reconciliation CAS/crash/rejection and exact predecessor/provider/source negatives fail closed")
+
+
 
 
 def main():
@@ -4592,6 +4727,7 @@ def main():
         ("fixed replacement admission and negatives", fixed_replacement_admission_tests),
         ("fixed replacement full pipeline", replacement_pipeline),
         ("post-handoff admission", post_handoff_admission_tests),
+        ("post-handoff required negatives", post_handoff_reconciliation_negative_tests),
         ("post-handoff actual host/Persist pipeline", post_handoff_full_pipeline_tests),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
