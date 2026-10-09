@@ -1944,7 +1944,8 @@ def recovery_continuation_cas_tests():
         else: raise AssertionError("recovery accepted " + reason)
         expect(canonical_json(backend.read_snapshot().files) == before,
                "rejected " + reason + " changed Store")
-    with patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})):
+    with (patch.object(subject, "_bounded_recovery_identity", return_value=({}, {})),
+          patch.object(subject, "_recovery_worker_blobs", return_value=historical_recovery_worker_blobs())):
         # Two distinct planners observe the same ref; only one CAS can commit.
         first, second = planner(backend.read_snapshot()), planner(backend.read_snapshot())
         expect(first.result["acquired"] is True and second.result["acquired"] is True,

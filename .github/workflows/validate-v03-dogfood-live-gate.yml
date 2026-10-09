@@ -71,8 +71,6 @@ jobs:
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_openai_host.py
       - name: Validate bounded production dogfood scenario runner
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_scenario_runner.py
-      - name: Validate trusted-main dogfood runtime driver
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
       - name: Setup pinned detector conclusion scripts
         uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
         with:
@@ -91,6 +89,8 @@ jobs:
               Path(os.environ['RUNNER_TEMP']) / 'v03-detector-test-actions/conclude_threat_detection.sh',
           )
           PY
+      - name: Validate trusted-main dogfood runtime driver
+        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
