@@ -13,6 +13,7 @@ import {fileURLToPath} from "node:url";
 
 const require = createRequire(import.meta.url);
 const self = fileURLToPath(import.meta.url);
+let replayPhase = "SETUP";
 function ensure(value, code) { if (!value) throw new Error(code); }
 function gitBlob(file) {
   const bytes = fs.readFileSync(file);
@@ -320,7 +321,7 @@ async function runCase(options, label, cap, retries) {
     if (startMarker >= 0 && endMarker > startMarker) {
       const firstCLI = startupLog.slice(startMarker, endMarker);
       for (const rawLine of firstCLI.split("\n")) {
-        const line = rawLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
+        const line = rawLine.replace(/\x1b\[[0-9;]*m/g, "").replace(/^\[engine\] /, "").trim();
         if (!/^(?:Error|error):/.test(line) ||
             /prompt|argument|argv|environment|credential|token|password|secret|api.?key|[A-Z_]{3,}=|Analyze this harmless/i.test(line)) continue;
         const scrubbed = line.replace(/https?:\/\/[^\s]+/g, "[URL]")
@@ -407,6 +408,63 @@ async function runCase(options, label, cap, retries) {
   }
 }
 
+
+async function directProxyBudget(options, cap) {
+  const root = path.join(options.workRoot, "direct-native-" + cap);
+  fs.mkdirSync(root);
+  let forwarded = 0;
+  const upstream = http.createServer((req, res) => {
+    if (req.method === "GET" && /\/models$/.test(req.url)) {
+      res.writeHead(200, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({object: "list", data: [{id: "deepseek-chat", object: "model", owned_by: "offline"}]}));
+      return;
+    }
+    let body = "";
+    req.on("data", data => { body += data; });
+    req.on("end", () => {
+      if (req.method !== "POST" || !/\/chat\/completions$/.test(req.url)) { res.writeHead(400); res.end(); return; }
+      forwarded++;
+      res.writeHead(200, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({id: "offline-native-" + forwarded, object: "chat.completion", created: 1,
+        model: "deepseek-chat", choices: [{index: 0, message: {role: "assistant", content: "ok"}, finish_reason: "stop"}],
+        usage: {prompt_tokens: 10, completion_tokens: 1, total_tokens: 11, prompt_tokens_details: {cached_tokens: 10}}}));
+    });
+  });
+  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const fd = fs.openSync(path.join(root, "proxy.log"), "w", 0o600);
+  const proxy = fork(self, ["--proxy", options.proxyRoot, String(upstream.address().port), String(cap)], {
+    env: {PATH: "/usr/local/bin:/usr/bin:/bin", HOME: root, AWF_MAX_RUNS: String(cap), AWF_MAX_CACHE_MISSES: "20"},
+    stdio: ["ignore", fd, fd, "ipc"],
+  });
+  fs.closeSync(fd);
+  try {
+    const ready = await childMessage(proxy, "ready");
+    let denied = false;
+    for (let index = 1; index <= (cap === 50 ? 51 : 52); index++) {
+      const response = await fetch("http://127.0.0.1:" + ready.port + "/chat/completions", {
+        method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer offline-dummy"},
+        body: JSON.stringify({model: "deepseek-chat", messages: [{role: "user", content: "offline constant"}], stream: false}),
+        signal: AbortSignal.timeout(10000),
+      });
+      const body = await response.json();
+      if (cap === 50 && index === 51) {
+        ensure(response.status === 429 && body.error?.type === "max_runs_exceeded"
+          && body.error.invocation_count === 50 && body.error.max_runs === 50, "DIRECT_NATIVE_DENIAL");
+        denied = true;
+      } else ensure(response.status === 200 && body.choices?.[0]?.message?.content === "ok", "DIRECT_NATIVE_FORWARD");
+    }
+    const pending = childMessage(proxy, "stats"); proxy.send("stats"); const stats = await pending;
+    ensure(forwarded === (cap === 50 ? 50 : 52) && stats.guard.invocation_count === forwarded
+      && stats.guard.max_runs === cap && denied === (cap === 50), "DIRECT_NATIVE_COUNTER");
+    return {status: "PASS", scope: "native proxy sequential completed-response budget only",
+      native_max_runs: cap, forwarded_responses: forwarded, request_51_denied: denied};
+  } finally {
+    proxy.kill("SIGTERM");
+    upstream.closeAllConnections();
+    await new Promise(resolve => upstream.close(resolve));
+  }
+}
+
 async function main() {
   const [proxyRoot, actionsRoot, detectorBinary, copilotBinary, workRoot] = process.argv.slice(2);
   ensure([proxyRoot, actionsRoot, detectorBinary, copilotBinary].every(value => value?.startsWith("/inputs/"))
@@ -444,6 +502,10 @@ async function main() {
   });
   ensure(version.status === 0 && /\b1\.0\.90\b/.test(version.stdout), "CLI_PIN");
   const options = {proxyRoot, actionsRoot, detectorBinary, copilotBinary, workRoot};
+  replayPhase = "DIRECT_NATIVE_PROXY_BUDGET";
+  const directProof = [await directProxyBudget(options, 500), await directProxyBudget(options, 50)];
+  console.log(JSON.stringify({status: "PASS", evidence: "DIRECT_NATIVE_PROXY_BUDGET", cases: directProof}));
+  replayPhase = "CLI_PROTOCOL";
   const summaries = [];
   summaries.push(await runCase(options, "baseline_env50_native500", 500, 6));
   summaries.push(await runCase(options, "capped_env50_native50", 50, 0));
@@ -455,7 +517,7 @@ if (process.argv[2] === "--proxy") {
 } else {
   main().catch(error => {
     const code = /^[A-Z_]+$/.test(error.message) ? error.message : "REPLAY_INFRASTRUCTURE";
-    console.log(JSON.stringify({status: "FAIL", stage: code, counts: error.counts || null}));
+    console.log(JSON.stringify({status: "FAIL", evidence: replayPhase, cli_protocol: "NOT_PROVEN", stage: code, counts: error.counts || null}));
     process.exitCode = 1;
   });
 }
