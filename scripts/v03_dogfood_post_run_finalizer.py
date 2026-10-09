@@ -908,10 +908,25 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
     )
+    human_interventions = 0
+    if observation.get("operation_id") == RECOVERY_OPERATION_ID:
+        route = recovery_route(preflight.composition.runtime.backend.read_snapshot())
+        if route["ordinal"] == 1:
+            accounting = route["authorization"]["observed_accounting"]
+            human_interventions = accounting["human_interventions"]
+            # This count covers the explicit observed ledger, not all historical
+            # chat. The evidence URI carries that limitation. Runtime measured
+            # repeated_continue_messages remains unchanged and separately gated.
+            evidence_uris.extend([
+                route["authorization"]["observed_accounting_uri"],
+                "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076638838",
+                "https://github.com/DREAM-XIN/ai-sdlc/actions/runs/37897902667",
+                "https://github.com/DREAM-XIN/ai-sdlc/pull/574",
+            ])
     trusted_facts = {
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,
-        "human_interventions": 0,
+        "human_interventions": human_interventions,
         "milestones": _milestone_facts(
             scenario, repository, source_run_id, finalizer_run_id, worker_run_ids, categories
         ),

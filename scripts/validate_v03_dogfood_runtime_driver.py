@@ -640,7 +640,8 @@ def prehttp_recovery_fence_tests():
         "recovery replay does not remain lookup-only and one-shot",
     )
     expect(
-        'StoreMutation("create_immutable", RECOVERY_RECEIPT_PATH' in seal_source,
+        'StoreMutation("create_immutable", route["receipt_path"]' in seal_source
+        and 'route = recovery_route(snapshot)' in seal_source,
         "recovery run is not sealed by immutable receipt",
     )
     expect(
@@ -2658,6 +2659,9 @@ def fixed_replacement_admission_tests():
     reject(lambda: subject.recover_approved_replacement(pf), pf, http, "crash-after-claim empty lookup")
     for path, value in frozen.files.items():
         expect(runtime.backend.snapshot.get(path) == value, "replacement rewrote frozen predecessor")
+    changed = deepcopy(runtime.backend.snapshot)
+    changed.files[composition.REPLACEMENT_AUTHORIZATION_PATH]["observed_accounting"]["human_interventions"] = 0
+    reject(lambda: composition.validate_replacement_chain(changed), pf, http, "rewritten observed accounting")
     for path in composition.REPLACEMENT_PATHS:
         for value in (None, {}, {"ordinal": 2}):
             bad = deepcopy(frozen); bad.files[path] = value
@@ -2728,12 +2732,15 @@ def fixed_replacement_admission_tests():
                    and composition.REPLACEMENT_ATTEMPT_PATH in pf_bad.composition.runtime.backend.snapshot.files
                    and composition.REPLACEMENT_RECEIPT_PATH not in pf_bad.composition.runtime.backend.snapshot.files,
                    "failed/uncertain replacement regained creation right: " + label)
-    for label in ("prefix", "reservation", "extra-claim", "historical-consumption"):
+    for label in ("prefix", "reservation", "extra-claim", "historical-consumption", "null-historical-seal"):
+
         pf_bad, http_bad, _, _ = fixed_replacement_fixture()
         from operator_store_model import operation_events, reservation_path, event_path, make_event
         snapshot = pf_bad.composition.runtime.backend.snapshot
         events = operation_events(snapshot, subject.HISTORICAL_PREHTTP_RECOVERY["operation_id"])
-        if label == "prefix":
+        if label == "null-historical-seal":
+            snapshot.files[composition.RECOVERY_RECEIPT_PATH] = None
+        elif label == "prefix":
             events[0]["occurred_at"] = "changed"
         elif label == "reservation":
             snapshot.files[reservation_path(subject.HISTORICAL_PREHTTP_RECOVERY["semantic_effect_key"])]["task_identity"] = "foreign"
@@ -3473,6 +3480,7 @@ def main():
     bounded_recovery_execution_tests()
     replacement_pf, replacement_seal, _ = fixed_replacement_admission_tests()
     fixed_replacement_route_lock_tests(replacement_pf, replacement_seal)
+    fixed_replacement_collector_pipeline_tests(replacement_pf, replacement_seal, expected_human_interventions=4)
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",

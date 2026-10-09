@@ -239,6 +239,48 @@ REPLACEMENT_ADMISSION = {
     "failed_artifact_id": 11601119499,
     "failed_artifact_digest": "sha256:18c7d55a82f07ff6edd0f1f12a168f3576aaf02655f71a6c65db9ec7d6f5efdc",
 }
+REPLACEMENT_ACCOUNTING_URI = "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6076882835"
+REPLACEMENT_ACCOUNTING_DIGEST = "sha256:3bf98da2a812b935c153b64f075d9ca5d71a57f30768e4ec919869cc8c1d7211"
+REPLACEMENT_ACCOUNTING = {
+    "schema_version": "ai-sdlc.v03-replacement-observed-accounting/v1",
+    "operation_id": "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4",
+    "operation_generation": 1,
+    "scenario": "happy_path",
+    "replacement_ordinal": 1,
+    "accounting_date_utc": "2026-10-09",
+    "scope": "Verified observed owner operational actions during recovery preparation for this Operation on the accounting date. This is not an exhaustive Operation-lifetime or historical-chat census.",
+    "human_interventions": 4,
+    "events": [
+        {
+            "kind": "recovery_credential_configuration",
+            "observed_time_utc": "02:38",
+            "time_precision": "minute"
+        },
+        {
+            "kind": "old_app_key_revocation",
+            "observed_time_utc": "02:57",
+            "time_precision": "minute"
+        },
+        {
+            "kind": "old_repository_secret_cleanup",
+            "observed_time_utc": "06:09:39",
+            "time_precision": "second"
+        },
+        {
+            "kind": "one_replacement_execution_budget_approval",
+            "observed_time_utc": "07:35:01",
+            "time_precision": "second"
+        }
+    ],
+    "excluded_categories": [
+        "development_tool_permissions",
+        "technical_disclosure_permissions",
+        "code_review_and_merge_administration_without_separate_live_authority"
+    ],
+    "historical_coverage": "non_exhaustive; earlier interactions are not represented as zero",
+    "repeated_continue_messages_source": "Independently measured lifecycle-driving continue interactions in the successful scenario runtime observation; this ledger supplies no value and never overrides that measurement or its existing zero requirement.",
+    "release_semantics": "Observed accounting only. No Gate waiver, no assertion of zero lifetime interventions, and no assertion of zero historical repeated-continue messages."
+}
 REPLACEMENT_WORKER_BLOBS = {
     ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
     ".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
@@ -269,7 +311,7 @@ def validate_replacement_predecessor(snapshot):
         raise VerticalInvariantError("POLICY_DENIED", "replacement frozen journal/reservation predecessor changed")
     if (_recovery_document_blob(continuation) != REPLACEMENT_PREDECESSOR_CONTINUATION_BLOB
             or continuation["execution_source_head_sha"] != REPLACEMENT_FAILED_SOURCE
-            or snapshot.get(RECOVERY_RECEIPT_PATH) is not None):
+            or RECOVERY_RECEIPT_PATH in snapshot.files):
         raise VerticalInvariantError("POLICY_DENIED", "replacement predecessor is not the exact unsealed failed recovery")
     return original, attempt, continuation
 
@@ -298,6 +340,9 @@ def validate_replacement_chain(snapshot):
         "worker_blobs": REPLACEMENT_WORKER_BLOBS,
         "collector_dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
         "failed_observation": REPLACEMENT_FAILED_OBSERVATION,
+        "observed_accounting": REPLACEMENT_ACCOUNTING,
+        "observed_accounting_digest": REPLACEMENT_ACCOUNTING_DIGEST,
+        "observed_accounting_uri": REPLACEMENT_ACCOUNTING_URI,
     })
     variable = {"source_head_sha", "installation_commit_sha", "trusted_context_digest",
                 "execution_source_head_sha", "execution_materialization_commit_sha",
@@ -308,6 +353,8 @@ def validate_replacement_chain(snapshot):
     if (set(authorization) != set(expected) | variable
             or any(canonical_json(authorization.get(k)) != canonical_json(v) for k, v in expected.items())
             or not REPLACEMENT_WORKER_BLOBS
+            or "sha256:" + digest_json(REPLACEMENT_ACCOUNTING) != REPLACEMENT_ACCOUNTING_DIGEST
+            or REPLACEMENT_ACCOUNTING["human_interventions"] != len(REPLACEMENT_ACCOUNTING["events"])
             or authorization.get("source_head_sha") != authorization.get("execution_source_head_sha")
             or authorization.get("installation_commit_sha") != authorization.get("execution_source_head_sha")
             or authorization.get("execution_source_head_sha") in {ARMED_RECOVERY_SOURCE, REPLACEMENT_FAILED_SOURCE}

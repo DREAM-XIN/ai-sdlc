@@ -35,6 +35,7 @@ from v03_dogfood_full_composition import (
     REPLACEMENT_ADMISSION, REPLACEMENT_FAILED_SOURCE, REPLACEMENT_FAILED_RUN,
     REPLACEMENT_FAILED_PR, REPLACEMENT_FAILED_HEAD, REPLACEMENT_WORKER_BLOBS,
     REPLACEMENT_FAILED_OBSERVATION, REPLACEMENT_PATHS,
+    REPLACEMENT_ACCOUNTING, REPLACEMENT_ACCOUNTING_DIGEST, REPLACEMENT_ACCOUNTING_URI,
     replacement_present, validate_replacement_predecessor, validate_replacement_chain,
     replacement_authorization_identity, recovery_route,
     validate_armed_recovery_pair, validate_recovery_continuation,
@@ -1789,6 +1790,8 @@ def _replacement_authorization(snapshot, preflight):
         worker_blobs=REPLACEMENT_WORKER_BLOBS,
         collector_dispatch_id=RECOVERY_COLLECTOR_DISPATCH_ID,
         failed_observation=REPLACEMENT_FAILED_OBSERVATION,
+        observed_accounting=REPLACEMENT_ACCOUNTING, observed_accounting_digest=REPLACEMENT_ACCOUNTING_DIGEST,
+        observed_accounting_uri=REPLACEMENT_ACCOUNTING_URI,
         source_head_sha=binding["execution_source_head_sha"],
         installation_commit_sha=binding["execution_source_head_sha"],
         trusted_context_digest=preflight.trusted_context_digest,
@@ -1817,13 +1820,14 @@ def _plan_fixed_replacement(snapshot, *, preflight):
         raise V03DogfoodRuntimeDriverError("replacement cannot follow any candidate handoff")
     if _recovery_worker_blobs() != REPLACEMENT_WORKER_BLOBS:
         raise V03DogfoodRuntimeDriverError("replacement Worker bytes differ from exact reviewed source")
-    _require_recovery_execution_source(preflight, preflight.execution.installation_commit_sha)
-    if _observe_failed_replacement_predecessor(preflight) != REPLACEMENT_FAILED_OBSERVATION:
-        raise V03DogfoodRuntimeDriverError("replacement failed observation drifted")
     gateway = preflight.composition.recovery_dispatch_gateway
     binding = dict(recovery_execution_binding(preflight.composition.policy_authority),
                    execution_trusted_context_digest=preflight.trusted_context_digest)
     gateway.transport.admit_continuation(snapshot, allow_post=False, **binding)
+    gateway.transport._validate_lookup_identity(workflow=RECOVERY_WORKFLOW, ref="main", dispatch_key=ARMED_RECOVERY_KEY)
+    _require_recovery_execution_source(preflight, preflight.execution.installation_commit_sha)
+    if _observe_failed_replacement_predecessor(preflight) != REPLACEMENT_FAILED_OBSERVATION:
+        raise V03DogfoodRuntimeDriverError("replacement failed observation drifted")
     old = gateway.lookup(external_dispatch_key=ARMED_RECOVERY_KEY)
     if old.get("lookup_state") != "LAUNCHED" or str(old.get("receipt_id")) != str(REPLACEMENT_FAILED_RUN):
         raise V03DogfoodRuntimeDriverError("replacement predecessor global scan is not uniquely terminal")
