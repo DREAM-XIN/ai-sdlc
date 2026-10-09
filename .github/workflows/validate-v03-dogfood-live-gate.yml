@@ -321,7 +321,7 @@ jobs:
           Path("evidence").mkdir(exist_ok=True)
           Path("evidence/recovery-developer.upstream.lock.yml").write_bytes(raw)
           Path("evidence/recovery-developer.hardened.lock.yml").write_bytes(hardened)
-          Path(f"evidence/release-{role}-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
+          Path("evidence/recovery-developer-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
           print("RECOVERY_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
           print("RECOVERY_LOCK_BASE64=" + base64.b64encode(hardened).decode())
           checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
@@ -372,15 +372,10 @@ jobs:
           source = path.with_suffix("").with_suffix(".md").read_text()
           body_hash = hashlib.sha256(source.split("\n---\n", 1)[1].rstrip("\n").encode()).hexdigest()
           assert metadata["body_hash"] == body_hash
-          trigger = "          GH_AW_CI_TRIGGER_TOKEN: $" + "{{ secrets.GH_AW_CI_TRIGGER_TOKEN }}\n"
+          assert "GH_AW_CI_TRIGGER_TOKEN" not in upstream
           # Inspected compiler input text, never a checkout setting in this workflow.
           old_persist_scalar = "persist-credentials: " + str(True).lower()
-          replacements = [
-              (',"GH_AW_CI_TRIGGER_TOKEN"', "", 1),
-              ("#   - GH_AW_CI_TRIGGER_TOKEN\n", "", 1),
-              (trigger, "", 1),
-              (old_persist_scalar, "persist-credentials: false", 2),
-          ]
+          replacements = [(old_persist_scalar, "persist-credentials: false", 2)]
           hardened = upstream
           for old, new, count in replacements:
               assert hardened.count(old) == count, (old, hardened.count(old), count)
@@ -391,8 +386,8 @@ jobs:
           proof = {
               "schema": "ai-sdlc.v03-release-gate-lock-transform/v1",
               "compiler": "gh-aw-v0.89.21-strict", "upstream_blob_sha": upstream_blob,
-              "persist_credentials_false": 2, "removed_trigger_lines": 3,
-              "removed_trigger_references": 4,
+              "persist_credentials_false": 2, "removed_trigger_lines": 0,
+              "removed_trigger_references": 0,
               "body_hash_from": body_hash, "body_hash_to": body_hash,
           }
           lines = hardened.splitlines(keepends=True)
@@ -401,7 +396,7 @@ jobs:
           Path("evidence").mkdir(exist_ok=True)
           Path(f"evidence/release-{role}.upstream.lock.yml").write_bytes(raw)
           Path(f"evidence/release-{role}.hardened.lock.yml").write_bytes(hardened)
-          Path("evidence/recovery-developer-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
+          Path(f"evidence/release-{role}-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
           print("RELEASE_GATE_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
           print("RELEASE_GATE_LOCK_BASE64=" + base64.b64encode(hardened).decode())
           checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
