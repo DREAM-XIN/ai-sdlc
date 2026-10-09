@@ -50,6 +50,71 @@ permissions:
   actions: read
 
 jobs:
+  compile-detector-budget-probe:
+    name: Compile fixed detector budget probe (no model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install pinned official compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v0.89.21 --force
+      - name: Prepare fixed uncommitted detector-only budget
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md")
+          source = path.read_text()
+          engine = source.split("\nengine:\n", 1)[1].split("\nnetwork:\n", 1)[0]
+          assert engine.count("    max-retries: 6") == 1
+          engine = engine.replace("    max-retries: 6", "    max-retries: 0")
+          assert engine.count("  id: copilot") == 1
+          engine = engine.replace("  id: copilot", "  id: copilot\n  max-turns: 50")
+          marker = "  threat-detection:\n    enabled: true\n"
+          assert source.count(marker) == 1
+          addition = "    retries: 0\n    engine:\n" + "\n".join("    " + line for line in engine.splitlines()) + "\n"
+          path.write_text(source.replace(marker, marker + addition))
+          PY
+      - name: Strict compile fixed uncommitted probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local --strict
+      - name: Verify generated detector budget and unchanged safety
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python - <<'PY'
+          import json, subprocess, yaml
+          from pathlib import Path
+          path = ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml"
+          before = yaml.safe_load(subprocess.check_output(["git", "show", "HEAD:" + path]))
+          raw = Path(path).read_text()
+          after = yaml.safe_load(raw)
+          metadata = json.loads(raw.splitlines()[0].split(": ", 1)[1])
+          assert metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True
+          assert before["jobs"]["agent"] == after["jobs"]["agent"]
+          assert before["jobs"]["safe_outputs"] == after["jobs"]["safe_outputs"]
+          old = before["jobs"]["detection"]
+          new = after["jobs"]["detection"]
+          old_steps = {s.get("id", s.get("name")): s for s in old["steps"]}
+          new_steps = {s.get("id", s.get("name")): s for s in new["steps"]}
+          step = new_steps["detection_agentic_execution"]
+          assert '\\"maxRuns\\":50' in step["run"]
+          assert str(step["env"]["GH_AW_HARNESS_MAX_RETRIES"]) == "0"
+          assert new.get("timeout-minutes") == old.get("timeout-minutes")
+          assert "--engine-timeout" not in step["run"]
+          for key, value in step["env"].items():
+              if key not in {"GH_AW_HARNESS_MAX_RETRIES", "GH_AW_MAX_TURNS"}:
+                  assert value == old_steps["detection_agentic_execution"]["env"][key]
+          for key in old_steps:
+              if key != "detection_agentic_execution":
+                  assert old_steps[key] == new_steps[key]
+          print(json.dumps({"schema":"v03-detector-budget-compile-probe/v1","strict_compiler":"v0.89.21","detector_max_runs":50,"detector_harness_retries":0,"agent_unchanged":True,"safe_outputs_unchanged":True,"timeout_unchanged":True}))
+          PY
   inspect-fixed-detector-artifact:
     name: Inspect fixed detector artifact (redacted, no model)
     runs-on: ubuntu-latest
