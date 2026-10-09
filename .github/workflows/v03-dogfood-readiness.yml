@@ -47,6 +47,7 @@ jobs:
           HAS_OPERATOR_ADMIN_TOKEN: ${{ secrets.AI_SDLC_OPERATOR_ADMIN_TOKEN != '' }}
           HAS_RUNTIME_APP_CLIENT_ID: ${{ vars.AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID != '' }}
           HAS_RUNTIME_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY != '' }}
+          HAS_LEGACY_RUNTIME_APP_PRIVATE_KEY: ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY != '' }}
           HAS_OPERATOR_APP_INTEGRATION_ID: ${{ vars.AI_SDLC_OPERATOR_APP_INTEGRATION_ID != '' }}
         run: |
           set -euo pipefail
@@ -236,16 +237,28 @@ jobs:
           key = "dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1"
           bindings = gate.bindings if "gate" in locals() else ()
           result["dispatch_diagnostic"] = diagnose_dispatch(bindings, key, actions_get)
-          # Stable terminal/skipped-step observations are review inputs only.
-          # They never invalidate a key or authorize a replacement execution.
-          from v03_dogfood_runtime_driver import observe_historical_worker_for_review
+          # Historical Worker failure alone never proves recovery. Require
+          # immutable GitHub-provenanced old-401/new-200 facts AND the old
+          # signing Secret's removal before claiming readiness to ATTEMPT the
+          # separately fenced protected-CAS recovery. No Worker or Store write.
+          from v03_dogfood_runtime_driver import (
+              observe_historical_worker_for_review, _load_pinned_revocation_observation,
+          )
           try:
               result["historical_worker_observation"] = observe_historical_worker_for_review(
                   actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
               )
-              result["recovery_error"] = "historical terminal/skipped-step observation lacks future-execution fencing and bounded recovery authorization"
+              result["recovery_error"] = "bounded recovery still requires independently verified provider revocation"
               if result["status"] == "READY":
-                  result["status"] = "BLOCKED_RECOVERY_AUTHORITY"
+                  if os.environ.get("HAS_LEGACY_RUNTIME_APP_PRIVATE_KEY") != "false":
+                      result["status"] = "BLOCKED_LEGACY_CREDENTIAL"
+                      result["recovery_error"] = "legacy App private-key Secret must be deleted before bounded recovery"
+                  else:
+                      proof = _load_pinned_revocation_observation(os.environ)
+                      result["provider_revocation_run_id"] = proof["run_id"]
+                      result["recovery_error"] = "none"
+                      # READY means only that a separately protected live
+                      # recovery may perform its own fresh checks and CAS.
           except Exception as exc:
               result["recovery_error"] = str(exc)
               if result["status"] == "READY":
