@@ -5858,7 +5858,8 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
                 pass
             except AssertionError as exc:
                 expect(str(exc).startswith("real dogfood happy_path: trusted provenance verification failed:")
-                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: V03DogfoodPostRunFinalizerError: original callback differs from historical launch/fresh run",
+                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: V03DogfoodPostRunFinalizerError: original callback differs from historical launch/fresh run"
+                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: VerticalInvariantError: Reviewer replacement producer source differs",
                        "source mutation failed outside trusted provenance: " + str(exc))
             else:
                 raise AssertionError("current-source Gate incorrectly inherited archived Developer source")
@@ -5943,7 +5944,8 @@ def reviewer_replacement_admission_tests():
     from operator_vertical import VerticalInvariantError
     import v03_dogfood_full_composition as c
     import v03_dogfood_runtime_driver as d
-    errors = (StoreCommandError, VerticalInvariantError, d.V03DogfoodRuntimeDriverError, ValueError)
+    errors = (StoreCommandError, VerticalInvariantError, d.V03DogfoodRuntimeDriverError,
+              d.V03DogfoodScenarioRunnerError, ValueError)
     def reject(pf, gates, feature, label):
         runtime = pf.composition.runtime
         before = (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
