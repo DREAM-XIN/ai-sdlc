@@ -483,6 +483,43 @@ class DogfoodGitHubCandidateProvider:
             raise V03DogfoodCompositionError("multiple incomplete Developer handoffs")
         return pending[0] if pending else None
 
+    def _candidate(self) -> dict[str, Any]:
+        owner = self.repository.split("/", 1)[0]
+        query = parse.urlencode({
+            "state": "open",
+            "head": f"{owner}:{self.slot.target_ref}",
+            "base": DEFAULT_BRANCH,
+            "per_page": 100,
+        })
+        status, payload = self.http_get(
+            f"{self.api_base}/repos/{self.repository}/pulls?{query}",
+            self._headers(),
+        )
+        if status != 200 or not isinstance(payload, list):
+            raise V03DogfoodCompositionError("dogfood candidate PR truth lookup failed closed")
+        rows = [row for row in payload if isinstance(row, dict) and row.get("state") == "open" and row.get("draft") is False]
+        if len(rows) != 1:
+            raise V03DogfoodCompositionError("dogfood slot must resolve exactly one open non-draft PR")
+        row = rows[0]
+        head = row.get("head") or {}
+        base = row.get("base") or {}
+        head_repo = str(((head.get("repo") or {}).get("full_name")) or "").lower()
+        base_repo = str(((base.get("repo") or {}).get("full_name")) or "").lower()
+        head_sha = str(head.get("sha") or "").lower()
+        number = row.get("number")
+        if (
+            head_repo != self.repository
+            or base_repo != self.repository
+            or head.get("ref") != self.slot.target_ref
+            or base.get("ref") != DEFAULT_BRANCH
+            or not isinstance(number, int)
+            or isinstance(number, bool)
+            or number < 1
+            or not _SHA40.fullmatch(head_sha)
+        ):
+            raise V03DogfoodCompositionError("dogfood candidate PR repository/ref/head authority drifted")
+        return row
+
     def current_candidate(self, *, operation_id: str, repository: str, feature_id: str, target_ref: str) -> TrustedCandidateSnapshot:
         if (
             not operation_id
