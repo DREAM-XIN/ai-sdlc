@@ -899,6 +899,19 @@ RECOVERY_OBSERVATION_DIGEST = "sha256:a86b7ead37bf96abe9b6e43098b7873b821833c6d9
 HISTORICAL_APP_PUBLIC_KEY_DIGEST = "sha256:2765aa5be8fe724421236d1ff15fb6ebaccc51b7476d82c27ead7e366cb32636"
 HISTORICAL_WORKER_RECEIPT = "37204777409"
 
+# Reviewed, immutable, non-release proof of the exact historical key revocation.
+# This is not launch authority: protected CAS and provider reauthentication
+# remain separately required. Do not follow the mutable diagnostic branch.
+REVOCATION_PROBE_SOURCE = "9dce67c90df3a8b302e0509d77c9420db353836e"
+REVOCATION_PROBE_PARENT = "9647b0802035dd15ca09a47774fb4e12c0cf9e14"
+REVOCATION_OBSERVATION_COMMIT = "af3e170de4c6bcec6ffcc61ee63f2101a6dcdda9"
+REVOCATION_OBSERVATION_BLOB = "040a2c0ae668a9f4f0ff497122889a0236480ccd"
+REVOCATION_PROBE_RUN = 37877145475
+REVOCATION_PROBE_WORKFLOW_ID = 329730419
+REVOCATION_PROBE_BRANCH = "dogfood/gh-aw-diagnose-key-revocation-20261008"
+REVOCATION_PROBE_WORKFLOW = ".github/workflows/ai-sdlc-gh-aw-run-diagnostic.yml"
+REVOCATION_NEW_KEY_DIGEST = "sha256:cf2341fc6c86e0a1226f9e4a5e409c4f432f3e326075be6c11425712be75e9ce"
+
 
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
@@ -950,6 +963,8 @@ def _validate_provider_rotation_fence(observation: Mapping[str, Any]) -> dict[st
         "historical_status": 401,
         "recovery_status": 200,
         "historical_public_key_digest": HISTORICAL_APP_PUBLIC_KEY_DIGEST,
+        "provider_observation_run_id": REVOCATION_PROBE_RUN,
+        "provider_observation_blob_sha": REVOCATION_OBSERVATION_BLOB,
     }
     if any(observation.get(key) != value for key, value in expected.items()):
         raise V03DogfoodRuntimeDriverError("provider key fence does not prove old-401/new-200 same-App rotation")
@@ -963,46 +978,197 @@ def _validate_provider_rotation_fence(observation: Mapping[str, Any]) -> dict[st
     return material
 
 
-def _observe_provider_rotation(env: Mapping[str, str]) -> dict[str, Any]:
-    issuer = _required(env, "AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID")
-    if issuer != "Iv23libojxnnuF43petx":
-        raise V03DogfoodRuntimeDriverError("recovery App client identity drifted")
-    historical_jwt, historical_digest = _app_jwt_and_public_digest(
-        private_key=_required(env, "AI_SDLC_HISTORICAL_APP_PRIVATE_KEY"),
-        issuer=issuer,
-    )
-    recovery_jwt, recovery_digest = _app_jwt_and_public_digest(
-        private_key=_required(env, "AI_SDLC_RECOVERY_APP_PRIVATE_KEY"),
-        issuer=issuer,
-    )
-    api = _required(env, "GITHUB_API_URL").rstrip("/")
+def _load_pinned_revocation_observation(
+    env: Mapping[str, str], *, read_json=None,
+) -> dict[str, Any]:
+    """Read only exact GitHub run + immutable source/output/blob provenance.
 
-    def probe(jwt: str) -> tuple[int, dict[str, Any]]:
+    A mutable branch, an Issue comment, a current secret, or a synthetic
+    test fixture must never act as provider revocation authority.
+    """
+    if normalize_repository(_required(env, "GITHUB_REPOSITORY")) != "dream-xin/ai-sdlc":
+        raise V03DogfoodRuntimeDriverError("revocation observation escaped fixed repository")
+    api = _required(env, "GITHUB_API_URL").rstrip("/")
+    if api != "https://api.github.com":
+        raise V03DogfoodRuntimeDriverError("revocation observation requires exact GitHub provider API")
+    token = _required(env, "AI_SDLC_ACTIONS_READ_TOKEN")
+
+    def provider_get(path: str) -> dict[str, Any]:
         req = urlrequest.Request(
-            api + "/app",
+            api + "/repos/DREAM-XIN/ai-sdlc/" + path,
             headers={
                 "Accept": "application/vnd.github+json",
-                "Authorization": "Bearer " + jwt,
+                "Authorization": "Bearer " + token,
                 "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "ai-sdlc-v03-bounded-recovery-fence",
+                "User-Agent": "ai-sdlc-reviewed-revocation-evidence",
             },
             method="GET",
         )
         try:
             with urlrequest.urlopen(req, timeout=20) as response:
-                raw = response.read()
-                return int(response.status), json.loads(raw.decode("utf-8")) if raw else {}
-        except urlerror.HTTPError as exc:
-            return int(exc.code), {}
-        except Exception as exc:
-            raise V03DogfoodRuntimeDriverError("provider key fence probe was indeterminate") from exc
+                if response.status != 200:
+                    raise V03DogfoodRuntimeDriverError("revocation provenance GET was not successful")
+                value = json.loads(response.read().decode("utf-8"))
+        except (ValueError, UnicodeError, OSError, urlerror.HTTPError) as exc:
+            raise V03DogfoodRuntimeDriverError("revocation provenance GET was unavailable") from exc
+        if not isinstance(value, dict):
+            raise V03DogfoodRuntimeDriverError("revocation provenance is not an object")
+        return value
 
-    historical_status, _ = probe(historical_jwt)
-    recovery_status, recovery_app = probe(recovery_jwt)
+    get = read_json if read_json is not None else provider_get
+    run = get("actions/runs/" + str(REVOCATION_PROBE_RUN))
+    if any((
+        run.get("id") != REVOCATION_PROBE_RUN,
+        run.get("workflow_id") != REVOCATION_PROBE_WORKFLOW_ID,
+        run.get("path") != REVOCATION_PROBE_WORKFLOW,
+        run.get("event") != "push",
+        run.get("head_branch") != REVOCATION_PROBE_BRANCH,
+        run.get("head_sha") != REVOCATION_PROBE_SOURCE,
+        run.get("run_attempt") != 1,
+        run.get("status") != "completed",
+        run.get("conclusion") != "success",
+    )):
+        raise V03DogfoodRuntimeDriverError("revocation provider probe run identity drifted")
+    jobs = get("actions/runs/" + str(REVOCATION_PROBE_RUN) + "/jobs?per_page=100")
+    rows = jobs.get("jobs")
+    if (
+        jobs.get("total_count") != 2
+        or not isinstance(rows, list) or len(rows) != 2
+        or {row.get("name") for row in rows if isinstance(row, dict)}
+        != {"validate-probe", "verify-key-fence"}
+        or any(not isinstance(row, dict) or row.get("run_id") != REVOCATION_PROBE_RUN
+               or row.get("run_attempt") != 1 or row.get("status") != "completed"
+               or row.get("conclusion") != "success" for row in rows)
+    ):
+        raise V03DogfoodRuntimeDriverError("revocation provider probe jobs are not successful first-attempt facts")
+
+    source = get("git/commits/" + REVOCATION_PROBE_SOURCE)
+    receipt_commit = get("git/commits/" + REVOCATION_OBSERVATION_COMMIT)
+    if (
+        source.get("sha") != REVOCATION_PROBE_SOURCE
+        or [row.get("sha") for row in source.get("parents", [])] != [REVOCATION_PROBE_PARENT]
+        or source.get("message") != "dogfood: verify revoked historical Worker key"
+        or receipt_commit.get("sha") != REVOCATION_OBSERVATION_COMMIT
+        or [row.get("sha") for row in receipt_commit.get("parents", [])] != [REVOCATION_PROBE_SOURCE]
+        or receipt_commit.get("message") != "dogfood: record bounded provider key revocation observation"
+        or not isinstance(receipt_commit.get("tree"), dict)
+    ):
+        raise V03DogfoodRuntimeDriverError("revocation source/output commit chain changed")
+    tree_sha = receipt_commit["tree"].get("sha")
+    if not isinstance(tree_sha, str) or len(tree_sha) != 40:
+        raise V03DogfoodRuntimeDriverError("revocation evidence tree identity is invalid")
+    tree = get("git/trees/" + tree_sha + "?recursive=1")
+    entries = tree.get("tree")
+    if (
+        tree.get("sha") != tree_sha or tree.get("truncated") is not False
+        or not isinstance(entries, list)
+        or len([entry for entry in entries if isinstance(entry, dict)
+                and entry.get("path") == "dogfood/gh-aw-key-revocation-observation.json"
+                and entry.get("mode") == "100644" and entry.get("type") == "blob"
+                and entry.get("sha") == REVOCATION_OBSERVATION_BLOB]) != 1
+    ):
+        raise V03DogfoodRuntimeDriverError("revocation observation blob not bound to pinned output tree")
+
+    blob = get("git/blobs/" + REVOCATION_OBSERVATION_BLOB)
+    if (
+        blob.get("sha") != REVOCATION_OBSERVATION_BLOB
+        or blob.get("encoding") != "base64"
+        or not isinstance(blob.get("size"), int)
+        or not 0 < blob["size"] <= 8192
+        or not isinstance(blob.get("content"), str)
+    ):
+        raise V03DogfoodRuntimeDriverError("revocation observation blob metadata changed")
+    try:
+        raw = base64.b64decode("".join(blob["content"].split()), validate=True)
+        observed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise V03DogfoodRuntimeDriverError("revocation observation blob is malformed") from exc
+    if (
+        len(raw) != blob["size"]
+        or hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw).hexdigest()
+        != REVOCATION_OBSERVATION_BLOB
+        or not isinstance(observed, dict)
+    ):
+        raise V03DogfoodRuntimeDriverError("revocation observation immutable bytes changed")
+    old, new = observed.get("old_key"), observed.get("recovery_key")
+    if (
+        observed.get("schema_version") != "ai-sdlc.v03-historical-worker-key-revocation-observation/v1"
+        or observed.get("repository") != "dream-xin/ai-sdlc"
+        or observed.get("source_sha") != REVOCATION_PROBE_SOURCE
+        or observed.get("run_id") != REVOCATION_PROBE_RUN
+        or observed.get("historical_run_id") != 37204777409
+        or observed.get("historical_workflow_blob_sha") != HISTORICAL_FAILED_WORKER["workflow_blob_sha"]
+        or observed.get("old_credential_identity") != "AI_SDLC_RUNTIME_APP_PRIVATE_KEY"
+        or observed.get("recovery_credential_identity") != "AI_SDLC_DOGFOOD_RECOVERY_APP_PRIVATE_KEY"
+        or observed.get("client_id") != "Iv23libojxnnuF43petx"
+        or observed.get("status") != "REVOCATION_OBSERVED"
+        or observed.get("provider_invalidation") is not True
+        or observed.get("future_attempts_fenced") is not False
+        or observed.get("recovery_authority") is not False
+        or observed.get("release_eligible") is not False
+        or not isinstance(old, dict) or not isinstance(new, dict)
+        or old.get("http_status") != 401
+        or old.get("public_key_sha256") != HISTORICAL_APP_PUBLIC_KEY_DIGEST.split(":", 1)[1]
+        or new.get("http_status") != 200
+        or new.get("app_id") != 4576406
+        or new.get("app_slug") != "dream-xin-ai-sdlc-runtime-operator"
+        or "sha256:" + str(new.get("public_key_sha256") or "") != REVOCATION_NEW_KEY_DIGEST
+        or not all(isinstance(x.get("github_request_id"), str) and x["github_request_id"]
+                   and isinstance(x.get("github_date"), str) and x["github_date"]
+                   for x in (old, new))
+    ):
+        raise V03DogfoodRuntimeDriverError("revocation provider observation contract changed")
+    return observed
+
+
+def _observe_provider_rotation(env: Mapping[str, str]) -> dict[str, Any]:
+    # An old Secret retained under a legacy name could be overwritten by a
+    # working key, re-enabling historical pinned Workers. Removal is mandatory.
+    if (
+        env.get("AI_SDLC_LEGACY_SECRET_PRESENT") != "false"
+        or str(env.get("AI_SDLC_HISTORICAL_APP_PRIVATE_KEY") or "").strip()
+    ):
+        raise V03DogfoodRuntimeDriverError("legacy App credential must be absent before recovery")
+    observed = _load_pinned_revocation_observation(env)
+    issuer = _required(env, "AI_SDLC_DOGFOOD_RECOVERY_APP_CLIENT_ID")
+    if issuer != "Iv23libojxnnuF43petx":
+        raise V03DogfoodRuntimeDriverError("recovery App client identity drifted")
+    recovery_jwt, recovery_digest = _app_jwt_and_public_digest(
+        private_key=_required(env, "AI_SDLC_RECOVERY_APP_PRIVATE_KEY"),
+        issuer=issuer,
+    )
+    if recovery_digest != REVOCATION_NEW_KEY_DIGEST:
+        raise V03DogfoodRuntimeDriverError("live recovery key differs from the authenticated pinned probe")
+    # Live new-key reauthentication is independently checked on each
+    # execution. Old-key 401 is bound to the prior immutable provider probe.
+    api = _required(env, "GITHUB_API_URL").rstrip("/")
+    if api != "https://api.github.com":
+        raise V03DogfoodRuntimeDriverError("live recovery key probe escaped GitHub")
+    req = urlrequest.Request(
+        api + "/app",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": "Bearer " + recovery_jwt,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "ai-sdlc-v03-bounded-recovery-fence",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=20) as response:
+            recovery_status = int(response.status)
+            recovery_app = json.loads(response.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        recovery_status, recovery_app = int(exc.code), {}
+        exc.close()
+    except (OSError, ValueError) as exc:
+        raise V03DogfoodRuntimeDriverError("live recovery provider identity probe indeterminate") from exc
     if (
         not isinstance(recovery_app, dict)
+        or recovery_status != 200
         or recovery_app.get("id") != 4576406
         or recovery_app.get("client_id") != issuer
+        or recovery_app.get("slug") != "dream-xin-ai-sdlc-runtime-operator"
     ):
         raise V03DogfoodRuntimeDriverError("recovery key did not authenticate the pinned GitHub App")
     return _validate_provider_rotation_fence({
@@ -1010,10 +1176,12 @@ def _observe_provider_rotation(env: Mapping[str, str]) -> dict[str, Any]:
         "app_id": 4576406,
         "app_client_id": issuer,
         "installation_id": 153325330,
-        "historical_status": historical_status,
+        "historical_status": observed["old_key"]["http_status"],
         "recovery_status": recovery_status,
-        "historical_public_key_digest": historical_digest,
+        "historical_public_key_digest": HISTORICAL_APP_PUBLIC_KEY_DIGEST,
         "recovery_public_key_digest": recovery_digest,
+        "provider_observation_run_id": REVOCATION_PROBE_RUN,
+        "provider_observation_blob_sha": REVOCATION_OBSERVATION_BLOB,
         "observed_at": _clock(),
     })
 
