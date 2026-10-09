@@ -1971,7 +1971,7 @@ def _reviewer_existing_producer_check(preflight, snapshot):
 
 def recover_reviewer_pre_model(preflight):
     from v03_dogfood_full_composition import (
-        REVIEWER_AUTH_PATH, REVIEWER_CLAIM_PATH, REVIEWER_SEAL_PATH, REVIEWER_CANDIDATE,
+        RECOVERY_OPERATION_ID, REVIEWER_AUTH_PATH, REVIEWER_CLAIM_PATH, REVIEWER_SEAL_PATH, REVIEWER_CANDIDATE,
         REVIEWER_OLD_KEY, REVIEWER_FAILED_RUN, REVIEWER_NEW_WORKFLOW,
         reviewer_replacement_present, validate_reviewer_predecessor, validate_reviewer_authorization,
         reviewer_replacement_route, plan_reviewer_replacement, reviewer_dispatch, reviewer_trusted_context,
