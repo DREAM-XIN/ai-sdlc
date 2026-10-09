@@ -1036,6 +1036,24 @@ def recovery_safe_output_source_tests():
     must_reject(lambda s: s["artifacts"]["artifacts"][0].update(digest="sha256:" + "0" * 64))
     must_reject(lambda s: s.update(archive=b"corrupted archive"))
     must_reject(lambda s: s["pr"].update(node_id="PR_wrong"))
+    def rewrite_archive(state, *, duplicate=False, unsafe=False, malformed=False):
+        import hashlib
+        import io
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(state["archive"])) as archive:
+            row = archive.read("safe-output-items.jsonl")
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr(
+                "../safe-output-items.jsonl" if unsafe else "safe-output-items.jsonl",
+                b"not-json" if malformed else row + (row if duplicate else b""))
+        state["archive"] = stream.getvalue()
+        state["artifacts"]["artifacts"][0].update(
+            size_in_bytes=len(state["archive"]),
+            digest="sha256:" + hashlib.sha256(state["archive"]).hexdigest())
+    must_reject(lambda s: rewrite_archive(s, duplicate=True))
+    must_reject(lambda s: rewrite_archive(s, unsafe=True))
+    must_reject(lambda s: rewrite_archive(s, malformed=True))
     stale = dict(trusted); stale["source_head_sha"] = "4" * 40
     try:
         source.resolve(external_dispatch_key=key, expected_receipt_identity=str(run_id), trusted_context=stale)
@@ -1690,6 +1708,344 @@ def recovery_continuation_cas_tests():
             reject(lambda: planner(snapshot), "changed Worker sources")
     print("- protected continuation CAS proves one winner, retry, crash fencing and immutable originals")
 
+def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback):
+    """Real finalizer/provenance/source pipeline over HTTP and Store fixtures only."""
+    from copy import deepcopy
+    from dataclasses import asdict, replace
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from urllib.parse import urlparse
+    import json
+    import v03_dogfood_runtime_driver as driver
+    import v03_dogfood_post_run_finalizer as finalizer
+    import v03_dogfood_production_provenance as provenance
+    from operator_store_model import digest_json, event_path, make_event, operation_events, reservation_path
+    from operator_vertical import VERTICAL_PROFILE, VerticalInvariantError
+    from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
+    from operator_vertical_store import vertical_projection
+    from operator_vertical_recovery import plan_vertical_callback_record
+    from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
+    from operator_vertical_gh_aw_github_source import _GATE_START, _GATE_END
+    from operator_vertical_gh_aw_collector import _build_receipts
+    from v03_dogfood_full_composition import DogfoodGitHubCandidateProvider, DogfoodCandidateHandoff
+
+    runtime = preflight.composition.runtime
+    saved_snapshot = runtime.backend.snapshot
+    runtime.backend.snapshot = deepcopy(saved_snapshot)
+    snapshot = runtime.backend.snapshot
+    h = driver.HISTORICAL_PREHTTP_RECOVERY
+    repository, operation_id = preflight.execution.repository, h["operation_id"]
+    old_head, new_head = h["candidate_head_sha"], sealed["output_candidate_head_sha"]
+    source_sha, run_id = preflight.execution.installation_commit_sha, int(sealed["receipt_id"])
+    original_auth = deepcopy(snapshot.get(driver.RECOVERY_AUTHORIZATION_PATH))
+    original_attempt = deepcopy(snapshot.get(driver.RECOVERY_ATTEMPT_PATH))
+    recovery_source = preflight.composition.recovery_result_source
+    workflows = recovery_source.config.workflows
+    slot = SimpleNamespace(scenario="happy_path", feature_id=h["feature_id"], target_ref=h["target_ref"])
+    state = {"head": old_head, "run_patch": {}, "patches": 0}
+    routes = {}
+
+    def candidate():
+        return {"number": h["candidate_pr_number"], "state": "open", "draft": False,
+                "html_url": f"https://github.com/{repository}/pull/{h['candidate_pr_number']}",
+                "head": {"ref": h["target_ref"], "sha": state["head"], "repo": {"full_name": repository}},
+                "base": {"ref": "main", "repo": {"full_name": repository}}}
+
+    def external_json(path):
+        if path == "/pulls":
+            return [candidate()]
+        if path == f"/pulls/{h['candidate_pr_number']}":
+            return candidate()
+        if path == f"/compare/{old_head}...{new_head}":
+            return {"status": "ahead", "ahead_by": 1, "behind_by": 0,
+                    "merge_base_commit": {"sha": old_head}}
+        if path == f"/actions/runs/{run_id}":
+            status, _, raw = recovery_source.http(
+                method="GET", url=f"https://api.github.com/repos/{repository}{path}", token="read")
+            expect(status == 200, "recovery run fixture did not resolve")
+            value = json.loads(raw)
+            value.update(repository={"full_name": repository})
+            value.update(state["run_patch"])
+            return value
+        if path in routes:
+            return deepcopy(routes[path])
+        if path == f"/pulls/{sealed['output_candidate_pr_number']}":
+            status, _, raw = recovery_source.http(
+                method="GET", url=f"https://api.github.com/repos/{repository}{path}", token="read")
+            expect(status == 200, "Developer output fixture did not resolve")
+            return json.loads(raw)
+        if path.startswith("/git/refs/heads/"):
+            return {"object": {"sha": state["head"]}}
+        raise AssertionError("finalization escaped exact HTTP fixture: " + path)
+
+    def suffix(url):
+        return urlparse(url).path.split("/repos/" + repository, 1)[1]
+
+    def get_json(url, headers):
+        return 200, external_json(suffix(url))
+
+    def source_http(*, method, url, token):
+        expect(method == "GET", "source unexpectedly mutated external state")
+        value = external_json(suffix(url))
+        return 200, {}, value if isinstance(value, bytes) else json.dumps(value).encode()
+
+    def handoff_http(method, url, headers, body):
+        path = suffix(url)
+        if method == "PATCH":
+            expect(path.startswith("/git/refs/heads/") and body == {"sha": new_head, "force": False},
+                   "handoff escaped one exact non-force fast-forward")
+            state["head"] = new_head
+            state["patches"] += 1
+            return 200, {"object": {"sha": new_head}}
+        expect(method == "GET", "handoff sent an unexpected HTTP mutation")
+        return 200, external_json(path)
+
+    normal_source = FirstAttemptDigestBoundGhAwResultSource(
+        recovery_source.config, target_repository=repository, http=source_http)
+    final_preflight = SimpleNamespace(
+        execution=preflight.execution, slot=slot, workflows=workflows,
+        candidate_pr_number=h["candidate_pr_number"], candidate_head_sha=new_head,
+        composition=SimpleNamespace(runtime=runtime, result_source=normal_source,
+            recovery_result_source=recovery_source,
+            policy_authority=preflight.composition.policy_authority))
+
+    def emit(event_type, payload):
+        current = runtime.backend.snapshot
+        sequence = len(operation_events(current, operation_id)) + 1
+        event_id = f"happy-fixture-{sequence}"
+        event = make_event(operation_id=operation_id, generation=h["generation"],
+            sequence=sequence, event_id=event_id, event_type=event_type,
+            occurred_at=runtime.clock(), payload=payload,
+            trusted_context_digest=preflight.trusted_context_digest)
+        current.files[event_path(operation_id, sequence, event_id)] = event
+        return event
+
+    def reserve_and_authorize(context, task_identity):
+        runtime.backend.snapshot.files[reservation_path(context.semantic_effect_key)] = {
+            "semantic_effect_key": context.semantic_effect_key,
+            "external_dispatch_key": context.external_dispatch_key,
+            "target_repository": context.target_repository, "feature_id": context.feature_id,
+            "expected_revision": context.expected_revision, "current_stage": context.feature_stage,
+            "role": context.role, "candidate_head_sha": context.candidate_head_sha,
+            "task_identity": task_identity}
+        emit("dispatch.launch.authorized", {
+            "external_dispatch_key": context.external_dispatch_key,
+            "semantic_effect_key": context.semantic_effect_key, "dispatch_id": context.dispatch_id,
+            "feature_id": context.feature_id, "expected_revision": context.expected_revision,
+            "stage": context.feature_stage, "role": context.role,
+            "candidate_head_sha": context.candidate_head_sha, "task_id": context.task_id})
+
+    def launch(context, step, receipt):
+        emit("loop.step.selected", {"step": step})
+        emit("dispatch.claimed", {"external_dispatch_key": context.external_dispatch_key})
+        reserve_and_authorize(context, context.task_id)
+        emit("dispatch.launch.lookup-recorded", {
+            "external_dispatch_key": context.external_dispatch_key,
+            "lookup_state": "LAUNCHED", "receipt_id": str(receipt)})
+
+    def record_callback(callback):
+        runtime.commit_replanned(lambda current: plan_vertical_callback_record(
+            current, context=callback["context"], callback_id=callback["callback_id"],
+            worker_payload=callback["worker_payload"], receipts=callback["receipts"],
+            occurred_at=runtime.clock(), trusted_context_digest=preflight.trusted_context_digest))
+
+    def accept_and_persist(callback):
+        context = callback["context"]
+        emit("worker.result.validated", {"callback_id": callback["callback_id"],
+            "role": context.role, "dispatch_id": context.dispatch_id})
+        material = {"feature_event_id": "happy-" + context.role,
+            "expected_revision": context.expected_revision, "target_ref": context.target_ref,
+            "candidate_head_sha": new_head}
+        for phase in ("requested", "linearized", "confirmed"):
+            emit("persist." + phase, dict(material, result_revision=context.expected_revision + 1))
+        if context.role != "qa":
+            emit("loop.stable-stop", {"status": "WAITING_EXTERNAL"})
+
+    try:
+        expect(not operation_events(snapshot, operation_id), "happy fixture expected frozen recovery sidecars only")
+        emit("operation.started", {"operation_profile": VERTICAL_PROFILE,
+            "target_repository": repository, "feature_id": h["feature_id"], "expected_revision": 1})
+        # Preserve original authorization/receipt positions at sequences 11/12.
+        emit("loop.step.selected", {"step": "IMPLEMENTATION_WORK"})
+        emit("dispatch.claimed", {"external_dispatch_key": h["external_dispatch_key"]})
+        for _ in range(7):
+            emit("feature.event.translated", {"purpose": "historical-fixture-prefix"})
+        dev_context = developer_callback["context"]
+        reserve_and_authorize(dev_context, h["task_identity"])
+        emit("dispatch.launch.lookup-recorded", {
+            "external_dispatch_key": h["external_dispatch_key"], "lookup_state": "LAUNCHED",
+            "receipt_id": "37204777409"})
+        record_callback(deepcopy(developer_callback))
+        provider = DogfoodGitHubCandidateProvider(slot=slot, repository=repository,
+            token="fixture", http_get=get_json)
+        provider.bind_runtime(runtime)
+        executor = TrustedVerticalExecutor(runtime=runtime, feature_gateway=None,
+            persist_gateway=None, dispatch_gateway=None,
+            config=TrustedVerticalExecutorConfig(target_ref=h["target_ref"],
+                trusted_context_digest=preflight.trusted_context_digest, legacy_compatibility_mode=True))
+        handoff = DogfoodCandidateHandoff(slot=slot, repository=repository, token="fixture",
+            candidate_provider=provider, http_request=handoff_http)
+        handoff.content_loader = recovery_source.load_content
+        handoff.adopt(executor=executor, context=dev_context,
+            callback_id=developer_callback["callback_id"], receipts=developer_callback["receipts"])
+        expect(vertical_projection(runtime.backend.read_snapshot(), operation_id)["generation"] == h["generation"],
+               "durable Developer handoff broke production Store projection")
+        expect(state["patches"] == 1 and state["head"] == new_head,
+               "actual handoff did not advance exact fixture")
+        accept_and_persist(developer_callback)
+
+        gate_runs = []
+        for index, (role, stage, step) in enumerate((
+            ("reviewer", "code-review", "CODE_REVIEW"),
+            ("qa", "verification", "VERIFICATION_QA")), start=2):
+            gate_run = run_id + index - 1
+            gate_runs.append(gate_run)
+            key, workflow, comment_id = "dispatch-" + str(index) * 40, workflows.workflow_for(role), 9100 + index
+            comment_url = f"https://github.com/{repository}/pull/{h['candidate_pr_number']}#issuecomment-{comment_id}"
+            context = replace(dev_context, role=role, feature_stage=stage, expected_revision=index,
+                semantic_effect_key=str(index) * 64, external_dispatch_key=key,
+                dispatch_id="dc-" + str(index) * 40, runtime_receipt_identity=str(gate_run),
+                task_id="happy-" + role, candidate_pr_number=h["candidate_pr_number"],
+                candidate_head_sha=new_head, worker_identity=f"gh-aw:{workflow}@{source_sha}")
+            external = {
+                "version": "0.1.0", "contract": "ai-sdlc-gh-aw-" + role + "-result-v0.1",
+                "id": "happy-" + role, "feature_id": context.feature_id, "task_id": context.task_id,
+                "stage": stage, "role": role, "expected_revision": index,
+                "target_repository": repository, "target_ref": context.target_ref,
+                "candidate_pr_number": context.candidate_pr_number, "candidate_head_sha": new_head,
+                "verdict": "PASS", "occurred_at": runtime.clock(),
+                "evidence": [{"id": "happy-evidence", "type": "review" if role == "reviewer" else "verification",
+                    "status": "pass", "uri": f"https://github.com/{repository}/actions/runs/{gate_run}"}]}
+            if role == "reviewer":
+                external["findings"] = []
+            else:
+                external["checks"] = [{"name": "runtime", "status": "pass"}]
+                external["coverage"] = [{"criterion": "happy path", "status": "pass"}]
+            routes[f"/issues/comments/{comment_id}"] = {
+                "id": comment_id, "html_url": comment_url,
+                "issue_url": f"https://api.github.com/repos/{repository}/issues/{context.candidate_pr_number}",
+                "user": {"type": "Bot"}, "body": _GATE_START + json.dumps(external) + _GATE_END}
+            routes[f"/actions/runs/{gate_run}"] = {
+                "id": gate_run, "run_attempt": 1, "repository": {"full_name": repository},
+                "html_url": f"https://github.com/{repository}/actions/runs/{gate_run}",
+                "path": ".github/workflows/" + workflow, "display_title": "AI-SDLC gh-aw " + key,
+                "event": "workflow_dispatch", "head_branch": "main", "head_sha": source_sha,
+                "status": "completed", "conclusion": "success"}
+            job_id = 9200 + index
+            routes[f"/actions/runs/{gate_run}/jobs"] = {"jobs": [
+                {"id": job_id - 100, "name": "safe_outputs", "conclusion": "success"},
+                {"id": job_id, "name": "conclusion", "conclusion": "success"}]}
+            log_values = {
+                "SOURCE_RUN_ID": gate_run,
+                "SOURCE_WORKFLOW_REF": f"{repository}/.github/workflows/{workflow}@refs/heads/main",
+                "TARGET_REPOSITORY": repository, "TARGET_REF": context.target_ref,
+                "FEATURE_ID": context.feature_id, "EXPECTED_REVISION": index,
+                "STAGE": stage, "ROLE": role, "TRUSTED_TASK_ID": context.task_id,
+                "CANDIDATE_PR_NUMBER": context.candidate_pr_number, "CANDIDATE_HEAD_SHA": new_head,
+                "COMMENT_ID": comment_id, "COMMENT_URL": comment_url}
+            routes[f"/actions/jobs/{job_id}/logs"] = "".join(
+                f"2026-10-09T07:00:00Z   {name}: {value}\n" for name, value in log_values.items()).encode()
+            launch(context, step, gate_run)
+            trusted = dict(asdict(context), launch_candidate_head_sha=new_head)
+            resolved = normal_source.resolve(external_dispatch_key=key,
+                expected_receipt_identity=str(gate_run), trusted_context=trusted)
+            receipts = _build_receipts(coordinator=SimpleNamespace(content_loader=normal_source.load_content),
+                context=context, outputs=resolved.outputs,
+                declared_outputs={row["label"]: row["kind"] for row in resolved.role_payload["outputs"]},
+                collected_at=runtime.clock())
+            callback = {"context": context, "receipts": receipts, "worker_payload": resolved.role_payload,
+                "callback_id": "gh-aw-callback-" + digest_json({
+                    "operation_id": operation_id, "generation": h["generation"], "external_dispatch_key": key,
+                    "runtime_receipt_identity": str(gate_run), "run_id": gate_run})[:24]}
+            record_callback(callback)
+            accept_and_persist(callback)
+        emit("notification.created", {"notification_id": "happy-done"})
+        emit("operation.done", {"feature_revision": 4})
+        emit("loop.stable-stop", {"status": "DONE"})
+        expect(vertical_projection(runtime.backend.read_snapshot(), operation_id)["status"] == "DONE",
+               "real completed snapshot did not project DONE")
+        observation = {
+            "scenario": "happy_path", "repository": repository, "feature_id": h["feature_id"],
+            "target_ref": h["target_ref"], "operation_id": operation_id,
+            "installation_commit_sha": source_sha, "candidate_pr_number": h["candidate_pr_number"],
+            "candidate_head_sha": new_head, "final_status": "DONE",
+            "workflow_run_ids": [run_id, *gate_runs], "runtime_receipt_identity": str(gate_runs[-1]),
+            "repeated_continue_messages": 0, "release_eligible": False, "provenance_verified": False}
+
+        class Response:
+            status = 200
+            def __init__(self, value): self.value = value
+            def __enter__(self): return self
+            def __exit__(self, *args): return None
+            def read(self): return json.dumps(self.value).encode()
+
+        def fake_urlopen(req, timeout):
+            expect(req.get_method() == "GET", "provenance attempted a non-read request")
+            return Response(external_json(suffix(req.full_url)))
+
+        def finalize():
+            return finalizer.finalize(observation=observation, preflight=final_preflight,
+                source_run_id=run_id + 10, finalizer_run_id=run_id + 11, github_token="fixture")
+
+        with patch.object(provenance, "urlopen", side_effect=fake_urlopen):
+            record = finalize()
+            expect(record["verdict"] == "PASS" and record["release_eligible"] is True
+                   and record["runtime"]["workflow_run_ids"] == [run_id, *gate_runs]
+                   and record["assertions"]["independent_review_observed"] is True,
+                   "complete production happy-path finalization did not verify")
+            expect(runtime.backend.snapshot.get(driver.RECOVERY_AUTHORIZATION_PATH) == original_auth
+                   and runtime.backend.snapshot.get(driver.RECOVERY_ATTEMPT_PATH) == original_attempt,
+                   "happy-path finalization rewrote frozen ARMED authorization history")
+            expect(original_auth["source_head_sha"] != source_sha
+                   and sealed["execution_source_head_sha"] == source_sha
+                   and sealed["recovery_dispatch_key"].startswith("recovery-"),
+                   "fixture failed to exercise real recovery key and old/new source separation")
+            for label, mutate, restore in (
+                ("execution-source", lambda: state["run_patch"].update(head_sha=original_auth["source_head_sha"]),
+                 lambda: state["run_patch"].clear()),
+                ("recovery-key", lambda: state["run_patch"].update(
+                    display_title="AI-SDLC gh-aw " + h["external_dispatch_key"]),
+                 lambda: state["run_patch"].clear()),
+                ("final-candidate-head", lambda: state.update(head="9" * 40),
+                 lambda: state.update(head=new_head)),
+            ):
+                mutate()
+                try:
+                    finalize()
+                except (finalizer.V03DogfoodPostRunFinalizerError,
+                        provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
+                    pass
+                else:
+                    raise AssertionError("actual finalizer accepted tampered " + label)
+                finally:
+                    restore()
+            # Rehash a forged envelope so the exact collector URI/lease/content
+            # binding must reject it independently of the envelope digest.
+            dev_event = next(row for row in operation_events(runtime.backend.snapshot, operation_id)
+                             if row["event_type"] == "worker.callback.recorded")
+            original_payload = deepcopy(dev_event["payload"])
+            payload = dev_event["payload"]
+            envelope = payload["trusted_callback_envelope"]
+            envelope["collected_outputs"][0]["trusted_uri"] = envelope["collected_outputs"][0]["trusted_uri"].replace(
+                "--lease-", "--lease-0", 1)
+            payload["trusted_callback_envelope_digest"] = digest_json(envelope)
+            payload["callback_digest"] = digest_json({
+                "worker_payload": envelope["worker_payload"], "receipts": envelope["collected_outputs"]})
+            try:
+                finalize()
+            except (finalizer.V03DogfoodPostRunFinalizerError,
+                    provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
+                pass
+            else:
+                raise AssertionError("actual finalizer accepted forged leased Developer URI")
+            finally:
+                dev_event["payload"] = original_payload
+            expect(finalize()["verdict"] == "PASS", "restored production happy-path did not reverify")
+    finally:
+        runtime.backend.snapshot = saved_snapshot
+    print("- real recovery Developer/Reviewer/QA finalizer verifies leased callbacks, handoff and provenance")
+
+
 def bounded_recovery_execution_tests():
     """Exercise CAS winner/replay/ack-loss and zero-POST failure behavior."""
     from copy import deepcopy
@@ -1700,7 +2056,7 @@ def bounded_recovery_execution_tests():
     from operator_vertical import VerticalInvariantError
     original_snapshot, proof, fence = armed_recovery_fixture()
     transport_fixture = recovery_actions_transport_tests()
-    from operator_store_git import MemoryStateRefBackend
+    from operator_store_git import MemoryStateRefBackend, CommitResult
     from operator_store_backends import OperatorStoreRuntime
     from operator_store_protection import PROTECTED, StaticProtectionVerifier
     class Backend(MemoryStateRefBackend):
@@ -1711,7 +2067,10 @@ def bounded_recovery_execution_tests():
             self.commit_count = 0
         def commit(self, plan, receipt):
             self.commit_count += 1
-            return super().commit(plan, receipt)
+            result = super().commit(plan, receipt)
+            # Preserve real CAS semantics while modelling provider SHA40 refs.
+            self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
+            return CommitResult(self.snapshot.ref_sha, self.read_snapshot(), result.result)
     class Runtime(OperatorStoreRuntime):
         def __init__(self):
             super().__init__(
@@ -1931,6 +2290,7 @@ def bounded_recovery_execution_tests():
         expect(len(callback_calls[0]["receipts"]) == 1
                and callback_calls[0]["receipts"][0]["dispatch_id"] == h["dispatch_id"],
                "collector receipts lost historical callback authority")
+        happy_path_recovery_finalization_tests(pf, sealed, callback_calls[0])
         with patch.object(
             finalizer_subject, "vertical_projection",
             return_value={"operation_profile": subject.VERTICAL_PROFILE},

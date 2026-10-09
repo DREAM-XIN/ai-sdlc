@@ -26,7 +26,7 @@ from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceVerifier,
 )
 from v03_dogfood_release_finalizer import build_release_record
-from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding
+from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding, read_dogfood_handoff, V03DogfoodCompositionError
 from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
@@ -415,28 +415,24 @@ def _durable_run_bindings(preflight, observation, events):
                 raise V03DogfoodPostRunFinalizerError("Developer run lacks one sealed callback for candidate handoff")
             callback = callbacks[0]
             callback_id = str((callback.get("payload") or {}).get("callback_id") or "")
-            handoffs = [
-                event for event in events
-                if event.get("event_type") == "candidate.handoff.adopted"
-                and event.get("operation_generation") == row.get("operation_generation")
-                and (event.get("payload") or {}).get("callback_id") == callback_id
-            ]
-            if len(handoffs) != 1:
-                raise V03DogfoodPostRunFinalizerError("Developer output lacks one durable trusted candidate handoff")
-            handoff = handoffs[0]
-            handoff_payload = handoff.get("payload") or {}
-            if (
-                int(handoff_payload.get("source_candidate_pr_number") or 0) != int(output_pr or 0)
-                or handoff_payload.get("source_candidate_head_sha") != output_head
-                or handoff_payload.get("prior_candidate_head_sha") != launch.get("candidate_head_sha")
-                or handoff_payload.get("dispatch_id") != launch.get("dispatch_id")
-                or int(handoff_payload.get("fixture_candidate_pr_number") or 0) != preflight.candidate_pr_number
-                or not (
-                    int(row.get("sequence") or 0)
-                    < int(callback.get("sequence") or 0)
-                    < int(handoff.get("sequence") or 0)
-                )
-            ):
+
+            try:
+                fact = read_dogfood_handoff(snapshot, observation["operation_id"], callback_id, require_applied=True)
+            except V03DogfoodCompositionError as exc:
+                raise V03DogfoodPostRunFinalizerError("Developer handoff sidecar proof differs") from exc
+            handoff_payload, applied = fact["intent"], fact["applied"]
+            validated = [event for event in events if event.get("event_type") == "worker.result.validated"
+                         and event.get("operation_generation") == row.get("operation_generation")
+                         and (event.get("payload") or {}).get("callback_id") == callback_id]
+            if (len(validated) != 1
+                    or handoff_payload["source_candidate_pr_number"] != output_pr
+                    or handoff_payload["source_candidate_head_sha"] != output_head
+                    or handoff_payload["prior_candidate_head_sha"] != launch.get("candidate_head_sha")
+                    or handoff_payload["dispatch_id"] != launch.get("dispatch_id")
+                    or handoff_payload["fixture_candidate_pr_number"] != preflight.candidate_pr_number
+                    or not (row["sequence"] < callback["sequence"]
+                            <= handoff_payload["observed_last_sequence"]
+                            <= applied["observed_last_sequence"] < validated[0]["sequence"])):
                 raise V03DogfoodPostRunFinalizerError("Developer candidate handoff identity/order differs")
         binding = {
             "repository": preflight.execution.repository, "feature_id": preflight.slot.feature_id,

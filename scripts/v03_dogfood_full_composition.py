@@ -27,11 +27,11 @@ from operator_openai_responses_production import (
 )
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
-from operator_store_model import canonical_json, digest_json, normalize_repository, operation_events, reservation_path
+from operator_store_model import canonical_json, digest_json, normalize_repository, operation_events, reservation_path, rebuild_projection, StoreMutation, StoreMutationPlan
 from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result
 from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
-from operator_vertical_recovery import plan_vertical_callback_record
+from operator_vertical_recovery import plan_vertical_callback_record, recover_vertical_callback, _context_payload, _task_binding_matches
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
 from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource, _FIRST_ATTEMPT_URI_RE
 from operator_vertical_gh_aw_collector import MaterializedGhAwOutput, TrustedGhAwResolvedResult, TrustedGhAwRun
@@ -203,6 +203,198 @@ class V03DogfoodCompositionError(RuntimeError):
     pass
 
 
+HANDOFF_SCHEMA = "ai-sdlc.v03-dogfood-candidate-handoff/v1"
+
+
+def _handoff_paths(operation_id, callback_id):
+    base = f"state/operator/v1/operations/{operation_id}/dogfood-candidate-handoffs/{digest_json({'callback_id': callback_id})}"
+    return base + "/intent.json", base + "/applied.json"
+
+
+def _handoff_prefix(events, document):
+    n = document.get("observed_last_sequence")
+    if (type(n) is not int or n < 1 or n > len(events)
+            or document.get("operation_journal_digest") != digest_json(events[:n])):
+        raise V03DogfoodCompositionError("handoff journal predecessor differs")
+    return n
+
+
+def _handoff_binding(snapshot, operation_id, callback_id, fixture_pr):
+    events = operation_events(snapshot, operation_id)
+    callbacks = [e for e in events if e.get("event_type") == "worker.callback.recorded"
+                 and (e.get("payload") or {}).get("callback_id") == callback_id]
+    if len(callbacks) != 1 or type(fixture_pr) is not int or fixture_pr < 1:
+        raise V03DogfoodCompositionError("handoff requires one callback and exact fixture PR")
+    callback = callbacks[0]
+    envelope = recover_vertical_callback(snapshot, operation_id=operation_id, callback_id=callback_id)
+    context = envelope["trusted_context"]
+    payload = validate_worker_result("developer", envelope["worker_payload"])
+    if context.get("role") != "developer" or payload.get("status") != "COMPLETED":
+        raise V03DogfoodCompositionError("handoff requires completed Developer result")
+    generation = callback["operation_generation"]
+    if context.get("operation_generation") != generation:
+        raise V03DogfoodCompositionError("handoff callback generation differs")
+    launches = [e for e in events if e.get("event_type") == "dispatch.launch.authorized"
+                and e.get("operation_generation") == generation
+                and (e.get("payload") or {}).get("external_dispatch_key") == context.get("external_dispatch_key")]
+    lookups = [e for e in events if e.get("event_type") == "dispatch.launch.lookup-recorded"
+               and e.get("operation_generation") == generation
+               and (e.get("payload") or {}).get("external_dispatch_key") == context.get("external_dispatch_key")
+               and (e.get("payload") or {}).get("lookup_state") == "LAUNCHED"]
+    if len(launches) != 1 or len(lookups) != 1 or not (launches[0]["sequence"] < lookups[0]["sequence"] < callback["sequence"]):
+        raise V03DogfoodCompositionError("handoff lacks original ordered launch and receipt")
+    launch = launches[0]["payload"]
+    reservation = snapshot.get(reservation_path(str(context.get("semantic_effect_key") or "")))
+    if not isinstance(reservation, dict):
+        raise V03DogfoodCompositionError("handoff lacks semantic reservation")
+    for field in ("dispatch_id", "semantic_effect_key", "external_dispatch_key", "feature_id", "role", "expected_revision", "candidate_head_sha"):
+        if launch.get(field) != context.get(field):
+            raise V03DogfoodCompositionError("handoff original launch binding differs: " + field)
+    for field in ("external_dispatch_key", "target_repository", "feature_id", "expected_revision", "role", "candidate_head_sha"):
+        if reservation.get(field) != context.get(field):
+            raise V03DogfoodCompositionError("handoff original reservation differs: " + field)
+    starts = [event for event in events if event.get("event_type") == "operation.started"]
+    if (len(starts) != 1
+            or (starts[0].get("payload") or {}).get("target_repository") != context.get("target_repository")
+            or (starts[0].get("payload") or {}).get("feature_id") != context.get("feature_id")
+            or not _task_binding_matches(str(reservation.get("task_identity") or ""), str(context.get("task_id") or ""))):
+        raise V03DogfoodCompositionError("handoff original Operation/task scope differs")
+    if launch.get("stage") != context.get("feature_stage") or reservation.get("current_stage") != context.get("feature_stage"):
+        raise V03DogfoodCompositionError("handoff original stage differs")
+    receipts = envelope["collected_outputs"]
+    source_pr, source_head = DogfoodGitHubCandidateProvider._developer_receipt(envelope)
+    matches = [_DEVELOPER_PR_URI.fullmatch(str(row.get("trusted_uri") or "")) for row in receipts
+               if isinstance(row, dict) and row.get("kind") == "artifact"]
+    matches = [match for match in matches if match]
+    if len(matches) != 1 or matches[0].group("feature") != context.get("feature_id") or matches[0].group("dispatch") != context.get("dispatch_id"):
+        raise V03DogfoodCompositionError("handoff output URI escaped original callback")
+    prior = context.get("candidate_head_sha")
+    if not _SHA40.fullmatch(str(prior or "")) or prior == source_head:
+        raise V03DogfoodCompositionError("handoff requires distinct exact input and output heads")
+    return {
+        "operation_id": operation_id, "operation_generation": generation,
+        "callback_id": callback_id, "callback_sequence": callback["sequence"],
+        "callback_event_digest": digest_json(callback), "callback_envelope_digest": digest_json(envelope),
+        "receipts_digest": digest_json(receipts), "launch_event_digest": digest_json(launches[0]),
+        "launch_lookup_event_digest": digest_json(lookups[0]), "reservation_digest": digest_json(reservation),
+        "dispatch_id": context["dispatch_id"], "external_dispatch_key": context["external_dispatch_key"],
+        "semantic_effect_key": context["semantic_effect_key"], "target_repository": context["target_repository"],
+        "feature_id": context["feature_id"], "target_ref": context["target_ref"],
+        "fixture_candidate_pr_number": fixture_pr, "prior_candidate_head_sha": prior,
+        "source_candidate_pr_number": source_pr, "source_candidate_head_sha": source_head,
+    }
+
+
+def _validate_handoff_intent(snapshot, intent, *, binding):
+    extras = {"schema_version", "fact_kind", "predecessor_store_commit", "observed_last_sequence", "operation_journal_digest"}
+    if (not isinstance(intent, dict) or set(intent) != set(binding) | extras
+            or any(intent.get(k) != v for k, v in binding.items())
+            or intent.get("schema_version") != HANDOFF_SCHEMA or intent.get("fact_kind") != "intent"
+            or not _SHA40.fullmatch(str(intent.get("predecessor_store_commit") or ""))):
+        raise V03DogfoodCompositionError("handoff intent identity differs")
+    events = operation_events(snapshot, binding["operation_id"])
+    n = _handoff_prefix(events, intent)
+    if binding["callback_sequence"] > n or any(e.get("event_type") in {
+        "worker.result.validated", "worker.result.rejected", "feature.event.translated"
+    } and (e.get("payload") or {}).get("callback_id") == binding["callback_id"] for e in events[:n]):
+        raise V03DogfoodCompositionError("handoff intent order differs")
+    return intent
+
+
+def _validate_handoff_applied(snapshot, intent, applied):
+    expected = {
+        "schema_version": HANDOFF_SCHEMA, "fact_kind": "applied",
+        "operation_id": intent["operation_id"], "callback_id": intent["callback_id"],
+        "intent_digest": digest_json(intent), "observed_ref_sha": intent["source_candidate_head_sha"],
+    }
+    extras = {"predecessor_store_commit", "observed_last_sequence", "operation_journal_digest"}
+    if (not isinstance(applied, dict) or set(applied) != set(expected) | extras
+            or any(applied.get(k) != v for k, v in expected.items())
+            or not _SHA40.fullmatch(str(applied.get("predecessor_store_commit") or ""))):
+        raise V03DogfoodCompositionError("handoff applied identity differs")
+    events = operation_events(snapshot, intent["operation_id"])
+    n = _handoff_prefix(events, applied)
+    if n < intent["observed_last_sequence"] or any(e.get("event_type") in {
+        "worker.result.validated", "worker.result.rejected", "feature.event.translated"
+    } and (e.get("payload") or {}).get("callback_id") == intent["callback_id"] for e in events[:n]):
+        raise V03DogfoodCompositionError("handoff applied order differs")
+    return applied
+
+
+def _plan_handoff_intent(snapshot, *, binding):
+    operation_id, callback_id = binding["operation_id"], binding["callback_id"]
+    events = operation_events(snapshot, operation_id)
+    intent_path, applied_path = _handoff_paths(operation_id, callback_id)
+    existing = snapshot.get(intent_path)
+    if existing is not None:
+        _validate_handoff_intent(snapshot, existing, binding=binding)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"intent": existing, "created": False})
+    if snapshot.get(applied_path) is not None:
+        raise V03DogfoodCompositionError("applied handoff lacks intent")
+    projection = rebuild_projection(snapshot, operation_id)
+    if (projection.get("generation") != binding["operation_generation"]
+            or projection.get("operation_profile") != VERTICAL_PROFILE
+            or projection.get("target_repository") != binding["target_repository"]
+            or projection.get("feature_id") != binding["feature_id"]
+            or projection.get("status") != "RUNNING"):
+        raise V03DogfoodCompositionError("handoff intent escaped current executable generation")
+    if any(e.get("event_type") in {"worker.result.validated", "worker.result.rejected", "feature.event.translated"}
+           and (e.get("payload") or {}).get("callback_id") == callback_id for e in events):
+        raise V03DogfoodCompositionError("handoff intent came after callback consumption")
+    intent = dict(binding, schema_version=HANDOFF_SCHEMA, fact_kind="intent",
+                  predecessor_store_commit=snapshot.ref_sha,
+                  observed_last_sequence=len(events), operation_journal_digest=digest_json(events))
+    _validate_handoff_intent(snapshot, intent, binding=binding)
+    return StoreMutationPlan(snapshot.ref_sha,
+        (StoreMutation("create_immutable", intent_path, intent),), {"intent": intent, "created": True})
+
+
+def _plan_handoff_applied(snapshot, *, intent, observed_ref_sha):
+    operation_id, callback_id = intent["operation_id"], intent["callback_id"]
+    intent_path, applied_path = _handoff_paths(operation_id, callback_id)
+    if snapshot.get(intent_path) != intent or observed_ref_sha != intent["source_candidate_head_sha"]:
+        raise V03DogfoodCompositionError("applied handoff escaped intent or exact observed ref")
+    _validate_handoff_intent(snapshot, intent, binding=_handoff_binding(
+        snapshot, operation_id, callback_id, intent["fixture_candidate_pr_number"]))
+    events = operation_events(snapshot, operation_id)
+    existing = snapshot.get(applied_path)
+    if existing is not None:
+        _validate_handoff_applied(snapshot, intent, existing)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"applied": existing})
+    if any(e.get("event_type") in {"worker.result.validated", "worker.result.rejected", "feature.event.translated"}
+           and (e.get("payload") or {}).get("callback_id") == callback_id for e in events):
+        raise V03DogfoodCompositionError("handoff application came after callback consumption")
+    applied = {
+        "schema_version": HANDOFF_SCHEMA, "fact_kind": "applied",
+        "operation_id": operation_id, "callback_id": callback_id,
+        "intent_digest": digest_json(intent), "observed_ref_sha": observed_ref_sha,
+        "predecessor_store_commit": snapshot.ref_sha,
+        "observed_last_sequence": len(events), "operation_journal_digest": digest_json(events),
+    }
+    _validate_handoff_applied(snapshot, intent, applied)
+    return StoreMutationPlan(snapshot.ref_sha,
+        (StoreMutation("create_immutable", applied_path, applied),), {"applied": applied})
+
+
+def read_dogfood_handoff(snapshot, operation_id, callback_id, *, require_applied=False):
+    intent_path, applied_path = _handoff_paths(operation_id, callback_id)
+    intent, applied = snapshot.get(intent_path), snapshot.get(applied_path)
+    if intent is None:
+        if applied is not None or require_applied:
+            raise V03DogfoodCompositionError("handoff intent missing")
+        return None
+    if not isinstance(intent, dict):
+        raise V03DogfoodCompositionError("handoff intent malformed")
+    binding = _handoff_binding(snapshot, operation_id, callback_id, intent.get("fixture_candidate_pr_number"))
+    _validate_handoff_intent(snapshot, intent, binding=binding)
+    if applied is not None:
+        _validate_handoff_applied(snapshot, intent, applied)
+    elif require_applied:
+        raise V03DogfoodCompositionError("handoff applied proof missing")
+    return {"intent": intent, "applied": applied}
+
+
+
 class DogfoodGitHubCandidateProvider:
     """Fresh-read exactly one same-repository PR for one immutable dogfood slot."""
 
@@ -259,108 +451,37 @@ class DogfoodGitHubCandidateProvider:
             raise V03DogfoodCompositionError("developer callback must bind one exact Draft PR output")
         return matches[0]
 
-    def _pending_handoff(self, operation_id: str) -> dict[str, Any] | None:
+    def _pending_handoff(self, operation_id):
         if self.runtime is None:
             return None
-        callbacks: dict[str, dict[str, Any]] = {}
-        handoffs: dict[str, dict[str, Any]] = {}
-        translated: dict[str, str] = {}
-        confirmed: set[str] = set()
-        for row in operation_events(self.runtime.backend.read_snapshot(), operation_id):
-            event_type = str(row.get("event_type") or "")
+        snapshot = self.runtime.backend.read_snapshot()
+        callbacks, translated, confirmed = {}, {}, set()
+        for row in operation_events(snapshot, operation_id):
             payload = row.get("payload") or {}
-            if event_type == "worker.callback.recorded":
-                envelope = payload.get("trusted_callback_envelope")
-                context = (envelope or {}).get("trusted_context") if isinstance(envelope, dict) else None
-                callback_id = str(payload.get("callback_id") or "")
-                if isinstance(context, dict) and context.get("role") == "developer" and callback_id:
-                    callbacks[callback_id] = envelope
-            elif event_type == "candidate.handoff.adopted":
-                callback_id = str(payload.get("callback_id") or "")
-                if callback_id:
-                    handoffs[callback_id] = payload
-            elif event_type == "feature.event.translated":
-                callback_id = str(payload.get("callback_id") or "")
-                event_id = str(payload.get("feature_event_id") or "")
-                if callback_id and event_id:
-                    translated.setdefault(callback_id, event_id)
-            elif event_type == "persist.confirmed":
-                event_id = str(payload.get("feature_event_id") or "")
-                if event_id:
-                    confirmed.add(event_id)
-        pending: list[dict[str, Any]] = []
-        for callback_id, envelope in callbacks.items():
-            event_id = translated.get(callback_id)
-            if event_id and event_id in confirmed:
+            kind = row.get("event_type")
+            if kind == "worker.callback.recorded":
+                envelope = payload.get("trusted_callback_envelope") or {}
+                if (envelope.get("trusted_context") or {}).get("role") == "developer":
+                    callbacks[payload["callback_id"]] = envelope
+            elif kind == "feature.event.translated":
+                if payload.get("callback_id") and payload.get("feature_event_id"):
+                    translated.setdefault(payload["callback_id"], payload["feature_event_id"])
+            elif kind == "persist.confirmed":
+                confirmed.add(payload.get("feature_event_id"))
+        pending = []
+        for callback_id in callbacks:
+            if translated.get(callback_id) in confirmed:
                 continue
-            context = envelope.get("trusted_context") or {}
-            handoff = handoffs.get(callback_id)
-            if not isinstance(handoff, dict):
-                continue
-            source_pr, source_head = self._developer_receipt(envelope)
-            if (
-                handoff.get("source_candidate_pr_number") != source_pr
-                or handoff.get("source_candidate_head_sha") != source_head
-                or handoff.get("prior_candidate_head_sha") != context.get("candidate_head_sha")
-                or handoff.get("dispatch_id") != context.get("dispatch_id")
-            ):
-                raise V03DogfoodCompositionError("durable candidate handoff differs from sealed Developer callback")
-            pending.append(handoff)
+            fact = read_dogfood_handoff(snapshot, operation_id, callback_id)
+            if fact is not None:
+                intent = fact["intent"]
+                if (intent["target_repository"] != self.repository or intent["feature_id"] != self.slot.feature_id
+                        or intent["target_ref"] != self.slot.target_ref):
+                    raise V03DogfoodCompositionError("handoff escaped fixed candidate provider")
+                pending.append(intent)
         if len(pending) > 1:
-            raise V03DogfoodCompositionError("multiple incomplete Developer candidate handoffs")
+            raise V03DogfoodCompositionError("multiple incomplete Developer handoffs")
         return pending[0] if pending else None
-
-    def _is_descendant(self, ancestor: str, descendant: str) -> bool:
-        if ancestor == descendant:
-            return True
-        status, payload = self.http_get(
-            f"{self.api_base}/repos/{self.repository}/compare/{ancestor}...{descendant}",
-            self._headers(),
-        )
-        return bool(
-            status == 200
-            and isinstance(payload, dict)
-            and payload.get("status") == "ahead"
-            and int(payload.get("behind_by") or 0) == 0
-            and str(((payload.get("merge_base_commit") or {}).get("sha")) or "").lower() == ancestor
-        )
-
-    def _candidate(self) -> dict[str, Any]:
-        owner = self.repository.split("/", 1)[0]
-        query = parse.urlencode({
-            "state": "open",
-            "head": f"{owner}:{self.slot.target_ref}",
-            "base": DEFAULT_BRANCH,
-            "per_page": 100,
-        })
-        status, payload = self.http_get(
-            f"{self.api_base}/repos/{self.repository}/pulls?{query}",
-            self._headers(),
-        )
-        if status != 200 or not isinstance(payload, list):
-            raise V03DogfoodCompositionError("dogfood candidate PR truth lookup failed closed")
-        rows = [row for row in payload if isinstance(row, dict) and row.get("state") == "open" and row.get("draft") is False]
-        if len(rows) != 1:
-            raise V03DogfoodCompositionError("dogfood slot must resolve exactly one open non-draft PR")
-        row = rows[0]
-        head = row.get("head") or {}
-        base = row.get("base") or {}
-        head_repo = str(((head.get("repo") or {}).get("full_name")) or "").lower()
-        base_repo = str(((base.get("repo") or {}).get("full_name")) or "").lower()
-        head_sha = str(head.get("sha") or "").lower()
-        number = row.get("number")
-        if (
-            head_repo != self.repository
-            or base_repo != self.repository
-            or head.get("ref") != self.slot.target_ref
-            or base.get("ref") != DEFAULT_BRANCH
-            or not isinstance(number, int)
-            or isinstance(number, bool)
-            or number < 1
-            or not _SHA40.fullmatch(head_sha)
-        ):
-            raise V03DogfoodCompositionError("dogfood candidate PR repository/ref/head authority drifted")
-        return row
 
     def current_candidate(self, *, operation_id: str, repository: str, feature_id: str, target_ref: str) -> TrustedCandidateSnapshot:
         if (
@@ -380,7 +501,7 @@ class DogfoodGitHubCandidateProvider:
                 int(pending.get("fixture_candidate_pr_number") or 0) != int(row["number"])
                 or not _SHA40.fullmatch(adopted_head)
                 or not _SHA40.fullmatch(prior_head)
-                or not self._is_descendant(adopted_head, current_head)
+                or current_head not in {prior_head, adopted_head}
             ):
                 raise V03DogfoodCompositionError("incomplete handoff no longer matches fixed candidate lineage")
             current_head = prior_head
@@ -445,74 +566,69 @@ class DogfoodCandidateHandoff:
             body,
         )
 
-    def adopt(
-        self,
-        *,
-        executor: Any,
-        context: Any,
-        callback_id: str,
-        receipts: list[dict[str, Any]],
-    ) -> None:
-        if context.role != "developer" or context.feature_id != self.slot.feature_id or context.target_ref != self.slot.target_ref:
-            raise V03DogfoodCompositionError("candidate handoff escaped fixed Developer/fixture authority")
-        envelope = {"collected_outputs": receipts}
+    def adopt(self, *, executor, context, callback_id, receipts):
+        if (context.role != "developer" or context.feature_id != self.slot.feature_id
+                or context.target_ref != self.slot.target_ref
+                or normalize_repository(context.target_repository) != self.repository):
+            raise V03DogfoodCompositionError("candidate handoff escaped fixed Developer authority")
+        snapshot = executor.runtime.backend.read_snapshot()
+        envelope = recover_vertical_callback(snapshot, operation_id=context.operation_id, callback_id=callback_id)
+        if envelope["collected_outputs"] != receipts or envelope["trusted_context"] != _context_payload(context):
+            raise V03DogfoodCompositionError("handoff arguments differ from durable callback")
         source_pr, source_head = self.candidate_provider._developer_receipt(envelope)
+        if not callable(self.content_loader):
+            raise V03DogfoodCompositionError("Developer handoff lacks trusted content loader")
         for receipt in receipts:
-            match = _DEVELOPER_PR_URI.fullmatch(str(receipt.get("trusted_uri") or ""))
-            if match and match.group("binding"):
-                if not callable(self.content_loader):
-                    raise V03DogfoodCompositionError("leased Developer handoff lacks trusted content loader")
-                data = self.content_loader(receipt["trusted_uri"])
-                if (not isinstance(data, bytes) or hashlib.sha256(data).hexdigest() != receipt.get("sha256")
-                        or len(data) != receipt.get("size_bytes")):
-                    raise V03DogfoodCompositionError("leased Developer output changed before handoff")
+            if receipt.get("kind") != "artifact":
+                continue
+            data = self.content_loader(receipt["trusted_uri"])
+            if (not isinstance(data, bytes) or hashlib.sha256(data).hexdigest() != receipt.get("sha256")
+                    or len(data) != receipt.get("size_bytes")):
+                raise V03DogfoodCompositionError("Developer output changed before handoff")
         fixture = self.candidate_provider._candidate()
+        fixture_pr = int(fixture["number"])
         prior_head = str(context.candidate_head_sha or "").lower()
-        fixture_head = str(fixture["head"]["sha"]).lower()
-        if int(fixture["number"]) < 1 or fixture_head not in {prior_head, source_head}:
-            raise V03DogfoodCompositionError("fixture candidate changed before Developer handoff")
+        if str(fixture["head"]["sha"]).lower() not in {prior_head, source_head}:
+            raise V03DogfoodCompositionError("fixture candidate changed before handoff")
         status, pr = self._api("GET", f"/pulls/{source_pr}")
-        if (
-            status != 200
-            or not isinstance(pr, dict)
-            or pr.get("state") != "open"
-            or pr.get("draft") is not True
-            or str((pr.get("base") or {}).get("ref") or "") != self.slot.target_ref
-            or str((pr.get("head") or {}).get("sha") or "").lower() != source_head
-        ):
+        if (status != 200 or not isinstance(pr, dict) or pr.get("number") != source_pr
+                or pr.get("state") != "open" or pr.get("draft") is not True
+                or (pr.get("base") or {}).get("ref") != self.slot.target_ref
+                or str((pr.get("head") or {}).get("sha") or "").lower() != source_head
+                or str((((pr.get("head") or {}).get("repo") or {}).get("full_name")) or "").lower() != self.repository
+                or str((((pr.get("base") or {}).get("repo") or {}).get("full_name")) or "").lower() != self.repository):
             raise V03DogfoodCompositionError("sealed Developer Draft PR changed before handoff")
         status, comparison = self._api("GET", f"/compare/{prior_head}...{source_head}")
-        if (
-            status != 200
-            or not isinstance(comparison, dict)
-            or comparison.get("status") != "ahead"
-            or int(comparison.get("ahead_by") or 0) < 1
-            or int(comparison.get("behind_by") or 0) != 0
-            or str(((comparison.get("merge_base_commit") or {}).get("sha")) or "").lower() != prior_head
-        ):
-            raise V03DogfoodCompositionError("Developer output is not a strict fast-forward of its reviewed fixture input")
+        if (status != 200 or not isinstance(comparison, dict) or comparison.get("status") != "ahead"
+                or type(comparison.get("ahead_by")) is not int or comparison["ahead_by"] < 1
+                or comparison.get("behind_by") != 0
+                or str(((comparison.get("merge_base_commit") or {}).get("sha")) or "").lower() != prior_head):
+            raise V03DogfoodCompositionError("Developer output is not strict fixture fast-forward")
+        def plan_intent(current):
+            binding = _handoff_binding(current, context.operation_id, callback_id, fixture_pr)
+            if (binding["prior_candidate_head_sha"] != prior_head
+                    or binding["source_candidate_pr_number"] != source_pr
+                    or binding["source_candidate_head_sha"] != source_head):
+                raise V03DogfoodCompositionError("handoff live proof differs from Store callback")
+            return _plan_handoff_intent(current, binding=binding)
+        outcome = executor._commit(plan_intent).result
+        intent, fresh = outcome["intent"], outcome["created"]
         ref_path = f"/git/refs/heads/{parse.quote(self.slot.target_ref, safe='')}"
-        status, current = self._api("GET", ref_path)
-        current_sha = str(((current or {}).get("object") or {}).get("sha") or "").lower() if isinstance(current, dict) else ""
-        if status != 200 or current_sha not in {prior_head, source_head}:
-            raise V03DogfoodCompositionError("fixture ref changed outside one-shot Developer handoff")
-        if current_sha == prior_head:
-            status, updated = self._api("PATCH", ref_path, {"sha": source_head, "force": False})
-            if status != 200 or str(((updated or {}).get("object") or {}).get("sha") or "").lower() != source_head:
-                raise V03DogfoodCompositionError("trusted Developer candidate fast-forward was not accepted")
-        executor._record_fact(
-            context.operation_id,
-            "candidate.handoff.adopted",
-            {
-                "callback_id": callback_id,
-                "dispatch_id": context.dispatch_id,
-                "target_ref": self.slot.target_ref,
-                "fixture_candidate_pr_number": int(fixture["number"]),
-                "prior_candidate_head_sha": prior_head,
-                "source_candidate_pr_number": source_pr,
-                "source_candidate_head_sha": source_head,
-            },
-        )
+        def read_ref():
+            status, body = self._api("GET", ref_path)
+            sha = str(((body.get("object") or {}).get("sha")) or "").lower() if isinstance(body, dict) else ""
+            if status != 200 or not _SHA40.fullmatch(sha):
+                raise V03DogfoodCompositionError("fixture ref lookup failed closed")
+            return sha
+        observed = read_ref()
+        if observed == prior_head:
+            if not fresh:
+                raise V03DogfoodCompositionError("existing handoff intent grants lookup only")
+            self._api("PATCH", ref_path, {"sha": source_head, "force": False})
+            observed = read_ref()
+        if observed != source_head:
+            raise V03DogfoodCompositionError("exact handoff effect not observed; lookup only")
+        executor._commit(lambda current: _plan_handoff_applied(current, intent=intent, observed_ref_sha=observed))
 
 
 class DogfoodTrustedCallbackCoordinator:
@@ -712,6 +828,26 @@ class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
         super().__init__(config, candidate_provider=candidate_provider, **kwargs)
         self._continuation_snapshot = None
         self._allow_post = False
+        self._creating = False
+        self._transport_http = self.http
+        self.http = self._guarded_http
+
+    def _guarded_http(self, *, method, url, token, body=None):
+        if method == "POST":
+            _, _, continuation = self._admitted()
+            if not self._creating or url != self._api(f"/actions/workflows/{RECOVERY_DEVELOPER_WORKFLOW}/dispatches"):
+                raise VerticalInvariantError("POLICY_DENIED", "recovery HTTP POST escaped one admitted create")
+            status, _, raw = self._transport_http(method="GET", url=self._api("/git/ref/heads/main"),
+                                                  token=self.config.token, body=None)
+            try:
+                ref = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeError) as exc:
+                raise VerticalInvariantError("BLOCKED", "recovery POST source lookup is indeterminate") from exc
+            if (status != 200 or not isinstance(ref, dict) or ref.get("ref") != "refs/heads/main"
+                    or (ref.get("object") or {}).get("type") != "commit"
+                    or (ref.get("object") or {}).get("sha") != continuation["execution_source_head_sha"]):
+                raise VerticalInvariantError("STALE_REVISION", "recovery main changed at HTTP POST boundary")
+        return self._transport_http(method=method, url=url, token=token, body=body)
 
     def admit_continuation(self, snapshot, *, allow_post=False, execution_source_head_sha, execution_trusted_context_digest,
                            execution_materialization_commit_sha, execution_policy_receipt_digest,
@@ -801,7 +937,11 @@ class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
         # Consume even on validation/lookup failure. Never retry a process-local
         # create or reinterpret absence after an ambiguous acknowledgement.
         self._allow_post = False
-        return super().dispatch(workflow=workflow, ref=ref, inputs=inputs)
+        self._creating = True
+        try:
+            return super().dispatch(workflow=workflow, ref=ref, inputs=inputs)
+        finally:
+            self._creating = False
 
 
 class DogfoodRecoveryDispatchGateway(GhAwVerticalRoleDispatchGateway):
