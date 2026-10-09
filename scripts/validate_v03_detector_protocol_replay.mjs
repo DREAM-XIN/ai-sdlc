@@ -309,6 +309,21 @@ async function runCase(options, label, cap, retries) {
     const firstAttemptOutcome = firstAttempt ? {exit: Number(firstAttempt[1]), classification: firstAttempt[2]} : {classification: "NOT_RECORDED"};
     if (firstProcess) Object.assign(firstAttemptOutcome, {process_exit: Number(firstProcess[1]),
       stdout_bytes: Number(firstProcess[2]), stderr_bytes: Number(firstProcess[3])});
+    const nativeCandidates = [
+      "home/.cache/copilot/pkg/linux-x64/1.0.90/runtime.linux-x64-gnu.node",
+      "home/.cache/copilot/pkg/linux-x64/1.0.90/prebuilds/runtime.node",
+      "home/.cache/copilot/pkg/linux-x64/1.0.90/native/runtime.linux-x64-gnu.node",
+    ].map((relative, index) => {
+      try { const stat = fs.statSync(path.join(root, relative)); return {index, present: stat.isFile(), bytes: stat.size}; }
+      catch { return {index, present: false, bytes: 0}; }
+    });
+    const tempMount = fs.readFileSync("/proc/self/mountinfo", "utf8").split("\n").find(line => line.split(" ")[4] === "/tmp");
+    const tmpNoexec = tempMount ? tempMount.split(" ").some(field => field.split(",").includes("noexec")) : null;
+    const nativeLoadFlags = {
+      failed_to_map_segment: /failed to map segment|cannot map shared object/i.test(startupLog),
+      operation_not_permitted: /Operation not permitted/i.test(startupLog),
+      dlopen_error: /ERR_DLOPEN_FAILED|dlopen/i.test(startupLog),
+    };
     const startupClasses = [
       ["MISSING_MODULE", /Cannot find module|MODULE_NOT_FOUND/],
       ["MISSING_EXECUTABLE", /ENOENT|executable file not found/],
@@ -320,7 +335,7 @@ async function runCase(options, label, cap, retries) {
       ["MISSING_PROMPT", /prompt.*missing|required.*prompt|prompt.*not found/i],
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
-      first_attempt: firstAttemptOutcome, startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
+      first_attempt: firstAttemptOutcome, native_candidates: nativeCandidates, tmp_noexec: tmpNoexec, native_load_flags: nativeLoadFlags, startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
       missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, case_module_relations: caseModuleRelations, synthetic_missing_module_relative: syntheticMissingModuleRelative, missing_direct_dependencies: missingDirectDependencies,
       official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");

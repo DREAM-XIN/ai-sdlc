@@ -113,7 +113,7 @@ jobs:
           timeout --signal=TERM --kill-after=10s 700s docker run --rm --init \
             --name "$name" --network none --cap-drop ALL --workdir /tmp \
             --security-opt no-new-privileges --user "$(id -u):$(id -g)" --read-only \
-            --tmpfs "/tmp:rw,nosuid,nodev,uid=$(id -u),gid=$(id -g),mode=700" \
+            --tmpfs "/tmp:rw,nosuid,nodev,exec,uid=$(id -u),gid=$(id -g),mode=700" \
             --mount "type=bind,src=$GITHUB_WORKSPACE/replay-awf,dst=/inputs/awf,readonly" \
             --mount "type=bind,src=$root/actions,dst=/inputs/actions,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/gh-aw/prompts,dst=/inputs/prompts,readonly" \
