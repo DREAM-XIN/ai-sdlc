@@ -1182,7 +1182,10 @@ def _observe_provider_rotation(env: Mapping[str, str]) -> dict[str, Any]:
         "recovery_public_key_digest": recovery_digest,
         "provider_observation_run_id": REVOCATION_PROBE_RUN,
         "provider_observation_blob_sha": REVOCATION_OBSERVATION_BLOB,
-        "observed_at": _clock(),
+        # Stable provider observation identity: retries must reconstruct the
+        # same protected-CAS fence digest after a lost local acknowledgement.
+        # The live /app authentication is rechecked but does not rename it.
+        "observed_at": observed["old_key"]["github_date"],
     })
 
 
