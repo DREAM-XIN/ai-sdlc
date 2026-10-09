@@ -2111,6 +2111,11 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
             except (finalizer.V03DogfoodPostRunFinalizerError,
                     provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
                 pass
+            except AssertionError as exc:
+                expect(str(exc) == (
+                    "real dogfood happy_path: trusted provenance verifier errored: "
+                    "V03DogfoodPostRunFinalizerError: fresh outputs differ from original sealed receipt locations"),
+                    "forged-URI negative failed for an unexpected assertion: " + str(exc))
             else:
                 raise AssertionError("actual finalizer accepted forged leased Developer URI")
             finally:
