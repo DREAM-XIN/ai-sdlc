@@ -257,6 +257,16 @@ async function runCase(options, label, cap, retries) {
     bundleFiles.sort();
     const argumentTokens = ["copilot", "node", "--add-dir", "--log-level", "all", "--disable-builtin-mcps",
       "--no-ask-user", "--allow-all-tools", "--prompt", "--prompt-file", "--continue"];
+    const syntheticMissingModuleRelative = [...new Set(missingSpecifiers)].map(specifier => {
+      for (const directory of [path.join(root, "artifacts"), path.join(root, "bin")]) {
+        if (!specifier.startsWith(directory + "/")) continue;
+        const relative = specifier.slice(directory.length + 1);
+        if (/^[A-Za-z0-9_.@+\/-]{1,160}$/.test(relative) &&
+            relative.split("/").every(segment => segment && segment !== "." && segment !== "..") &&
+            path.normalize(relative) === relative) return relative;
+      }
+      return "UNKNOWN";
+    });
     const caseModuleRelations = [...new Set(missingSpecifiers)].map(specifier => {
       const locations = [path.join(root, "artifacts"), root, path.join(root, "bin"), path.join(root, "home")];
       const matches = [];
@@ -304,7 +314,7 @@ async function runCase(options, label, cap, retries) {
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
       startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
-      missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, case_module_relations: caseModuleRelations, missing_direct_dependencies: missingDirectDependencies,
+      missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, case_module_relations: caseModuleRelations, synthetic_missing_module_relative: syntheticMissingModuleRelative, missing_direct_dependencies: missingDirectDependencies,
       official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");
     proxy.send("stats");
