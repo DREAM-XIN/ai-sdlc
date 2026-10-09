@@ -1577,6 +1577,8 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
         "run_conclusion": resolved.run.conclusion,
         "output_candidate_pr_number": resolved.run.candidate_pr_number,
         "output_candidate_head_sha": resolved.run.candidate_head_sha,
+        "safe_output_artifact_proof": preflight.composition.recovery_result_source.safe_output_proof(run_id=resolved.run.run_id),
+        "safe_output_artifact_digest": "sha256:" + digest_json(preflight.composition.recovery_result_source.safe_output_proof(run_id=resolved.run.run_id)),
         "safe_output_uri": resolved.outputs[0].trusted_uri,
         "safe_output_digest": "sha256:" + digest_json({"trusted_uri": resolved.outputs[0].trusted_uri}),
         "resolved_run_digest": "sha256:" + digest_json({
@@ -1653,7 +1655,7 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
     admitted_snapshot = preflight.composition.runtime.backend.read_snapshot()
     preflight.composition.recovery_dispatch_gateway.transport.admit_continuation(
         admitted_snapshot, allow_post=result.get("acquired") is True,
-        execution_source_head_sha=preflight.execution.installation_commit_sha,
+        **recovery_execution_binding(preflight.composition.policy_authority),
         execution_trusted_context_digest=preflight.trusted_context_digest,
     )
     existing = admitted_snapshot.get(RECOVERY_RECEIPT_PATH)

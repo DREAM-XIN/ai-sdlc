@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import io
+import stat
+import zipfile
 import json
 import re
 from typing import Any, Callable
@@ -34,7 +37,7 @@ from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwR
 from operator_vertical_gh_aw_collector import MaterializedGhAwOutput, TrustedGhAwResolvedResult, TrustedGhAwRun
 from operator_vertical_gh_aw_github_source import (
     GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector,
-    _build_receipts, _current_launch_binding, _validate_run,
+    _build_receipts, _current_launch_binding, _validate_run, _GitHubSafeRedirectHandler,
 )
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_session_policy import DogfoodSessionDecisionPolicyVerifier
@@ -169,8 +172,16 @@ def recovery_execution_binding(policy_authority):
 
 def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
     authorization, attempt, continuation = validate_recovery_continuation(snapshot)
+    artifact = sealed.get("safe_output_artifact_proof") if isinstance(sealed, dict) else None
     if (
         not isinstance(sealed, dict)
+        or not isinstance(artifact, dict)
+        or artifact.get("schema_version") != "ai-sdlc.v03-recovery-safe-output-artifact/v1"
+        or artifact.get("source_head_sha") != continuation["execution_source_head_sha"]
+        or str(artifact.get("run_id") or "") != sealed.get("receipt_id")
+        or artifact.get("pr_number") != sealed.get("output_candidate_pr_number")
+        or artifact.get("repository") != authorization["target_repository"]
+        or sealed.get("safe_output_artifact_digest") != "sha256:" + digest_json(artifact)
         or any(continuation.get(k) != v or sealed.get(k) != v for k, v in execution_binding.items())
         or set(execution_binding) != {"execution_source_head_sha", "execution_policy_bundle_digest",
                                       "execution_materialization_commit_sha", "execution_policy_receipt_digest"}
@@ -844,6 +855,118 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
     the one open Draft PR whose protected head name embeds the immutable run id.
     """
 
+
+    def _http(self, *, method, url, token):
+        if re.fullmatch(r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/artifacts/[1-9][0-9]*/zip", url.lower()):
+            req = request.Request(url, method=method, headers={
+                "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                "X-GitHub-Api-Version": self.config.api_version, "User-Agent": self.config.user_agent,
+            })
+            try:
+                with request.build_opener(_GitHubSafeRedirectHandler()).open(req, timeout=30) as response:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive exceeds bound")
+                    return int(response.status), dict(response.headers.items()), raw
+            except VerticalInvariantError:
+                raise
+            except Exception as exc:
+                raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive unavailable") from exc
+        return super()._http(method=method, url=url, token=token)
+
+    def _run_owned_safe_output(self, *, run_id, source_head_sha, pr):
+        """Authenticate the PR against successful pinned-handler run artifacts."""
+        listing = self._json(self.config.control_repository,
+            f"/actions/runs/{run_id}/artifacts?per_page=100", self.config.control_token)
+        rows = listing.get("artifacts") if isinstance(listing, dict) else None
+        if (not isinstance(rows, list) or type(listing.get("total_count")) is not int
+                or listing["total_count"] != len(rows) or len(rows) > 100):
+            raise VerticalInvariantError("BLOCKED", "recovery artifact listing is not exhaustive")
+        matches = [row for row in rows if isinstance(row, dict) and row.get("name") == "safe-outputs-items"]
+        if len(matches) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery lacks one run-owned Safe Outputs artifact")
+        artifact = matches[0]
+        workflow_run = artifact.get("workflow_run")
+        if (
+            type(artifact.get("id")) is not int or artifact["id"] < 1
+            or artifact.get("expired") is not False
+            or type(artifact.get("size_in_bytes")) is not int
+            or not 0 < artifact["size_in_bytes"] <= 2 * 1024 * 1024
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("digest") or ""))
+            or not isinstance(workflow_run, dict)
+            or any(workflow_run.get(k) != v for k, v in {
+                "id": run_id, "head_sha": source_head_sha, "head_branch": "main",
+                "repository_id": 1326302284, "head_repository_id": 1326302284,
+            }.items())
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery artifact run/source/digest binding drifted")
+        raw = self._bytes(self.config.control_repository,
+            f"/actions/artifacts/{artifact['id']}/zip", self.config.control_token)
+        if (
+            not 0 < len(raw) <= 2 * 1024 * 1024
+            or "sha256:" + hashlib.sha256(raw).hexdigest() != artifact["digest"]
+        ):
+            raise VerticalInvariantError("BLOCKED", "recovery artifact bytes differ from provider digest")
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                members = archive.infolist()
+                names = [item.filename for item in members]
+                allowed = {"safe-output-items.jsonl", "temporary-id-map.json", "safe-output-errors.json"}
+                if (
+                    not members or len(names) != len(set(names))
+                    or "safe-output-items.jsonl" not in names or not set(names) <= allowed
+                    or sum(item.file_size for item in members) > 2 * 1024 * 1024
+                    or any(item.is_dir() or item.flag_bits & 1
+                           or stat.S_ISLNK(item.external_attr >> 16)
+                           or item.file_size < 0 or item.file_size > 2 * 1024 * 1024
+                           for item in members)
+                    or archive.getinfo("safe-output-items.jsonl").file_size > 256 * 1024
+                ):
+                    raise ValueError("unsafe or oversized archive member")
+                with archive.open("safe-output-items.jsonl") as member:
+                    data = member.read(256 * 1024 + 1)
+                if len(data) > 256 * 1024:
+                    raise ValueError("oversized manifest")
+                lines = data.decode("utf-8").splitlines()
+                if not lines or len(lines) > 100:
+                    raise ValueError("manifest count")
+                entries = [json.loads(line) for line in lines if line.strip()]
+                if any(not isinstance(entry, dict) for entry in entries):
+                    raise ValueError("manifest row")
+        except (OSError, ValueError, UnicodeError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise VerticalInvariantError("BLOCKED", "recovery Safe Output artifact is malformed") from exc
+        created = [entry for entry in entries if entry.get("type") == "create_pull_request"]
+        if len(created) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery artifact lacks one created PR")
+        entry = created[0]
+        if (
+            entry.get("provider") != "github"
+            or type(pr.get("id")) is not int or pr["id"] < 1
+            or not isinstance(pr.get("node_id"), str) or not pr["node_id"]
+            or type(entry.get("id")) is not int or type(entry.get("number")) is not int
+            or entry.get("id") != pr["id"] or entry.get("number") != pr["number"]
+            or entry.get("url") != pr.get("html_url")
+            or str(entry.get("repo") or "").lower() != self.target_repository
+            or not isinstance(entry.get("metadata"), dict)
+            or entry["metadata"].get("node_id") != pr["node_id"]
+            or not isinstance(entry.get("timestamp"), str) or not entry["timestamp"]
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "candidate PR is not the exact run-owned Safe Output")
+        return {
+            "schema_version": "ai-sdlc.v03-recovery-safe-output-artifact/v1",
+            "artifact_id": artifact["id"], "archive_digest": artifact["digest"],
+            "manifest_entry_digest": "sha256:" + digest_json(entry),
+            "run_id": run_id, "source_head_sha": source_head_sha,
+            "pr_number": pr["number"], "pr_id": pr["id"], "pr_node_id": pr["node_id"],
+            "pr_url": pr["html_url"], "repository": self.target_repository,
+        }
+
+    def safe_output_proof(self, *, run_id):
+        proof = getattr(self, "_safe_output_proofs", {}).get(int(run_id))
+        if proof is None:
+            raise VerticalInvariantError("BLOCKED", "recovery run-owned Safe Output was not freshly resolved")
+        return json.loads(canonical_json(proof))
+
     def seal_readiness(self, *, external_dispatch_key: str, expected_receipt_identity: str, source_head_sha: str) -> str:
         """Return PENDING/READY; terminal failure raises without permitting a seal."""
         receipt = str(expected_receipt_identity or "")
@@ -966,6 +1089,7 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
         ):
             raise VerticalInvariantError("STALE_REVISION", "recovery Draft PR Safe Output changed after run-bound discovery")
 
+        artifact_proof = self._run_owned_safe_output(run_id=run_id, source_head_sha=before["head_sha"], pr=pr)
         after = self._first_attempt_run_snapshot(run_id=run_id, external_dispatch_key=external_dispatch_key)
         jobs_after = self._json(self.config.control_repository, jobs_path, self.config.control_token)
         if not self._same_run_snapshot(before, after) or canonical_json(jobs_before) != canonical_json(jobs_after):
@@ -1006,6 +1130,9 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
             media_type=bound.media_type,
             trusted_uri=self._lease_uri(bound, after),
         )
+        if not hasattr(self, "_safe_output_proofs"):
+            self._safe_output_proofs = {}
+        self._safe_output_proofs[run_id] = artifact_proof
         return TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(leased,))
 
 
@@ -1039,6 +1166,14 @@ class DogfoodRecoveryBoundContentLoader:
                 or match.group("head") != sealed.get("execution_source_head_sha")
             ):
                 raise VerticalInvariantError("POLICY_DENIED", "recovery content URI is not the exact sealed run")
+            proof = sealed["safe_output_artifact_proof"]
+            current = self.recovery_result_source._run_owned_safe_output(
+                run_id=int(sealed["receipt_id"]), source_head_sha=sealed["execution_source_head_sha"],
+                pr={"id": proof["pr_id"], "node_id": proof["pr_node_id"],
+                    "number": proof["pr_number"], "html_url": proof["pr_url"]},
+            )
+            if current != proof:
+                raise VerticalInvariantError("POLICY_DENIED", "recovery run-owned artifact changed before content load")
             return self.recovery_result_source.load_content(uri)
         return self.result_source.load_content(uri)
 
@@ -1187,6 +1322,8 @@ class DogfoodRecoveryCollector:
             or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['execution_source_head_sha']}"
             or resolved.run.candidate_pr_number != sealed.get("output_candidate_pr_number")
             or resolved.run.candidate_head_sha != sealed.get("output_candidate_head_sha")
+            or self.result_source.safe_output_proof(run_id=resolved.run.run_id) != sealed.get("safe_output_artifact_proof")
+            or "sha256:" + digest_json(sealed.get("safe_output_artifact_proof")) != sealed.get("safe_output_artifact_digest")
             or len(resolved.outputs) != 1
             or resolved.outputs[0].trusted_uri != sealed.get("safe_output_uri")
             or "sha256:" + digest_json({"trusted_uri": resolved.outputs[0].trusted_uri})

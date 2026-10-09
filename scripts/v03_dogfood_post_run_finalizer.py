@@ -375,7 +375,9 @@ def _durable_run_bindings(preflight, observation, events):
                 "candidate_head_sha": resolved.run.candidate_head_sha,
             })
             if (
-                resolved.run.candidate_pr_number != recovery_sealed["output_candidate_pr_number"]
+                result_source.safe_output_proof(run_id=resolved.run.run_id) != recovery_sealed.get("safe_output_artifact_proof")
+                or "sha256:" + digest_json(recovery_sealed.get("safe_output_artifact_proof")) != recovery_sealed.get("safe_output_artifact_digest")
+                or resolved.run.candidate_pr_number != recovery_sealed["output_candidate_pr_number"]
                 or resolved.run.candidate_head_sha != recovery_sealed["output_candidate_head_sha"]
                 or len(resolved.outputs) != 1
                 or resolved.outputs[0].trusted_uri != recovery_sealed["safe_output_uri"]
