@@ -2913,6 +2913,10 @@ def fixed_replacement_collector_pipeline_tests(preflight, sealed, *, expected_hu
         ):
             snapshot = deepcopy(original)
             snapshot.files[composition.REPLACEMENT_RECEIPT_PATH][field] = value
+            if field == "safe_output_uri":
+                from operator_store_model import digest_json
+                snapshot.files[composition.REPLACEMENT_RECEIPT_PATH]["safe_output_digest"] = (
+                    "sha256:" + digest_json({"trusted_uri": value}))
             reject_collector(snapshot, field)
         runtime.backend.snapshot = original
         expect(isinstance(bound_loader(sealed["safe_output_uri"]), bytes),
