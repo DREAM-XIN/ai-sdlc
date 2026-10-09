@@ -385,8 +385,14 @@ jobs:
                       items = [json.loads(line) for line in data.decode("utf-8").splitlines() if line.strip()]
                       assert len(items) == 1
                       item = items[0]
-                      assert all(isinstance(k, str) and re.fullmatch(r"[a-z_]+", k) for k in item)
-                      print("CAPTURE_ITEM_SCHEMA=" + json.dumps({k:type(v).__name__ for k,v in item.items()}, sort_keys=True))
+                      def schema(value):
+                          if isinstance(value, dict):
+                              assert all(isinstance(k, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", k) for k in value)
+                              return {k:schema(v) for k,v in value.items()}
+                          if isinstance(value, list):
+                              return {"array_length":len(value),"types":[type(v).__name__ for v in value]}
+                          return type(value).__name__
+                      print("CAPTURE_ITEM_SCHEMA=" + json.dumps(schema(item), sort_keys=True))
                       assert set(item) == {"type","provider","number","url","id","repo","metadata","timestamp"}
                       assert item["type"] == "create_pull_request" and item["provider"] == "github"
                       assert type(item["number"]) is int and item["number"] == 577
