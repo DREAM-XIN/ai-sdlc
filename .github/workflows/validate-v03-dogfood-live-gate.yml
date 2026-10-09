@@ -50,6 +50,21 @@ permissions:
   actions: read
 
 jobs:
+  manifest-fixed-detector-inputs:
+    name: Manifest fixed detector inputs (read-only, no model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Verify immutable archives and hash five consumed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/v03_detector_input_manifest.py
   replay-pinned-detector-protocol:
     name: Replay pinned detector protocol (offline, no model)
     runs-on: ubuntu-latest
@@ -155,7 +170,12 @@ jobs:
           marker = "  threat-detection:\n    enabled: true\n"
           assert source.count(marker) == 1
           addition = "    retries: 0\n    engine:\n" + "\n".join("    " + line for line in engine.splitlines()) + "\n"
-          path.write_text(source.replace(marker, marker + addition))
+          source = source.replace(marker, marker + addition)
+          prompt_end = "  github-token: $" + "{{ secrets.GITHUB_TOKEN }}\n  add-comment:"
+          assert source.count(prompt_end) == 1
+          supplemental = "Track which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
+          source = source.replace(prompt_end, "".join("      " + line + "\n" for line in supplemental.splitlines()) + prompt_end)
+          path.write_text(source)
           PY
       - name: Strict compile fixed uncommitted probe
         env:
@@ -165,7 +185,7 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           python - <<'PY'
-          import json, subprocess, yaml
+          import base64, hashlib, json, subprocess, yaml
           from pathlib import Path
           path = ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml"
           before = yaml.safe_load(subprocess.check_output(["git", "show", "HEAD:" + path]))
@@ -177,6 +197,16 @@ jobs:
           assert before["jobs"]["safe_outputs"] == after["jobs"]["safe_outputs"]
           old = before["jobs"]["detection"]
           new = after["jobs"]["detection"]
+          before_md = yaml.safe_load(subprocess.check_output(["git", "show", "HEAD:.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md"]).decode().split("---", 2)[1])
+          old_prompt = before_md["safe-outputs"]["threat-detection"]["prompt"]
+          expected_prompt = old_prompt + "Track which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
+          def update_prompt(value):
+              if isinstance(value, dict):
+                  return {key: update_prompt(item) for key, item in value.items()}
+              if isinstance(value, list):
+                  return [update_prompt(item) for item in value]
+              return expected_prompt if value == old_prompt else value
+          old = update_prompt(old)
           old_steps = {s.get("id", s.get("name")): s for s in old["steps"]}
           new_steps = {s.get("id", s.get("name")): s for s in new["steps"]}
           step = new_steps["detection_agentic_execution"]
@@ -190,6 +220,9 @@ jobs:
           for key in old_steps:
               if key != "detection_agentic_execution":
                   assert old_steps[key] == new_steps[key]
+          assert step["env"]["CUSTOM_PROMPT"] == expected_prompt
+          print("DIAGNOSTIC_COMPILED_SHA256=" + hashlib.sha256(raw.encode()).hexdigest())
+          print("DIAGNOSTIC_COMPILED_BASE64=" + base64.b64encode(raw.encode()).decode())
           print(json.dumps({"schema":"v03-detector-budget-compile-probe/v1","strict_compiler":"v0.89.21","detector_max_runs":50,"detector_harness_retries":0,"agent_unchanged":True,"safe_outputs_unchanged":True,"timeout_unchanged":True}))
           PY
   inspect-fixed-detector-artifact:
