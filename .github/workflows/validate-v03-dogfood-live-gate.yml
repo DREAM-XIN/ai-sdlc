@@ -61,9 +61,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
+      - uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-manifest-actions
       - name: Verify immutable archives and hash five consumed files
         env:
           GH_TOKEN: ${{ github.token }}
+          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/v03-manifest-actions
         run: python scripts/v03_detector_input_manifest.py
   replay-pinned-detector-protocol:
     name: Replay pinned detector protocol (offline, no model)
@@ -185,7 +189,7 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           python - <<'PY'
-          import base64, hashlib, json, subprocess, yaml
+          import base64, hashlib, json, shlex, subprocess, yaml
           from pathlib import Path
           path = ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml"
           before = yaml.safe_load(subprocess.check_output(["git", "show", "HEAD:" + path]))
@@ -210,7 +214,55 @@ jobs:
           old_steps = {s.get("id", s.get("name")): s for s in old["steps"]}
           new_steps = {s.get("id", s.get("name")): s for s in new["steps"]}
           step = new_steps["detection_agentic_execution"]
-          assert '\\"maxRuns\\":50' in step["run"]
+          new_agent_steps = after["jobs"]["agent"]["steps"]
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  assert key not in result
+                  result[key] = value
+              return result
+          def require_native_fifty(raw):
+              config = json.loads(raw, object_pairs_hook=unique_object)
+              proxy = config["apiProxy"]
+              assert "maxTurns" not in proxy and type(proxy.get("maxRuns")) is int and proxy["maxRuns"] == 50
+          require_native_fifty('{"apiProxy":{"maxRuns":50}}')
+          for invalid in ('{"apiProxy":{"maxRuns":500}}', '{"apiProxy":{"maxRuns":5000}}',
+                          '{"apiProxy":{"maxRuns":true}}', '{"apiProxy":{"maxRuns":"50"}}',
+                          '{"apiProxy":{"maxRuns":50.0}}', '{"apiProxy":{"maxRuns":50,"maxRuns":500}}'):
+              try:
+                  require_native_fifty(invalid)
+              except AssertionError:
+                  pass
+              else:
+                  raise AssertionError("invalid native budget admitted")
+          def native_proxy_config(body):
+              lines = [line.strip() for line in body.splitlines()
+                       if line.strip().startswith("printf ") and "awf-config.json" in line
+                       and "apiProxy" in line]
+              assert len(lines) == 1
+              words = shlex.split(lines[0], posix=True)
+              assert len(words) == 5 and words[0] == "printf" and words[1] == "%s\\n"
+              assert words[3:] == [">", "${RUNNER_TEMP}/gh-aw/awf-config.json"]
+              literal = words[2]
+              assert literal.count("${GH_AW_MAX_AI_CREDITS}") == 1
+              literal = literal.replace("${GH_AW_MAX_AI_CREDITS}", "400").replace("\\$schema", "$schema")
+              assert "${" not in literal and "$(" not in literal
+              config = json.loads(literal, object_pairs_hook=unique_object)
+              proxy = config["apiProxy"]
+              assert "maxTurns" not in proxy and type(proxy.get("maxRuns")) is int
+              calls = [line.strip() for line in body.splitlines() if line.strip().startswith("awf ")]
+              assert len(calls) == 1 and calls[0].startswith('awf --config "${RUNNER_TEMP}/gh-aw/awf-config.json" ')
+              return proxy
+          detector_proxy = native_proxy_config(step["run"])
+          agent_steps = [item for item in new_agent_steps if item.get("id") == "agentic_execution"]
+          assert len(agent_steps) == 1
+          agent_proxy = native_proxy_config(agent_steps[0]["run"])
+          print(json.dumps({"schema":"v03-native-budget-structural-proof/v1",
+                            "detector_max_runs": detector_proxy["maxRuns"],
+                            "agent_max_runs": agent_proxy["maxRuns"],
+                            "agent_unchanged": before["jobs"]["agent"] == after["jobs"]["agent"]}))
+          assert agent_proxy["maxRuns"] == 500
+          assert detector_proxy["maxRuns"] == 500
           assert str(step["env"]["GH_AW_HARNESS_MAX_RETRIES"]) == "0"
           assert new.get("timeout-minutes") == old.get("timeout-minutes")
           assert "--engine-timeout" not in step["run"]
@@ -223,7 +275,23 @@ jobs:
           assert step["env"]["CUSTOM_PROMPT"] == expected_prompt
           print("DIAGNOSTIC_COMPILED_SHA256=" + hashlib.sha256(raw.encode()).hexdigest())
           print("DIAGNOSTIC_COMPILED_BASE64=" + base64.b64encode(raw.encode()).decode())
-          print(json.dumps({"schema":"v03-detector-budget-compile-probe/v1","strict_compiler":"v0.89.21","detector_max_runs":50,"detector_harness_retries":0,"agent_unchanged":True,"safe_outputs_unchanged":True,"timeout_unchanged":True}))
+          print(json.dumps({"schema":"v03-detector-budget-compile-probe/v1","strict_compiler":"v0.89.21","detector_max_runs":500,"compiler_native_cap_override":False,"detector_harness_retries":0,"agent_unchanged":True,"safe_outputs_unchanged":True,"timeout_unchanged":True}))
+          PY
+      - name: Validate separately authored detector budget and admission (no model)
+        run: |
+          python - <<'PY'
+          import hashlib, os, subprocess, urllib.request
+          from pathlib import Path
+          url = "https://raw.githubusercontent.com/github/gh-aw-firewall/744bd7387c4ae8a6c2d38200f6f63a781804e892/src/awf-config-schema.json"
+          with urllib.request.urlopen(url, timeout=30) as response:
+              schema = response.read(1048577)
+          assert len(schema) <= 1048576
+          assert hashlib.sha1(b"blob " + str(len(schema)).encode() + b"\0" + schema).hexdigest() == "f2938160535d5611a44b45d8e0ff1bff69d60832"
+          path = Path(os.environ["RUNNER_TEMP"]) / "v03-official-awf-schema.json"
+          path.write_bytes(schema)
+          subprocess.run(["python", "scripts/validate_v03_detector_diagnostic.py",
+              "--compiled-lock", ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
+              "--awf-schema", str(path)], check=True)
           PY
   inspect-fixed-detector-artifact:
     name: Inspect fixed detector artifact (redacted, no model)

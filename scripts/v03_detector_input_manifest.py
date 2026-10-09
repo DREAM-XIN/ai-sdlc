@@ -6,6 +6,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,9 +28,13 @@ FILES = {
     "agent_output.json": 6923,
     "aw-prompts/prompt-import-tree.json": 15028,
     "aw-prompts/prompt-template.txt": 10152,
-    "aw-prompts/prompt.txt": 4328,
+    "aw-prompts/prompt.txt": 13660,
     "aw_info.json": 892,
 }
+
+CONSUMED_FILES = dict(FILES, **{"aw-prompts/prompt.txt": 4328})
+ACTIONS_COMMIT = "924af5fdc64061cfbf66fb584c8b07e2ac230c60"
+SETUP_BLOB = "0f5803962654d4e856a2515add11df7b2d43a870"
 
 class ManifestError(ValueError):
     pass
@@ -86,7 +92,7 @@ def validate_run(get):
         require(type(repo.get("id")) is int and repo["id"] == REPOSITORY_ID
                 and repo.get("full_name") == REPOSITORY, "run_repository")
 
-def fetch_fixed_inputs(read_token):
+def fetch_fixed_inputs(read_token, *, actions_root):
     get = reader(read_token)
     validate_run(get)
     status, data, location = get(BASE + "/actions/runs/" + str(RUN) + "/artifacts?per_page=100", True)
@@ -157,18 +163,49 @@ def fetch_fixed_inputs(read_token):
                                   "sha256": archive_digest, "consumed_paths": sorted(consumed)})
     require(set(contents) == set(FILES), "consumed_missing")
     validate_run(get)
+    setup = Path(actions_root).resolve() / "setup_threat_detection.cjs"
+    setup_bytes = setup.read_bytes()
+    require(hashlib.sha1(b"blob " + str(len(setup_bytes)).encode() + b"\0" + setup_bytes).hexdigest() == SETUP_BLOB,
+            "setup_module_pin")
+    contents["aw-prompts/prompt.txt"].decode("utf-8")
+    javascript = (
+        "const fs=require('fs');const setup=require(process.argv[1]);"
+        "const raw=fs.readFileSync(0,'utf8');"
+        "const transformed=setup.stripFrameworkSystemBlock(raw);"
+        "if(typeof transformed!=='string')process.exit(2);"
+        "process.stdout.write(transformed);"
+    )
+    normalized = subprocess.run(
+        ["node", "-e", javascript, str(setup)], input=contents["aw-prompts/prompt.txt"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False,
+        env={"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")},
+    )
+    require(normalized.returncode == 0 and len(normalized.stdout) == CONSUMED_FILES["aw-prompts/prompt.txt"],
+            "official_setup_transform")
+    consumed_contents = dict(contents)
+    consumed_contents["aw-prompts/prompt.txt"] = normalized.stdout
+    require(all(len(consumed_contents[name]) == size for name, size in CONSUMED_FILES.items()), "consumed_inventory")
     manifest = {"schema": "v03-fixed-detector-input-manifest/v1", "repository": REPOSITORY,
                 "run_id": RUN, "run_attempt": 1, "source_head": SOURCE, "artifacts": artifact_manifest,
-                "patch_files": 0, "files": [
+                "patch_files": 0,
+                "reconstruction": {"mode": "pinned-official-setup-transform", "actions_commit": ACTIONS_COMMIT,
+                    "setup_module_blob": SETUP_BLOB, "export": "stripFrameworkSystemBlock",
+                    "original_consumed_sizes_corroborated": True, "original_post_transform_hash_available": False},
+                "source_files": [
                     {"path": name, "size_bytes": len(contents[name]),
                      "sha256": hashlib.sha256(contents[name]).hexdigest(), "artifact_ids": sorted(origins[name])}
                     for name in sorted(FILES)]}
+    manifest["files"] = [
+        {"path": name, "size_bytes": len(consumed_contents[name]),
+         "sha256": hashlib.sha256(consumed_contents[name]).hexdigest(), "artifact_ids": sorted(origins[name])}
+        for name in sorted(CONSUMED_FILES)]
     manifest["manifest_sha256"] = hashlib.sha256(canonical(manifest)).hexdigest()
-    return manifest, contents
+    return manifest, contents, consumed_contents
 
 if __name__ == "__main__":
     try:
-        manifest, _ = fetch_fixed_inputs(os.environ.get("GH_TOKEN", ""))
+        manifest, _, _ = fetch_fixed_inputs(os.environ.get("GH_TOKEN", ""),
+            actions_root=os.environ["V03_DETECTOR_ACTIONS_ROOT"])
         print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     except Exception as error:
         reason = str(error) if isinstance(error, ManifestError) else "manifest_validation_failed"
