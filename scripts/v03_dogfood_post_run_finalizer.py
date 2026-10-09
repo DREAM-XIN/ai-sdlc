@@ -26,6 +26,8 @@ from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceVerifier,
 )
 from v03_dogfood_release_finalizer import build_release_record
+from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding, read_dogfood_handoff, V03DogfoodCompositionError
+from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
 from validate_v03_dogfood_evidence import SCENARIO_PROFILES
@@ -66,12 +68,16 @@ def _run_uri(repository: str, run_id: int) -> str:
     return f"https://github.com/{repository}/actions/runs/{run_id}"
 
 
-def _validated_recovery_chain(snapshot: Any) -> dict[str, Any]:
+def _validated_recovery_chain(snapshot: Any, *, execution_binding) -> dict[str, Any]:
     authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
     attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
     sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
     if not all(isinstance(row, dict) for row in (authorization, attempt, sealed)):
         raise V03DogfoodPostRunFinalizerError("finalizer lacks complete recovery fact chain")
+    try:
+        validate_recovery_execution_seal(snapshot, sealed, execution_binding=execution_binding)
+    except VerticalInvariantError as exc:
+        raise V03DogfoodPostRunFinalizerError("finalizer recovery continuation/source bridge drifted") from exc
     authorization_digest = "sha256:" + digest_json(authorization)
     attempt_digest = "sha256:" + digest_json(attempt)
     exact = {
@@ -159,7 +165,9 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
             raise V03DogfoodPostRunFinalizerError("durable LAUNCHED lookup lacks exact Actions receipt")
         run_ids.append(int(receipt))
     if operation_id == RECOVERY_OPERATION_ID:
-        sealed = _validated_recovery_chain(preflight.composition.runtime.backend.read_snapshot())
+        sealed = _validated_recovery_chain(preflight.composition.runtime.backend.read_snapshot(), execution_binding=recovery_execution_binding(
+            preflight.composition.policy_authority,
+        ))
         run_ids.insert(0, int(sealed["receipt_id"]))
     declared = [int(value) for value in (observation.get("workflow_run_ids") or [])]
     if run_ids != declared or not run_ids or len(set(run_ids)) != len(run_ids):
@@ -302,7 +310,9 @@ def _durable_run_bindings(preflight, observation, events):
         run_id = int(lookup["receipt_id"])
         recovery_sealed = None
         if observation["operation_id"] == RECOVERY_OPERATION_ID and key == RECOVERY_EXTERNAL_KEY:
-            recovery_sealed = _validated_recovery_chain(snapshot)
+            recovery_sealed = _validated_recovery_chain(snapshot, execution_binding=recovery_execution_binding(
+                preflight.composition.policy_authority,
+            ))
             if str(run_id) != "37204777409" or recovery_sealed.get("external_dispatch_key") != key:
                 raise V03DogfoodPostRunFinalizerError("recovery binding is not separated from historical receipt")
             run_id = int(recovery_sealed["receipt_id"])
@@ -336,9 +346,10 @@ def _durable_run_bindings(preflight, observation, events):
             resolve_key = str(recovery_sealed["recovery_dispatch_key"])
             resolve_trusted = dict(trusted)
             resolve_trusted["external_dispatch_key"] = resolve_key
-            resolve_trusted["dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
+            resolve_trusted["dispatch_id"] = str(recovery_sealed["collector_dispatch_id"])
+            resolve_trusted["execution_dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
             resolve_trusted["task_id"] = str(recovery_sealed["task_id"])
-            resolve_trusted["source_head_sha"] = str(recovery_sealed["source_head_sha"])
+            resolve_trusted["source_head_sha"] = str(recovery_sealed["execution_source_head_sha"])
         resolved = result_source.resolve(
             external_dispatch_key=resolve_key,
             expected_receipt_identity=str(run_id),
@@ -364,7 +375,9 @@ def _durable_run_bindings(preflight, observation, events):
                 "candidate_head_sha": resolved.run.candidate_head_sha,
             })
             if (
-                resolved.run.candidate_pr_number != recovery_sealed["output_candidate_pr_number"]
+                result_source.safe_output_proof(run_id=resolved.run.run_id) != recovery_sealed.get("safe_output_artifact_proof")
+                or "sha256:" + digest_json(recovery_sealed.get("safe_output_artifact_proof")) != recovery_sealed.get("safe_output_artifact_digest")
+                or resolved.run.candidate_pr_number != recovery_sealed["output_candidate_pr_number"]
                 or resolved.run.candidate_head_sha != recovery_sealed["output_candidate_head_sha"]
                 or len(resolved.outputs) != 1
                 or resolved.outputs[0].trusted_uri != recovery_sealed["safe_output_uri"]
@@ -402,28 +415,24 @@ def _durable_run_bindings(preflight, observation, events):
                 raise V03DogfoodPostRunFinalizerError("Developer run lacks one sealed callback for candidate handoff")
             callback = callbacks[0]
             callback_id = str((callback.get("payload") or {}).get("callback_id") or "")
-            handoffs = [
-                event for event in events
-                if event.get("event_type") == "candidate.handoff.adopted"
-                and event.get("operation_generation") == row.get("operation_generation")
-                and (event.get("payload") or {}).get("callback_id") == callback_id
-            ]
-            if len(handoffs) != 1:
-                raise V03DogfoodPostRunFinalizerError("Developer output lacks one durable trusted candidate handoff")
-            handoff = handoffs[0]
-            handoff_payload = handoff.get("payload") or {}
-            if (
-                int(handoff_payload.get("source_candidate_pr_number") or 0) != int(output_pr or 0)
-                or handoff_payload.get("source_candidate_head_sha") != output_head
-                or handoff_payload.get("prior_candidate_head_sha") != launch.get("candidate_head_sha")
-                or handoff_payload.get("dispatch_id") != launch.get("dispatch_id")
-                or int(handoff_payload.get("fixture_candidate_pr_number") or 0) != preflight.candidate_pr_number
-                or not (
-                    int(row.get("sequence") or 0)
-                    < int(callback.get("sequence") or 0)
-                    < int(handoff.get("sequence") or 0)
-                )
-            ):
+
+            try:
+                fact = read_dogfood_handoff(snapshot, observation["operation_id"], callback_id, require_applied=True)
+            except V03DogfoodCompositionError as exc:
+                raise V03DogfoodPostRunFinalizerError("Developer handoff sidecar proof differs") from exc
+            handoff_payload, applied = fact["intent"], fact["applied"]
+            validated = [event for event in events if event.get("event_type") == "worker.result.validated"
+                         and event.get("operation_generation") == row.get("operation_generation")
+                         and (event.get("payload") or {}).get("callback_id") == callback_id]
+            if (len(validated) != 1
+                    or handoff_payload["source_candidate_pr_number"] != output_pr
+                    or handoff_payload["source_candidate_head_sha"] != output_head
+                    or handoff_payload["prior_candidate_head_sha"] != launch.get("candidate_head_sha")
+                    or handoff_payload["dispatch_id"] != launch.get("dispatch_id")
+                    or handoff_payload["fixture_candidate_pr_number"] != preflight.candidate_pr_number
+                    or not (row["sequence"] < callback["sequence"]
+                            <= handoff_payload["observed_last_sequence"]
+                            <= applied["observed_last_sequence"] < validated[0]["sequence"])):
                 raise V03DogfoodPostRunFinalizerError("Developer candidate handoff identity/order differs")
         binding = {
             "repository": preflight.execution.repository, "feature_id": preflight.slot.feature_id,
@@ -435,7 +444,8 @@ def _durable_run_bindings(preflight, observation, events):
                 str(recovery_sealed["workflow_file"]) if recovery_sealed is not None
                 else preflight.workflows.workflow_for(trusted["role"])
             ),
-            "external_dispatch_key": key, "lookup_sequence": int(row.get("sequence") or 0),
+            "external_dispatch_key": resolve_key, "logical_external_dispatch_key": key,
+            "lookup_sequence": int(row.get("sequence") or 0),
         }
         bindings[run_id] = binding
         ordered.append(binding)
@@ -880,7 +890,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
             installation_commit_sha=preflight.execution.installation_commit_sha,
             github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         ),
-        runtime_receipt_resolver=lambda record: _durable_receipt(events, observation),
+        runtime_receipt_resolver=lambda record: _durable_receipt(preflight, events, observation),
         runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
     )

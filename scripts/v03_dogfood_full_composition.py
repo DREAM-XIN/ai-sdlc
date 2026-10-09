@@ -10,6 +10,10 @@ no second Store, Persist, callback or dispatch authority is constructed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import io
+import stat
+import zipfile
 import json
 import re
 from typing import Any, Callable
@@ -23,17 +27,17 @@ from operator_openai_responses_production import (
 )
 from operator_production_runtime import TrustedOperatorRuntimeConfig
 from operator_release_feature_event_gateway import build_release_decision_event_gateway
-from operator_store_model import canonical_json, digest_json, normalize_repository, operation_events, reservation_path
-from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result
+from operator_store_model import canonical_json, digest_json, normalize_repository, operation_events, reservation_path, rebuild_projection, StoreMutation, StoreMutationPlan
+from operator_vertical import TrustedDispatchContext, VERTICAL_PROFILE, VerticalInvariantError, validate_worker_result, validate_collected_outputs
 from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
-from operator_vertical_recovery import plan_vertical_callback_record
+from operator_vertical_recovery import plan_vertical_callback_record, recover_vertical_callback, _context_payload, _task_binding_matches
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
-from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
+from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource, _FIRST_ATTEMPT_URI_RE
 from operator_vertical_gh_aw_collector import MaterializedGhAwOutput, TrustedGhAwResolvedResult, TrustedGhAwRun
 from operator_vertical_gh_aw_github_source import (
     GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector,
-    _build_receipts, _current_launch_binding, _validate_run,
+    _build_receipts, _current_launch_binding, _validate_run, _GitHubSafeRedirectHandler,
 )
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_session_policy import DogfoodSessionDecisionPolicyVerifier
@@ -41,8 +45,12 @@ from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _DEVELOPER_PR_URI = re.compile(
-    r"^docs/features/(?P<feature>[^/]+)/worker-runs/(?P<dispatch>[^/]+)/"
-    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})\.json$"
+    r"^docs/features/(?P<feature>[A-Za-z0-9._:-]+)/worker-runs/(?P<dispatch>[A-Za-z0-9._:-]+)/"
+    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})"
+    r"(?:-binding-(?P<binding>[0-9a-f]{64})"
+    r"--first-attempt--key-(?P<key>[A-Za-z0-9._:-]+)"
+    r"--run-(?P<run>[1-9][0-9]*)--head-(?P<run_head>[0-9a-f]{40})"
+    r"--lease-(?P<lease>[0-9a-f]{64}))?\.json$"
 )
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
@@ -56,9 +64,375 @@ RECOVERY_ATTEMPT_PATH = RECOVERY_BASE_PATH + "/create-attempt.json"
 RECOVERY_RECEIPT_PATH = RECOVERY_BASE_PATH + "/sealed-receipt.json"
 RECOVERY_OBSERVATION_DIGEST = "sha256:a86b7ead37bf96abe9b6e43098b7873b821833c6d93c720ed7409835af18916f"
 
+# Exact, already-armed pre-HTTP failure. These bytes remain immutable forever.
+RECOVERY_CONTINUATION_PATH = RECOVERY_BASE_PATH + "/transport-continuation.json"
+RECOVERY_CONTINUATION_SCHEMA = "ai-sdlc.v03-dogfood-transport-continuation/v1"
+RECOVERY_COLLECTOR_DISPATCH_ID = "vertical-31df3f1ed41b54c58ed4c4030a9f97d9"
+ARMED_RECOVERY_SOURCE = "0b5f0a69db9b3cbc4388e8318948f87ba0a92fea"
+ARMED_RECOVERY_STORE = "42df69c5bf3dc85fec9b30d318e2651335d74552"
+ARMED_RECOVERY_KEY = "recovery-935ad236772d508dfd7e57da6370243dcce4555e"
+ARMED_RECOVERY_AUTHORIZATION_BLOB = "d344fca61af21038c929897bc3fd636d4297ee17"
+ARMED_RECOVERY_ATTEMPT_BLOB = "db183bc850c8e9add5abad38ced5728325192aba"
+ARMED_RECOVERY_SOURCE_BLOBS = {
+    ".github/workflows/v03-real-dogfood-scenario.yml": "4beb772c801233ff9907f70ca6cfc9b2fab0bdce",
+    "scripts/v03_dogfood_runtime_driver.py": "ad9f7f9a8e8c34132682c4ebd0d09917bfbc5eb7",
+    "scripts/v03_dogfood_full_composition.py": "c61dde6e441dcb62e813ef3bafa172e633dbc741",
+    "scripts/operator_vertical_gh_aw.py": "8f0181f31d17d7a81c831b19a68bf63c83a72392",
+    "scripts/operator_vertical_gh_aw_actions_transport.py": "ec9ea44f81cda1a052cd984cd345f1572c4903e7",
+}
+ARMED_RECOVERY_NO_HTTP_PROOF = {
+    "schema_version": RECOVERY_CONTINUATION_SCHEMA,
+    "proof_kind": "exact-source-rejects-identity-before-http",
+    "store_commit": ARMED_RECOVERY_STORE,
+    "authorization_blob": ARMED_RECOVERY_AUTHORIZATION_BLOB,
+    "create_attempt_blob": ARMED_RECOVERY_ATTEMPT_BLOB,
+    "source_head_sha": ARMED_RECOVERY_SOURCE,
+    "source_blobs": ARMED_RECOVERY_SOURCE_BLOBS,
+    "run_id": 37892560162,
+    "run_attempt": 1,
+    "job_id": 113696529763,
+    "workflow_file": "v03-real-dogfood-scenario.yml",
+    "workflow_id": 342691463,
+    "dispatch_key": ARMED_RECOVERY_KEY,
+    "exception": "invalid stable external dispatch key",
+}
+
+
+def _recovery_document_blob(document):
+    raw = (canonical_json(document) + "\n").encode("utf-8")
+    return hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\x00" + raw).hexdigest()
+
+
+def validate_armed_recovery_pair(snapshot):
+    """Validate historical bytes, never reconstruct or replace their identity."""
+    authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
+    attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
+    if (
+        not isinstance(authorization, dict) or not isinstance(attempt, dict)
+        or _recovery_document_blob(authorization) != ARMED_RECOVERY_AUTHORIZATION_BLOB
+        or _recovery_document_blob(attempt) != ARMED_RECOVERY_ATTEMPT_BLOB
+        or attempt.get("authorization_digest") != "sha256:" + digest_json(authorization)
+    ):
+        raise VerticalInvariantError("POLICY_DENIED", "exact armed recovery predecessor bytes are required")
+    return authorization, attempt
+
+
+def validate_recovery_continuation(snapshot):
+    authorization, attempt = validate_armed_recovery_pair(snapshot)
+    continuation = snapshot.get(RECOVERY_CONTINUATION_PATH)
+    if not isinstance(continuation, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery transport continuation is missing")
+    expected = {
+        "schema_version": RECOVERY_CONTINUATION_SCHEMA,
+        "admission_version": 1,
+        "collector_dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
+        "status": "ARMED",
+        "authorization_digest": "sha256:" + digest_json(authorization),
+        "create_attempt_digest": "sha256:" + digest_json(attempt),
+        "original_source_head_sha": ARMED_RECOVERY_SOURCE,
+        "no_http_proof": ARMED_RECOVERY_NO_HTTP_PROOF,
+        "no_http_proof_digest": "sha256:" + digest_json(ARMED_RECOVERY_NO_HTTP_PROOF),
+    }
+    for key in (
+        "operation_id", "operation_generation", "semantic_effect_key", "external_dispatch_key",
+        "recovery_dispatch_key", "recovery_dispatch_id", "workflow_file", "feature_id",
+        "target_repository", "target_ref", "task_id", "task_identity", "stage", "role",
+        "expected_revision", "candidate_pr_number", "candidate_head_sha",
+        "provider_fence_digest", "historical_observation_digest", "worker_blobs",
+    ):
+        expected[key] = authorization[key]
+    if (
+        any(canonical_json(continuation.get(key)) != canonical_json(value) for key, value in expected.items())
+        or type(continuation.get("admission_version")) is not int
+        or set(continuation) != set(expected) | {
+            "execution_source_head_sha", "execution_trusted_context_digest",
+            "execution_materialization_commit_sha", "execution_policy_receipt_digest",
+            "execution_policy_bundle_digest", "created_at"
+        }
+        or not _SHA40.fullmatch(str(continuation.get("execution_source_head_sha") or ""))
+        or continuation["execution_source_head_sha"] == ARMED_RECOVERY_SOURCE
+        or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_trusted_context_digest") or ""))
+        or not _SHA40.fullmatch(str(continuation.get("execution_materialization_commit_sha") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_policy_receipt_digest") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_policy_bundle_digest") or ""))
+        or not str(continuation.get("created_at") or "")
+    ):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery transport continuation binding drifted")
+    return authorization, attempt, continuation
+
+
+def recovery_execution_binding(policy_authority):
+    # Stable authority deliberately excludes the mutable preflight Store tip.
+    # execution_trusted_context_digest remains historical audit metadata after
+    # the one claim-to-POST comparison; it cannot authorize collection by itself.
+    return {
+        "execution_source_head_sha": policy_authority.installation_commit_sha,
+        "execution_policy_bundle_digest": policy_authority.bundle_digest,
+        "execution_materialization_commit_sha": policy_authority.materialization_commit_sha,
+        "execution_policy_receipt_digest": policy_authority.receipt_digest,
+    }
+
+
+def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
+    authorization, attempt, continuation = validate_recovery_continuation(snapshot)
+    artifact = sealed.get("safe_output_artifact_proof") if isinstance(sealed, dict) else None
+    if (
+        not isinstance(sealed, dict)
+        or not isinstance(artifact, dict)
+        or artifact.get("schema_version") != "ai-sdlc.v03-recovery-safe-output-artifact/v1"
+        or artifact.get("source_head_sha") != continuation["execution_source_head_sha"]
+        or str(artifact.get("run_id") or "") != sealed.get("receipt_id")
+        or artifact.get("pr_number") != sealed.get("output_candidate_pr_number")
+        or artifact.get("repository") != authorization["target_repository"]
+        or sealed.get("safe_output_artifact_digest") != "sha256:" + digest_json(artifact)
+        or any(continuation.get(k) != v or sealed.get(k) != v for k, v in execution_binding.items())
+        or set(execution_binding) != {"execution_source_head_sha", "execution_policy_bundle_digest",
+                                      "execution_materialization_commit_sha", "execution_policy_receipt_digest"}
+        or sealed.get("collector_dispatch_id") != RECOVERY_COLLECTOR_DISPATCH_ID
+        or sealed.get("continuation_digest") != "sha256:" + digest_json(continuation)
+        or sealed.get("execution_source_head_sha") != continuation["execution_source_head_sha"]
+        or sealed.get("execution_trusted_context_digest") != continuation["execution_trusted_context_digest"]
+        or sealed.get("source_head_sha") != authorization["source_head_sha"]
+        or sealed.get("installation_commit_sha") != authorization["installation_commit_sha"]
+    ):
+        raise VerticalInvariantError("POLICY_DENIED", "recovery seal lacks its exact execution-source bridge")
+    return continuation
+
 
 class V03DogfoodCompositionError(RuntimeError):
     pass
+
+
+HANDOFF_SCHEMA = "ai-sdlc.v03-dogfood-candidate-handoff/v1"
+
+class _ReadOnlyHandoffResult(RuntimeError):
+    def __init__(self, result):
+        self.result = result
+
+
+def _commit_handoff_nonempty(executor, planner):
+    def guarded(snapshot):
+        plan = planner(snapshot)
+        if not plan.mutations:
+            raise _ReadOnlyHandoffResult(plan.result)
+        return plan
+    try:
+        return executor._commit(guarded).result
+    except _ReadOnlyHandoffResult as replay:
+        return replay.result
+
+
+
+
+def _handoff_paths(operation_id, callback_id):
+    base = f"state/operator/v1/operations/{operation_id}/dogfood-candidate-handoffs/{digest_json({'callback_id': callback_id})}"
+    return base + "/intent.json", base + "/applied.json"
+
+
+def _handoff_prefix(events, document):
+    n = document.get("observed_last_sequence")
+    if (type(n) is not int or n < 1 or n > len(events)
+            or document.get("operation_journal_digest") != digest_json(events[:n])):
+        raise V03DogfoodCompositionError("handoff journal predecessor differs")
+    return n
+
+
+def _handoff_binding(snapshot, operation_id, callback_id, fixture_pr):
+    events = operation_events(snapshot, operation_id)
+    callbacks = [e for e in events if e.get("event_type") == "worker.callback.recorded"
+                 and (e.get("payload") or {}).get("callback_id") == callback_id]
+    if len(callbacks) != 1 or type(fixture_pr) is not int or fixture_pr < 1:
+        raise V03DogfoodCompositionError("handoff requires one callback and exact fixture PR")
+    callback = callbacks[0]
+    envelope = recover_vertical_callback(snapshot, operation_id=operation_id, callback_id=callback_id)
+    context = envelope["trusted_context"]
+    payload = validate_worker_result("developer", envelope["worker_payload"])
+    if context.get("role") != "developer" or payload.get("status") != "COMPLETED":
+        raise V03DogfoodCompositionError("handoff requires completed Developer result")
+    generation = callback["operation_generation"]
+    if context.get("operation_generation") != generation:
+        raise V03DogfoodCompositionError("handoff callback generation differs")
+    launches = [e for e in events if e.get("event_type") == "dispatch.launch.authorized"
+                and e.get("operation_generation") == generation
+                and (e.get("payload") or {}).get("external_dispatch_key") == context.get("external_dispatch_key")]
+    lookups = [e for e in events if e.get("event_type") == "dispatch.launch.lookup-recorded"
+               and e.get("operation_generation") == generation
+               and (e.get("payload") or {}).get("external_dispatch_key") == context.get("external_dispatch_key")
+               and (e.get("payload") or {}).get("lookup_state") == "LAUNCHED"]
+    if len(launches) != 1 or len(lookups) != 1 or not (launches[0]["sequence"] < lookups[0]["sequence"] < callback["sequence"]):
+        raise V03DogfoodCompositionError("handoff lacks original ordered launch and receipt")
+    launch = launches[0]["payload"]
+    reservation = snapshot.get(reservation_path(str(context.get("semantic_effect_key") or "")))
+    if not isinstance(reservation, dict):
+        raise V03DogfoodCompositionError("handoff lacks semantic reservation")
+    for field in ("dispatch_id", "semantic_effect_key", "external_dispatch_key", "feature_id", "role", "expected_revision", "candidate_head_sha"):
+        if launch.get(field) != context.get(field):
+            raise V03DogfoodCompositionError("handoff original launch binding differs: " + field)
+    for field in ("external_dispatch_key", "target_repository", "feature_id", "expected_revision", "role", "candidate_head_sha"):
+        if reservation.get(field) != context.get(field):
+            raise V03DogfoodCompositionError("handoff original reservation differs: " + field)
+    starts = [event for event in events if event.get("event_type") == "operation.started"]
+    if (len(starts) != 1
+            or (starts[0].get("payload") or {}).get("target_repository") != context.get("target_repository")
+            or (starts[0].get("payload") or {}).get("feature_id") != context.get("feature_id")
+            or not _task_binding_matches(str(reservation.get("task_identity") or ""), str(context.get("task_id") or ""))):
+        raise V03DogfoodCompositionError("handoff original Operation/task scope differs")
+    if launch.get("stage") != context.get("feature_stage") or reservation.get("current_stage") != context.get("feature_stage"):
+        raise V03DogfoodCompositionError("handoff original stage differs")
+    receipts = envelope["collected_outputs"]
+    source_pr, source_head = DogfoodGitHubCandidateProvider._developer_receipt(envelope)
+    matches = [_DEVELOPER_PR_URI.fullmatch(str(row.get("trusted_uri") or "")) for row in receipts
+               if isinstance(row, dict) and row.get("kind") == "artifact"]
+    matches = [match for match in matches if match]
+    if len(matches) != 1 or matches[0].group("feature") != context.get("feature_id") or matches[0].group("dispatch") != context.get("dispatch_id"):
+        raise V03DogfoodCompositionError("handoff output URI escaped original callback")
+    prior = context.get("candidate_head_sha")
+    if not _SHA40.fullmatch(str(prior or "")) or prior == source_head:
+        raise V03DogfoodCompositionError("handoff requires distinct exact input and output heads")
+    return {
+        "operation_id": operation_id, "operation_generation": generation,
+        "callback_id": callback_id, "callback_sequence": callback["sequence"],
+        "callback_event_digest": digest_json(callback), "callback_envelope_digest": digest_json(envelope),
+        "receipts_digest": digest_json(receipts), "launch_event_digest": digest_json(launches[0]),
+        "launch_lookup_event_digest": digest_json(lookups[0]), "reservation_digest": digest_json(reservation),
+        "dispatch_id": context["dispatch_id"], "external_dispatch_key": context["external_dispatch_key"],
+        "semantic_effect_key": context["semantic_effect_key"], "target_repository": context["target_repository"],
+        "feature_id": context["feature_id"], "target_ref": context["target_ref"],
+        "fixture_candidate_pr_number": fixture_pr, "prior_candidate_head_sha": prior,
+        "source_candidate_pr_number": source_pr, "source_candidate_head_sha": source_head,
+    }
+
+
+def _validate_handoff_intent(snapshot, intent, *, binding):
+    extras = {"schema_version", "fact_kind", "predecessor_store_commit", "observed_last_sequence", "operation_journal_digest"}
+    if (not isinstance(intent, dict) or set(intent) != set(binding) | extras
+            or any(canonical_json(intent.get(k)) != canonical_json(v) for k, v in binding.items())
+            or intent.get("schema_version") != HANDOFF_SCHEMA or intent.get("fact_kind") != "intent"
+            or not _SHA40.fullmatch(str(intent.get("predecessor_store_commit") or ""))):
+        raise V03DogfoodCompositionError("handoff intent identity differs")
+    events = operation_events(snapshot, binding["operation_id"])
+    n = _handoff_prefix(events, intent)
+    if binding["callback_sequence"] > n or any(e.get("event_type") in {
+        "worker.result.validated", "worker.result.rejected", "feature.event.translated"
+    } and (e.get("payload") or {}).get("callback_id") == binding["callback_id"] for e in events[:n]):
+        raise V03DogfoodCompositionError("handoff intent order differs")
+    return intent
+
+
+def _validate_handoff_applied(snapshot, intent, applied):
+    expected = {
+        "schema_version": HANDOFF_SCHEMA, "fact_kind": "applied",
+        "operation_id": intent["operation_id"], "callback_id": intent["callback_id"],
+        "intent_digest": digest_json(intent), "observed_ref_sha": intent["source_candidate_head_sha"],
+    }
+    extras = {"predecessor_store_commit", "observed_last_sequence", "operation_journal_digest"}
+    if (not isinstance(applied, dict) or set(applied) != set(expected) | extras
+            or any(canonical_json(applied.get(k)) != canonical_json(v) for k, v in expected.items())
+            or not _SHA40.fullmatch(str(applied.get("predecessor_store_commit") or ""))):
+        raise V03DogfoodCompositionError("handoff applied identity differs")
+    events = operation_events(snapshot, intent["operation_id"])
+    n = _handoff_prefix(events, applied)
+    if n < intent["observed_last_sequence"] or any(e.get("event_type") in {
+        "worker.result.validated", "worker.result.rejected", "feature.event.translated"
+    } and (e.get("payload") or {}).get("callback_id") == intent["callback_id"] for e in events[:n]):
+        raise V03DogfoodCompositionError("handoff applied order differs")
+    return applied
+
+
+def _plan_handoff_intent(snapshot, *, binding):
+    operation_id, callback_id = binding["operation_id"], binding["callback_id"]
+    events = operation_events(snapshot, operation_id)
+    intent_path, applied_path = _handoff_paths(operation_id, callback_id)
+    existing = snapshot.get(intent_path)
+    if existing is not None:
+        _validate_handoff_intent(snapshot, existing, binding=binding)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"intent": existing, "created": False})
+    if snapshot.get(applied_path) is not None:
+        raise V03DogfoodCompositionError("applied handoff lacks intent")
+    # A different callback cannot race another unresolved handoff on this
+    # same operation/ref. Re-evaluate from each protected CAS snapshot.
+    prefix = f"state/operator/v1/operations/{operation_id}/dogfood-candidate-handoffs/"
+    for path, other in snapshot.files.items():
+        if not path.startswith(prefix) or not path.endswith("/intent.json") or path == intent_path:
+            continue
+        if not isinstance(other, dict):
+            raise V03DogfoodCompositionError("conflicting handoff intent is malformed")
+        other_id = str(other.get("callback_id") or "")
+        fact = read_dogfood_handoff(snapshot, operation_id, other_id)
+        if (fact is None or path != _handoff_paths(operation_id, other_id)[0]
+                or fact["intent"] != other):
+            raise V03DogfoodCompositionError("conflicting handoff intent is incomplete")
+        if fact["intent"]["target_ref"] != binding["target_ref"]:
+            continue
+        translated = {str((event.get("payload") or {}).get("feature_event_id") or "")
+                      for event in events if event.get("event_type") == "feature.event.translated"
+                      and (event.get("payload") or {}).get("callback_id") == other_id}
+        confirmed = {str((event.get("payload") or {}).get("feature_event_id") or "")
+                     for event in events if event.get("event_type") == "persist.confirmed"}
+        if not (translated & confirmed) - {""}:
+            raise V03DogfoodCompositionError("another callback handoff remains unresolved for this target")
+    projection = rebuild_projection(snapshot, operation_id)
+    if (projection.get("generation") != binding["operation_generation"]
+            or projection.get("operation_profile") != VERTICAL_PROFILE
+            or projection.get("target_repository") != binding["target_repository"]
+            or projection.get("feature_id") != binding["feature_id"]
+            or projection.get("status") != "RUNNING"):
+        raise V03DogfoodCompositionError("handoff intent escaped current executable generation")
+    if any(e.get("event_type") in {"worker.result.validated", "worker.result.rejected", "feature.event.translated"}
+           and (e.get("payload") or {}).get("callback_id") == callback_id for e in events):
+        raise V03DogfoodCompositionError("handoff intent came after callback consumption")
+    intent = dict(binding, schema_version=HANDOFF_SCHEMA, fact_kind="intent",
+                  predecessor_store_commit=snapshot.ref_sha,
+                  observed_last_sequence=len(events), operation_journal_digest=digest_json(events))
+    _validate_handoff_intent(snapshot, intent, binding=binding)
+    return StoreMutationPlan(snapshot.ref_sha,
+        (StoreMutation("create_immutable", intent_path, intent),), {"intent": intent, "created": True})
+
+
+def _plan_handoff_applied(snapshot, *, intent, observed_ref_sha):
+    operation_id, callback_id = intent["operation_id"], intent["callback_id"]
+    intent_path, applied_path = _handoff_paths(operation_id, callback_id)
+    if snapshot.get(intent_path) != intent or observed_ref_sha != intent["source_candidate_head_sha"]:
+        raise V03DogfoodCompositionError("applied handoff escaped intent or exact observed ref")
+    _validate_handoff_intent(snapshot, intent, binding=_handoff_binding(
+        snapshot, operation_id, callback_id, intent["fixture_candidate_pr_number"]))
+    events = operation_events(snapshot, operation_id)
+    existing = snapshot.get(applied_path)
+    if existing is not None:
+        _validate_handoff_applied(snapshot, intent, existing)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"applied": existing})
+    if any(e.get("event_type") in {"worker.result.validated", "worker.result.rejected", "feature.event.translated"}
+           and (e.get("payload") or {}).get("callback_id") == callback_id for e in events):
+        raise V03DogfoodCompositionError("handoff application came after callback consumption")
+    applied = {
+        "schema_version": HANDOFF_SCHEMA, "fact_kind": "applied",
+        "operation_id": operation_id, "callback_id": callback_id,
+        "intent_digest": digest_json(intent), "observed_ref_sha": observed_ref_sha,
+        "predecessor_store_commit": snapshot.ref_sha,
+        "observed_last_sequence": len(events), "operation_journal_digest": digest_json(events),
+    }
+    _validate_handoff_applied(snapshot, intent, applied)
+    return StoreMutationPlan(snapshot.ref_sha,
+        (StoreMutation("create_immutable", applied_path, applied),), {"applied": applied})
+
+
+def read_dogfood_handoff(snapshot, operation_id, callback_id, *, require_applied=False):
+    intent_path, applied_path = _handoff_paths(operation_id, callback_id)
+    intent, applied = snapshot.get(intent_path), snapshot.get(applied_path)
+    if intent is None:
+        if applied is not None or require_applied:
+            raise V03DogfoodCompositionError("handoff intent missing")
+        return None
+    if not isinstance(intent, dict):
+        raise V03DogfoodCompositionError("handoff intent malformed")
+    binding = _handoff_binding(snapshot, operation_id, callback_id, intent.get("fixture_candidate_pr_number"))
+    _validate_handoff_intent(snapshot, intent, binding=binding)
+    if applied is not None:
+        _validate_handoff_applied(snapshot, intent, applied)
+    elif require_applied:
+        raise V03DogfoodCompositionError("handoff applied proof missing")
+    return {"intent": intent, "applied": applied}
+
 
 
 class DogfoodGitHubCandidateProvider:
@@ -117,71 +491,37 @@ class DogfoodGitHubCandidateProvider:
             raise V03DogfoodCompositionError("developer callback must bind one exact Draft PR output")
         return matches[0]
 
-    def _pending_handoff(self, operation_id: str) -> dict[str, Any] | None:
+    def _pending_handoff(self, operation_id):
         if self.runtime is None:
             return None
-        callbacks: dict[str, dict[str, Any]] = {}
-        handoffs: dict[str, dict[str, Any]] = {}
-        translated: dict[str, str] = {}
-        confirmed: set[str] = set()
-        for row in operation_events(self.runtime.backend.read_snapshot(), operation_id):
-            event_type = str(row.get("event_type") or "")
+        snapshot = self.runtime.backend.read_snapshot()
+        callbacks, translated, confirmed = {}, {}, set()
+        for row in operation_events(snapshot, operation_id):
             payload = row.get("payload") or {}
-            if event_type == "worker.callback.recorded":
-                envelope = payload.get("trusted_callback_envelope")
-                context = (envelope or {}).get("trusted_context") if isinstance(envelope, dict) else None
-                callback_id = str(payload.get("callback_id") or "")
-                if isinstance(context, dict) and context.get("role") == "developer" and callback_id:
-                    callbacks[callback_id] = envelope
-            elif event_type == "candidate.handoff.adopted":
-                callback_id = str(payload.get("callback_id") or "")
-                if callback_id:
-                    handoffs[callback_id] = payload
-            elif event_type == "feature.event.translated":
-                callback_id = str(payload.get("callback_id") or "")
-                event_id = str(payload.get("feature_event_id") or "")
-                if callback_id and event_id:
-                    translated.setdefault(callback_id, event_id)
-            elif event_type == "persist.confirmed":
-                event_id = str(payload.get("feature_event_id") or "")
-                if event_id:
-                    confirmed.add(event_id)
-        pending: list[dict[str, Any]] = []
-        for callback_id, envelope in callbacks.items():
-            event_id = translated.get(callback_id)
-            if event_id and event_id in confirmed:
+            kind = row.get("event_type")
+            if kind == "worker.callback.recorded":
+                envelope = payload.get("trusted_callback_envelope") or {}
+                if (envelope.get("trusted_context") or {}).get("role") == "developer":
+                    callbacks[payload["callback_id"]] = envelope
+            elif kind == "feature.event.translated":
+                if payload.get("callback_id") and payload.get("feature_event_id"):
+                    translated.setdefault(payload["callback_id"], payload["feature_event_id"])
+            elif kind == "persist.confirmed":
+                confirmed.add(payload.get("feature_event_id"))
+        pending = []
+        for callback_id in callbacks:
+            if translated.get(callback_id) in confirmed:
                 continue
-            context = envelope.get("trusted_context") or {}
-            handoff = handoffs.get(callback_id)
-            if not isinstance(handoff, dict):
-                continue
-            source_pr, source_head = self._developer_receipt(envelope)
-            if (
-                handoff.get("source_candidate_pr_number") != source_pr
-                or handoff.get("source_candidate_head_sha") != source_head
-                or handoff.get("prior_candidate_head_sha") != context.get("candidate_head_sha")
-                or handoff.get("dispatch_id") != context.get("dispatch_id")
-            ):
-                raise V03DogfoodCompositionError("durable candidate handoff differs from sealed Developer callback")
-            pending.append(handoff)
+            fact = read_dogfood_handoff(snapshot, operation_id, callback_id)
+            if fact is not None:
+                intent = fact["intent"]
+                if (intent["target_repository"] != self.repository or intent["feature_id"] != self.slot.feature_id
+                        or intent["target_ref"] != self.slot.target_ref):
+                    raise V03DogfoodCompositionError("handoff escaped fixed candidate provider")
+                pending.append(intent)
         if len(pending) > 1:
-            raise V03DogfoodCompositionError("multiple incomplete Developer candidate handoffs")
+            raise V03DogfoodCompositionError("multiple incomplete Developer handoffs")
         return pending[0] if pending else None
-
-    def _is_descendant(self, ancestor: str, descendant: str) -> bool:
-        if ancestor == descendant:
-            return True
-        status, payload = self.http_get(
-            f"{self.api_base}/repos/{self.repository}/compare/{ancestor}...{descendant}",
-            self._headers(),
-        )
-        return bool(
-            status == 200
-            and isinstance(payload, dict)
-            and payload.get("status") == "ahead"
-            and int(payload.get("behind_by") or 0) == 0
-            and str(((payload.get("merge_base_commit") or {}).get("sha")) or "").lower() == ancestor
-        )
 
     def _candidate(self) -> dict[str, Any]:
         owner = self.repository.split("/", 1)[0]
@@ -238,7 +578,7 @@ class DogfoodGitHubCandidateProvider:
                 int(pending.get("fixture_candidate_pr_number") or 0) != int(row["number"])
                 or not _SHA40.fullmatch(adopted_head)
                 or not _SHA40.fullmatch(prior_head)
-                or not self._is_descendant(adopted_head, current_head)
+                or current_head not in {prior_head, adopted_head}
             ):
                 raise V03DogfoodCompositionError("incomplete handoff no longer matches fixed candidate lineage")
             current_head = prior_head
@@ -265,6 +605,7 @@ class DogfoodCandidateHandoff:
         self.repository = normalize_repository(repository)
         self.token = str(token or "")
         self.candidate_provider = candidate_provider
+        self.content_loader = None
         self.api_base = str(api_base or "").rstrip("/")
         self.http_request = http_request or self._default_request
         if not self.token or not self.api_base.startswith("https://"):
@@ -302,65 +643,69 @@ class DogfoodCandidateHandoff:
             body,
         )
 
-    def adopt(
-        self,
-        *,
-        executor: Any,
-        context: Any,
-        callback_id: str,
-        receipts: list[dict[str, Any]],
-    ) -> None:
-        if context.role != "developer" or context.feature_id != self.slot.feature_id or context.target_ref != self.slot.target_ref:
-            raise V03DogfoodCompositionError("candidate handoff escaped fixed Developer/fixture authority")
-        envelope = {"collected_outputs": receipts}
+    def adopt(self, *, executor, context, callback_id, receipts):
+        if (context.role != "developer" or context.feature_id != self.slot.feature_id
+                or context.target_ref != self.slot.target_ref
+                or normalize_repository(context.target_repository) != self.repository):
+            raise V03DogfoodCompositionError("candidate handoff escaped fixed Developer authority")
+        snapshot = executor.runtime.backend.read_snapshot()
+        envelope = recover_vertical_callback(snapshot, operation_id=context.operation_id, callback_id=callback_id)
+        if envelope["collected_outputs"] != receipts or envelope["trusted_context"] != _context_payload(context):
+            raise V03DogfoodCompositionError("handoff arguments differ from durable callback")
         source_pr, source_head = self.candidate_provider._developer_receipt(envelope)
+        if not callable(self.content_loader):
+            raise V03DogfoodCompositionError("Developer handoff lacks trusted content loader")
+        for receipt in receipts:
+            if receipt.get("kind") != "artifact":
+                continue
+            data = self.content_loader(receipt["trusted_uri"])
+            if (not isinstance(data, bytes) or hashlib.sha256(data).hexdigest() != receipt.get("sha256")
+                    or len(data) != receipt.get("size_bytes")):
+                raise V03DogfoodCompositionError("Developer output changed before handoff")
         fixture = self.candidate_provider._candidate()
+        fixture_pr = int(fixture["number"])
         prior_head = str(context.candidate_head_sha or "").lower()
-        fixture_head = str(fixture["head"]["sha"]).lower()
-        if int(fixture["number"]) < 1 or fixture_head not in {prior_head, source_head}:
-            raise V03DogfoodCompositionError("fixture candidate changed before Developer handoff")
+        if str(fixture["head"]["sha"]).lower() not in {prior_head, source_head}:
+            raise V03DogfoodCompositionError("fixture candidate changed before handoff")
         status, pr = self._api("GET", f"/pulls/{source_pr}")
-        if (
-            status != 200
-            or not isinstance(pr, dict)
-            or pr.get("state") != "open"
-            or pr.get("draft") is not True
-            or str((pr.get("base") or {}).get("ref") or "") != self.slot.target_ref
-            or str((pr.get("head") or {}).get("sha") or "").lower() != source_head
-        ):
+        if (status != 200 or not isinstance(pr, dict) or pr.get("number") != source_pr
+                or pr.get("state") != "open" or pr.get("draft") is not True
+                or (pr.get("base") or {}).get("ref") != self.slot.target_ref
+                or str((pr.get("head") or {}).get("sha") or "").lower() != source_head
+                or str((((pr.get("head") or {}).get("repo") or {}).get("full_name")) or "").lower() != self.repository
+                or str((((pr.get("base") or {}).get("repo") or {}).get("full_name")) or "").lower() != self.repository):
             raise V03DogfoodCompositionError("sealed Developer Draft PR changed before handoff")
         status, comparison = self._api("GET", f"/compare/{prior_head}...{source_head}")
-        if (
-            status != 200
-            or not isinstance(comparison, dict)
-            or comparison.get("status") != "ahead"
-            or int(comparison.get("ahead_by") or 0) < 1
-            or int(comparison.get("behind_by") or 0) != 0
-            or str(((comparison.get("merge_base_commit") or {}).get("sha")) or "").lower() != prior_head
-        ):
-            raise V03DogfoodCompositionError("Developer output is not a strict fast-forward of its reviewed fixture input")
+        if (status != 200 or not isinstance(comparison, dict) or comparison.get("status") != "ahead"
+                or type(comparison.get("ahead_by")) is not int or comparison["ahead_by"] < 1
+                or comparison.get("behind_by") != 0
+                or str(((comparison.get("merge_base_commit") or {}).get("sha")) or "").lower() != prior_head):
+            raise V03DogfoodCompositionError("Developer output is not strict fixture fast-forward")
+        def plan_intent(current):
+            binding = _handoff_binding(current, context.operation_id, callback_id, fixture_pr)
+            if (binding["prior_candidate_head_sha"] != prior_head
+                    or binding["source_candidate_pr_number"] != source_pr
+                    or binding["source_candidate_head_sha"] != source_head):
+                raise V03DogfoodCompositionError("handoff live proof differs from Store callback")
+            return _plan_handoff_intent(current, binding=binding)
+        outcome = _commit_handoff_nonempty(executor, plan_intent)
+        intent, fresh = outcome["intent"], outcome["created"]
         ref_path = f"/git/refs/heads/{parse.quote(self.slot.target_ref, safe='')}"
-        status, current = self._api("GET", ref_path)
-        current_sha = str(((current or {}).get("object") or {}).get("sha") or "").lower() if isinstance(current, dict) else ""
-        if status != 200 or current_sha not in {prior_head, source_head}:
-            raise V03DogfoodCompositionError("fixture ref changed outside one-shot Developer handoff")
-        if current_sha == prior_head:
-            status, updated = self._api("PATCH", ref_path, {"sha": source_head, "force": False})
-            if status != 200 or str(((updated or {}).get("object") or {}).get("sha") or "").lower() != source_head:
-                raise V03DogfoodCompositionError("trusted Developer candidate fast-forward was not accepted")
-        executor._record_fact(
-            context.operation_id,
-            "candidate.handoff.adopted",
-            {
-                "callback_id": callback_id,
-                "dispatch_id": context.dispatch_id,
-                "target_ref": self.slot.target_ref,
-                "fixture_candidate_pr_number": int(fixture["number"]),
-                "prior_candidate_head_sha": prior_head,
-                "source_candidate_pr_number": source_pr,
-                "source_candidate_head_sha": source_head,
-            },
-        )
+        def read_ref():
+            status, body = self._api("GET", ref_path)
+            sha = str(((body.get("object") or {}).get("sha")) or "").lower() if isinstance(body, dict) else ""
+            if status != 200 or not _SHA40.fullmatch(sha):
+                raise V03DogfoodCompositionError("fixture ref lookup failed closed")
+            return sha
+        observed = read_ref()
+        if observed == prior_head:
+            if not fresh:
+                raise V03DogfoodCompositionError("existing handoff intent grants lookup only")
+            self._api("PATCH", ref_path, {"sha": source_head, "force": False})
+            observed = read_ref()
+        if observed != source_head:
+            raise V03DogfoodCompositionError("exact handoff effect not observed; lookup only")
+        _commit_handoff_nonempty(executor, lambda current: _plan_handoff_applied(current, intent=intent, observed_ref_sha=observed))
 
 
 class DogfoodTrustedCallbackCoordinator:
@@ -370,6 +715,10 @@ class DogfoodTrustedCallbackCoordinator:
         self.delegate = delegate
         self.executor = delegate.executor
         self.candidate_handoff = candidate_handoff
+
+    @property
+    def content_loader(self):
+        return self.delegate.content_loader
 
     @staticmethod
     def _artifact_uri(receipts: list[dict[str, Any]]) -> str:
@@ -475,6 +824,11 @@ class DogfoodTrustedCallbackCoordinator:
             )
         )
         if context.role == "developer":
+            feature, _ = self.executor.feature_gateway.read_feature(operation_id=context.operation_id)
+            validate_collected_outputs(
+                context=context, feature=feature, worker_payload=worker_payload,
+                receipts=receipts, content_loader=self.delegate.content_loader,
+            )
             self.candidate_handoff.adopt(
                 executor=self.executor,
                 context=context,
@@ -516,6 +870,27 @@ class DogfoodCandidateBoundActionsTransport(GitHubActionsVerticalGhAwTransport):
         super().__init__(config, **kwargs)
         self.candidate_provider = candidate_provider
 
+
+    def _http(self, *, method, url, token, body=None):
+        if method == "GET" and re.fullmatch(
+            r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/jobs/[1-9][0-9]*/logs", url.lower()
+        ):
+            req = request.Request(url, method="GET", headers={
+                "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                "X-GitHub-Api-Version": self.config.api_version, "User-Agent": self.config.user_agent,
+            })
+            try:
+                with request.build_opener(_GitHubSafeRedirectHandler()).open(req, timeout=30) as response:
+                    raw = response.read(4 * 1024 * 1024 + 1)
+                    if len(raw) > 4 * 1024 * 1024:
+                        raise VerticalInvariantError("BLOCKED", "dogfood proof log exceeds bound")
+                    return int(response.status), dict(response.headers.items()), raw
+            except VerticalInvariantError:
+                raise
+            except Exception as exc:
+                raise VerticalInvariantError("BLOCKED", "dogfood proof log unavailable") from exc
+        return super()._http(method=method, url=url, token=token, body=body)
+
     def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
         if workflow != self.config.workflows.developer_workflow:
             return super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
@@ -543,6 +918,144 @@ class DogfoodCandidateBoundActionsTransport(GitHubActionsVerticalGhAwTransport):
         # Only the validation copy was normalized. The inherited dispatcher
         # sends the original candidate-bound bytes and retains the stable key.
         return key
+
+
+class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
+    """One exact legacy key, admitted only by its immutable protected bridge.
+
+    The shared transport's lookup pagination, global collision checks, input
+    validation and single-POST acknowledgement semantics remain unchanged.
+    """
+
+    def __init__(self, config, *, candidate_provider, **kwargs):
+        super().__init__(config, candidate_provider=candidate_provider, **kwargs)
+        self._continuation_snapshot = None
+        self._allow_post = False
+        self._creating = False
+        self._transport_http = self.http
+        self.http = self._guarded_http
+
+    def _guarded_http(self, *, method, url, token, body=None):
+        if method == "POST":
+            _, _, continuation = self._admitted()
+            if not self._creating or url != self._api(f"/actions/workflows/{RECOVERY_DEVELOPER_WORKFLOW}/dispatches"):
+                raise VerticalInvariantError("POLICY_DENIED", "recovery HTTP POST escaped one admitted create")
+            status, _, raw = self._transport_http(method="GET", url=self._api("/git/ref/heads/main"),
+                                                  token=self.config.token, body=None)
+            try:
+                ref = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeError) as exc:
+                raise VerticalInvariantError("BLOCKED", "recovery POST source lookup is indeterminate") from exc
+            if (status != 200 or not isinstance(ref, dict) or ref.get("ref") != "refs/heads/main"
+                    or (ref.get("object") or {}).get("type") != "commit"
+                    or (ref.get("object") or {}).get("sha") != continuation["execution_source_head_sha"]):
+                raise VerticalInvariantError("STALE_REVISION", "recovery main changed at HTTP POST boundary")
+        return self._transport_http(method=method, url=url, token=token, body=body)
+
+    def admit_continuation(self, snapshot, *, allow_post=False, execution_source_head_sha, execution_trusted_context_digest,
+                           execution_materialization_commit_sha, execution_policy_receipt_digest,
+                           execution_policy_bundle_digest):
+        _, _, continuation = validate_recovery_continuation(snapshot)
+        if allow_post and (
+            continuation["execution_source_head_sha"] != execution_source_head_sha
+            or continuation["execution_trusted_context_digest"] != execution_trusted_context_digest
+            or continuation["execution_materialization_commit_sha"] != execution_materialization_commit_sha
+            or continuation["execution_policy_receipt_digest"] != execution_policy_receipt_digest
+            or continuation["execution_policy_bundle_digest"] != execution_policy_bundle_digest
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "continuation POST escaped current trusted installation/context")
+        # Detach from a caller's mutable snapshot after validating the full chain.
+        from copy import deepcopy
+        self._continuation_snapshot = deepcopy(snapshot)
+        self._allow_post = allow_post is True
+
+    def _admitted(self):
+        if self._continuation_snapshot is None:
+            raise VerticalInvariantError("POLICY_DENIED", "recovery transport has no protected admission")
+        return validate_recovery_continuation(self._continuation_snapshot)
+
+    def _validate_lookup_identity(self, *, workflow, ref, dispatch_key):
+        self._admitted()
+        if (
+            dispatch_key != ARMED_RECOVERY_KEY
+            or workflow not in self._trusted_workflows
+            or ref != "main" or ref != self.config.workflows.default_branch
+            or self.config.workflows.developer_workflow != RECOVERY_DEVELOPER_WORKFLOW
+            or self.config.control_repository != "dream-xin/ai-sdlc"
+            or self.config.api_url != "https://api.github.com"
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery lookup escaped exact admitted identity")
+        # All three configured trusted workflows must be scanned for collisions.
+        # No substitute dispatch key is passed to validation or to HTTP.
+        return self._role_for_workflow(workflow)
+
+    def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
+        authorization, _, _ = self._admitted()
+        if workflow != RECOVERY_DEVELOPER_WORKFLOW:
+            raise VerticalInvariantError("POLICY_DENIED", "recovery POST is Developer-only")
+        key = super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
+        candidate = self.candidate_provider.current_candidate(
+            operation_id=authorization["operation_id"], repository=authorization["target_repository"],
+            feature_id=authorization["feature_id"], target_ref=authorization["target_ref"],
+        )
+        if (candidate.candidate_pr_number, candidate.candidate_head_sha) != (
+            authorization["candidate_pr_number"], authorization["candidate_head_sha"]
+        ):
+            raise VerticalInvariantError("STALE_REVISION", "recovery POST candidate PR/head drifted")
+        payload = json.loads(inputs["task_payload"])
+        task, vertical = payload["task"], payload["feature_context"]["vertical"]
+        expected_dispatch = dict(authorization,
+            external_dispatch_key=authorization["recovery_dispatch_key"],
+            dispatch_id=authorization["recovery_dispatch_id"],
+            operation_profile=VERTICAL_PROFILE,
+        )
+        if payload != json.loads(GhAwVerticalRoleDispatchGateway._task_payload(expected_dispatch)):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery POST task payload is not exact")
+        expected_vertical = {
+            "profile": VERTICAL_PROFILE,
+            "operation_id": authorization["operation_id"],
+            "operation_generation": authorization["operation_generation"],
+            "semantic_effect_key": authorization["semantic_effect_key"],
+            "external_dispatch_key": authorization["recovery_dispatch_key"],
+            "dispatch_id": authorization["recovery_dispatch_id"],
+            "expected_revision": authorization["expected_revision"],
+            "candidate_head_sha": authorization["candidate_head_sha"],
+        }
+        if (
+            vertical != expected_vertical
+            or task.get("id") != authorization["task_id"]
+            or task.get("role") != authorization["role"]
+            or inputs.get("feature_id") != authorization["feature_id"]
+            or inputs.get("target_repository") != authorization["target_repository"]
+            or inputs.get("target_ref") != authorization["target_ref"]
+            or inputs.get("stage") != authorization["stage"]
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery POST lost full original task binding")
+        return key
+
+    def dispatch(self, *, workflow, ref, inputs):
+        self._admitted()
+        if not self._allow_post:
+            raise VerticalInvariantError("POLICY_DENIED", "continuation replay is lookup-only")
+        # Consume even on validation/lookup failure. Never retry a process-local
+        # create or reinterpret absence after an ambiguous acknowledgement.
+        self._allow_post = False
+        self._creating = True
+        try:
+            return super().dispatch(workflow=workflow, ref=ref, inputs=inputs)
+        finally:
+            self._creating = False
+
+
+class DogfoodRecoveryDispatchGateway(GhAwVerticalRoleDispatchGateway):
+    def lookup(self, *, external_dispatch_key):
+        # Ignore the parent's per-process role cache. UNKNOWN in any role wins,
+        # and a positive match in a different role is not an adoptable receipt.
+        return self.transport._global_preflight(
+            selected_workflow=RECOVERY_DEVELOPER_WORKFLOW,
+            ref=self.workflows.default_branch,
+            dispatch_key=external_dispatch_key,
+        )
 
 
 class DogfoodExecutionBoundDispatchGateway:
@@ -591,6 +1104,118 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
     trusted result is therefore derived from the successful Safe Outputs job and
     the one open Draft PR whose protected head name embeds the immutable run id.
     """
+
+
+    def _http(self, *, method, url, token):
+        if re.fullmatch(r"https://api\.github\.com/repos/dream-xin/ai-sdlc/actions/artifacts/[1-9][0-9]*/zip", url.lower()):
+            req = request.Request(url, method=method, headers={
+                "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+                "X-GitHub-Api-Version": self.config.api_version, "User-Agent": self.config.user_agent,
+            })
+            try:
+                with request.build_opener(_GitHubSafeRedirectHandler()).open(req, timeout=30) as response:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive exceeds bound")
+                    return int(response.status), dict(response.headers.items()), raw
+            except VerticalInvariantError:
+                raise
+            except Exception as exc:
+                raise VerticalInvariantError("BLOCKED", "recovery Safe Output archive unavailable") from exc
+        return super()._http(method=method, url=url, token=token)
+
+    def _run_owned_safe_output(self, *, run_id, source_head_sha, pr):
+        """Authenticate the PR against successful pinned-handler run artifacts."""
+        listing = self._json(self.config.control_repository,
+            f"/actions/runs/{run_id}/artifacts?per_page=100", self.config.control_token)
+        rows = listing.get("artifacts") if isinstance(listing, dict) else None
+        if (not isinstance(rows, list) or type(listing.get("total_count")) is not int
+                or listing["total_count"] != len(rows) or len(rows) > 100):
+            raise VerticalInvariantError("BLOCKED", "recovery artifact listing is not exhaustive")
+        matches = [row for row in rows if isinstance(row, dict) and row.get("name") == "safe-outputs-items"]
+        if len(matches) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery lacks one run-owned Safe Outputs artifact")
+        artifact = matches[0]
+        workflow_run = artifact.get("workflow_run")
+        if (
+            type(artifact.get("id")) is not int or artifact["id"] < 1
+            or artifact.get("expired") is not False
+            or type(artifact.get("size_in_bytes")) is not int
+            or not 0 < artifact["size_in_bytes"] <= 2 * 1024 * 1024
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("digest") or ""))
+            or not isinstance(workflow_run, dict)
+            or any(workflow_run.get(k) != v for k, v in {
+                "id": run_id, "head_sha": source_head_sha, "head_branch": "main",
+                "repository_id": 1326302284, "head_repository_id": 1326302284,
+            }.items())
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery artifact run/source/digest binding drifted")
+        raw = self._bytes(self.config.control_repository,
+            f"/actions/artifacts/{artifact['id']}/zip", self.config.control_token)
+        if (
+            not 0 < len(raw) <= 2 * 1024 * 1024
+            or "sha256:" + hashlib.sha256(raw).hexdigest() != artifact["digest"]
+        ):
+            raise VerticalInvariantError("BLOCKED", "recovery artifact bytes differ from provider digest")
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                members = archive.infolist()
+                names = [item.filename for item in members]
+                allowed = {"safe-output-items.jsonl", "temporary-id-map.json", "safe-output-errors.json"}
+                if (
+                    not members or len(names) != len(set(names))
+                    or "safe-output-items.jsonl" not in names or not set(names) <= allowed
+                    or sum(item.file_size for item in members) > 2 * 1024 * 1024
+                    or any(item.is_dir() or item.flag_bits & 1
+                           or stat.S_ISLNK(item.external_attr >> 16)
+                           or item.file_size < 0 or item.file_size > 2 * 1024 * 1024
+                           for item in members)
+                    or archive.getinfo("safe-output-items.jsonl").file_size > 256 * 1024
+                ):
+                    raise ValueError("unsafe or oversized archive member")
+                with archive.open("safe-output-items.jsonl") as member:
+                    data = member.read(256 * 1024 + 1)
+                if len(data) > 256 * 1024:
+                    raise ValueError("oversized manifest")
+                lines = data.decode("utf-8").splitlines()
+                if not lines or len(lines) > 100:
+                    raise ValueError("manifest count")
+                entries = [json.loads(line) for line in lines if line.strip()]
+                if any(not isinstance(entry, dict) for entry in entries):
+                    raise ValueError("manifest row")
+        except (OSError, ValueError, UnicodeError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise VerticalInvariantError("BLOCKED", "recovery Safe Output artifact is malformed") from exc
+        created = [entry for entry in entries if entry.get("type") == "create_pull_request"]
+        if len(created) != 1:
+            raise VerticalInvariantError("BLOCKED", "recovery artifact lacks one created PR")
+        entry = created[0]
+        if (
+            entry.get("provider") != "github"
+            or type(pr.get("id")) is not int or pr["id"] < 1
+            or not isinstance(pr.get("node_id"), str) or not pr["node_id"]
+            or type(entry.get("id")) is not int or type(entry.get("number")) is not int
+            or entry.get("id") != pr["id"] or entry.get("number") != pr["number"]
+            or entry.get("url") != pr.get("html_url")
+            or str(entry.get("repo") or "").lower() != self.target_repository
+            or not isinstance(entry.get("metadata"), dict)
+            or entry["metadata"].get("node_id") != pr["node_id"]
+            or not isinstance(entry.get("timestamp"), str) or not entry["timestamp"]
+        ):
+            raise VerticalInvariantError("POLICY_DENIED", "candidate PR is not the exact run-owned Safe Output")
+        return {
+            "schema_version": "ai-sdlc.v03-recovery-safe-output-artifact/v1",
+            "artifact_id": artifact["id"], "archive_digest": artifact["digest"],
+            "manifest_entry_digest": "sha256:" + digest_json(entry),
+            "run_id": run_id, "source_head_sha": source_head_sha,
+            "pr_number": pr["number"], "pr_id": pr["id"], "pr_node_id": pr["node_id"],
+            "pr_url": pr["html_url"], "repository": self.target_repository,
+        }
+
+    def safe_output_proof(self, *, run_id):
+        proof = getattr(self, "_safe_output_proofs", {}).get(int(run_id))
+        if proof is None:
+            raise VerticalInvariantError("BLOCKED", "recovery run-owned Safe Output was not freshly resolved")
+        return json.loads(canonical_json(proof))
 
     def seal_readiness(self, *, external_dispatch_key: str, expected_receipt_identity: str, source_head_sha: str) -> str:
         """Return PENDING/READY; terminal failure raises without permitting a seal."""
@@ -714,6 +1339,7 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
         ):
             raise VerticalInvariantError("STALE_REVISION", "recovery Draft PR Safe Output changed after run-bound discovery")
 
+        artifact_proof = self._run_owned_safe_output(run_id=run_id, source_head_sha=before["head_sha"], pr=pr)
         after = self._first_attempt_run_snapshot(run_id=run_id, external_dispatch_key=external_dispatch_key)
         jobs_after = self._json(self.config.control_repository, jobs_path, self.config.control_token)
         if not self._same_run_snapshot(before, after) or canonical_json(jobs_before) != canonical_json(jobs_after):
@@ -754,13 +1380,60 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
             media_type=bound.media_type,
             trusted_uri=self._lease_uri(bound, after),
         )
+        if not hasattr(self, "_safe_output_proofs"):
+            self._safe_output_proofs = {}
+        self._safe_output_proofs[run_id] = artifact_proof
         return TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(leased,))
+
+
+class DogfoodRecoveryBoundContentLoader:
+    """Route exactly the protected sealed recovery URI, preserving live leases."""
+
+    def __init__(self, *, result_source, recovery_result_source, policy_authority):
+        self.result_source = result_source
+        self.recovery_result_source = recovery_result_source
+        self.policy_authority = policy_authority
+        self.runtime = None
+
+    def bind_runtime(self, runtime):
+        if self.runtime is not None and self.runtime is not runtime:
+            raise V03DogfoodCompositionError("recovery content loader runtime changed")
+        self.runtime = runtime
+
+    def __call__(self, uri):
+        match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
+        if match and match.group("key") == ARMED_RECOVERY_KEY:
+            if self.runtime is None:
+                raise VerticalInvariantError("POLICY_DENIED", "recovery content lacks protected runtime")
+            snapshot = self.runtime.backend.read_snapshot()
+            sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+            validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
+                self.policy_authority,
+            ))
+            if (
+                uri != sealed.get("safe_output_uri")
+                or match.group("run") != sealed.get("receipt_id")
+                or match.group("head") != sealed.get("execution_source_head_sha")
+            ):
+                raise VerticalInvariantError("POLICY_DENIED", "recovery content URI is not the exact sealed run")
+            proof = sealed["safe_output_artifact_proof"]
+            current = self.recovery_result_source._run_owned_safe_output(
+                run_id=int(sealed["receipt_id"]), source_head_sha=sealed["execution_source_head_sha"],
+                pr={"id": proof["pr_id"], "node_id": proof["pr_node_id"],
+                    "number": proof["pr_number"], "html_url": proof["pr_url"]},
+            )
+            if current != proof:
+                raise VerticalInvariantError("POLICY_DENIED", "recovery run-owned artifact changed before content load")
+            return self.recovery_result_source.load_content(uri)
+        return self.result_source.load_content(uri)
+
 
 
 class DogfoodRecoveryCollector:
     """Collect only the one sealed recovery run, then reuse the closed callback path."""
 
-    def __init__(self, *, callback_coordinator, result_source, workflows, control_repository, clock):
+    def __init__(self, *, callback_coordinator, result_source, workflows, control_repository, clock, policy_authority):
+        self.policy_authority = policy_authority
         self.callback_coordinator = callback_coordinator
         self.result_source = result_source
         self.workflows = workflows
@@ -777,6 +1450,9 @@ class DogfoodRecoveryCollector:
         attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
         if not isinstance(authorization, dict) or not isinstance(attempt, dict) or not isinstance(sealed, dict):
             raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks complete immutable fact chain")
+        continuation = validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
+            self.policy_authority,
+        ))
         authorization_digest = "sha256:" + digest_json(authorization)
         attempt_digest = "sha256:" + digest_json(attempt)
         sealed_bindings = {
@@ -834,6 +1510,7 @@ class DogfoodRecoveryCollector:
         )
         if (
             str(historical_receipt) != "37204777409"
+            or launch.get("dispatch_id") != RECOVERY_COLLECTOR_DISPATCH_ID
             or str(launch.get("role") or "") != "developer"
             or int(authorization.get("operation_generation") or -1) != int(projection["generation"])
             or authorization.get("feature_id") != projection.get("feature_id")
@@ -859,7 +1536,8 @@ class DogfoodRecoveryCollector:
             "operation_profile": VERTICAL_PROFILE,
             "semantic_effect_key": semantic_key,
             "external_dispatch_key": recovery_key,
-            "dispatch_id": str(sealed["recovery_dispatch_id"]),
+            "dispatch_id": str(sealed["collector_dispatch_id"]),
+            "execution_dispatch_id": str(sealed["recovery_dispatch_id"]),
             "target_repository": normalize_repository(str(projection["target_repository"])),
             "target_ref": executor.config.target_ref,
             "feature_id": str(projection["feature_id"]),
@@ -868,7 +1546,7 @@ class DogfoodRecoveryCollector:
             "role": "developer",
             "task_id": str(sealed["task_id"]),
             "launch_candidate_head_sha": launch.get("candidate_head_sha"),
-            "source_head_sha": str(sealed["source_head_sha"]),
+            "source_head_sha": str(sealed["execution_source_head_sha"]),
         }
         resolved = self.result_source.resolve(
             external_dispatch_key=recovery_key,
@@ -891,9 +1569,11 @@ class DogfoodRecoveryCollector:
             or resolved.run.external_dispatch_key != sealed["recovery_dispatch_key"]
             or resolved.run.task_id != sealed["task_id"]
             or resolved.run.role != sealed["role"]
-            or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['source_head_sha']}"
+            or resolved.run.worker_identity != f"gh-aw:{sealed['workflow_file']}@{sealed['execution_source_head_sha']}"
             or resolved.run.candidate_pr_number != sealed.get("output_candidate_pr_number")
             or resolved.run.candidate_head_sha != sealed.get("output_candidate_head_sha")
+            or self.result_source.safe_output_proof(run_id=resolved.run.run_id) != sealed.get("safe_output_artifact_proof")
+            or "sha256:" + digest_json(sealed.get("safe_output_artifact_proof")) != sealed.get("safe_output_artifact_digest")
             or len(resolved.outputs) != 1
             or resolved.outputs[0].trusted_uri != sealed.get("safe_output_uri")
             or "sha256:" + digest_json({"trusted_uri": resolved.outputs[0].trusted_uri})
@@ -1080,7 +1760,7 @@ def build_v03_dogfood_full_composition(
         recovery_source_config,
         target_repository=config.target_repository,
     )
-    recovery_transport = DogfoodCandidateBoundActionsTransport(
+    recovery_transport = DogfoodRecoveryActionsTransport(
         GitHubActionsWorkflowTransportConfig(
             control_repository=control_repository,
             token=actions_token,
@@ -1089,7 +1769,7 @@ def build_v03_dogfood_full_composition(
         ),
         candidate_provider=candidate_provider,
     )
-    recovery_dispatch_gateway = GhAwVerticalRoleDispatchGateway(
+    recovery_dispatch_gateway = DogfoodRecoveryDispatchGateway(
         transport=recovery_transport,
         workflows=recovery_workflows,
     )
@@ -1107,6 +1787,10 @@ def build_v03_dogfood_full_composition(
             token=target_read_token,
             api_base=github_api_base,
         )
+    content_loader = DogfoodRecoveryBoundContentLoader(
+        result_source=result_source, recovery_result_source=recovery_result_source,
+        policy_authority=policy_authority,
+    )
     responses = build_openai_responses_production_bundle(
         config=config,
         feature_id=slot.feature_id,
@@ -1119,7 +1803,7 @@ def build_v03_dogfood_full_composition(
         feature_gateway=feature_truth,
         feature_event_gateway=feature_event_gateway,
         dispatch_gateway=dispatch_gateway,
-        collector_content_loader=result_source.load_content,
+        collector_content_loader=content_loader,
         policy_verifier=decision_verifier,
         trusted_context_digest=trusted_context_digest,
         collector_namespace_policy=collector_namespace_policy,
@@ -1128,6 +1812,7 @@ def build_v03_dogfood_full_composition(
         clock=clock,
     )
     bundle = responses.operator_bundle
+    content_loader.bind_runtime(responses.runtime)
     durable_truth = DurableDecisionFeatureTruthGateway(
         runtime=responses.runtime,
         feature_gateway=feature_event_gateway,
@@ -1142,6 +1827,7 @@ def build_v03_dogfood_full_composition(
         candidate_provider=candidate_provider,
         api_base=github_api_base,
     )
+    candidate_handoff.content_loader = content_loader
     callback_coordinator = DogfoodTrustedCallbackCoordinator(
         delegate=bundle.callback_coordinator,
         candidate_handoff=candidate_handoff,
@@ -1159,6 +1845,7 @@ def build_v03_dogfood_full_composition(
         workflows=recovery_workflows,
         control_repository=control_repository,
         clock=clock,
+        policy_authority=policy_authority,
     )
 
     if responses.runtime is not bundle.runtime or durable_truth.runtime is not responses.runtime:
