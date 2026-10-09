@@ -4001,7 +4001,17 @@ def assert_post_handoff_done_replay(preflight, *, adapter, feature_fixture, gate
     puts, applied, posts = feature_fixture.state["puts"], feature_fixture.state["applied"], len(gate_fixture.state["posts"])
     host = build_post_handoff_responses_host(preflight, adapter=adapter,
         expected_revision=feature_fixture.state["manifest"]["revision"], session_label="completed-replay")
-    replay = runner.run_scenario(preflight=preflight, host=host.host)
+    coordinator = preflight.composition.bundle.decision_notification_coordinator
+    old_context = coordinator.trusted_context_digest
+    coordinator.trusted_context_digest = "changed-current-context-on-replay"
+    before_notification = (runtime.backend.read_snapshot().ref_sha, runtime.backend.commit_count)
+    try:
+        runner._notify_completed(preflight, operation_id)
+        expect(before_notification == (runtime.backend.read_snapshot().ref_sha, runtime.backend.commit_count),
+               "existing immutable Notification replay wrote Store under a changed context")
+        replay = runner.run_scenario(preflight=preflight, host=host.host)
+    finally:
+        coordinator.trusted_context_digest = old_context
     expect(replay.operation_id == operation_id and replay.final_status == "DONE"
            and replay.worker_results_consumed == 3
            and vertical_projection(runtime.backend.read_snapshot(), operation_id)["generation"] == 1,
@@ -4095,7 +4105,7 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
     done_event["event_id"] = "forged-done"
     try:
         runner._notify_completed(preflight, operation_id)
-    except runner.V03DogfoodScenarioRunnerError:
+    except (runner.V03DogfoodScenarioRunnerError, __import__("operator_store_model").StoreInvariantError):
         pass
     else:
         raise AssertionError("completion Notification accepted a forged DONE identity")
@@ -4776,6 +4786,48 @@ def post_handoff_reconciliation_negative_tests():
     print("- reconciliation CAS/crash/rejection and exact predecessor/provider/source negatives fail closed")
 
 
+def post_handoff_read_only_discovery_tests():
+    import json
+    from copy import deepcopy
+    from operator_api import API_VERSION
+    from operator_store_model import canonical_json
+    from v03_dogfood_runtime_driver import reconcile_post_handoff
+    from v03_dogfood_openai_host import V03DogfoodOpenAIResponsesHost, V03DogfoodOpenAIHostError
+    import v03_dogfood_scenario_runner as runner
+    pf, provider, _, gates, _ = post_handoff_runtime_fixture()
+    reconcile_post_handoff(pf)
+    runtime = pf.composition.runtime
+    template = build_post_handoff_responses_host(pf, adapter=pf.composition.responses.adapter, expected_revision=1)
+    status = {"type":"function_call","id":"status-call","call_id":"status-1",
+              "name":"aisdlc_v1_operation_status","arguments":json.dumps({
+                  "api_version":API_VERSION,"operation_id":runner.RECOVERY_OPERATION_ID})}
+    batches = []
+    for tool in ("aisdlc_v1_operation_start", "aisdlc_v1_operation_cancel", "aisdlc_v1_decision_respond"):
+        batches.append([dict(status, name=tool)])
+    batches.append([dict(status, arguments=json.dumps({"api_version":API_VERSION,"operation_id":"op-other"}))])
+    batches.append([status, dict(status, call_id="cancel-2", name="aisdlc_v1_operation_cancel")])
+    for calls in batches:
+        before = (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
+                  runtime.backend.commit_count)
+        def malicious_post(url, headers, body):
+            expect([tool["name"] for tool in body["tools"]] == ["aisdlc_v1_operation_status"],
+                   "reconciliation advertised writable discovery tools")
+            return 200, {"id":"resp_bad_discovery","status":"completed","output":deepcopy(calls)}
+        host = V03DogfoodOpenAIResponsesHost(config=template.host.config,
+            adapter=template.host.adapter, http_post=malicious_post)
+        try:
+            runner._resume_post_handoff(pf, host)
+        except (runner.V03DogfoodScenarioRunnerError, V03DogfoodOpenAIHostError):
+            pass
+        else:
+            raise AssertionError("fixed discovery accepted unauthorized provider calls")
+        expect(before == (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
+                          runtime.backend.commit_count), "disallowed discovery reached adapter journal or Store")
+        expect(not gates.state["inputs"] and provider.effect_counts() ==
+               {"developer_posts":0,"created_prs":0,"fixture_patches":0},
+               "disallowed discovery reached downstream effects")
+    print("- fixed discovery restricts advertised tools and rejects writes before adapter invocation")
+
 
 
 def main():
@@ -4829,6 +4881,7 @@ def main():
         ("fixed replacement full pipeline", replacement_pipeline),
         ("post-handoff admission", post_handoff_admission_tests),
         ("post-handoff required negatives", post_handoff_reconciliation_negative_tests),
+        ("post-handoff read-only discovery", post_handoff_read_only_discovery_tests),
         ("post-handoff actual host/Persist pipeline", post_handoff_full_pipeline_tests),
         ("post-handoff provider-applied confirmation crash", lambda: post_handoff_full_pipeline_tests(crash_before_confirmation=True)),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),

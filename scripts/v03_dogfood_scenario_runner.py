@@ -372,6 +372,33 @@ def _verify_fresh_session_discovery(
 
 
 
+
+class _PostHandoffStatusHost(V03DogfoodOpenAIResponsesHost):
+    """Reduce only fixed reconciliation discovery before any adapter invocation."""
+    def _create(self, body):
+        restricted = dict(body)
+        restricted["tools"] = [tool for tool in body.get("tools", [])
+                               if tool.get("name") == "aisdlc_v1_operation_status"]
+        if len(restricted["tools"]) != 1:
+            raise V03DogfoodScenarioRunnerError("fixed discovery lacks exactly one status tool")
+        return super()._create(restricted)
+
+    def _function_calls(self, payload):
+        from operator_api import API_VERSION
+        calls = super()._function_calls(payload)
+        if len(calls) > 1:
+            raise V03DogfoodScenarioRunnerError("fixed discovery forbids additional function calls")
+        for call in calls:
+            try:
+                arguments = json.loads(call.get("arguments", ""))
+            except Exception as exc:
+                raise V03DogfoodScenarioRunnerError("fixed discovery arguments are malformed") from exc
+            if (call.get("name") != "aisdlc_v1_operation_status"
+                    or arguments != {"api_version": API_VERSION, "operation_id": RECOVERY_OPERATION_ID}):
+                raise V03DogfoodScenarioRunnerError("fixed discovery attempted an unauthorized tool or Operation")
+        return calls
+
+
 def _resume_post_handoff(preflight, host):
     """Discover the existing fixed Operation, then use its original server backend."""
     runtime = preflight.composition.runtime
@@ -389,7 +416,10 @@ def _resume_post_handoff(preflight, host):
         "Call operation.status exactly once and then return control. Do not call operation.start, "
         "do not request a new execution, and do not choose a lifecycle action."
     )
-    trace = host.run(scenario_instruction=instruction)
+    if host.adapter is not preflight.composition.responses.adapter:
+        raise V03DogfoodScenarioRunnerError("fixed discovery adapter differs from protected composition")
+    restricted_host = _PostHandoffStatusHost(config=host.config, adapter=host.adapter, http_post=host.http_post)
+    trace = restricted_host.run(scenario_instruction=instruction)
     if (tuple(trace.function_call_names) != ("aisdlc_v1_operation_status",)
             or len(trace.function_outputs) != 1):
         raise V03DogfoodScenarioRunnerError("reconciliation host did not observe the exact existing Operation")
@@ -454,6 +484,26 @@ def _notify_completed(preflight, operation_id):
     coordinator = preflight.composition.bundle.decision_notification_coordinator
     if coordinator.runtime is not preflight.composition.runtime:
         raise V03DogfoodScenarioRunnerError("completion Notification split protected runtime")
+    from operator_decisions_notifications import notification_id_for, rebuild_notification
+    from operator_store_model import notification_path
+    semantic_key = "operation.completed:" + completed[0]["event_id"]
+    notification_id = notification_id_for({
+        "notification_type": "operation.completed", "operation_id": operation_id,
+        "operation_generation": projection["generation"], "semantic_key": semantic_key})
+    snapshot = preflight.composition.runtime.backend.read_snapshot()
+    created = [row for row in rows if row.get("event_type") == "notification.created"
+               and (row.get("payload") or {}).get("notification_type") == "operation.completed"]
+    if notification_path(notification_id) in snapshot.files or created:
+        if (len(created) != 1 or created[0].get("operation_generation") != projection["generation"]
+                or created[0]["payload"] != {"notification_id": notification_id,
+                    "notification_type": "operation.completed", "semantic_key": semantic_key}):
+            raise V03DogfoodScenarioRunnerError("completion Notification identity conflicts with DONE")
+        original = rebuild_notification(snapshot, notification_id)
+        if any(original.get(key) != value for key, value in {
+                "operation_id": operation_id, "operation_generation": projection["generation"],
+                "notification_type": "operation.completed", "semantic_key": semantic_key}.items()):
+            raise V03DogfoodScenarioRunnerError("completion Notification document differs from DONE")
+        return original
     return coordinator.notify_operation(operation_id=operation_id,
         notification_type="operation.completed", trigger_identity=completed[0]["event_id"],
         summary="The trusted dogfood Operation completed its canonical lifecycle.")
