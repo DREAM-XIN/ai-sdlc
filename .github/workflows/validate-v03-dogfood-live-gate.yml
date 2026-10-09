@@ -3,6 +3,10 @@ name: Validate v0.3 Dogfood Live Gate
 on:
   pull_request:
     paths:
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml'
       - '.github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md'
       - '.github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml'
       - '.github/workflows/v03-dogfood-readiness.yml'
@@ -90,6 +94,7 @@ jobs:
           )
           PY
       - name: Validate trusted-main dogfood runtime driver
+        if: ${{ !cancelled() }}
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
@@ -327,4 +332,83 @@ jobs:
         with:
           name: v03-recovery-developer-compiled
           path: evidence/recovery-developer*
+          if-no-files-found: error
+
+  compile-release-gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [reviewer, qa]
+    env:
+      GATE_ROLE: ${{ matrix.role }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install pinned release Gate compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v0.89.21 --force
+      - name: Strict compile fixed release Gate source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GATE_ROLE" in reviewer|qa) ;; *) exit 1 ;; esac
+          gh aw compile "ai-sdlc-gh-aw-$GATE_ROLE-deepseek-v03-release-local" --strict
+      - name: Export mechanically hardened release Gate lock
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, re, subprocess
+          from pathlib import Path
+          role = os.environ["GATE_ROLE"]
+          assert role in {"reviewer", "qa"}
+          path = Path(f".github/workflows/ai-sdlc-gh-aw-{role}-deepseek-v03-release-local.lock.yml")
+          raw = path.read_bytes()
+          upstream = raw.decode()
+          metadata = json.loads(upstream.splitlines()[0].split(": ", 1)[1])
+          assert metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True
+          source = path.with_suffix("").with_suffix(".md").read_text()
+          body_hash = hashlib.sha256(source.split("\n---\n", 1)[1].rstrip("\n").encode()).hexdigest()
+          assert metadata["body_hash"] == body_hash
+          assert "GH_AW_CI_TRIGGER_TOKEN" not in upstream
+          # Inspected compiler input text, never a checkout setting in this workflow.
+          old_persist_scalar = "persist-credentials: " + str(True).lower()
+          assert old_persist_scalar not in upstream
+          checkout_scalars = re.findall(r"(?m)^\s+persist-credentials: ([^\n]+)$", upstream)
+          assert checkout_scalars and all(value == "false" for value in checkout_scalars)
+          replacements = []
+          hardened = upstream
+          for old, new, count in replacements:
+              assert hardened.count(old) == count, (old, hardened.count(old), count)
+              hardened = hardened.replace(old, new)
+          assert "GH_AW_CI_TRIGGER_TOKEN" not in hardened
+          assert old_persist_scalar not in hardened
+          upstream_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+          proof = {
+              "schema": "ai-sdlc.v03-release-gate-lock-transform/v1",
+              "compiler": "gh-aw-v0.89.21-strict", "upstream_blob_sha": upstream_blob,
+              "persist_credentials_false": 0, "removed_trigger_lines": 0,
+              "removed_trigger_references": 0,
+              "body_hash_from": body_hash, "body_hash_to": body_hash,
+          }
+          lines = hardened.splitlines(keepends=True)
+          lines.insert(1, "# ai-sdlc-release-gate-lock-transform: " + json.dumps(proof, separators=(",", ":")) + "\n")
+          hardened = "".join(lines).encode()
+          Path("evidence").mkdir(exist_ok=True)
+          Path(f"evidence/release-{role}.upstream.lock.yml").write_bytes(raw)
+          Path(f"evidence/release-{role}.hardened.lock.yml").write_bytes(hardened)
+          Path(f"evidence/release-{role}-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
+          print("RELEASE_GATE_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
+          print("RELEASE_GATE_LOCK_BASE64=" + base64.b64encode(hardened).decode())
+          checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
+          assert checked_in == hardened, "checked-in release Gate lock differs from strict compiled hardening"
+          PY
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: v03-release-${{ matrix.role }}-compiled
+          path: evidence/release-${{ matrix.role }}*
           if-no-files-found: error

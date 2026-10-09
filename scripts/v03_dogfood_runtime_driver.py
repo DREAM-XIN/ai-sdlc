@@ -1867,6 +1867,212 @@ def _replacement_prepost_old_scan(preflight, snapshot):
     gateway.transport.admit_continuation(snapshot, allow_post=True, **binding)
 
 
+
+def _reviewer_worker_blobs():
+    from v03_dogfood_live_gate import CURRENT_DOGFOOD_WORKFLOWS
+    root = Path(__file__).resolve().parents[1]
+    return {".github/workflows/" + name: _git_blob_sha(root / ".github/workflows" / name)
+            for workflow in CURRENT_DOGFOOD_WORKFLOWS.values()
+            for name in (workflow, workflow.replace(".lock.yml", ".md"))}
+
+
+def _observe_reviewer_pre_model_failure(preflight):
+    from v03_dogfood_full_composition import (
+        REVIEWER_FAILED_RUN, REVIEWER_PREDECESSOR_SOURCE, REVIEWER_OLD_WORKFLOW,
+        REVIEWER_OLD_KEY, REVIEWER_FAILURE_JOBS, REVIEWER_FAILURE_WORKER_BLOBS)
+    expected_run = {"id": REVIEWER_FAILED_RUN, "run_attempt": 1, "workflow_id": 372854672,
+        "head_sha": REVIEWER_PREDECESSOR_SOURCE, "head_branch": "main", "event": "workflow_dispatch",
+        "path": ".github/workflows/" + REVIEWER_OLD_WORKFLOW, "status": "completed", "conclusion": "failure",
+        "display_title": "AI-SDLC gh-aw " + REVIEWER_OLD_KEY}
+    before = _github_json(preflight, f"/actions/runs/{REVIEWER_FAILED_RUN}")
+    if (any(before.get(k) != v for k, v in expected_run.items())
+            or any(type(before.get(k)) is not int for k in ("id", "run_attempt", "workflow_id"))):
+        raise V03DogfoodRuntimeDriverError("Reviewer predecessor run is not exact failed attempt one")
+    jobs_path = f"/actions/runs/{REVIEWER_FAILED_RUN}/attempts/1/jobs?per_page=100"
+    jobs = _github_json(preflight, jobs_path)
+    rows = jobs.get("jobs")
+    if (not isinstance(rows, list) or jobs.get("total_count") != len(rows) or type(jobs.get("total_count")) is not int
+            or len(rows) != len(REVIEWER_FAILURE_JOBS)):
+        raise V03DogfoodRuntimeDriverError("Reviewer predecessor job listing is not exact and exhaustive")
+    normalized = []
+    conclusions = {"activation": "success", "agent": "failure", "detection": "success",
+                   "safe_outputs": "failure", "conclusion": "failure"}
+    for name, job_id in REVIEWER_FAILURE_JOBS.items():
+        selected = [row for row in rows if row.get("name") == name]
+        if (len(selected) != 1 or selected[0].get("id") != job_id or type(selected[0].get("id")) is not int
+                or selected[0].get("run_id") != REVIEWER_FAILED_RUN
+                or selected[0].get("run_attempt") != 1 or type(selected[0].get("run_attempt")) is not int
+                or selected[0].get("head_sha") != REVIEWER_PREDECESSOR_SOURCE
+                or selected[0].get("status") != "completed" or selected[0].get("conclusion") != conclusions[name]
+                or not isinstance(selected[0].get("steps"), list)):
+            raise V03DogfoodRuntimeDriverError("Reviewer predecessor terminal jobs changed")
+        row = selected[0]
+        steps = row["steps"]
+        required = {
+            "agent": {"Generate GitHub App token for checkout (0)": "failure",
+                      "Checkout repository": "skipped", "Checkout dream-xin/ai-sdlc": "skipped",
+                      "Initialize agent execution evidence": "skipped", "Execute GitHub Copilot CLI": "skipped"},
+            "detection": {"Execute threat detection with AWF": "skipped"},
+            "safe_outputs": {"Generate GitHub App token": "failure", "Process Safe Outputs": "skipped"},
+        }.get(name, {})
+        for label, conclusion in required.items():
+            found = [step for step in steps if step.get("name") == label]
+            if len(found) != 1 or found[0].get("status") != "completed" or found[0].get("conclusion") != conclusion:
+                raise V03DogfoodRuntimeDriverError("Reviewer predecessor model/effect execution is not absent")
+        normalized.append({"name": name, "id": job_id, "conclusion": conclusions[name],
+                           "steps": [{k: step.get(k) for k in ("number", "name", "status", "conclusion")} for step in steps]})
+    for path, blob in REVIEWER_FAILURE_WORKER_BLOBS.items():
+        document = _github_json(preflight, "/contents/" + path + "?ref=" + REVIEWER_PREDECESSOR_SOURCE)
+        if document.get("sha") != blob or document.get("encoding") != "base64":
+            raise V03DogfoodRuntimeDriverError("Reviewer predecessor source proof differs")
+        raw = base64.b64decode(document.get("content", ""), validate=False)
+        actual = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
+        if actual != blob:
+            raise V03DogfoodRuntimeDriverError("Reviewer predecessor source bytes differ")
+    transport = preflight.composition.actions_transport
+    status, _, raw = transport.http(method="GET",
+        url=transport._api(f"/actions/jobs/{REVIEWER_FAILURE_JOBS['agent']}/logs"),
+        token=transport.config.token, body=None)
+    diagnostic = "The 'private-key' input must be set to a non-empty string."
+    if status != 200 or diagnostic not in raw.decode("utf-8", errors="strict"):
+        raise V03DogfoodRuntimeDriverError("Reviewer predecessor exact pre-model diagnostic is missing")
+    artifacts = _github_json(preflight, f"/actions/runs/{REVIEWER_FAILED_RUN}/artifacts?per_page=100")
+    artifact_rows = artifacts.get("artifacts")
+    if (not isinstance(artifact_rows, list) or type(artifacts.get("total_count")) is not int
+            or artifacts["total_count"] != len(artifact_rows) or len(artifact_rows) > 100
+            or any(row.get("name") == "safe-outputs-items" for row in artifact_rows)):
+        raise V03DogfoodRuntimeDriverError("Reviewer predecessor has unknown or contradictory output artifacts")
+    after = _github_json(preflight, f"/actions/runs/{REVIEWER_FAILED_RUN}")
+    if (any(after.get(k) != before.get(k) for k in (*expected_run, "updated_at"))
+            or _github_json(preflight, jobs_path) != jobs):
+        raise V03DogfoodRuntimeDriverError("Reviewer predecessor changed during proof")
+    material = {"run": expected_run, "updated_at": before.get("updated_at"), "jobs": normalized,
+                "source_blobs": REVIEWER_FAILURE_WORKER_BLOBS, "diagnostic_digest": hashlib.sha256(raw).hexdigest(),
+                "artifact_ids": sorted(row["id"] for row in artifact_rows)}
+    return {"schema_version": "ai-sdlc.v03-reviewer-pre-model-failure/v1",
+            "run_id": REVIEWER_FAILED_RUN, "run_attempt": 1, "source_head_sha": REVIEWER_PREDECESSOR_SOURCE,
+            "jobs": REVIEWER_FAILURE_JOBS, "model_executed": False, "safe_outputs_processed": False,
+            "semantic_safety_pass": False, "observation_digest": "sha256:" + digest_json(material)}
+
+
+
+def _reviewer_existing_producer_check(preflight, snapshot):
+    from v03_dogfood_full_composition import POST_HANDOFF_RUN, POST_HANDOFF_SOURCE, validate_post_handoff_predecessor, observe_post_handoff_pr
+    sealed, _ = validate_post_handoff_predecessor(snapshot)
+    source = preflight.composition.recovery_result_source
+    before = source._first_attempt_run_snapshot(run_id=POST_HANDOFF_RUN, external_dispatch_key=sealed["recovery_dispatch_key"])
+    if before["head_sha"] != POST_HANDOFF_SOURCE:
+        raise V03DogfoodRuntimeDriverError("existing Developer producer changed before Reviewer replacement")
+    observe_post_handoff_pr(source, snapshot)
+    after = source._first_attempt_run_snapshot(run_id=POST_HANDOFF_RUN, external_dispatch_key=sealed["recovery_dispatch_key"])
+    if not source._same_run_snapshot(before, after):
+        raise V03DogfoodRuntimeDriverError("existing Developer changed during Reviewer preclaim proof")
+
+
+def recover_reviewer_pre_model(preflight):
+    from v03_dogfood_full_composition import (
+        RECOVERY_OPERATION_ID, REVIEWER_AUTH_PATH, REVIEWER_CLAIM_PATH, REVIEWER_SEAL_PATH, REVIEWER_CANDIDATE,
+        REVIEWER_OLD_KEY, REVIEWER_FAILED_RUN, REVIEWER_NEW_WORKFLOW,
+        reviewer_replacement_present, validate_reviewer_predecessor, validate_reviewer_authorization,
+        reviewer_replacement_route, plan_reviewer_replacement, reviewer_dispatch, reviewer_trusted_context,
+        _reviewer_authority_identity, _reviewer_complete_authorization, reviewer_scan,
+        DogfoodReviewerReplacementTransport)
+    if preflight.slot.scenario != "happy_path":
+        return None
+    runtime = preflight.composition.runtime
+    binding = recovery_execution_binding(preflight.composition.policy_authority)
+    snapshot = runtime.backend.read_snapshot()
+    old, events = validate_reviewer_predecessor(snapshot)
+    source = preflight.composition.result_source
+    source.bind_reviewer(runtime, preflight.composition.policy_authority)
+    if reviewer_replacement_present(snapshot):
+        auth, _ = validate_reviewer_authorization(snapshot, consumer_binding=binding)
+        if (_observe_reviewer_pre_model_failure(preflight) != auth["pre_model_failure_proof"]
+                or _reviewer_worker_blobs() != auth["worker_blobs"]):
+            raise V03DogfoodRuntimeDriverError("Reviewer replay predecessor/source changed")
+        result = {"acquired": False, "authorization": auth}
+    else:
+        proof = _observe_reviewer_pre_model_failure(preflight)
+        workers = _reviewer_worker_blobs()
+        def planner(current):
+            if reviewer_replacement_present(current):
+                return plan_reviewer_replacement(current, consumer_binding=binding,
+                    worker_blobs=workers, failure_proof=proof)
+            validate_reviewer_predecessor(current, fresh=True)
+            _reviewer_existing_producer_check(preflight, current)
+            _require_recovery_execution_source(preflight, binding["execution_source_head_sha"])
+            if _observe_reviewer_pre_model_failure(preflight) != proof or _reviewer_worker_blobs() != workers:
+                raise V03DogfoodRuntimeDriverError("Reviewer source/failure proof drifted before claim")
+            candidate = preflight.composition.candidate_provider.current_candidate(
+                operation_id=RECOVERY_OPERATION_ID, repository=preflight.execution.repository,
+                feature_id=preflight.slot.feature_id, target_ref=preflight.slot.target_ref)
+            if candidate.candidate_pr_number != 552 or candidate.candidate_head_sha != REVIEWER_CANDIDATE:
+                raise V03DogfoodRuntimeDriverError("Reviewer replacement candidate drifted before claim")
+            proposed = _reviewer_complete_authorization(_reviewer_authority_identity(
+                current, consumer_binding=binding, worker_blobs=workers, failure_proof=proof))
+            gateway = preflight.composition.dispatch_gateway
+            raw_gateway = gateway.delegate
+            inputs = raw_gateway._inputs(reviewer_dispatch(proposed))
+            raw_gateway.transport._validate_dispatch_inputs(workflow=REVIEWER_NEW_WORKFLOW, ref="main", inputs=inputs)
+            if reviewer_scan(raw_gateway.transport, physical_key=proposed["physical_key"])["lookup_state"] != "NOT_LAUNCHED":
+                raise V03DogfoodRuntimeDriverError("Reviewer replacement already exists before claim")
+            return plan_reviewer_replacement(current, consumer_binding=binding,
+                worker_blobs=workers, failure_proof=proof)
+        result = _commit_recovery_nonempty(runtime, planner)
+        auth = result["authorization"]
+    snapshot = runtime.backend.read_snapshot()
+    transport = DogfoodReviewerReplacementTransport(preflight.composition.actions_transport.config,
+        snapshot=snapshot, consumer_binding=binding, allow_post=result["acquired"],
+        http=preflight.composition.actions_transport.http, sleeper=time.sleep)
+    def prepost():
+        _reviewer_existing_producer_check(preflight, runtime.backend.read_snapshot())
+        if _observe_reviewer_pre_model_failure(preflight) != auth["pre_model_failure_proof"]:
+            raise V03DogfoodRuntimeDriverError("Reviewer predecessor proof changed before POST")
+    transport.prepost = prepost
+    if REVIEWER_SEAL_PATH in snapshot.files:
+        route = reviewer_replacement_route(snapshot, consumer_binding=binding)
+        receipt = reviewer_scan(transport, physical_key=auth["physical_key"])
+        if receipt != {"lookup_state": "LAUNCHED", "receipt_id": route["receipt_id"]}:
+            raise V03DogfoodRuntimeDriverError("Reviewer sealed execution lookup changed")
+    else:
+        receipt = reviewer_scan(transport, physical_key=auth["physical_key"])
+        if result["acquired"]:
+            if receipt["lookup_state"] != "NOT_LAUNCHED":
+                raise V03DogfoodRuntimeDriverError("Reviewer winner lost exhaustive absence")
+            gateway = GhAwVerticalRoleDispatchGateway(transport=transport, workflows=transport.config.workflows)
+            receipt = gateway.launch(dispatch=reviewer_dispatch(auth))
+        elif receipt["lookup_state"] != "LAUNCHED":
+            raise V03DogfoodRuntimeDriverError("Reviewer create slot consumed; lookup cannot establish a run")
+    if receipt.get("lookup_state") != "LAUNCHED":
+        raise V03DogfoodRuntimeDriverError("Reviewer execution uncertain; no second POST is authorized")
+    from v03_dogfood_scenario_runner import wait_for_worker_run
+    run_id = int(receipt["receipt_id"])
+    wait_for_worker_run(read_run=lambda n: _github_json(preflight, f"/actions/runs/{n}"),
+        receipt=str(run_id), workflow=REVIEWER_NEW_WORKFLOW,
+        installation_sha=binding["execution_source_head_sha"], external_dispatch_key=auth["physical_key"])
+    resolved = source.resolve(external_dispatch_key=auth["physical_key"], expected_receipt_identity=str(run_id),
+        trusted_context=reviewer_trusted_context(auth))
+    proof = source._reviewer_proofs[run_id]
+    def seal(current):
+        current_auth, claim = validate_reviewer_authorization(current, consumer_binding=binding)
+        expected = {"schema_version": current_auth["schema_version"], "ordinal": 1,
+            "authorization_digest": "sha256:" + digest_json(current_auth), "claim_digest": "sha256:" + digest_json(claim),
+            "logical_key": REVIEWER_OLD_KEY, "physical_key": current_auth["physical_key"],
+            "run_id": run_id, "run_attempt": 1, "conclusion": "success", "workflow_file": REVIEWER_NEW_WORKFLOW,
+            "execution_binding": binding, **proof}
+        if REVIEWER_SEAL_PATH in current.files:
+            existing = reviewer_replacement_route(current, consumer_binding=binding)["sealed"]
+            if existing != expected:
+                raise V03DogfoodRuntimeDriverError("Reviewer seal replay changed")
+            return StoreMutationPlan(current.ref_sha, (), {"sealed": existing})
+        from operator_store_model import apply_plan_to_snapshot
+        plan = StoreMutationPlan(current.ref_sha,
+            (StoreMutation("create_immutable", REVIEWER_SEAL_PATH, expected),), {"sealed": expected})
+        reviewer_replacement_route(apply_plan_to_snapshot(current, plan), consumer_binding=binding)
+        return plan
+    return _commit_recovery_nonempty(runtime, seal)
+
+
 def reconcile_post_handoff(preflight):
     """Read the existing successful output; this entry has no Developer gateway."""
     if preflight.slot.scenario != "happy_path":
@@ -2141,7 +2347,9 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         print(json.dumps(public_preflight(preflight), indent=2, sort_keys=True))
         return 0
 
-    recovered_historical_attempt = reconcile_post_handoff(preflight)
+    recovered_historical_attempt = recover_reviewer_pre_model(preflight)
+    if recovered_historical_attempt is not None:
+        reconcile_post_handoff(preflight)
     if recovered_historical_attempt is None:
         prepare_previous_installation_operation(preflight)
 

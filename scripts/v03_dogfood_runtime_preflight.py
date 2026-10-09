@@ -12,7 +12,7 @@ from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
 from gh_aw_role_workers import resolve_role_worker
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_full_composition import V03DogfoodFullComposition, build_v03_dogfood_full_composition
-from v03_dogfood_live_gate import DogfoodLiveGate
+from v03_dogfood_live_gate import DogfoodLiveGate, CURRENT_DOGFOOD_POLICY, CURRENT_DOGFOOD_WORKFLOWS
 from v03_real_runtime_live_authority import TrustedMainExecution, V03LiveAuthority
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,31 +67,19 @@ def _execution_bindings(gate: DogfoodLiveGate, workflows: GhAwVerticalWorkflowMa
         workflow = workflows.workflow_for(role)
         if row.worker_workflow != workflow:
             raise V03DogfoodRuntimePreflightError(f"{role} workflow differs from resolved production binding")
-        if row.specialized_role_worker:
-            worker = resolve_role_worker(row.role, row.stage, row.selected_profile)
-            if worker.worker_workflow != workflow:
-                raise V03DogfoodRuntimePreflightError(f"{role} specialized worker identity drifted")
-            worker_id = worker.id
-        else:
-            if role != "developer" or not workflow.endswith(".lock.yml"):
-                raise V03DogfoodRuntimePreflightError("generic production worker identity is not bounded")
-            worker_id = workflow.removesuffix(".lock.yml")
+        if (row.rule_id != CURRENT_DOGFOOD_POLICY or row.selected_profile != "deepseek"
+                or row.candidate_order != ("deepseek",) or row.fallback
+                or row.worker_workflow != CURRENT_DOGFOOD_WORKFLOWS[role]
+                or row.accepted_credential_identities != ("DEEPSEEK_API_KEY",)
+                or row.present_credential_identities != ("DEEPSEEK_API_KEY",)):
+            raise V03DogfoodRuntimePreflightError("current dogfood execution selection drifted")
         binding = {
-            "worker_id": worker_id,
-            "role": role,
-            "profile": row.selected_profile,
-            "workflow_file": workflow,
-            "selection_policy_id": (
-                "v03-frozen-reviewer-provider-order/v2"
-                if role == "reviewer"
-                else "v03-frozen-vertical-workflow-map/v1"
-            ),
+            "worker_id": workflow.removesuffix(".lock.yml"),
+            "role": role, "profile": "deepseek", "workflow_file": workflow,
+            "selection_policy_id": CURRENT_DOGFOOD_POLICY,
             "default_branch": workflows.default_branch,
+            "credential_name": "DEEPSEEK_API_KEY",
         }
-        if role == "reviewer":
-            if not row.accepted_credential_identities:
-                raise V03DogfoodRuntimePreflightError("Reviewer binding lacks credential identity")
-            binding["credential_name"] = row.accepted_credential_identities[0]
         result[role] = binding
     if len({row["workflow_file"] for row in result.values()}) != 3:
         raise V03DogfoodRuntimePreflightError("dogfood execution workflows are not distinct")
@@ -181,6 +169,13 @@ def build_v03_dogfood_runtime_preflight(
         clock=clock,
         github_api_base=github_api_base,
     )
+    if slot.scenario == "happy_path":
+        from v03_dogfood_full_composition import POST_HANDOFF_PATH, REVIEWER_PREDECESSOR_SOURCE, validate_reviewer_controller_bridge, recovery_execution_binding
+        snapshot = composition.runtime.backend.read_snapshot()
+        old = snapshot.get(POST_HANDOFF_PATH)
+        if (isinstance(old, dict) and old.get("consumer_execution_binding", {}).get("execution_source_head_sha") == REVIEWER_PREDECESSOR_SOURCE
+                and execution.installation_commit_sha != REVIEWER_PREDECESSOR_SOURCE):
+            validate_reviewer_controller_bridge(snapshot, recovery_execution_binding(composition.policy_authority), inspection_only=True)
     candidate = composition.candidate_provider.current_candidate(
         operation_id="v03-dogfood-preflight",
         repository=repository,
