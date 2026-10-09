@@ -30,7 +30,7 @@ from operator_vertical_callback import process_recorded_callback
 from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway, GhAwVerticalWorkflowMap
 from operator_vertical_recovery import plan_vertical_callback_record
 from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig
-from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
+from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource, _FIRST_ATTEMPT_URI_RE
 from operator_vertical_gh_aw_collector import MaterializedGhAwOutput, TrustedGhAwResolvedResult, TrustedGhAwRun
 from operator_vertical_gh_aw_github_source import (
     GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector,
@@ -42,8 +42,12 @@ from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _DEVELOPER_PR_URI = re.compile(
-    r"^docs/features/(?P<feature>[^/]+)/worker-runs/(?P<dispatch>[^/]+)/"
-    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})\.json$"
+    r"^docs/features/(?P<feature>[A-Za-z0-9._:-]+)/worker-runs/(?P<dispatch>[A-Za-z0-9._:-]+)/"
+    r"developer-pr-(?P<pr>[1-9][0-9]*)-(?P<head>[0-9a-f]{40})"
+    r"(?:-binding-(?P<binding>[0-9a-f]{64})"
+    r"--first-attempt--key-(?P<key>[A-Za-z0-9._:-]+)"
+    r"--run-(?P<run>[1-9][0-9]*)--head-(?P<run_head>[0-9a-f]{40})"
+    r"--lease-(?P<lease>[0-9a-f]{64}))?\.json$"
 )
 DEFAULT_BRANCH = "main"
 COLLECTOR_IDENTITY = "ai-sdlc-v03-real-dogfood-collector"
@@ -60,6 +64,7 @@ RECOVERY_OBSERVATION_DIGEST = "sha256:a86b7ead37bf96abe9b6e43098b7873b821833c6d9
 # Exact, already-armed pre-HTTP failure. These bytes remain immutable forever.
 RECOVERY_CONTINUATION_PATH = RECOVERY_BASE_PATH + "/transport-continuation.json"
 RECOVERY_CONTINUATION_SCHEMA = "ai-sdlc.v03-dogfood-transport-continuation/v1"
+RECOVERY_COLLECTOR_DISPATCH_ID = "vertical-31df3f1ed41b54c58ed4c4030a9f97d9"
 ARMED_RECOVERY_SOURCE = "0b5f0a69db9b3cbc4388e8318948f87ba0a92fea"
 ARMED_RECOVERY_STORE = "42df69c5bf3dc85fec9b30d318e2651335d74552"
 ARMED_RECOVERY_KEY = "recovery-935ad236772d508dfd7e57da6370243dcce4555e"
@@ -117,6 +122,7 @@ def validate_recovery_continuation(snapshot):
     expected = {
         "schema_version": RECOVERY_CONTINUATION_SCHEMA,
         "admission_version": 1,
+        "collector_dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
         "status": "ARMED",
         "authorization_digest": "sha256:" + digest_json(authorization),
         "create_attempt_digest": "sha256:" + digest_json(attempt),
@@ -134,22 +140,41 @@ def validate_recovery_continuation(snapshot):
         expected[key] = authorization[key]
     if (
         any(continuation.get(key) != value for key, value in expected.items())
+        or type(continuation.get("admission_version")) is not int
         or set(continuation) != set(expected) | {
-            "execution_source_head_sha", "execution_trusted_context_digest", "created_at"
+            "execution_source_head_sha", "execution_trusted_context_digest",
+            "execution_materialization_commit_sha", "execution_policy_receipt_digest",
+            "execution_policy_bundle_digest", "created_at"
         }
         or not _SHA40.fullmatch(str(continuation.get("execution_source_head_sha") or ""))
         or continuation["execution_source_head_sha"] == ARMED_RECOVERY_SOURCE
         or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_trusted_context_digest") or ""))
+        or not _SHA40.fullmatch(str(continuation.get("execution_materialization_commit_sha") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_policy_receipt_digest") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(continuation.get("execution_policy_bundle_digest") or ""))
         or not str(continuation.get("created_at") or "")
     ):
         raise VerticalInvariantError("POLICY_DENIED", "recovery transport continuation binding drifted")
     return authorization, attempt, continuation
 
 
-def validate_recovery_execution_seal(snapshot, sealed):
+def recovery_execution_binding(policy_authority):
+    return {
+        "execution_source_head_sha": policy_authority.installation_commit_sha,
+        "execution_policy_bundle_digest": policy_authority.bundle_digest,
+        "execution_materialization_commit_sha": policy_authority.materialization_commit_sha,
+        "execution_policy_receipt_digest": policy_authority.receipt_digest,
+    }
+
+
+def validate_recovery_execution_seal(snapshot, sealed, *, execution_binding):
     authorization, attempt, continuation = validate_recovery_continuation(snapshot)
     if (
         not isinstance(sealed, dict)
+        or any(continuation.get(k) != v or sealed.get(k) != v for k, v in execution_binding.items())
+        or set(execution_binding) != {"execution_source_head_sha", "execution_policy_bundle_digest",
+                                      "execution_materialization_commit_sha", "execution_policy_receipt_digest"}
+        or sealed.get("collector_dispatch_id") != RECOVERY_COLLECTOR_DISPATCH_ID
         or sealed.get("continuation_digest") != "sha256:" + digest_json(continuation)
         or sealed.get("execution_source_head_sha") != continuation["execution_source_head_sha"]
         or sealed.get("execution_trusted_context_digest") != continuation["execution_trusted_context_digest"]
@@ -368,6 +393,7 @@ class DogfoodCandidateHandoff:
         self.repository = normalize_repository(repository)
         self.token = str(token or "")
         self.candidate_provider = candidate_provider
+        self.content_loader = None
         self.api_base = str(api_base or "").rstrip("/")
         self.http_request = http_request or self._default_request
         if not self.token or not self.api_base.startswith("https://"):
@@ -417,6 +443,15 @@ class DogfoodCandidateHandoff:
             raise V03DogfoodCompositionError("candidate handoff escaped fixed Developer/fixture authority")
         envelope = {"collected_outputs": receipts}
         source_pr, source_head = self.candidate_provider._developer_receipt(envelope)
+        for receipt in receipts:
+            match = _DEVELOPER_PR_URI.fullmatch(str(receipt.get("trusted_uri") or ""))
+            if match and match.group("binding"):
+                if not callable(self.content_loader):
+                    raise V03DogfoodCompositionError("leased Developer handoff lacks trusted content loader")
+                data = self.content_loader(receipt["trusted_uri"])
+                if (not isinstance(data, bytes) or hashlib.sha256(data).hexdigest() != receipt.get("sha256")
+                        or len(data) != receipt.get("size_bytes")):
+                    raise V03DogfoodCompositionError("leased Developer output changed before handoff")
         fixture = self.candidate_provider._candidate()
         prior_head = str(context.candidate_head_sha or "").lower()
         fixture_head = str(fixture["head"]["sha"]).lower()
@@ -660,11 +695,16 @@ class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
         self._continuation_snapshot = None
         self._allow_post = False
 
-    def admit_continuation(self, snapshot, *, allow_post=False, execution_source_head_sha, execution_trusted_context_digest):
+    def admit_continuation(self, snapshot, *, allow_post=False, execution_source_head_sha, execution_trusted_context_digest,
+                           execution_materialization_commit_sha, execution_policy_receipt_digest,
+                           execution_policy_bundle_digest):
         _, _, continuation = validate_recovery_continuation(snapshot)
         if allow_post and (
             continuation["execution_source_head_sha"] != execution_source_head_sha
             or continuation["execution_trusted_context_digest"] != execution_trusted_context_digest
+            or continuation["execution_materialization_commit_sha"] != execution_materialization_commit_sha
+            or continuation["execution_policy_receipt_digest"] != execution_policy_receipt_digest
+            or continuation["execution_policy_bundle_digest"] != execution_policy_bundle_digest
         ):
             raise VerticalInvariantError("POLICY_DENIED", "continuation POST escaped current trusted installation/context")
         # Detach from a caller's mutable snapshot after validating the full chain.
@@ -697,8 +737,23 @@ class DogfoodRecoveryActionsTransport(DogfoodCandidateBoundActionsTransport):
         if workflow != RECOVERY_DEVELOPER_WORKFLOW:
             raise VerticalInvariantError("POLICY_DENIED", "recovery POST is Developer-only")
         key = super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
+        candidate = self.candidate_provider.current_candidate(
+            operation_id=authorization["operation_id"], repository=authorization["target_repository"],
+            feature_id=authorization["feature_id"], target_ref=authorization["target_ref"],
+        )
+        if (candidate.candidate_pr_number, candidate.candidate_head_sha) != (
+            authorization["candidate_pr_number"], authorization["candidate_head_sha"]
+        ):
+            raise VerticalInvariantError("STALE_REVISION", "recovery POST candidate PR/head drifted")
         payload = json.loads(inputs["task_payload"])
         task, vertical = payload["task"], payload["feature_context"]["vertical"]
+        expected_dispatch = dict(authorization,
+            external_dispatch_key=authorization["recovery_dispatch_key"],
+            dispatch_id=authorization["recovery_dispatch_id"],
+            operation_profile=VERTICAL_PROFILE,
+        )
+        if payload != json.loads(GhAwVerticalRoleDispatchGateway._task_payload(expected_dispatch)):
+            raise VerticalInvariantError("POLICY_DENIED", "recovery POST task payload is not exact")
         expected_vertical = {
             "profile": VERTICAL_PROFILE,
             "operation_id": authorization["operation_id"],
@@ -954,10 +1009,46 @@ class RecoverySafeOutputGhAwResultSource(FirstAttemptDigestBoundGhAwResultSource
         return TrustedGhAwResolvedResult(run=trusted_run, role_payload=payload, outputs=(leased,))
 
 
+class DogfoodRecoveryBoundContentLoader:
+    """Route exactly the protected sealed recovery URI, preserving live leases."""
+
+    def __init__(self, *, result_source, recovery_result_source, policy_authority):
+        self.result_source = result_source
+        self.recovery_result_source = recovery_result_source
+        self.policy_authority = policy_authority
+        self.runtime = None
+
+    def bind_runtime(self, runtime):
+        if self.runtime is not None and self.runtime is not runtime:
+            raise V03DogfoodCompositionError("recovery content loader runtime changed")
+        self.runtime = runtime
+
+    def __call__(self, uri):
+        match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
+        if match and match.group("key") == ARMED_RECOVERY_KEY:
+            if self.runtime is None:
+                raise VerticalInvariantError("POLICY_DENIED", "recovery content lacks protected runtime")
+            snapshot = self.runtime.backend.read_snapshot()
+            sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
+            validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
+                self.policy_authority,
+            ))
+            if (
+                uri != sealed.get("safe_output_uri")
+                or match.group("run") != sealed.get("receipt_id")
+                or match.group("head") != sealed.get("execution_source_head_sha")
+            ):
+                raise VerticalInvariantError("POLICY_DENIED", "recovery content URI is not the exact sealed run")
+            return self.recovery_result_source.load_content(uri)
+        return self.result_source.load_content(uri)
+
+
+
 class DogfoodRecoveryCollector:
     """Collect only the one sealed recovery run, then reuse the closed callback path."""
 
-    def __init__(self, *, callback_coordinator, result_source, workflows, control_repository, clock):
+    def __init__(self, *, callback_coordinator, result_source, workflows, control_repository, clock, policy_authority):
+        self.policy_authority = policy_authority
         self.callback_coordinator = callback_coordinator
         self.result_source = result_source
         self.workflows = workflows
@@ -974,7 +1065,9 @@ class DogfoodRecoveryCollector:
         attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
         if not isinstance(authorization, dict) or not isinstance(attempt, dict) or not isinstance(sealed, dict):
             raise VerticalInvariantError("POLICY_DENIED", "recovery collector lacks complete immutable fact chain")
-        continuation = validate_recovery_execution_seal(snapshot, sealed)
+        continuation = validate_recovery_execution_seal(snapshot, sealed, execution_binding=recovery_execution_binding(
+            self.policy_authority,
+        ))
         authorization_digest = "sha256:" + digest_json(authorization)
         attempt_digest = "sha256:" + digest_json(attempt)
         sealed_bindings = {
@@ -1032,6 +1125,7 @@ class DogfoodRecoveryCollector:
         )
         if (
             str(historical_receipt) != "37204777409"
+            or launch.get("dispatch_id") != RECOVERY_COLLECTOR_DISPATCH_ID
             or str(launch.get("role") or "") != "developer"
             or int(authorization.get("operation_generation") or -1) != int(projection["generation"])
             or authorization.get("feature_id") != projection.get("feature_id")
@@ -1057,7 +1151,8 @@ class DogfoodRecoveryCollector:
             "operation_profile": VERTICAL_PROFILE,
             "semantic_effect_key": semantic_key,
             "external_dispatch_key": recovery_key,
-            "dispatch_id": str(sealed["recovery_dispatch_id"]),
+            "dispatch_id": str(sealed["collector_dispatch_id"]),
+            "execution_dispatch_id": str(sealed["recovery_dispatch_id"]),
             "target_repository": normalize_repository(str(projection["target_repository"])),
             "target_ref": executor.config.target_ref,
             "feature_id": str(projection["feature_id"]),
@@ -1305,6 +1400,10 @@ def build_v03_dogfood_full_composition(
             token=target_read_token,
             api_base=github_api_base,
         )
+    content_loader = DogfoodRecoveryBoundContentLoader(
+        result_source=result_source, recovery_result_source=recovery_result_source,
+        policy_authority=policy_authority,
+    )
     responses = build_openai_responses_production_bundle(
         config=config,
         feature_id=slot.feature_id,
@@ -1317,7 +1416,7 @@ def build_v03_dogfood_full_composition(
         feature_gateway=feature_truth,
         feature_event_gateway=feature_event_gateway,
         dispatch_gateway=dispatch_gateway,
-        collector_content_loader=result_source.load_content,
+        collector_content_loader=content_loader,
         policy_verifier=decision_verifier,
         trusted_context_digest=trusted_context_digest,
         collector_namespace_policy=collector_namespace_policy,
@@ -1326,6 +1425,7 @@ def build_v03_dogfood_full_composition(
         clock=clock,
     )
     bundle = responses.operator_bundle
+    content_loader.bind_runtime(responses.runtime)
     durable_truth = DurableDecisionFeatureTruthGateway(
         runtime=responses.runtime,
         feature_gateway=feature_event_gateway,
@@ -1340,6 +1440,7 @@ def build_v03_dogfood_full_composition(
         candidate_provider=candidate_provider,
         api_base=github_api_base,
     )
+    candidate_handoff.content_loader = content_loader
     callback_coordinator = DogfoodTrustedCallbackCoordinator(
         delegate=bundle.callback_coordinator,
         candidate_handoff=candidate_handoff,
@@ -1357,6 +1458,7 @@ def build_v03_dogfood_full_composition(
         workflows=recovery_workflows,
         control_repository=control_repository,
         clock=clock,
+        policy_authority=policy_authority,
     )
 
     if responses.runtime is not bundle.runtime or durable_truth.runtime is not responses.runtime:

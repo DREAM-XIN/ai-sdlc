@@ -26,7 +26,7 @@ from v03_dogfood_production_provenance import (
     ProductionDogfoodProvenanceVerifier,
 )
 from v03_dogfood_release_finalizer import build_release_record
-from v03_dogfood_full_composition import validate_recovery_execution_seal
+from v03_dogfood_full_composition import validate_recovery_execution_seal, recovery_execution_binding
 from operator_vertical import VerticalInvariantError
 from v03_dogfood_runtime_driver import assemble_preflight, _head
 from v03_dogfood_scenario_runner import SCENARIO_ROLE_SEQUENCES, STEP_ROLE
@@ -68,14 +68,14 @@ def _run_uri(repository: str, run_id: int) -> str:
     return f"https://github.com/{repository}/actions/runs/{run_id}"
 
 
-def _validated_recovery_chain(snapshot: Any) -> dict[str, Any]:
+def _validated_recovery_chain(snapshot: Any, *, execution_binding) -> dict[str, Any]:
     authorization = snapshot.get(RECOVERY_AUTHORIZATION_PATH)
     attempt = snapshot.get(RECOVERY_ATTEMPT_PATH)
     sealed = snapshot.get(RECOVERY_RECEIPT_PATH)
     if not all(isinstance(row, dict) for row in (authorization, attempt, sealed)):
         raise V03DogfoodPostRunFinalizerError("finalizer lacks complete recovery fact chain")
     try:
-        validate_recovery_execution_seal(snapshot, sealed)
+        validate_recovery_execution_seal(snapshot, sealed, execution_binding=execution_binding)
     except VerticalInvariantError as exc:
         raise V03DogfoodPostRunFinalizerError("finalizer recovery continuation/source bridge drifted") from exc
     authorization_digest = "sha256:" + digest_json(authorization)
@@ -165,7 +165,9 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
             raise V03DogfoodPostRunFinalizerError("durable LAUNCHED lookup lacks exact Actions receipt")
         run_ids.append(int(receipt))
     if operation_id == RECOVERY_OPERATION_ID:
-        sealed = _validated_recovery_chain(preflight.composition.runtime.backend.read_snapshot())
+        sealed = _validated_recovery_chain(preflight.composition.runtime.backend.read_snapshot(), execution_binding=recovery_execution_binding(
+            preflight.composition.policy_authority,
+        ))
         run_ids.insert(0, int(sealed["receipt_id"]))
     declared = [int(value) for value in (observation.get("workflow_run_ids") or [])]
     if run_ids != declared or not run_ids or len(set(run_ids)) != len(run_ids):
@@ -308,7 +310,9 @@ def _durable_run_bindings(preflight, observation, events):
         run_id = int(lookup["receipt_id"])
         recovery_sealed = None
         if observation["operation_id"] == RECOVERY_OPERATION_ID and key == RECOVERY_EXTERNAL_KEY:
-            recovery_sealed = _validated_recovery_chain(snapshot)
+            recovery_sealed = _validated_recovery_chain(snapshot, execution_binding=recovery_execution_binding(
+                preflight.composition.policy_authority,
+            ))
             if str(run_id) != "37204777409" or recovery_sealed.get("external_dispatch_key") != key:
                 raise V03DogfoodPostRunFinalizerError("recovery binding is not separated from historical receipt")
             run_id = int(recovery_sealed["receipt_id"])
@@ -342,7 +346,8 @@ def _durable_run_bindings(preflight, observation, events):
             resolve_key = str(recovery_sealed["recovery_dispatch_key"])
             resolve_trusted = dict(trusted)
             resolve_trusted["external_dispatch_key"] = resolve_key
-            resolve_trusted["dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
+            resolve_trusted["dispatch_id"] = str(recovery_sealed["collector_dispatch_id"])
+            resolve_trusted["execution_dispatch_id"] = str(recovery_sealed["recovery_dispatch_id"])
             resolve_trusted["task_id"] = str(recovery_sealed["task_id"])
             resolve_trusted["source_head_sha"] = str(recovery_sealed["execution_source_head_sha"])
         resolved = result_source.resolve(
@@ -441,7 +446,8 @@ def _durable_run_bindings(preflight, observation, events):
                 str(recovery_sealed["workflow_file"]) if recovery_sealed is not None
                 else preflight.workflows.workflow_for(trusted["role"])
             ),
-            "external_dispatch_key": key, "lookup_sequence": int(row.get("sequence") or 0),
+            "external_dispatch_key": resolve_key, "logical_external_dispatch_key": key,
+            "lookup_sequence": int(row.get("sequence") or 0),
         }
         bindings[run_id] = binding
         ordered.append(binding)
@@ -886,7 +892,7 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
             installation_commit_sha=preflight.execution.installation_commit_sha,
             github_api_base=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         ),
-        runtime_receipt_resolver=lambda record: _durable_receipt(events, observation),
+        runtime_receipt_resolver=lambda record: _durable_receipt(preflight, events, observation),
         runtime_binding_resolver=lambda record: _durable_run_bindings(preflight, observation, events),
         milestone_resolver=lambda record: categories,
     )

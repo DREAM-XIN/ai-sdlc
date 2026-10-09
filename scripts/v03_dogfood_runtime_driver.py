@@ -32,7 +32,7 @@ from v03_dogfood_full_composition import (
     ARMED_RECOVERY_ATTEMPT_BLOB, ARMED_RECOVERY_NO_HTTP_PROOF,
     RECOVERY_CONTINUATION_PATH, RECOVERY_CONTINUATION_SCHEMA,
     validate_armed_recovery_pair, validate_recovery_continuation,
-    validate_recovery_execution_seal,
+    validate_recovery_execution_seal, recovery_execution_binding, RECOVERY_COLLECTOR_DISPATCH_ID,
 )
 from v03_dogfood_fixture_pool import require_slot
 from v03_dogfood_live_gate import ALLOWED_SCENARIOS, assemble_dogfood_live_gate
@@ -1312,6 +1312,7 @@ def _observe_armed_recovery_no_http(preflight: Any) -> dict[str, Any]:
         }
         if (
             any(value.get(k) != v for k, v in expected.items())
+            or any(type(value.get(k)) is not int for k in ("id", "run_attempt", "workflow_id"))
             or str((value.get("repository") or {}).get("full_name") or "").lower()
                != "dream-xin/ai-sdlc"
             or not value.get("updated_at")
@@ -1329,7 +1330,8 @@ def _observe_armed_recovery_no_http(preflight: Any) -> dict[str, Any]:
         "head_sha": ARMED_RECOVERY_SOURCE, "status": "completed", "conclusion": "failure",
         "name": "dogfood",
     }
-    if any(job.get(k) != v for k, v in expected_job.items()):
+    if (any(job.get(k) != v for k, v in expected_job.items())
+            or any(type(job.get(k)) is not int for k in ("id", "run_id", "run_attempt"))):
         raise V03DogfoodRuntimeDriverError("armed recovery failed job identity drifted")
     transport = preflight.composition.actions_transport
     status, _, raw = transport.http(
@@ -1352,6 +1354,25 @@ def _observe_armed_recovery_no_http(preflight: Any) -> dict[str, Any]:
         raise V03DogfoodRuntimeDriverError("armed recovery source-bound pre-HTTP traceback drifted")
     return json.loads(canonical_json(proof))
 
+
+class _RecoveryReadOnlyResult(RuntimeError):
+    def __init__(self, result):
+        self.result = result
+
+
+def _commit_recovery_nonempty(runtime, planner):
+    """Use protected replan reads, without turning replay into an empty write."""
+    def guarded(snapshot):
+        plan = planner(snapshot)
+        if not plan.mutations:
+            raise _RecoveryReadOnlyResult(plan.result)
+        return plan
+    try:
+        return runtime.commit_replanned(guarded).result
+    except _RecoveryReadOnlyResult as replay:
+        return replay.result
+
+
 def _plan_bounded_recovery(snapshot: Any, *, preflight: Any, fence: Mapping[str, Any], proof: Mapping[str, Any]) -> StoreMutationPlan:
     _bounded_recovery_identity(snapshot, preflight)
     authorization, attempt = validate_armed_recovery_pair(snapshot)
@@ -1371,12 +1392,13 @@ def _plan_bounded_recovery(snapshot: Any, *, preflight: Any, fence: Mapping[str,
         raise V03DogfoodRuntimeDriverError("recovery receipt exists without a continuation")
     continuation = {
         "schema_version": RECOVERY_CONTINUATION_SCHEMA, "admission_version": 1, "status": "ARMED",
+        "collector_dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
         "authorization_digest": "sha256:" + digest_json(authorization),
         "create_attempt_digest": "sha256:" + digest_json(attempt),
         "original_source_head_sha": ARMED_RECOVERY_SOURCE,
         "no_http_proof": dict(proof),
         "no_http_proof_digest": "sha256:" + digest_json(proof),
-        "execution_source_head_sha": preflight.execution.installation_commit_sha,
+        **recovery_execution_binding(preflight.composition.policy_authority),
         "execution_trusted_context_digest": preflight.trusted_context_digest,
         "created_at": preflight.composition.runtime.clock(),
     }
@@ -1392,6 +1414,18 @@ def _plan_bounded_recovery(snapshot: Any, *, preflight: Any, fence: Mapping[str,
     proposed = deepcopy(snapshot)
     proposed.files[RECOVERY_CONTINUATION_PATH] = continuation
     validate_recovery_continuation(proposed)
+    # Validate the actual production gateway payload and transport before the
+    # irreversible claim, while the transport is strictly lookup-only.
+    gateway = preflight.composition.recovery_dispatch_gateway
+    gateway.transport.admit_continuation(
+        proposed, allow_post=False,
+        **recovery_execution_binding(preflight.composition.policy_authority),
+        execution_trusted_context_digest=preflight.trusted_context_digest,
+    )
+    dispatch = _bounded_recovery_dispatch(preflight, authorization)
+    gateway.transport._validate_dispatch_inputs(
+        workflow=RECOVERY_WORKFLOW, ref="main", inputs=gateway._inputs(dispatch),
+    )
     return StoreMutationPlan(snapshot.ref_sha, (
         StoreMutation("create_immutable", RECOVERY_CONTINUATION_PATH, continuation),
     ), {"acquired": True, "authorization": authorization, "continuation": continuation})
@@ -1442,6 +1476,10 @@ def _recovery_trusted_context(authorization: Mapping[str, Any]) -> dict[str, Any
 def _resolve_recovery_run_for_seal(preflight: Any, *, authorization: Mapping[str, Any], receipt_id: str) -> Any:
     source = preflight.composition.recovery_result_source
     _, _, continuation = validate_recovery_continuation(preflight.composition.runtime.backend.read_snapshot())
+    if any(continuation.get(k) != v for k, v in recovery_execution_binding(
+        preflight.composition.policy_authority,
+    ).items()):
+        raise V03DogfoodRuntimeDriverError("recovery resolver escaped current trusted execution authority")
     execution_source = continuation["execution_source_head_sha"]
     key = str(authorization["recovery_dispatch_key"])
     for _poll in range(121):
@@ -1454,7 +1492,9 @@ def _resolve_recovery_run_for_seal(preflight: Any, *, authorization: Mapping[str
             resolved = source.resolve(
                 external_dispatch_key=key,
                 expected_receipt_identity=receipt_id,
-                trusted_context={**_recovery_trusted_context(authorization), "source_head_sha": execution_source},
+                trusted_context={**_recovery_trusted_context(authorization), "source_head_sha": execution_source,
+                                 "dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
+                                 "execution_dispatch_id": authorization["recovery_dispatch_id"]},
             )
             if (
                 resolved.run.run_id != int(receipt_id)
@@ -1556,14 +1596,17 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
             "candidate_head_sha": resolved.run.candidate_head_sha,
         }),
         "continuation_digest": "sha256:" + digest_json(continuation),
-        "execution_source_head_sha": continuation["execution_source_head_sha"],
+        "collector_dispatch_id": RECOVERY_COLLECTOR_DISPATCH_ID,
+        **recovery_execution_binding(preflight.composition.policy_authority),
         "execution_trusted_context_digest": continuation["execution_trusted_context_digest"],
         "sealed_at": preflight.composition.runtime.clock(),
     }
     def plan(snapshot: Any) -> StoreMutationPlan:
         _bounded_recovery_identity(snapshot, preflight)
         _validate_recovery_pair(snapshot, authorization)
-        validate_recovery_execution_seal(snapshot, expected)
+        validate_recovery_execution_seal(snapshot, expected, execution_binding=recovery_execution_binding(
+            preflight.composition.policy_authority,
+        ))
         existing = snapshot.get(RECOVERY_RECEIPT_PATH)
         if existing is not None:
             stable = {key: value for key, value in expected.items() if key != "sealed_at"}
@@ -1575,7 +1618,18 @@ def _seal_recovery_receipt(preflight: Any, *, authorization: Mapping[str, Any], 
             (StoreMutation("create_immutable", RECOVERY_RECEIPT_PATH, expected),),
             {"receipt": expected},
         )
-    return preflight.composition.runtime.commit_replanned(plan).result["receipt"]
+    return _commit_recovery_nonempty(preflight.composition.runtime, plan)["receipt"]
+
+
+
+def _require_recovery_execution_source(preflight: Any, source_sha: str) -> None:
+    ref = _github_json(preflight, "/git/ref/heads/main")
+    if (
+        ref.get("ref") != "refs/heads/main"
+        or (ref.get("object") or {}).get("type") != "commit"
+        or (ref.get("object") or {}).get("sha") != source_sha
+    ):
+        raise V03DogfoodRuntimeDriverError("recovery execution main source changed before admission/POST")
 
 
 def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
@@ -1590,9 +1644,10 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
         raise V03DogfoodRuntimeDriverError("historical immutable observation digest drifted")
     fence = _observe_provider_rotation(os.environ)
     proof = _observe_armed_recovery_no_http(preflight)
-    result = preflight.composition.runtime.commit_replanned(
+    _require_recovery_execution_source(preflight, preflight.execution.installation_commit_sha)
+    result = _commit_recovery_nonempty(preflight.composition.runtime,
         lambda snapshot: _plan_bounded_recovery(snapshot, preflight=preflight, fence=fence, proof=proof)
-    ).result
+    )
     authorization = result["authorization"]
     key = str(authorization["recovery_dispatch_key"])
     admitted_snapshot = preflight.composition.runtime.backend.read_snapshot()
@@ -1605,7 +1660,9 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
     if existing is not None:
         if not isinstance(existing, dict) or not str(existing.get("receipt_id") or "").isdigit():
             raise V03DogfoodRuntimeDriverError("existing recovery receipt is malformed before model execution")
-        validate_recovery_execution_seal(admitted_snapshot, existing)
+        validate_recovery_execution_seal(admitted_snapshot, existing, execution_binding=recovery_execution_binding(
+            preflight.composition.policy_authority,
+        ))
         resolved = _resolve_recovery_run_for_seal(
             preflight, authorization=authorization, receipt_id=str(existing["receipt_id"])
         )
@@ -1633,6 +1690,7 @@ def recover_historical_prehttp_attempt(preflight: Any) -> dict[str, Any] | None:
         )
     if not isinstance(before, dict) or before.get("lookup_state") != "NOT_LAUNCHED":
         raise V03DogfoodRuntimeDriverError("bounded recovery pre-POST lookup is not exhaustive NOT_LAUNCHED")
+    _require_recovery_execution_source(preflight, result["continuation"]["execution_source_head_sha"])
     dispatch = _bounded_recovery_dispatch(preflight, authorization)
     try:
         receipt = preflight.composition.recovery_dispatch_gateway.launch(dispatch=dispatch)
