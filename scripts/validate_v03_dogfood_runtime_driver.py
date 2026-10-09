@@ -4831,6 +4831,1217 @@ def post_handoff_read_only_discovery_tests():
 
 
 
+def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
+    """Check real selection and gateway grammar; actual planner/Persist paths are tested separately."""
+    import json
+    import os
+    import re
+    import subprocess
+    from copy import deepcopy
+    import yaml
+
+    scenarios = ("happy_path", "review_remediation", "session_recovery")
+    roles = {"developer": "implementation", "reviewer": "code-review", "qa": "verification"}
+    from v03_dogfood_fixture_pool import require_slot
+    expected_model_env = {
+        "COPILOT_PROVIDER_BASE_URL": "https://api.deepseek.com",
+        "COPILOT_MODEL": "deepseek-chat",
+        "COPILOT_PROVIDER_API_KEY": "${{ secrets.DEEPSEEK_API_KEY }}",
+        "COPILOT_PROVIDER_TYPE": "openai",
+        "COPILOT_PROVIDER_WIRE_API": "completions",
+    }
+    # PyYAML's YAML1.1 loader treats 'on' as boolean; support that parser detail only.
+    def triggers(document):
+        return document.get("on", document.get(True))
+    def reject(label, call):
+        try:
+            call()
+        except (AssertionError, ValueError, KeyError, StopIteration):
+            return
+        raise AssertionError("selected Worker contract accepted " + label)
+    def unique_step(document, job, *, name=None, step_id=None):
+        rows = [s for s in document["jobs"][job]["steps"]
+                if (name is None or s.get("name") == name)
+                and (step_id is None or s.get("id") == step_id)]
+        expect(len(rows) == 1, "missing/duplicate selected Worker step")
+        return rows[0]
+    def shell_truth_table(step, cases):
+        expect(not step.get("if") and step.get("continue-on-error", False) is False,
+               "selected Worker guard can skip or swallow rejection")
+        for values, accepted in cases:
+            result = subprocess.run(["bash", "-c", step["run"]],
+                env={"PATH": os.defpath, **values}, capture_output=True, timeout=5)
+            expect((result.returncode == 0) is accepted, "selected Worker guard semantic drift")
+
+    def check(role, source, body, compiled, source_text, lock_text):
+        expect(source["engine"]["id"] == "copilot" and source["engine"]["model"] == "deepseek-chat",
+               "selected dogfood Worker changed paid DeepSeek model")
+        expect(source["engine"]["env"] == expected_model_env, "selected source provider binding drift")
+        expect(set(triggers(source)) == {"workflow_dispatch"}, "selected Worker has automatic trigger")
+        for text in (source_text, lock_text):
+            expect("AI_SDLC_RUNTIME_APP_PRIVATE_KEY" not in text
+                   and "AI_SDLC_RUNTIME_APP_CLIENT_ID" not in text
+                   and "GH_AW_CI_TRIGGER_TOKEN" not in text,
+                   "selected Worker retains retired credential/collector dependency")
+            # These selected same-repository Workers need no App private key at all.
+            expect(not re.search(r"(?:secrets|vars)\.[A-Z0-9_]*(?:APP_PRIVATE_KEY|APP_CLIENT_ID)", text),
+                   "selected same-repository Worker unnecessarily depends on App identity")
+        allowed_secrets = {"COPILOT_GITHUB_TOKEN", "DEEPSEEK_API_KEY", "GH_AW_DEFAULT_OTLP_ENDPOINT",
+            "GH_AW_DEFAULT_OTLP_HEADERS", "GH_AW_GITHUB_MCP_SERVER_TOKEN", "GH_AW_GITHUB_TOKEN", "GITHUB_TOKEN"}
+        allowed_vars = {"GH_AW_DEFAULT_DETECTION_MAX_AI_CREDITS", "GH_AW_DEFAULT_MAX_AI_CREDITS",
+            "GH_AW_DEFAULT_MAX_DAILY_AI_CREDITS", "GH_AW_DEFAULT_MAX_TURNS", "GH_AW_DEFAULT_OTLP_ENDPOINT",
+            "GH_AW_DEFAULT_TIMEOUT_MINUTES", "GH_AW_GITHUB_APPROVAL_LABELS", "GH_AW_GITHUB_BLOCKED_USERS",
+            "GH_AW_GITHUB_TRUSTED_USERS", "GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST", "GH_AW_RUNTIME_FEATURES"}
+        expect(set(re.findall(r"secrets\.([A-Z0-9_]+)", source_text)) <= {"GITHUB_TOKEN", "DEEPSEEK_API_KEY"}
+               and set(re.findall(r"secrets\.([A-Z0-9_]+)", lock_text)) <= allowed_secrets
+               and set(re.findall(r"vars\.([A-Z0-9_]+)", lock_text)) <= allowed_vars,
+               "selected source/compiled credential or variable dependency escaped finite allowlist")
+        if role == "developer":
+            expect("conclusion" not in source.get("jobs", {}), "Developer gained legacy collector transport")
+        metadata = json.loads(lock_text.splitlines()[0].split(": ", 1)[1])
+        expect(metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True,
+               "selected Worker lock is not strict pinned compiler output")
+        checkout = source["checkout"]
+        ref = "${{ inputs.target_ref }}" if role == "developer" else "${{ inputs.candidate_head_sha }}"
+        expect(checkout["repository"] == "dream-xin/ai-sdlc" and checkout["ref"] == ref
+               and checkout["fetch-depth"] == 0 and checkout["github-token"] == "${{ secrets.GITHUB_TOKEN }}",
+               "selected source checks out wrong candidate or requires retired credential")
+        all_steps = [step for job in compiled["jobs"].values() for step in job.get("steps", [])]
+        checkouts = [step for step in all_steps if str(step.get("uses", "")).startswith("actions/checkout@")]
+        expect(checkouts and all(step.get("with", {}).get("persist-credentials") is False
+                                 for step in checkouts), "selected lock persists checkout credentials")
+        steps = compiled["jobs"]["agent"]["steps"]
+        nested = [s for s in steps if s.get("with", {}).get("repository") == "dream-xin/ai-sdlc"]
+        expect(len(nested) == 1 and nested[0]["with"].get("path") == "ai-sdlc"
+               and nested[0]["with"].get("ref") == ref and nested[0]["with"].get("fetch-depth") == 0,
+               "selected compiled checkout escaped exact nested candidate")
+        engine = unique_step(compiled, "agent", step_id="agentic_execution")
+        expect(steps.index(nested[0]) < steps.index(engine) and engine.get("working-directory") == "ai-sdlc",
+               "selected model starts before/in wrong candidate checkout")
+        expect(not engine.get("if"), "selected model can bypass failed preconditions")
+        for key, value in expected_model_env.items():
+            expect(engine.get("env", {}).get(key) == value, "compiled selected model provider differs: " + key)
+        guard = unique_step(compiled, "agent", name="Reject rerun before model execution")
+        expect(steps.index(guard) < steps.index(engine)
+               and guard["env"] == {"RUN_ATTEMPT": "${{ github.run_attempt }}"},
+               "selected model is not first-attempt fenced")
+        shell_truth_table(guard, [({"RUN_ATTEMPT": a}, a == "1") for a in ("1", "2", "", "0")])
+        identity = unique_step(compiled, "agent", name="Validate release-only local Worker identity")
+        expect(steps.index(identity) < steps.index(engine)
+               and identity["env"] == {
+                   "TARGET_REPOSITORY": "${{ inputs.target_repository }}",
+                   "TARGET_REF": "${{ inputs.target_ref }}",
+                   "FEATURE_ID": "${{ inputs.feature_id }}",
+                   "STAGE": "${{ inputs.stage }}", "ROLE": "${{ inputs.role }}"},
+               "selected identity guard is absent, late, or caller-independent")
+        identity_cases = []
+        for scenario in scenarios:
+            slot = require_slot(scenario)
+            values = {"TARGET_REPOSITORY": "dream-xin/ai-sdlc", "TARGET_REF": slot.target_ref,
+                      "FEATURE_ID": slot.feature_id, "STAGE": roles[role], "ROLE": role}
+            identity_cases += [(values, True), (dict(values, TARGET_REF="main"), False)]
+        identity_cases += [(dict(identity_cases[0][0], ROLE="product"), False)]
+        shell_truth_table(identity, identity_cases)
+        safe = source["safe-outputs"]
+        expect(safe["github-token"] == "${{ secrets.GITHUB_TOKEN }}",
+               "selected Safe Output token dependency drift")
+        if role != "developer":
+            expect("create-pull-request" not in safe and safe["add-comment"]["max"] == 1
+                   and safe["add-comment"]["target"] == "${{ inputs.candidate_pr_number }}"
+                   and safe["add-comment"]["target-repo"] == "dream-xin/ai-sdlc",
+                   "selected Gate Safe Output escaped exact candidate comment")
+            expect(source["tools"]["bash"] is False and source["tools"].get("cli-proxy") is False,
+                   "selected Gate has implementation command authority")
+            expect("AI-SDLC-GATE-RESULT" in body and "non-authoritative" in body
+                   and ("ai-sdlc-gh-aw-" + role + "-result-v0.1") in body,
+                   "selected Gate lost trusted collector envelope boundary")
+        detector = safe["threat-detection"]
+        expect(detector["enabled"] is True and detector["continue-on-error"] is False,
+               "selected Safe Outputs detector fails open")
+        detect = compiled["jobs"]["detection"]
+        execution = unique_step(compiled, "detection", step_id="detection_agentic_execution")
+        for key, value in expected_model_env.items():
+            expect(execution.get("env", {}).get(key) == value,
+                   "compiled detector provider differs from paid execution policy: " + key)
+        expect(execution["env"]["CUSTOM_PROMPT"].strip() == detector["prompt"].strip(),
+               "compiled detector does not receive full bounded source prompt")
+        conclusion = unique_step(compiled, "detection", step_id="detection_conclusion")
+        expect(conclusion.get("continue-on-error", False) is False and conclusion.get("if") == "always()"
+               and conclusion["env"]["GH_AW_DETECTION_CONTINUE_ON_ERROR"] == "false",
+               "selected detector loses mandatory semantic conclusion")
+        expect(detect["outputs"]["detection_success"] == "${{ steps.detection_conclusion.outputs.success }}"
+               and detect["outputs"]["detection_conclusion"] == "${{ steps.detection_conclusion.outputs.conclusion }}",
+               "selected detector outputs are not real conclusion outputs")
+        safe_job = compiled["jobs"]["safe_outputs"]
+        expect("detection" in safe_job["needs"] and "needs.detection.result == 'success'" in safe_job["if"],
+               "selected Safe Outputs lost detector job dependency")
+        effect = unique_step(compiled, "safe_outputs", step_id="process_safe_outputs")
+        if role != "developer":
+            handler = json.loads(effect["env"]["GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG"])
+            expect(handler["add_comment"] == {"footer": False, "max": 1,
+                "target": "${{ inputs.candidate_pr_number }}", "target-repo": "dream-xin/ai-sdlc"}
+                and effect["with"]["github-token"] == "${{ secrets.GITHUB_TOKEN }}",
+                "compiled comment effect no longer matches selected exact candidate")
+            expect(any(s.get("with", {}).get("name") == "safe-outputs-items"
+                       and "/tmp/gh-aw/safe-output-items.jsonl" in s.get("with", {}).get("path", "")
+                       for s in safe_job["steps"]),
+                   "compiled Gate lacks run-owned Safe Output manifest used by trusted collection")
+            identity_name = "Record non-authoritative Gate execution identity"
+            metadata_step = unique_step(compiled, "conclusion", name=identity_name)
+            source_metadata = [s for s in source["jobs"]["conclusion"]["pre-steps"]
+                               if s.get("name") == identity_name]
+            expect(len(source_metadata) == 1 and metadata_step["run"] == source_metadata[0]["run"]
+                   and metadata_step["env"] == source_metadata[0]["env"]
+                   and source["jobs"]["conclusion"]["permissions"] == {"contents": "read"},
+                   "actual generated read-only metadata differs from selected source")
+            metadata_env = {
+                "SOURCE_RUN_ID": "${{ github.run_id }}", "SOURCE_WORKFLOW_REF": "${{ github.workflow_ref }}",
+                "SOURCE_HEAD_SHA": "${{ github.sha }}",
+                "TRUSTED_TASK_ID": "${{ fromJSON(inputs.task_payload).task.id }}",
+                "COMMENT_ID": "${{ needs.safe_outputs.outputs.comment_id }}",
+                "COMMENT_URL": "${{ needs.safe_outputs.outputs.comment_url }}",
+            }
+            metadata_env.update({name: "${{ inputs." + name.lower() + " }}" for name in (
+                "TARGET_REPOSITORY", "TARGET_REF", "FEATURE_ID", "EXPECTED_REVISION", "STAGE", "ROLE",
+                "CANDIDATE_PR_NUMBER", "CANDIDATE_HEAD_SHA", "TASK_PAYLOAD", "DISPATCH_KEY")})
+            expect(metadata_step["env"] == metadata_env, "selected metadata identity uses wrong authority")
+            values = {"SOURCE_RUN_ID": "123", "SOURCE_WORKFLOW_REF":
+                "dream-xin/ai-sdlc/.github/workflows/ai-sdlc-gh-aw-" + role + "-deepseek-v03-release-local.lock.yml@refs/heads/main",
+                "SOURCE_HEAD_SHA": "a"*40, "TRUSTED_TASK_ID": "vertical:gate:1",
+                "COMMENT_ID": "456", "COMMENT_URL": "https://github.com/dream-xin/ai-sdlc/pull/552#issuecomment-456",
+                "TARGET_REPOSITORY": "dream-xin/ai-sdlc", "TARGET_REF": "dogfood/v0.3-happy-path-0001",
+                "FEATURE_ID": "F-OPERATOR-V03-DOGFOOD-HAPPY-0001", "EXPECTED_REVISION": "4",
+                "STAGE": roles[role], "ROLE": role, "CANDIDATE_PR_NUMBER": "552",
+                "CANDIDATE_HEAD_SHA": "b"*40, "TASK_PAYLOAD": json.dumps({"task":{"id":"vertical:gate:1"}}),
+                "DISPATCH_KEY": "dispatch-" + "c"*40}
+            shell_truth_table(metadata_step, [(values, True),
+                (dict(values, COMMENT_ID=""), False), (dict(values, TRUSTED_TASK_ID="wrong-task"), False),
+                (dict(values, SOURCE_WORKFLOW_REF="other"), False),
+                (dict(values, COMMENT_URL="https://github.com/dream-xin/ai-sdlc/pull/553#issuecomment-456"), False)])
+        guard = unique_step(compiled, "safe_outputs",
+            name="Require first attempt and affirmative detection before Safe Outputs effects")
+        expect(safe_job["steps"].index(guard) < safe_job["steps"].index(effect) and not effect.get("if"),
+               "selected effects can bypass semantic guard")
+        expect(guard["env"] == {
+            "RUN_ATTEMPT": "${{ github.run_attempt }}",
+            "DETECTION_SUCCESS": "${{ needs.detection.outputs.detection_success }}",
+            "DETECTION_CONCLUSION": "${{ needs.detection.outputs.detection_conclusion }}"},
+            "selected effect guard trusts literals/caller verdict")
+        cases = [({"RUN_ATTEMPT": a, "DETECTION_SUCCESS": s, "DETECTION_CONCLUSION": c},
+                   a == "1" and s == "true" and c == "success")
+                 for a,s,c in (("1","true","success"), ("2","true","success"),
+                    ("1","false","success"), ("1","true","skipped"),
+                    ("1","",""), ("1","unknown","success"), ("1","true","failure"))]
+        shell_truth_table(guard, cases)
+
+    from types import SimpleNamespace
+    from gh_aw_provider_registry import load_registry
+    from v03_dogfood_execution_bindings import credential_identities
+    from v03_dogfood_live_gate import resolve_current_dogfood_bindings, V03DogfoodLiveGateError
+    from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
+    expected_files = {
+        "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+        "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
+        "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+    }
+    presence = {name: False for name in credential_identities(load_registry())}
+    presence["DEEPSEEK_API_KEY"] = True
+    # Presence is not paid quota: the explicit release policy must remain DeepSeek
+    # even when another provider has a configured but unusable credential.
+    preferred = resolve_current_dogfood_bindings(presence)
+    competing = resolve_current_dogfood_bindings({name: True for name in presence})
+    expect([(r.role, r.worker_workflow, r.selected_profile, r.model) for r in preferred]
+           == [(r.role, r.worker_workflow, r.selected_profile, r.model) for r in competing],
+           "configured unpaid provider displaced admitted paid DeepSeek execution")
+    try:
+        resolve_current_dogfood_bindings({name: False for name in presence})
+    except V03DogfoodLiveGateError:
+        pass
+    else:
+        raise AssertionError("current dogfood selection accepted missing paid provider credential")
+    seen = {}
+    for scenario in scenarios:
+        resolved = resolve_current_dogfood_bindings(presence)
+        gate = SimpleNamespace(scenario=scenario, bindings=resolved)
+        workflows = _workflow_map(gate)
+        rows = _execution_bindings(gate, workflows)
+        raw = {r.role: r for r in resolved}
+        expect(set(rows) == set(roles), "actual selected scenario lacks all three roles")
+        for role, stage in roles.items():
+            row = rows[role]
+            expect(row["role"] == role and row["profile"] == "deepseek"
+                   and raw[role].stage == stage and raw[role].model == "deepseek-chat"
+                   and raw[role].accepted_credential_identities == ("DEEPSEEK_API_KEY",),
+                   "actual dogfood selection ignored paid DeepSeek execution policy")
+            filename = row["workflow_file"]
+            expect(filename == expected_files[role] == workflows.workflow_for(role),
+                   "actual selected Worker differs from admitted role-local pair")
+            if filename not in seen:
+                source_text = (root / ".github/workflows" / filename.replace(".lock.yml", ".md")).read_text()
+                lock_text = (root / ".github/workflows" / filename).read_text()
+                _, frontmatter, body = source_text.split("---\n", 2)
+                source, compiled = yaml.safe_load(frontmatter), yaml.safe_load(lock_text)
+                check(role, source, body, compiled, source_text, lock_text)
+                for label, mutate in (
+                    ("credential persistence", lambda c: next(s for j in c["jobs"].values()
+                        for s in j.get("steps", []) if str(s.get("uses", "")).startswith("actions/checkout@"))["with"].update({"persist-credentials": True})),
+                    ("model bypass", lambda c: unique_step(c, "agent", step_id="agentic_execution").update({"if": "always()"})),
+                    ("effect bypass", lambda c: unique_step(c, "safe_outputs", step_id="process_safe_outputs").update({"if": "always()"})),
+                    ("candidate checkout", lambda c: next(s for s in c["jobs"]["agent"]["steps"]
+                        if s.get("with", {}).get("repository") == "dream-xin/ai-sdlc")["with"].update(ref="main")),
+                    ("model credential", lambda c: unique_step(c, "agent", step_id="agentic_execution")["env"].update(COPILOT_PROVIDER_API_KEY="${{ secrets.GEMINI_API_KEY }}")),
+                ):
+                    bad = deepcopy(compiled)
+                    mutate(bad)
+                    reject(label, lambda: check(role, source, body, bad, source_text, lock_text))
+                if role != "developer":
+                    bad = deepcopy(compiled)
+                    bad["jobs"]["conclusion"]["steps"].remove(unique_step(bad, "conclusion",
+                        name="Record non-authoritative Gate execution identity"))
+                    reject("missing generated identity step", lambda: check(role, source, body, bad, source_text, lock_text))
+                reject("retired key dependency", lambda: check(role, source, body, compiled,
+                    source_text, lock_text + "\\n# ${{ secrets.AI_SDLC_RUNTIME_APP_PRIVATE_KEY }}"))
+                reject("generic trigger dependency", lambda: check(role, source, body, compiled,
+                    source_text + "\\n# ${{ secrets.GH_AW_CI_TRIGGER_TOKEN }}", lock_text))
+                seen[filename] = role
+            expect(seen[filename] == role, "two selected roles share a Worker")
+        slot = require_slot(scenario)
+        if developer_inputs is None:
+            from operator_vertical import VERTICAL_PROFILE
+            from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway
+            gateway = GhAwVerticalRoleDispatchGateway(transport=object(), workflows=workflows)
+            steps = ["vertical:implementation:1"]
+            if scenario == "review_remediation":
+                steps.append("vertical:code-remediation:1")
+            payloads = []
+            for index, task_id in enumerate(steps):
+                dispatch = dict(operation_id="op-" + "a" * 40, operation_generation=0,
+                    operation_profile=VERTICAL_PROFILE, semantic_effect_key="b" * 64,
+                    external_dispatch_key="dispatch-" + "c" * 40,
+                    dispatch_id="vertical-" + "d" * 32,
+                    target_repository="dream-xin/ai-sdlc", target_ref=slot.target_ref,
+                    feature_id=slot.feature_id, expected_revision=1 + index,
+                    feature_stage="implementation" if index == 0 else "code-review",
+                    task_id=task_id, task_identity=task_id, role="developer",
+                    candidate_pr_number=552, candidate_head_sha="e" * 40)
+                payloads.append(gateway._inputs(dispatch))
+        else:
+            payloads = developer_inputs(scenario)
+        expect(payloads, "scenario lacks actual generated Developer dispatch inputs")
+        expect(len(payloads) >= (2 if scenario == "review_remediation" else 1),
+               "remediation scenario did not exercise normal and remediation Developer grammar")
+        kinds = set()
+        for inputs in payloads:
+            task = json.loads(inputs["task_payload"])
+            expect(inputs["feature_id"] == slot.feature_id and inputs["target_ref"] == slot.target_ref
+                   and inputs["target_repository"].lower() == "dream-xin/ai-sdlc"
+                   and inputs["role"] == "developer" and inputs["stage"] == "implementation",
+                   "actual normal/remediation Developer inputs violate selected source identity guard")
+            kinds.add(task["task"]["kind"])
+            expect(task["contract"] == "ai-sdlc-task-v0.1"
+                   and task["task"]["feature_id"] == slot.feature_id
+                   and task["task"]["role"] == "developer"
+                   and task["feature_context"]["id"] == slot.feature_id
+                   and task["feature_context"]["vertical"]["expected_revision"] == int(inputs["expected_revision"]),
+                   "actual Developer payload identity/revision differs from workflow inputs")
+            expect(task["feature_context"]["repository"].lower() == inputs["target_repository"].lower()
+                   and task["feature_context"]["manifest_ref"] and task["task"]["id"],
+                   "actual Developer task grammar differs from source instructions")
+        expect(kinds == ({"stage", "remediation"} if scenario == "review_remediation" else {"stage"}),
+               "scenario Developer task kinds do not cover admitted normal/remediation grammar")
+    expect(len(seen) == 3, "frozen scenarios do not use the same explicit three selected role Workers")
+    print("- actual selected 3x3 dogfood Worker source/compiled contracts validated")
+
+
+def build_selected_dogfood_gate_fixture(preflight, *, read_ref, fallback_http):
+    """Actual Actions transport/source; fake successful Reviewer/QA HTTP results.
+
+    Gate payloads are derived only from the actual production dispatch POST.
+    No role selection, launch facts, callbacks, validation or Persist is seeded.
+    fallback_http supplies existing Developer/PR/source routes at the HTTP boundary.
+    """
+    import json
+    import hashlib
+    import io
+    import zipfile
+    from pathlib import Path
+    import yaml
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from urllib.parse import unquote, urlparse
+    from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway
+    from operator_vertical_gh_aw_actions_transport import (
+        GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig)
+    from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
+    from operator_vertical_gh_aw_github_source import _GATE_START, _GATE_END
+    import v03_dogfood_runtime_driver as driver
+
+    repository = preflight.execution.repository
+    workflows = preflight.workflows
+    source_sha = preflight.execution.installation_commit_sha
+    state = {"runs": [], "posts": [], "routes": {}, "inputs": []}
+
+    def respond(value):
+        return 200, {}, value if isinstance(value, bytes) else json.dumps(value).encode()
+
+    def http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        prefix = "/repos/" + repository
+        expect(parsed.path.startswith(prefix), "gate provider escaped repository")
+        path = unquote(parsed.path[len(prefix):])
+        if path.startswith("/actions/workflows/") and path.endswith("/runs"):
+            workflow = path.split("/")[3]
+            rows = [row for row in state["runs"]
+                    if row["path"] == ".github/workflows/" + workflow]
+            rows.extend(deepcopy(row) for row in getattr(preflight, "historical_gate_runs", ())
+                        if row["path"] == ".github/workflows/" + workflow)
+            return respond({"total_count": len(rows), "workflow_runs": deepcopy(rows)})
+        if method == "POST":
+            expect(path.startswith("/actions/workflows/") and path.endswith("/dispatches"),
+                   "gate provider received unexpected POST")
+            submitted = json.loads(body)
+            inputs = submitted["inputs"]
+            role = inputs["role"]
+            expect(role in {"reviewer", "qa"} and role not in [row["role"] for row in state["inputs"]],
+                   "continuation attempted another Developer or duplicate Gate execution")
+            workflow = workflows.workflow_for(role)
+            expect(path == "/actions/workflows/" + workflow + "/dispatches"
+                   and submitted["ref"] == "main"
+                   and inputs["candidate_head_sha"] == read_ref(),
+                   "actual Gate launch did not bind post-Persist candidate head")
+            task = json.loads(inputs["task_payload"])["task"]
+            run_id = 47905505035 + len(state["runs"]) + 1
+            comment_id, job_id = run_id + 100, run_id + 200
+            run = {"id": run_id, "run_attempt": 1, "repository": {"full_name": repository},
+                "html_url": f"https://github.com/{repository}/actions/runs/{run_id}",
+                "path": ".github/workflows/" + workflow,
+                "display_title": "AI-SDLC gh-aw " + inputs["dispatch_key"],
+                "event": "workflow_dispatch", "head_branch": "main", "head_sha": source_sha,
+                "status": "completed", "conclusion": "success"}
+            state["runs"].append(run)
+            state["posts"].append(deepcopy(submitted))
+            state["inputs"].append(deepcopy(inputs))
+            comment_url = f"https://github.com/{repository}/pull/{inputs['candidate_pr_number']}#issuecomment-{comment_id}"
+            external = {
+                "version": "0.1.0", "contract": "ai-sdlc-gh-aw-" + role + "-result-v0.1",
+                "id": "real-continuation-" + role, "feature_id": inputs["feature_id"],
+                "task_id": task["id"], "stage": inputs["stage"], "role": role,
+                "expected_revision": int(inputs["expected_revision"]),
+                "target_repository": repository, "target_ref": inputs["target_ref"],
+                "candidate_pr_number": int(inputs["candidate_pr_number"]),
+                "candidate_head_sha": inputs["candidate_head_sha"], "verdict": "PASS",
+                "occurred_at": preflight.composition.runtime.clock(),
+                "evidence": [{"id": "real-continuation-" + role,
+                    "type": "review" if role == "reviewer" else "verification",
+                    "status": "pass", "uri": run["html_url"]}]}
+            if role == "reviewer":
+                external["findings"] = []
+            else:
+                external["checks"] = [{"name": "runtime", "status": "pass"}]
+                external["coverage"] = [{"criterion": "happy path", "status": "pass"}]
+            routes = state["routes"]
+            routes[f"/actions/runs/{run_id}"] = run
+            routes[f"/issues/comments/{comment_id}"] = {
+                "id": comment_id, "html_url": comment_url,
+                "issue_url": f"https://api.github.com/repos/{repository}/issues/{inputs['candidate_pr_number']}",
+                "user": {"type": "Bot"},
+                "body": _GATE_START + json.dumps(external) + _GATE_END}
+            lock = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows" / workflow).read_text())
+            identity_steps = [step for step in lock["jobs"]["conclusion"]["steps"]
+                if {"COMMENT_ID", "COMMENT_URL", "TRUSTED_TASK_ID", "SOURCE_RUN_ID", "SOURCE_WORKFLOW_REF"}
+                <= set(step.get("env", {}))]
+            expect(len(identity_steps) == 1,
+                   "fake Gate cannot fabricate metadata absent from selected compiled source")
+            expressions = {
+                "${{ github.run_id }}": run_id,
+                "${{ github.sha }}": source_sha,
+                "${{ github.workflow_ref }}": f"{repository}/.github/workflows/{workflow}@refs/heads/main",
+                "${{ needs.safe_outputs.outputs.comment_id }}": comment_id,
+                "${{ needs.safe_outputs.outputs.comment_url }}": comment_url,
+                "${{ fromJSON(inputs.task_payload).task.id }}": task["id"],
+            }
+            expressions.update({"${{ inputs." + key + " }}": value for key, value in inputs.items()})
+            values = {name: expressions[expression] for name, expression in identity_steps[0]["env"].items()}
+            jobs = []
+            for index, (name, job) in enumerate(lock["jobs"].items()):
+                identity = job_id if name == "conclusion" else job_id + index + 1
+                jobs.append({"id": identity, "name": name, "conclusion": "success",
+                    "status": "completed", "run_id": run_id, "run_attempt": 1, "head_sha": source_sha,
+                    "steps": [{"name": step.get("name", step.get("id", "step")),
+                               "status": "completed", "conclusion": "success"}
+                              for step in job.get("steps", [])]})
+            routes[f"/actions/runs/{run_id}/jobs"] = {"total_count": len(jobs), "jobs": jobs}
+            routes[f"/actions/runs/{run_id}/attempts/1/jobs"] = {"total_count": len(jobs), "jobs": jobs}
+            routes[f"/actions/jobs/{job_id}/logs"] = "".join(
+                (f"2026-10-09T09:00:00Z   {name}: {value}" + chr(10)) for name, value in values.items()).encode()
+            item = {
+                "type": "add_comment", "provider": "github", "id": comment_id,
+                "number": int(inputs["candidate_pr_number"]), "url": comment_url, "repo": repository,
+                "target": {"provider": "github", "repository": repository,
+                           "number": int(inputs["candidate_pr_number"])},
+                "timestamp": preflight.composition.runtime.clock(),
+            }
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr(zipfile.ZipInfo("safe-output-items.jsonl", (2026, 10, 9, 9, 0, 0)),
+                                 json.dumps(item, sort_keys=True) + "\n")
+            archive_bytes = stream.getvalue()
+            artifact_id = run_id + 300
+            artifact = {
+                "id": artifact_id, "name": "safe-outputs-items", "expired": False,
+                "size_in_bytes": len(archive_bytes), "digest": "sha256:" + hashlib.sha256(archive_bytes).hexdigest(),
+                "archive_download_url": f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}/zip",
+                "workflow_run": {"id": run_id, "head_sha": source_sha, "head_branch": "main",
+                                "repository_id": 1326302284, "head_repository_id": 1326302284},
+            }
+            routes[f"/actions/runs/{run_id}/artifacts"] = {"total_count": 1, "artifacts": [artifact]}
+            routes[f"/actions/artifacts/{artifact_id}/zip"] = archive_bytes
+            return 204, {}, b""
+        expect(method == "GET", "gate HTTP provider allowed an unapproved effect")
+        if path in state["routes"]:
+            return respond(deepcopy(state["routes"][path]))
+        return fallback_http(method=method, url=url, token=token)
+
+    transport = GitHubActionsVerticalGhAwTransport(
+        GitHubActionsWorkflowTransportConfig(
+            control_repository=repository, token="fixture", workflows=workflows,
+            launch_poll_attempts=2, launch_poll_seconds=0),
+        http=http, sleeper=lambda _: None)
+    gateway = GhAwVerticalRoleDispatchGateway(transport=transport, workflows=workflows)
+    from v03_dogfood_full_composition import DogfoodReviewerReplacementSource
+    source = DogfoodReviewerReplacementSource(
+        preflight.composition.recovery_result_source.config,
+        target_repository=repository, http=http)
+    source.bind_reviewer(preflight.composition.runtime, preflight.composition.policy_authority)
+    return SimpleNamespace(transport=transport, dispatch_gateway=gateway,
+                           result_source=source, state=state, http=http)
+
+
+
+
+def reviewer_frozen_provider_fixture(archive_bytes):
+    """Frozen thirty-event prefix and actual failed pre-model Reviewer observations.
+
+    Reuses the independently captured successful Developer/closed-PR provider.
+    All existing callback/Persist facts are historical input from one exact Store
+    commit. This helper executes no replacement, callback or lifecycle transition.
+    """
+    import base64
+    import hashlib
+    import json
+    import subprocess
+    from copy import deepcopy
+    from pathlib import Path
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs, unquote, urlparse
+    import yaml
+    from operator_store_model import StoreSnapshot, operation_events
+    from operator_vertical_store import vertical_projection
+
+    provider = post_handoff_frozen_provider_fixture(archive_bytes)
+    root = Path(__file__).resolve().parents[1]
+    commit = "ac95a1cefdeb33dc836ae969168cd992c482401f"
+    operation_id = "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"
+    head = "41e0df7089c5907b00bbaeac5dd2be71d4f02d4b"
+    repository = "dream-xin/ai-sdlc"
+    target_ref = "dogfood/v0.3-happy-path-0001"
+    manifest_path = "state/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001.yaml"
+    pins = json.loads("{\"state/operator/v1/claims/dispatch/dc-3006ff66a16631b94316e4dac3d4711a4b4d2159.json\":\"1b93a7c81ae8be4bd4aef80a6c1c7c0641f40cc8\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/authorization.json\":\"e68d45041c47083c2da5521aa325fcf58bef256b\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/create-claim.json\":\"706888dddd1acc157cdbeb5b54ace6539125e16b\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/post-handoff-reconciliation-1.json\":\"5178d7697c9b140c64c4dc2cf3fca94bf223c1ab\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/sealed-receipt.json\":\"7558b2b3ffe08bb255d3c287fffa49f5fc988f0e\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/authorization.json\":\"d344fca61af21038c929897bc3fd636d4297ee17\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/create-attempt.json\":\"db183bc850c8e9add5abad38ced5728325192aba\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/transport-continuation.json\":\"e2b2edf5e50eedaacbdaee7ef1b0ae64c5f94580\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-candidate-handoffs/1f546bd51bfea6214480ecea7789f74bb7c26356a2362357f4bd22aa0367b7be/applied.json\":\"eb63e61ff00ae20bbe465d205c98924056e77827\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-candidate-handoffs/1f546bd51bfea6214480ecea7789f74bb7c26356a2362357f4bd22aa0367b7be/intent.json\":\"da06cd8849fff194e3cdbeb1df54d3efa69f850e\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-prehttp-recovery-attempt.json\":\"e9bf99cc5fd8810a6fd08666ff4c17b136bee1b3\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000001-operation-started-739f4331137732d6184000cf3d8b4915.json\":\"86e43c43941b03e9721844b58479d95db93ce5c8\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000002-loop-step-selected-2cf82f42399ec59c7283df1711819426.json\":\"f26de71400211607359fb60b58e77ddbab7216ed\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000003-dispatch-claimed-687520874a948a5c4534e4e30d97b366.json\":\"6741a203a62d31e81f1d619d705bb18feddc0173\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000004-dispatch-launch-authorized-5f6d063282780be1d174254ce8ef9134.json\":\"1840f7cac50722dad83cb0118e441e475175d859\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000005-dispatch-launch-lookup-recorded-8629bfae40264dc5d15df601bc67686d.json\":\"6f73721b7c8847ddae58e59bbee801d28cd9ef43\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000006-operation-superseded-972620170d72306fdfa27f564dbc68c4.json\":\"a11e8f98ab5a9511fe30cf22f0ba6fa0c41253d9\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000007-operation-generation-started-559d6292df44700862ae642429872527.json\":\"def317058e40c16a8b35c7390ab5847e678192c5\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000008-loop-step-selected-d13700446f0139fb96e5717dc101bbdf.json\":\"275a6134e086e95c72f7a8c0aa8940a9f35a67c8\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000009-dispatch-claimed-f55e33e1ea7fd6b35eb44831e700d91f.json\":\"09cbb9201c82d1e69bcce5b0febc8c28f8948fac\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000010-dispatch-launch-authorized-8ea8faac43fb02dc1c3c8e481a40da93.json\":\"f6f793ce9725e618be0b7b25712e5abe44a55b59\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000011-dispatch-launch-lookup-recorded-ef426f7c675283149f805fdab65861ec.json\":\"ca4581772d9271f0e7d4dece22479a376504e8d5\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000012-dispatch-launch-lookup-recorded-cff7b708649dcf3b6ca354d3f72fbb6d.json\":\"96c43dcefda8558aa73750eb12a5e0d5af419d82\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000013-worker-callback-recorded-6e9bb8c4081e7ac28af2c5bccda2dcb4.json\":\"d773017efeec4ceccd65aaf28c1574c5aa6c9f69\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000014-worker-result-rejected-6e6b1ab67000b9207463c8676cad7be7.json\":\"93c3c64ea155b65bdbeaf78eed0067590aed9ede\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000015-loop-stable-stop-cd01bb348e233107a60b54928e336a00.json\":\"5a6969ba938f6153705d999065f786d4bb3159ec\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000016-worker-callback-recorded-8f4c403e06ae9355b0b245c9df740bf7.json\":\"069beb76d507b71109a1219722e03bf9bd4179f2\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000017-worker-result-validated-ed56d7eadf7efdb50d607eebb60c09e1.json\":\"54c9ddf16627d495c4ef06f80016fda173e12475\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000018-feature-event-translated-146e91f4ed5fa9420bdc79e69576a866.json\":\"b277131c21142e815de9825c9c7f02f5283bf19a\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000019-persist-requested-05b10f2f65d52ecbde4f92a6f48ad0a8.json\":\"03c6cb5628f5896c3dedcfddeb6abb0257b0886d\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000020-persist-linearized-9a302d406aac5e4a2b8aede284386a4c.json\":\"e8ea390b14f84173a2f2ba65003fb7fcb21d1faf\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000021-persist-confirmed-a92f43c724a6f37ad3eef0d7f217977e.json\":\"3f1dac41fef483899b0af3d1de6634e502497986\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000022-loop-step-selected-185d0cd557b4337a582cdcdc9ed7075c.json\":\"19c681ab77d90849e6b67aa53b8ccc3e271c16e6\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000023-feature-event-translated-5bd0311cb465491d30a7027e617c4c4c.json\":\"09aedd1fa3bd0fb8b71ef6fd75390e2edc520db4\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000024-persist-requested-1e166d13887db2dee0b82e6a979b850e.json\":\"4dcf56f2ad6a941ccf5b6204cbb418d86f9be0b6\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000025-persist-linearized-5681cee3f8344418644af863d69d5ce8.json\":\"1b807744b90d39564e05ce2f378e28fba6ece5b1\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000026-persist-confirmed-c1ee4698394d605b8ba50d7529227216.json\":\"1bd7b63e0b30882f1c304d1be16dad17f3b1dfbe\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000027-loop-step-selected-0c44caba02897e2237f92649007a66fa.json\":\"2400f03e80d353ba989b66a8609f780e955d5dff\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000028-dispatch-claimed-1d7f9416b07a819c38b27bf7535ccc18.json\":\"792494e66a1d31529993832e3cc8b0940ab58244\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000029-dispatch-launch-authorized-551bf29f723465460beea589087e5adf.json\":\"905d1b7f02ebb4a4b59342de885a5120ca2ff089\",\"state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000030-dispatch-launch-lookup-recorded-cd54b307a841588acaa8f4ccb197323f.json\":\"20ced53e567b946554fdaaa166f64167c4fe78c8\",\"state/operator/v1/reservations/external/ca592b5e204090e093d46d351b4f2bd369b35d289c541cd066b7007e4515ed25.json\":\"63fbc84909ecc9395c3113da1edb5a91f54c48bb\",\"state/operator/v1/reservations/external/ca592b5e204090e093d46d351b4f2bd369b35d289c541cd066b7007e4515ed25/external-create-attempt.json\":\"2b85c38cf3fa6fa1043205cc7b791828e71ec420\"}")
+    pins["state/operator/v1/effect-lineages/members/lin-5aec6488d04a953a1d4f1619b4fb2ec503f53a69f98750e3/ca592b5e204090e093d46d351b4f2bd369b35d289c541cd066b7007e4515ed25.json"] = "1dfa9b783546f4a356cdf11a5a0c42513d9cda63"
+    observed = json.loads("{\"run\":{\"id\":37917962742,\"run_attempt\":1,\"workflow_id\":372854672,\"path\":\".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.lock.yml\",\"display_title\":\"AI-SDLC gh-aw dispatch-3d9202e579f855d0d36bdaaf1872dec1a2b84a28\",\"event\":\"workflow_dispatch\",\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"status\":\"completed\",\"conclusion\":\"failure\",\"html_url\":\"https://github.com/DREAM-XIN/ai-sdlc/actions/runs/37917962742\",\"created_at\":\"2026-10-09T10:29:57Z\",\"updated_at\":\"2026-10-09T10:32:04Z\",\"run_started_at\":\"2026-10-09T10:29:57Z\",\"repository\":{\"full_name\":\"DREAM-XIN/ai-sdlc\"}},\"jobs\":{\"total_count\":5,\"jobs\":[{\"id\":113778697506,\"run_id\":37917962742,\"run_attempt\":1,\"name\":\"activation\",\"status\":\"completed\",\"conclusion\":\"success\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"started_at\":\"2026-10-09T10:30:02Z\",\"completed_at\":\"2026-10-09T10:30:16Z\",\"steps\":[{\"name\":\"Set up job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":1,\"started_at\":\"2026-10-09T10:30:04Z\",\"completed_at\":\"2026-10-09T10:30:06Z\"},{\"name\":\"Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":2,\"started_at\":\"2026-10-09T10:30:06Z\",\"completed_at\":\"2026-10-09T10:30:08Z\"},{\"name\":\"Mask OTLP telemetry headers\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":3,\"started_at\":\"2026-10-09T10:30:08Z\",\"completed_at\":\"2026-10-09T10:30:08Z\"},{\"name\":\"Generate agentic run info\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":4,\"started_at\":\"2026-10-09T10:30:08Z\",\"completed_at\":\"2026-10-09T10:30:08Z\"},{\"name\":\"Restore daily AIC scan observations\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":5,\"started_at\":\"2026-10-09T10:30:08Z\",\"completed_at\":\"2026-10-09T10:30:08Z\"},{\"name\":\"Check daily workflow token guardrail\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":6,\"started_at\":\"2026-10-09T10:30:08Z\",\"completed_at\":\"2026-10-09T10:30:09Z\"},{\"name\":\"Publish daily AIC scan observations\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":7,\"started_at\":\"2026-10-09T10:30:09Z\",\"completed_at\":\"2026-10-09T10:30:09Z\"},{\"name\":\"Check for OAuth tokens\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":8,\"started_at\":\"2026-10-09T10:30:09Z\",\"completed_at\":\"2026-10-09T10:30:09Z\"},{\"name\":\"Checkout .github and .agents folders\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":9,\"started_at\":\"2026-10-09T10:30:09Z\",\"completed_at\":\"2026-10-09T10:30:10Z\"},{\"name\":\"Save agent config folders for base branch restoration\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":10,\"started_at\":\"2026-10-09T10:30:10Z\",\"completed_at\":\"2026-10-09T10:30:10Z\"},{\"name\":\"Check workflow lock file\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":11,\"started_at\":\"2026-10-09T10:30:10Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Check compile-agentic version\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":12,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Log runtime features\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":13,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Create prompt with built-in context\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":14,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Interpolate variables and render templates\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":15,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Substitute placeholders\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":16,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Validate prompt placeholders\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":17,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Print prompt\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":18,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:11Z\"},{\"name\":\"Upload info artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":19,\"started_at\":\"2026-10-09T10:30:11Z\",\"completed_at\":\"2026-10-09T10:30:12Z\"},{\"name\":\"Stage prompt files for artifact upload\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":20,\"started_at\":\"2026-10-09T10:30:12Z\",\"completed_at\":\"2026-10-09T10:30:12Z\"},{\"name\":\"Upload activation artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":21,\"started_at\":\"2026-10-09T10:30:12Z\",\"completed_at\":\"2026-10-09T10:30:13Z\"},{\"name\":\"Post Checkout .github and .agents folders\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":41,\"started_at\":\"2026-10-09T10:30:13Z\",\"completed_at\":\"2026-10-09T10:30:14Z\"},{\"name\":\"Post Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":42,\"started_at\":\"2026-10-09T10:30:14Z\",\"completed_at\":\"2026-10-09T10:30:14Z\"},{\"name\":\"Complete job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":43,\"started_at\":\"2026-10-09T10:30:14Z\",\"completed_at\":\"2026-10-09T10:30:14Z\"}]},{\"id\":113778789435,\"run_id\":37917962742,\"run_attempt\":1,\"name\":\"agent\",\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"started_at\":\"2026-10-09T10:30:18Z\",\"completed_at\":\"2026-10-09T10:30:33Z\",\"steps\":[{\"name\":\"Set up job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":1,\"started_at\":\"2026-10-09T10:30:19Z\",\"completed_at\":\"2026-10-09T10:30:22Z\"},{\"name\":\"Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":2,\"started_at\":\"2026-10-09T10:30:22Z\",\"completed_at\":\"2026-10-09T10:30:24Z\"},{\"name\":\"Set runtime paths\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":3,\"started_at\":\"2026-10-09T10:30:24Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Mask OTLP telemetry headers\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":4,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Check OTLP telemetry configuration\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":5,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Generate GitHub App token for checkout (0)\",\"status\":\"completed\",\"conclusion\":\"failure\",\"number\":6,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Checkout repository\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":7,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Checkout dream-xin/ai-sdlc\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":8,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Build checkout manifest for safe-outputs handlers\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":9,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Initialize agent execution evidence\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":10,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Create gh-aw temp directory\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":11,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Configure gh CLI for GitHub Enterprise\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":12,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Download activation artifact\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":13,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Configure Git credentials\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":14,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Checkout PR branch\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":15,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Install GitHub Copilot CLI\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":16,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Install AWF binary\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":17,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Generate GitHub App token\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":18,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Determine automatic lockdown mode for GitHub MCP Server\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":19,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Restore agent config folders from base branch\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":20,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Restore inline sub-agents from activation artifact\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":21,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Restore inline skills from activation artifact\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":22,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Download container images\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":23,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Prepare Safe Outputs Directories\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":24,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Generate Safe Outputs Config\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":25,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Generate Safe Outputs Tools\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":26,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Start MCP Gateway\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":27,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Mount MCP servers as CLIs\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":28,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Clean credentials\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":29,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Audit pre-agent workspace\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":30,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Execute GitHub Copilot CLI\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":31,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Detect agent errors\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":32,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Configure Git credentials\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":33,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Copy Copilot session state files to logs\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":34,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Stop MCP Gateway\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":35,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Redact secrets in logs\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":36,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Append agent step summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":37,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Copy Safe Outputs\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":38,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:25Z\"},{\"name\":\"Ingest agent output\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":39,\"started_at\":\"2026-10-09T10:30:25Z\",\"completed_at\":\"2026-10-09T10:30:26Z\"},{\"name\":\"Parse agent logs for step summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":40,\"started_at\":\"2026-10-09T10:30:26Z\",\"completed_at\":\"2026-10-09T10:30:26Z\"},{\"name\":\"Parse MCP Gateway logs for step summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":41,\"started_at\":\"2026-10-09T10:30:26Z\",\"completed_at\":\"2026-10-09T10:30:26Z\"},{\"name\":\"Print firewall logs\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":42,\"started_at\":\"2026-10-09T10:30:26Z\",\"completed_at\":\"2026-10-09T10:30:26Z\"},{\"name\":\"Parse token usage for step summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":43,\"started_at\":\"2026-10-09T10:30:26Z\",\"completed_at\":\"2026-10-09T10:30:26Z\"},{\"name\":\"Print AWF reflect summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":44,\"started_at\":\"2026-10-09T10:30:26Z\",\"completed_at\":\"2026-10-09T10:30:26Z\"},{\"name\":\"Generate observability summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":45,\"started_at\":\"2026-10-09T10:30:26Z\",\"completed_at\":\"2026-10-09T10:30:27Z\"},{\"name\":\"Write agent output placeholder if missing\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":46,\"started_at\":\"2026-10-09T10:30:27Z\",\"completed_at\":\"2026-10-09T10:30:27Z\"},{\"name\":\"Upload agent output fallback artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":47,\"started_at\":\"2026-10-09T10:30:27Z\",\"completed_at\":\"2026-10-09T10:30:28Z\"},{\"name\":\"Upload agent artifacts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":48,\"started_at\":\"2026-10-09T10:30:28Z\",\"completed_at\":\"2026-10-09T10:30:29Z\"},{\"name\":\"Post Generate GitHub App token for checkout (0)\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":95,\"started_at\":\"2026-10-09T10:30:29Z\",\"completed_at\":\"2026-10-09T10:30:29Z\"},{\"name\":\"Post Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":96,\"started_at\":\"2026-10-09T10:30:29Z\",\"completed_at\":\"2026-10-09T10:30:29Z\"},{\"name\":\"Complete job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":97,\"started_at\":\"2026-10-09T10:30:29Z\",\"completed_at\":\"2026-10-09T10:30:29Z\"}]},{\"id\":113778892780,\"run_id\":37917962742,\"run_attempt\":1,\"name\":\"detection\",\"status\":\"completed\",\"conclusion\":\"success\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"started_at\":\"2026-10-09T10:30:35Z\",\"completed_at\":\"2026-10-09T10:31:06Z\",\"steps\":[{\"name\":\"Set up job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":1,\"started_at\":\"2026-10-09T10:30:36Z\",\"completed_at\":\"2026-10-09T10:30:39Z\"},{\"name\":\"Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":2,\"started_at\":\"2026-10-09T10:30:39Z\",\"completed_at\":\"2026-10-09T10:30:40Z\"},{\"name\":\"Download activation artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":3,\"started_at\":\"2026-10-09T10:30:40Z\",\"completed_at\":\"2026-10-09T10:30:41Z\"},{\"name\":\"Download agent output artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":4,\"started_at\":\"2026-10-09T10:30:41Z\",\"completed_at\":\"2026-10-09T10:30:42Z\"},{\"name\":\"Setup agent output environment variable\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":5,\"started_at\":\"2026-10-09T10:30:42Z\",\"completed_at\":\"2026-10-09T10:30:42Z\"},{\"name\":\"Checkout repository for patch context\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":6,\"started_at\":\"2026-10-09T10:30:42Z\",\"completed_at\":\"2026-10-09T10:30:42Z\"},{\"name\":\"Initialize detection execution evidence\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":7,\"started_at\":\"2026-10-09T10:30:42Z\",\"completed_at\":\"2026-10-09T10:30:42Z\"},{\"name\":\"Clear inherited Copilot session state\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":8,\"started_at\":\"2026-10-09T10:30:42Z\",\"completed_at\":\"2026-10-09T10:30:42Z\"},{\"name\":\"Clean stale firewall files from agent artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":9,\"started_at\":\"2026-10-09T10:30:42Z\",\"completed_at\":\"2026-10-09T10:30:42Z\"},{\"name\":\"Download container images\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":10,\"started_at\":\"2026-10-09T10:30:42Z\",\"completed_at\":\"2026-10-09T10:30:53Z\"},{\"name\":\"Check if detection needed\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":11,\"started_at\":\"2026-10-09T10:30:53Z\",\"completed_at\":\"2026-10-09T10:30:53Z\"},{\"name\":\"Clear MCP Config for detection\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":12,\"started_at\":\"2026-10-09T10:30:53Z\",\"completed_at\":\"2026-10-09T10:30:53Z\"},{\"name\":\"Prepare threat detection files\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":13,\"started_at\":\"2026-10-09T10:30:53Z\",\"completed_at\":\"2026-10-09T10:30:53Z\"},{\"name\":\"Setup threat detection\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":14,\"started_at\":\"2026-10-09T10:30:53Z\",\"completed_at\":\"2026-10-09T10:30:53Z\"},{\"name\":\"Ensure threat-detection directory and log\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":15,\"started_at\":\"2026-10-09T10:30:53Z\",\"completed_at\":\"2026-10-09T10:30:53Z\"},{\"name\":\"Install AWF binary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":16,\"started_at\":\"2026-10-09T10:30:53Z\",\"completed_at\":\"2026-10-09T10:30:54Z\"},{\"name\":\"Setup Node.js\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":17,\"started_at\":\"2026-10-09T10:30:54Z\",\"completed_at\":\"2026-10-09T10:30:54Z\"},{\"name\":\"Install GitHub Copilot CLI\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":18,\"started_at\":\"2026-10-09T10:30:54Z\",\"completed_at\":\"2026-10-09T10:31:03Z\"},{\"name\":\"Install threat-detect binary\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":19,\"started_at\":\"2026-10-09T10:31:03Z\",\"completed_at\":\"2026-10-09T10:31:03Z\"},{\"name\":\"Execute threat detection with AWF\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":20,\"started_at\":\"2026-10-09T10:31:03Z\",\"completed_at\":\"2026-10-09T10:31:03Z\"},{\"name\":\"Render detection log\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":21,\"started_at\":\"2026-10-09T10:31:03Z\",\"completed_at\":\"2026-10-09T10:31:03Z\"},{\"name\":\"Copy detection firewall logs\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":22,\"started_at\":\"2026-10-09T10:31:03Z\",\"completed_at\":\"2026-10-09T10:31:03Z\"},{\"name\":\"Parse threat detection token usage for step summary\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":23,\"started_at\":\"2026-10-09T10:31:03Z\",\"completed_at\":\"2026-10-09T10:31:03Z\"},{\"name\":\"Upload threat detection artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":24,\"started_at\":\"2026-10-09T10:31:03Z\",\"completed_at\":\"2026-10-09T10:31:04Z\"},{\"name\":\"Conclude threat detection\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":25,\"started_at\":\"2026-10-09T10:31:04Z\",\"completed_at\":\"2026-10-09T10:31:04Z\"},{\"name\":\"Post Setup Node.js\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":49,\"started_at\":\"2026-10-09T10:31:04Z\",\"completed_at\":\"2026-10-09T10:31:04Z\"},{\"name\":\"Post Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":50,\"started_at\":\"2026-10-09T10:31:04Z\",\"completed_at\":\"2026-10-09T10:31:04Z\"},{\"name\":\"Complete job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":51,\"started_at\":\"2026-10-09T10:31:04Z\",\"completed_at\":\"2026-10-09T10:31:04Z\"}]},{\"id\":113779083838,\"run_id\":37917962742,\"run_attempt\":1,\"name\":\"safe_outputs\",\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"started_at\":\"2026-10-09T10:31:12Z\",\"completed_at\":\"2026-10-09T10:31:40Z\",\"steps\":[{\"name\":\"Set up job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":1,\"started_at\":\"2026-10-09T10:31:13Z\",\"completed_at\":\"2026-10-09T10:31:20Z\"},{\"name\":\"Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":2,\"started_at\":\"2026-10-09T10:31:20Z\",\"completed_at\":\"2026-10-09T10:31:34Z\"},{\"name\":\"Mask OTLP telemetry headers\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":3,\"started_at\":\"2026-10-09T10:31:34Z\",\"completed_at\":\"2026-10-09T10:31:34Z\"},{\"name\":\"Download agent output artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":4,\"started_at\":\"2026-10-09T10:31:34Z\",\"completed_at\":\"2026-10-09T10:31:36Z\"},{\"name\":\"Setup agent output environment variable\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":5,\"started_at\":\"2026-10-09T10:31:36Z\",\"completed_at\":\"2026-10-09T10:31:36Z\"},{\"name\":\"Generate GitHub App token\",\"status\":\"completed\",\"conclusion\":\"failure\",\"number\":6,\"started_at\":\"2026-10-09T10:31:36Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"},{\"name\":\"Configure GH_HOST for enterprise compatibility\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":7,\"started_at\":\"2026-10-09T10:31:37Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"},{\"name\":\"Process Safe Outputs\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":8,\"started_at\":\"2026-10-09T10:31:37Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"},{\"name\":\"Upload Safe Outputs Items\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":9,\"started_at\":\"2026-10-09T10:31:37Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"},{\"name\":\"Post Generate GitHub App token\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":17,\"started_at\":\"2026-10-09T10:31:37Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"},{\"name\":\"Post Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":18,\"started_at\":\"2026-10-09T10:31:37Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"},{\"name\":\"Complete job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":19,\"started_at\":\"2026-10-09T10:31:37Z\",\"completed_at\":\"2026-10-09T10:31:37Z\"}]},{\"id\":113779278658,\"run_id\":37917962742,\"run_attempt\":1,\"name\":\"conclusion\",\"status\":\"completed\",\"conclusion\":\"failure\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"started_at\":\"2026-10-09T10:31:43Z\",\"completed_at\":\"2026-10-09T10:32:03Z\",\"steps\":[{\"name\":\"Set up job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":1,\"started_at\":\"2026-10-09T10:31:45Z\",\"completed_at\":\"2026-10-09T10:31:50Z\"},{\"name\":\"Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":2,\"started_at\":\"2026-10-09T10:31:50Z\",\"completed_at\":\"2026-10-09T10:31:58Z\"},{\"name\":\"Dispatch non-authoritative Gate-role recommendation to trusted collector\",\"status\":\"completed\",\"conclusion\":\"failure\",\"number\":3,\"started_at\":\"2026-10-09T10:31:58Z\",\"completed_at\":\"2026-10-09T10:31:58Z\"},{\"name\":\"Generate GitHub App token\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":4,\"started_at\":\"2026-10-09T10:31:58Z\",\"completed_at\":\"2026-10-09T10:31:58Z\"},{\"name\":\"Download agent output artifact\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":5,\"started_at\":\"2026-10-09T10:31:58Z\",\"completed_at\":\"2026-10-09T10:31:58Z\"},{\"name\":\"Setup agent output environment variable\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":6,\"started_at\":\"2026-10-09T10:31:58Z\",\"completed_at\":\"2026-10-09T10:31:58Z\"},{\"name\":\"Download detection artifact\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":7,\"started_at\":\"2026-10-09T10:31:58Z\",\"completed_at\":\"2026-10-09T10:31:58Z\"},{\"name\":\"Download Safe Outputs Items Manifest\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":8,\"started_at\":\"2026-10-09T10:31:58Z\",\"completed_at\":\"2026-10-09T10:31:59Z\"},{\"name\":\"Collect usage artifact files\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":9,\"started_at\":\"2026-10-09T10:31:59Z\",\"completed_at\":\"2026-10-09T10:31:59Z\"},{\"name\":\"Upload usage artifact\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":10,\"started_at\":\"2026-10-09T10:31:59Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Wait before retrying usage artifact upload\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":11,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Retry upload usage artifact\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":12,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Process no-op messages\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":13,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Log detection run\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":14,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Record missing tool\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":15,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Record incomplete\",\"status\":\"completed\",\"conclusion\":\"skipped\",\"number\":16,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:00Z\"},{\"name\":\"Handle agent failure\",\"status\":\"completed\",\"conclusion\":\"failure\",\"number\":17,\"started_at\":\"2026-10-09T10:32:00Z\",\"completed_at\":\"2026-10-09T10:32:01Z\"},{\"name\":\"Report failed jobs\",\"status\":\"completed\",\"conclusion\":\"failure\",\"number\":18,\"started_at\":\"2026-10-09T10:32:01Z\",\"completed_at\":\"2026-10-09T10:32:01Z\"},{\"name\":\"Post Setup Scripts\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":36,\"started_at\":\"2026-10-09T10:32:01Z\",\"completed_at\":\"2026-10-09T10:32:01Z\"},{\"name\":\"Complete job\",\"status\":\"completed\",\"conclusion\":\"success\",\"number\":37,\"started_at\":\"2026-10-09T10:32:01Z\",\"completed_at\":\"2026-10-09T10:32:01Z\"}]}]},\"artifacts\":{\"total_count\":6,\"artifacts\":[{\"id\":11611241425,\"node_id\":\"MDg6QXJ0aWZhY3QxMTYxMTI0MTQyNQ==\",\"name\":\"activation\",\"size_in_bytes\":1025232,\"url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11611241425\",\"archive_download_url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11611241425/zip\",\"expired\":false,\"digest\":\"sha256:7c05d67c30fd7965159402a9765133adf7128a6bc4b18ec9d380d639597965e5\",\"created_at\":\"2026-10-09T10:30:13Z\",\"updated_at\":\"2026-10-09T10:30:13Z\",\"expires_at\":\"2026-10-10T10:30:12Z\",\"workflow_run\":{\"id\":37917962742,\"repository_id\":1326302284,\"head_repository_id\":1326302284,\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\"}},{\"id\":11610406910,\"node_id\":\"MDg6QXJ0aWZhY3QxMTYxMDQwNjkxMA==\",\"name\":\"detection\",\"size_in_bytes\":570,\"url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610406910\",\"archive_download_url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610406910/zip\",\"expired\":false,\"digest\":\"sha256:ee87864d23b65c8d8e365bb40fa83862224bd7f8006e9a294b624c060aa433a5\",\"created_at\":\"2026-10-09T10:31:04Z\",\"updated_at\":\"2026-10-09T10:31:04Z\",\"expires_at\":\"2027-01-07T10:30:00Z\",\"workflow_run\":{\"id\":37917962742,\"repository_id\":1326302284,\"head_repository_id\":1326302284,\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\"}},{\"id\":11610246782,\"node_id\":\"MDg6QXJ0aWZhY3QxMTYxMDI0Njc4Mg==\",\"name\":\"info\",\"size_in_bytes\":622,\"url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610246782\",\"archive_download_url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610246782/zip\",\"expired\":false,\"digest\":\"sha256:4779b36bcc5bb37f9c02a0a4456bbd75f217f3e9af0ab4daee6b90af4da028f7\",\"created_at\":\"2026-10-09T10:30:12Z\",\"updated_at\":\"2026-10-09T10:30:12Z\",\"expires_at\":\"2027-01-07T10:30:00Z\",\"workflow_run\":{\"id\":37917962742,\"repository_id\":1326302284,\"head_repository_id\":1326302284,\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\"}},{\"id\":11610121887,\"node_id\":\"MDg6QXJ0aWZhY3QxMTYxMDEyMTg4Nw==\",\"name\":\"agent-output-fallback\",\"size_in_bytes\":170,\"url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610121887\",\"archive_download_url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610121887/zip\",\"expired\":false,\"digest\":\"sha256:35f7a8ac45d6504ac9c5304e712244c40c6546f644b1c6ee7a854ebc44bc7cac\",\"created_at\":\"2026-10-09T10:30:28Z\",\"updated_at\":\"2026-10-09T10:30:28Z\",\"expires_at\":\"2027-01-07T10:30:00Z\",\"workflow_run\":{\"id\":37917962742,\"repository_id\":1326302284,\"head_repository_id\":1326302284,\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\"}},{\"id\":11610087162,\"node_id\":\"MDg6QXJ0aWZhY3QxMTYxMDA4NzE2Mg==\",\"name\":\"usage\",\"size_in_bytes\":445,\"url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610087162\",\"archive_download_url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610087162/zip\",\"expired\":false,\"digest\":\"sha256:a58fa2cc17fe2ceee180d9308afce2336891b2215413cd7826af4bfdcecfdd08\",\"created_at\":\"2026-10-09T10:32:00Z\",\"updated_at\":\"2026-10-09T10:32:00Z\",\"expires_at\":\"2027-01-07T10:30:00Z\",\"workflow_run\":{\"id\":37917962742,\"repository_id\":1326302284,\"head_repository_id\":1326302284,\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\"}},{\"id\":11610061858,\"node_id\":\"MDg6QXJ0aWZhY3QxMTYxMDA2MTg1OA==\",\"name\":\"agent\",\"size_in_bytes\":1372,\"url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610061858\",\"archive_download_url\":\"https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/artifacts/11610061858/zip\",\"expired\":false,\"digest\":\"sha256:c96cfcde2ae9dc34583d2ce975ede2c19ebd20317db1d068f2ff9b13ca0bf1ee\",\"created_at\":\"2026-10-09T10:30:29Z\",\"updated_at\":\"2026-10-09T10:30:29Z\",\"expires_at\":\"2027-01-07T10:30:00Z\",\"workflow_run\":{\"id\":37917962742,\"repository_id\":1326302284,\"head_repository_id\":1326302284,\"head_branch\":\"main\",\"head_sha\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\"}}]},\"comments\":[]}")
+    feature_manifest_text = "protocol_version: 0.1.0\nrevision: 3\nfeature:\n  id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001\n  title: 'v0.3 release dogfood: happy_path'\n  risk: low\n  issue: '#342'\nworkflow:\n  profile: v03-release-dogfood\n  status: ACTIVE\n  current_stage: code-review\n  stages:\n  - id: implementation\n    status: DONE\n  - id: code-review\n    status: WORKING\n    gate: code-gate\n  - id: verification\n    status: TODO\n    gate: verification-gate\n  - id: acceptance\n    status: TODO\n    gate: release-gate\ntasks: []\nartifacts:\n- id: dogfood-scenario-task\n  type: dogfood-task\n  uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/dogfood-task.md\n  status: draft\n- id: vertical-artifact-3ac60f9b63c79ca4168c\n  status: draft\n  type: implementation\n  uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/worker-runs/vertical-31df3f1ed41b54c58ed4c4030a9f97d9/developer-pr-577-a7b208a49668fb9ae16de908a52418106c616819-binding-52d3fc01396e496b5930f8bbb95ded34b3506e457e5ec867de2d8298c8e6a91c--first-attempt--key-dispatch-86e969e947932b9dd38c608ca80333714c3396d2--run-37905505035--head-6e75792b8e441167cfaadab2d13667a2d80721b8--lease-008fa9d6a8dc823366cf1d367b048cae6e26bfa3db8c18a00448daf1793679e4.json\ngates:\n- id: code-gate\n  status: PENDING\n- id: verification-gate\n  status: PENDING\n- id: release-gate\n  status: PENDING\nevidence: []\napplied_events:\n- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-IMPLEMENTATION-START\n- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-IMPLEMENTATION-DONE-454A443721B6\n- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD\nupdated_at: '2026-10-09T10:24:20Z'\n"
+    feature_manifest_blob = "b4191ea1f9d83ee78ec80655d6332e44960a0b3f"
+    feature_documents = json.loads("{\"state/events/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD.yaml\":{\"text\":\"changes:\\n- id: code-review\\n  kind: stage\\n  status: WORKING\\nexpected_revision: 2\\nfeature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001\\nid: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD\\noccurred_at: '2026-10-09T10:24:20Z'\\nversion: 0.1.0\\n\",\"sha\":\"56ef88ef4f05ac2d8d95b7260f3b947019c3f508\"},\"state/events/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-IMPLEMENTATION-DONE-454A443721B6.yaml\":{\"text\":\"changes:\\n- kind: artifact-record\\n  record:\\n    id: vertical-artifact-3ac60f9b63c79ca4168c\\n    status: draft\\n    type: implementation\\n    uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/worker-runs/vertical-31df3f1ed41b54c58ed4c4030a9f97d9/developer-pr-577-a7b208a49668fb9ae16de908a52418106c616819-binding-52d3fc01396e496b5930f8bbb95ded34b3506e457e5ec867de2d8298c8e6a91c--first-attempt--key-dispatch-86e969e947932b9dd38c608ca80333714c3396d2--run-37905505035--head-6e75792b8e441167cfaadab2d13667a2d80721b8--lease-008fa9d6a8dc823366cf1d367b048cae6e26bfa3db8c18a00448daf1793679e4.json\\n- id: implementation\\n  kind: stage\\n  status: DONE\\n- id: code-review\\n  kind: stage\\n  status: READY\\nexpected_revision: 1\\nfeature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001\\nid: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-IMPLEMENTATION-DONE-454A443721B6\\noccurred_at: '2026-10-09T10:20:40Z'\\nversion: 0.1.0\\n\",\"sha\":\"261fe74650e30e39402d90b5d6450f66d319e446\"},\"state/events/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-IMPLEMENTATION-START.yaml\":{\"text\":\"version: 0.1.0\\nid: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-IMPLEMENTATION-START\\nfeature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001\\nexpected_revision: 0\\noccurred_at: '2026-08-25T07:21:01Z'\\nchanges:\\n- kind: artifact-record\\n  record:\\n    id: dogfood-scenario-task\\n    type: dogfood-task\\n    uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/dogfood-task.md\\n    status: draft\\n- kind: stage\\n  id: implementation\\n  status: WORKING\\n\",\"sha\":\"bf9b49488887bb1f1f8c4433ff5f964557da6f69\"}}")
+    historical_commits = json.loads("[{\"sha\":\"f9b5bbbec9a18ac64c2c6cb7bc2780c168d71397\",\"parent\":\"a7b208a49668fb9ae16de908a52418106c616819\",\"files\":[{\"filename\":\"state/events/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-IMPLEMENTATION-DONE-454A443721B6.yaml\",\"sha\":\"261fe74650e30e39402d90b5d6450f66d319e446\",\"status\":\"added\"}]},{\"sha\":\"b36fbee5bb4397249ce1382b90f45dcd33a6265d\",\"parent\":\"f9b5bbbec9a18ac64c2c6cb7bc2780c168d71397\",\"files\":[{\"filename\":\"state/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001.yaml\",\"sha\":\"f9950d13efce0bcf1ffd53a9b1e8d13cc1f89aa3\",\"status\":\"modified\"}]},{\"sha\":\"70c666436d711f3333687a1fe765a7dcb8a504b6\",\"parent\":\"b36fbee5bb4397249ce1382b90f45dcd33a6265d\",\"files\":[{\"filename\":\"state/events/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD.yaml\",\"sha\":\"56ef88ef4f05ac2d8d95b7260f3b947019c3f508\",\"status\":\"added\"}]},{\"sha\":\"41e0df7089c5907b00bbaeac5dd2be71d4f02d4b\",\"parent\":\"70c666436d711f3333687a1fe765a7dcb8a504b6\",\"files\":[{\"filename\":\"state/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001.yaml\",\"sha\":\"b4191ea1f9d83ee78ec80655d6332e44960a0b3f\",\"status\":\"modified\"}]}]")
+
+    def blob(raw):
+        return hashlib.sha1(b"blob " + str(len(raw)).encode() + bytes([0]) + raw).hexdigest()
+
+    listed = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", commit, "state/operator/v1",
+         "config/operator/v03-vertical-policy"],
+        cwd=root, check=True, capture_output=True, text=True).stdout.splitlines()
+    raw_files = {path: subprocess.run(
+        ["git", "show", commit + ":" + path], cwd=root, check=True, capture_output=True).stdout
+        for path in listed if path.endswith(".json")}
+    expect(all(path in raw_files and blob(raw_files[path]) == sha for path, sha in pins.items()),
+           "Reviewer fixture changed its exact historical Store/sidecar documents")
+    snapshot = StoreSnapshot(commit, {path: json.loads(raw) for path, raw in raw_files.items()})
+    events = operation_events(snapshot, operation_id)
+    projection = vertical_projection(snapshot, operation_id)
+    expect(len(events) == 30 and projection["generation"] == 1
+           and projection["status"] == "WAITING_EXTERNAL" and projection["expected_feature_revision"] == 3,
+           "Reviewer fixture is not the frozen thirty-event code-review wait")
+    expect(events[-1]["event_type"] == "dispatch.launch.lookup-recorded"
+           and events[-1]["payload"]["lookup_state"] == "LAUNCHED"
+           and str(events[-1]["payload"]["receipt_id"]) == "37917962742"
+           and events[-1]["payload"]["external_dispatch_key"]
+               == "dispatch-3d9202e579f855d0d36bdaaf1872dec1a2b84a28",
+           "Reviewer fixture changed its original logical launch receipt")
+    expect(blob(feature_manifest_text.encode()) == feature_manifest_blob,
+           "Reviewer fixture manifest bytes changed")
+    manifest = yaml.safe_load(feature_manifest_text)
+    expect(manifest["revision"] == 3 and manifest["workflow"]["current_stage"] == "code-review"
+           and next(row for row in manifest["workflow"]["stages"] if row["id"] == "code-review")["status"] == "WORKING",
+           "Reviewer fixture must begin at actual revision-three code-review state")
+    feature_event_files = {}
+    for path, document in feature_documents.items():
+        raw = document["text"].encode()
+        expect(blob(raw) == document["sha"], "historical Feature Event bytes changed")
+        event = yaml.safe_load(raw)
+        expect(event["id"] in manifest["applied_events"],
+               "historical Event is not in frozen Feature applied-events")
+        feature_event_files[path] = raw
+
+    provider.snapshot = snapshot
+    state = provider.state
+    state["head"] = head
+    state["reviewer_observed"] = observed
+    state["reviewer_predecessor_commit"] = commit
+    state["reviewer_frozen_events"] = deepcopy(events)
+    for row in historical_commits:
+        expect(len(row["files"]) == 1, "frozen Persist commit changed more than its one expected file")
+        state["parents"][row["sha"]] = row["parent"]
+        state["changes"][row["sha"]] = deepcopy(row["files"][0])
+    old_http = provider.http
+
+    def response(value):
+        return 200, {}, value if isinstance(value, bytes) else json.dumps(value).encode()
+
+    def paginate(rows, query):
+        page = int(query.get("page", ["1"])[0])
+        per_page = int(query.get("per_page", ["100"])[0])
+        expect(page > 0 and 1 <= per_page <= 100, "fake provider received malformed pagination")
+        return deepcopy(rows[(page - 1) * per_page:page * per_page])
+
+    def http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        prefix = "/repos/" + repository
+        expect(parsed.scheme == "https" and parsed.netloc == "api.github.com"
+               and parsed.path.lower().startswith(prefix + "/"),
+               "Reviewer fixture escaped exact GitHub repository")
+        path = unquote(parsed.path[len(prefix):])
+        query = parse_qs(parsed.query)
+        expect(method == "GET", "frozen Reviewer provider attempted a new external effect: " + method)
+        old_run = state["reviewer_observed"]["run"]
+        old_id = int(old_run["id"])
+        if path in {f"/actions/runs/{old_id}", f"/actions/runs/{old_id}/attempts/1"}:
+            state["calls"].append((method, path))
+            return response(deepcopy(old_run))
+        if path in {f"/actions/runs/{old_id}/jobs", f"/actions/runs/{old_id}/attempts/1/jobs"}:
+            state["calls"].append((method, path))
+            payload = state["reviewer_observed"]["jobs"]
+            return response({"total_count": payload["total_count"], "jobs": paginate(payload["jobs"], query)})
+        if path == f"/actions/runs/{old_id}/artifacts":
+            state["calls"].append((method, path))
+            payload = state["reviewer_observed"]["artifacts"]
+            return response({"total_count": payload["total_count"], "artifacts": paginate(payload["artifacts"], query)})
+        if path == "/actions/jobs/113778789435/logs":
+            return 200, {}, b"2026-10-09T10:30:25.1467564Z Error: The 'private-key' input must be set to a non-empty string. If using a secret or variable, ensure it is available in this workflow context.\\n"
+        if path.startswith("/actions/workflows/") and path.endswith("/runs"):
+            state["calls"].append((method, path))
+            workflow = path[len("/actions/workflows/"):-len("/runs")]
+            rows = [row for row in (old_run, state["observed"]["run"])
+                    if workflow in {row["path"].rsplit("/", 1)[-1], str(row["workflow_id"])}]
+            return response({"total_count": len(rows), "workflow_runs": paginate(rows, query)})
+        if path == "/actions/runs":
+            state["calls"].append((method, path))
+            rows = [old_run, state["observed"]["run"]]
+            return response({"total_count": len(rows), "workflow_runs": paginate(rows, query)})
+        if path == "/issues/552/comments":
+            state["calls"].append((method, path))
+            return response(paginate(state["reviewer_observed"]["comments"], query))
+        if path.startswith("/contents/"):
+            content_path = path[len("/contents/"):]
+            ref = query.get("ref", [None])[0]
+            if ref == head and (content_path == manifest_path or content_path in feature_event_files):
+                state["calls"].append((method, path))
+                raw = feature_manifest_text.encode() if content_path == manifest_path else feature_event_files[content_path]
+                return response({"type": "file", "path": content_path, "name": content_path.rsplit("/", 1)[-1],
+                    "encoding": "base64", "content": base64.b64encode(raw).decode(),
+                    "sha": blob(raw), "size": len(raw)})
+        return old_http(method=method, url=url, token=token, body=body)
+
+    provider.http = http
+    provider.feature_manifest_text = feature_manifest_text
+    provider.feature_event_files = feature_event_files
+    provider.feature_manifest_blob = feature_manifest_blob
+    provider.frozen_events = deepcopy(events)
+    provider.historical_reviewer_run = deepcopy(observed["run"])
+    provider.historical_reviewer_jobs = deepcopy(observed["jobs"])
+    return provider
+
+
+def build_reviewer_frozen_feature_fixture(preflight, candidate_provider, provider):
+    """Initialize only the factual revision-three prefix before new transitions.
+
+    The existing fake-HTTP Feature fixture retains its real reducer and real
+    Event/Persist gateways. All replacement Reviewer/QA Events, revision changes,
+    confirmation facts, DONE and Notifications must be produced after this call.
+    """
+    from copy import deepcopy
+    import yaml
+    fixture = build_post_handoff_feature_fixture(
+        preflight, candidate_provider, read_ref=provider.read_ref, advance_ref=provider.advance_ref)
+    expect(not fixture.state["calls"] and fixture.state["puts"] == 0 and fixture.state["applied"] == 0
+           and fixture.state["pending"] is None and not fixture.state["commits"],
+           "historical Feature initialization occurred after execution began")
+    manifest = yaml.safe_load(provider.feature_manifest_text)
+    expect(manifest["revision"] == 3 and manifest["workflow"]["current_stage"] == "code-review",
+           "Reviewer fixture cannot reset or advance the historical Feature")
+    fixture.state["manifest"] = deepcopy(manifest)
+    fixture.state["manifest_text"] = provider.feature_manifest_text
+    fixture.state["files"] = deepcopy(provider.feature_event_files)
+    fixture.state["historical_revision"] = 3
+    fixture.state["historical_applied_event_ids"] = tuple(manifest["applied_events"])
+    return fixture
+
+
+def reviewer_runtime_fixture():
+    import base64
+    import json
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from operator_store_model import StoreSnapshot, operation_events
+    from operator_store_git import MemoryStateRefBackend, CommitResult
+    from operator_store_backends import OperatorStoreRuntime
+    from operator_store_protection import PROTECTED, StaticProtectionVerifier
+    from operator_effect_rollout import ProtectedEffectLineageRolloutVerifier, EffectLineageWriteFence
+    from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
+    from operator_vertical_callback import TrustedVerticalCallbackCoordinator
+    from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector
+    from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
+    from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
+    from v03_dogfood_fixture_pool import require_slot
+    import v03_dogfood_full_composition as composition
+    provider = reviewer_frozen_provider_fixture(base64.b64decode(POST_HANDOFF_ARCHIVE_B64, validate=True))
+    import subprocess
+    from pathlib import Path
+    files = provider.snapshot.files
+    for name in ("effect-lineage-rollout.json", "writer-fence-receipt.json", "effect-resolution-policy.json", "decision-policy.json"):
+        path = "config/operator/v03-vertical-policy/" + name
+        files[path] = json.loads(subprocess.run(["git", "show", composition.REVIEWER_PREDECESSOR_STORE + ":" + path],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True).stdout)
+    policy_path = "config/operator/v03-vertical-policy/"
+    rollout_verifier = ProtectedEffectLineageRolloutVerifier(
+        policy_loader=lambda *_: deepcopy(files[policy_path + "effect-lineage-rollout.json"]),
+        writer_fence_receipt_loader=lambda *_: deepcopy(files[policy_path + "writer-fence-receipt.json"]))
+    rollout = rollout_verifier.verify(repository="dream-xin/ai-sdlc",
+        state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE)
+    resolution = ProtectedEffectResolutionPolicyVerifier(repository="dream-xin/ai-sdlc",
+        state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE,
+        policy_loader=lambda *_: deepcopy(files[policy_path + "effect-resolution-policy.json"]),
+        evidence_fact_loader=lambda *_: (_ for _ in ()).throw(AssertionError("unexpected resolution evidence")))
+    resolution.verify_current()
+    class Backend(MemoryStateRefBackend):
+        def __init__(self):
+            super().__init__(repository="dream-xin/ai-sdlc", state_ref="refs/heads/ai-sdlc-operator-state",
+                             snapshot=deepcopy(provider.snapshot))
+            self.commit_count = 0
+            self.fail_confirmation_once = False
+        def commit(self, plan, receipt):
+            if self.fail_confirmation_once and any(isinstance(m.value, dict)
+                    and m.value.get("event_type") == "persist.confirmed" for m in plan.mutations):
+                self.fail_confirmation_once = False
+                raise OSError("fixture crash before protected Persist confirmation")
+            result = super().commit(plan, receipt)
+            self.commit_count += 1
+            self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
+            return CommitResult(self.snapshot.ref_sha, self.read_snapshot(), result.result)
+    runtime = OperatorStoreRuntime(backend=Backend(), protection_verifier=StaticProtectionVerifier(status=PROTECTED),
+        plan_guard=EffectLineageWriteFence(rollout), clock=lambda: "2026-10-09T09:10:00Z")
+    from v03_dogfood_live_gate import resolve_current_dogfood_bindings
+    from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
+    gate = SimpleNamespace(bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}))
+    workflows = _workflow_map(gate)
+    policy = recovery_policy_fixture()
+    provider.state["controller_source"] = policy.installation_commit_sha
+    source = composition.RecoverySafeOutputGhAwResultSource(
+        GitHubActionsGhAwResultSourceConfig(control_repository="dream-xin/ai-sdlc",
+            control_token="fixture", target_token="fixture", workflows=workflows,
+            collector_identity=composition.COLLECTOR_IDENTITY),
+        target_repository="dream-xin/ai-sdlc", http=provider.http)
+    pf = SimpleNamespace(slot=require_slot("happy_path"), workflows=workflows,
+        candidate_pr_number=552, candidate_head_sha=composition.REVIEWER_CANDIDATE,
+        execution=SimpleNamespace(repository="dream-xin/ai-sdlc", installation_commit_sha=policy.installation_commit_sha),
+        trusted_context_digest="6" * 64,
+        composition=SimpleNamespace(runtime=runtime, policy_authority=policy, recovery_result_source=source))
+    def get_json(url, headers):
+        status, _, raw = provider.http(method="GET", url=url, token="fixture")
+        return status, json.loads(raw)
+    candidate = composition.DogfoodGitHubCandidateProvider(slot=pf.slot, repository=pf.execution.repository,
+        token="fixture", http_get=get_json)
+    candidate.bind_runtime(runtime)
+    feature = build_reviewer_frozen_feature_fixture(pf, candidate, provider)
+    candidate.persist_gateway = feature.persist_gateway
+    pf.historical_gate_runs = [provider.state["reviewer_observed"]["run"], provider.state["observed"]["run"]]
+    gates = build_selected_dogfood_gate_fixture(pf, read_ref=provider.read_ref, fallback_http=provider.http)
+    bindings = _execution_bindings(gate, workflows)
+    dispatch = composition.DogfoodExecutionBoundDispatchGateway(
+        delegate=gates.dispatch_gateway, execution_bindings=bindings)
+    one_shot = StoreBackedOneShotExternalCreateGateway(runtime=runtime, delegate=dispatch,
+        trusted_context_digest=pf.trusted_context_digest, effect_lineage_required=True)
+    loader = composition.DogfoodRecoveryBoundContentLoader(
+        result_source=gates.result_source, recovery_result_source=source, policy_authority=policy)
+    loader.bind_runtime(runtime)
+    source.bind_post_handoff(runtime, policy)
+    base = TrustedVerticalExecutor(runtime=runtime, feature_gateway=feature.feature_gateway,
+        persist_gateway=feature.persist_gateway, dispatch_gateway=one_shot,
+        config=TrustedVerticalExecutorConfig(target_ref=pf.slot.target_ref,
+            trusted_context_digest=pf.trusted_context_digest, effect_lineage_required=True,
+            old_writers_quiesced=True, rollout_policy_digest=rollout.policy_digest,
+            writer_fence_receipt_digest=rollout.writer_fence_receipt_digest, max_auto_steps=64),
+        resolution_policy_verifier=resolution)
+    from pathlib import Path
+    from operator_production_runtime import TrustedOperatorRuntimeConfig, TrustedFeatureBinding
+    from operator_decision_policy import ProtectedDecisionPolicyVerifier
+    from validate_v03_dogfood_runtime_composition import assemble_post_handoff_responses_graph, assert_post_handoff_authority_graph
+    config = TrustedOperatorRuntimeConfig(target_repository=pf.execution.repository,
+        store_repository=pf.execution.repository, installation_ref="main", store_checkout=Path("."),
+        principal="post-handoff-fixture",
+        feature_bindings=(TrustedFeatureBinding(pf.slot.feature_id, pf.slot.target_ref),))
+    decision = ProtectedDecisionPolicyVerifier(repository=config.store_repository, state_ref=config.state_ref,
+        operation_profile=VERTICAL_PROFILE,
+        policy_loader=lambda *_: deepcopy(files[policy_path + "decision-policy.json"]))
+    def reader_get(url, headers):
+        if "/contents/state/features/" in url:
+            return feature.http("GET", url.replace("https://api.github.com", "https://api.github.test"), headers, None)
+        return get_json(url, headers)
+    responses, graph_before = assemble_post_handoff_responses_graph(
+        runtime=runtime, base_executor=base, content_loader=loader, slot=pf.slot, config=config,
+        policy_authority=policy, decision_policy_verifier=decision,
+        trusted_role_policy="fixture-independent-role-policy", collector_namespace_policy="fixture-collector-namespace",
+        reader_http_get=reader_get)
+    executor = responses.operator_bundle.executor
+    delegate = responses.operator_bundle.callback_coordinator
+    predecessor_events = deepcopy(operation_events(runtime.backend.read_snapshot(), composition.RECOVERY_OPERATION_ID))
+    assert_post_handoff_authority_graph(graph_before, responses, policy, predecessor_events=predecessor_events[:15])
+    def forbidden_handoff_http(*args, **kwargs):
+        raise AssertionError("post-handoff reconciliation attempted another fixture PATCH")
+    handoff = composition.DogfoodCandidateHandoff(slot=pf.slot, repository=pf.execution.repository,
+        token="fixture", candidate_provider=candidate, http_request=forbidden_handoff_http)
+    handoff.content_loader = loader
+    coordinator = composition.DogfoodTrustedCallbackCoordinator(delegate=delegate, candidate_handoff=handoff)
+    collector = composition.DogfoodReviewerReplacementCollector(policy_authority=policy,callback_coordinator=coordinator,
+        result_source=gates.result_source, workflows=workflows, control_repository=pf.execution.repository,
+        clock=runtime.clock)
+    recovery_collector = composition.DogfoodRecoveryCollector(callback_coordinator=coordinator,
+        result_source=source, workflows=workflows, control_repository=pf.execution.repository,
+        clock=runtime.clock, policy_authority=policy)
+    pf.composition.__dict__.update(candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
+        result_source=gates.result_source, collector=collector, recovery_collector=recovery_collector,
+        actions_transport=gates.transport, dispatch_gateway=dispatch, bundle=responses.operator_bundle,
+        responses=responses, graph_before=graph_before, predecessor_events=predecessor_events,
+        callback_coordinator=coordinator)
+    return pf, provider, feature, gates, coordinator
+
+
+
+
+def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, feature_fixture,
+                                       read_ref, effect_counts, adapter):
+    """Continue real scenario collection through Reviewer/QA and real finalizer.
+
+    Call immediately after atomic reconciliation, before processing its new callback.
+    The actual Responses host/adapter/start backend must invoke the bound recovering
+    executor. Provider routes alone are fake; all claims, callback facts, translation,
+    Persist and DONE are production.
+    """
+    import json
+    from copy import deepcopy
+    from dataclasses import is_dataclass, replace
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import v03_dogfood_runtime_driver as driver
+    import v03_dogfood_scenario_runner as runner
+    import v03_dogfood_post_run_finalizer as finalizer
+    import v03_dogfood_production_provenance as provenance
+    from operator_store_model import operation_events, digest_json
+    from operator_vertical import VerticalInvariantError
+    from operator_vertical_store import vertical_projection
+
+    h = driver.HISTORICAL_PREHTTP_RECOVERY
+    runtime = preflight.composition.runtime
+    operation_id = h["operation_id"]
+    frozen_prefix = deepcopy(operation_events(runtime.backend.read_snapshot(), operation_id)[:30])
+    before_effects = dict(effect_counts())
+    first_host = build_post_handoff_responses_host(
+        preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
+        session_label="first-observation")
+    crash_expected = runtime.backend.fail_confirmation_once
+    try:
+        first_trace, first_operation, first_status = runner._resume_post_handoff(preflight, first_host.host)
+    except OSError as exc:
+        expect(crash_expected and str(exc) == "fixture crash before protected Persist confirmation",
+               "unexpected error escaped real resume")
+        interrupted = operation_events(runtime.backend.read_snapshot(), operation_id)
+        expect(feature_fixture.state["applied"] == 1
+               and any(e["event_type"] == "persist.linearized" for e in interrupted)
+               and not any(e["event_type"] == "persist.confirmed" for e in interrupted)
+               and not gate_fixture.state["inputs"],
+               "crash fixture did not stop after real provider apply and before Store confirmation")
+        first_host = build_post_handoff_responses_host(
+            preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
+            session_label="after-confirmation-crash")
+        first_trace, first_operation, first_status = runner._resume_post_handoff(preflight, first_host.host)
+    else:
+        expect(not crash_expected, "requested protected confirmation crash was not exercised")
+    expect(first_operation == operation_id and first_status == "WAITING_EXTERNAL"
+           and len(first_host.requests) == 2
+           and feature_fixture.state["manifest"]["revision"] > 1
+           and [row["role"] for row in gate_fixture.state["inputs"]] == ["reviewer"],
+           "first actual host did not persist Developer and stop at one Reviewer")
+    progressed_prefix = deepcopy(operation_events(runtime.backend.read_snapshot(), operation_id))
+    progressed_puts = feature_fixture.state["puts"]
+    host_fixture = build_post_handoff_responses_host(
+        preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
+        session_label="fresh-post-persist")
+
+    scenario = runner.run_scenario(preflight=preflight, host=host_fixture.host)
+    expect(len(host_fixture.requests) == 2
+           and scenario.operation_id == operation_id
+           and scenario.worker_results_consumed == 3
+           and scenario.function_call_ids == (host_fixture.call_id,)
+           and scenario.dispatch_roles == ("developer", "reviewer", "qa"),
+           "actual host/status/resume/scenario entry failed to consume the reconciled prefix exactly once")
+    consumed = scenario.worker_results_consumed
+    assert_post_handoff_done_replay(preflight, adapter=adapter, feature_fixture=feature_fixture,
+        gate_fixture=gate_fixture, effect_counts=effect_counts)
+    projection = vertical_projection(runtime.backend.read_snapshot(), operation_id)
+    expect(projection["status"] == "DONE" and consumed == 3,
+           "actual Reviewer/QA callback and lifecycle paths did not finish DONE")
+    runner._notify_completed(preflight, operation_id)
+    events = operation_events(runtime.backend.read_snapshot(), operation_id)
+    completed_notifications = [e for e in events if e["event_type"] == "notification.created"
+                               and e["payload"].get("notification_type") == "operation.completed"]
+    expect(len(completed_notifications) == 1, "completion replay duplicated standard Notification")
+    done_event = next(e for e in events if e["event_type"] == "operation.done")
+    original_done_id = done_event["event_id"]
+    done_event["event_id"] = "forged-done"
+    try:
+        runner._notify_completed(preflight, operation_id)
+    except (runner.V03DogfoodScenarioRunnerError, __import__("operator_store_model").StoreInvariantError):
+        pass
+    else:
+        raise AssertionError("completion Notification accepted a forged DONE identity")
+    finally:
+        done_event["event_id"] = original_done_id
+
+    expect(events[:len(progressed_prefix)] == progressed_prefix,
+           "fresh actual host rewrote or replayed the confirmed Developer prefix")
+    expect(feature_fixture.state["puts"] > progressed_puts,
+           "fresh actual host did not continue actual downstream Persist")
+    expect(events[:30] == frozen_prefix, "downstream lifecycle rewrote original blocked history")
+    claims = runner._dispatch_rows(preflight, operation_id)
+    expect(tuple(runner._dispatch_role(row) for row in claims) == ("developer", "reviewer", "qa"),
+           "actual continuation repeated or omitted a role")
+    run_ids, receipt = runner._launch_receipts(preflight, operation_id)
+    expect(run_ids == (37905505035, *[row["id"] for row in gate_fixture.state["runs"]]),
+           "scenario receipts lost original successful Developer or added an execution")
+    expect([row["role"] for row in gate_fixture.state["inputs"]] == ["reviewer", "qa"]
+           and gate_fixture.state["inputs"][0]["candidate_head_sha"]
+               != gate_fixture.state["inputs"][1]["candidate_head_sha"]
+           and read_ref() != gate_fixture.state["inputs"][1]["candidate_head_sha"],
+           "fake provider failed to advance candidate head through actual Persist commits")
+    for kind in ("developer_posts", "created_prs", "fixture_patches"):
+        expect(effect_counts()[kind] == before_effects[kind],
+               "downstream continuation repeated forbidden external effect: " + kind)
+    translated = {row["payload"]["feature_event_id"]: row["payload"]
+                  for row in events if row["event_type"] == "feature.event.translated"}
+    confirmed = [row["payload"] for row in events if row["event_type"] == "persist.confirmed"]
+    historical_confirmed = sum(e["event_type"] == "persist.confirmed" for e in frozen_prefix)
+    expect(len(confirmed) - historical_confirmed == feature_fixture.state["applied"]
+           and len(confirmed) - historical_confirmed == feature_fixture.state["puts"]
+           and all(row["feature_event_id"] in translated for row in confirmed),
+           "Store confirmations differ from real Event PUT/reducer applications")
+    expect(feature_fixture.state["manifest"]["revision"] == projection["expected_feature_revision"],
+           "final Feature revision and Store projection diverged")
+    observation = {
+        "scenario": "happy_path", "repository": preflight.execution.repository,
+        "feature_id": h["feature_id"], "target_ref": h["target_ref"],
+        "operation_id": operation_id,
+        "installation_commit_sha": preflight.execution.installation_commit_sha,
+        "candidate_pr_number": h["candidate_pr_number"], "candidate_head_sha": read_ref(),
+        "final_status": "DONE", "workflow_run_ids": list(run_ids),
+        "runtime_receipt_identity": receipt, "repeated_continue_messages": 0,
+        "release_eligible": False, "provenance_verified": False}
+    if is_dataclass(preflight):
+        final_preflight = replace(preflight, candidate_head_sha=read_ref())
+    else:
+        final_preflight = SimpleNamespace(**dict(vars(preflight), candidate_head_sha=read_ref()))
+
+    class Response:
+        status = 200
+        def __init__(self, raw): self.raw = raw
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self): return self.raw
+
+    def fake_urlopen(req, timeout):
+        expect(req.get_method() == "GET", "final provenance attempted provider mutation")
+        status, _, raw = gate_fixture.http(method="GET", url=req.full_url, token="fixture")
+        expect(status == 200, "final provenance escaped fake provider routes")
+        return Response(raw)
+
+    def finalize():
+        return finalizer.finalize(
+            observation=observation, preflight=final_preflight,
+            source_run_id=47905505045, finalizer_run_id=47905505046, github_token="fixture")
+
+    with patch.object(provenance, "urlopen", side_effect=fake_urlopen):
+        record = finalize()
+        expect(record["verdict"] == "PASS" and record["release_eligible"] is True
+               and record["counts"]["human_interventions"] == 4
+               and record["runtime"]["workflow_run_ids"] == list(run_ids),
+               "real Reviewer replacement full pipeline failed final provenance/release validation")
+        required_history = {"https://github.com/dream-xin/ai-sdlc/actions/runs/37917962742",
+                            "https://github.com/dream-xin/ai-sdlc/issues/239#issuecomment-6079239160"}
+        expect(required_history <= {uri.lower() for uri in record["evidence_uris"]},
+               "Reviewer replacement hid its failed predecessor or admission")
+        # Controller-generated stage-start Persist cycles are not arbitrary
+        # extra Worker confirmations. Rehash a forged semantic change so the
+        # finalizer must authenticate its exact trusted transition.
+        controller_rows = [row for row in events if row["event_type"] == "feature.event.translated"
+                           and not row["payload"].get("callback_id")]
+        expect(controller_rows, "full lifecycle omitted controller stage-start events")
+        changed = controller_rows[0]
+        original_payload = deepcopy(changed["payload"])
+        for label in ("orphan-persist", "forged-stage-start"):
+            if label == "orphan-persist":
+                changed["payload"]["feature_event_id"] += "-UNBOUND"
+            else:
+                event_body = changed["payload"]["feature_event"]
+                stage_changes = [item for item in event_body["changes"] if item.get("kind") == "stage"]
+                expect(stage_changes, "controller event did not contain a stage transition")
+                stage_changes[0]["status"] = "DONE"
+                changed["payload"]["feature_event_digest"] = digest_json(event_body)
+            try:
+                finalize()
+            except (finalizer.V03DogfoodPostRunFinalizerError,
+                    provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
+                pass
+            except AssertionError as exc:
+                expect(str(exc).startswith("real dogfood happy_path: trusted provenance "),
+                       "controller-cycle negative failed outside finalizer: " + str(exc))
+            else:
+                raise AssertionError("finalizer accepted " + label)
+            finally:
+                changed["payload"] = deepcopy(original_payload)
+        expect(finalize()["verdict"] == "PASS", "restored controller lifecycle did not reverify")
+        # Only the exact Developer may retain its archived execution source.
+        for run in gate_fixture.state["runs"]:
+            original = run["head_sha"]
+            run["head_sha"] = "6e75792b8e441167cfaadab2d13667a2d80721b8"
+            try:
+                finalize()
+            except (finalizer.V03DogfoodPostRunFinalizerError,
+                    provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
+                pass
+            except AssertionError as exc:
+                expect(str(exc).startswith("real dogfood happy_path: trusted provenance verification failed:")
+                       or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: V03DogfoodPostRunFinalizerError: original callback differs from historical launch/fresh run",
+                       "source mutation failed outside trusted provenance: " + str(exc))
+            else:
+                raise AssertionError("current-source Gate incorrectly inherited archived Developer source")
+            finally:
+                run["head_sha"] = original
+        expect(finalize()["verdict"] == "PASS", "restored full pipeline failed re-verification")
+    print("- real reconciled Developer/Reviewer/QA scenario and canonical Persist finish DONE and finalize")
+    return record
+
+
+
+
+def selected_gate_manifest_negative_tests(gates):
+    """Authenticate actual fake-provider artifacts with the production reader."""
+    import hashlib
+    import io
+    import json
+    import zipfile
+    from copy import deepcopy
+    from operator_vertical import VerticalInvariantError
+
+    source, state = gates.result_source, gates.state
+    routes = state["routes"]
+    expect(len(state["runs"]) == 2, "manifest tests require actual Reviewer and QA results")
+    original_routes = deepcopy(routes)
+    before_posts = deepcopy(state["posts"])
+    for run in state["runs"]:
+        run_id = run["id"]
+        listing_path = f"/actions/runs/{run_id}/artifacts"
+        artifact = routes[listing_path]["artifacts"][0]
+        archive_path = f"/actions/artifacts/{artifact['id']}/zip"
+        with zipfile.ZipFile(io.BytesIO(routes[archive_path])) as archive:
+            entry = json.loads(archive.read("safe-output-items.jsonl").decode().strip())
+        comment = routes[f"/issues/comments/{entry['id']}"]
+        def verify():
+            return source._run_owned_gate_comment(run_id=run_id, source_head_sha=run["head_sha"],
+                comment=comment, candidate_pr_number=entry["number"])
+        proof = verify()
+        expect(proof["comment_id"] == entry["id"] and proof["run_id"] == run_id,
+               "production reader did not authenticate actual run-owned comment")
+        def replace_entry(mutator):
+            altered = deepcopy(entry)
+            mutator(altered)
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w") as archive:
+                archive.writestr("safe-output-items.jsonl", json.dumps(altered) + "\n")
+            raw = output.getvalue()
+            routes[archive_path] = raw
+            current = routes[listing_path]["artifacts"][0]
+            current.update(size_in_bytes=len(raw), digest="sha256:" + hashlib.sha256(raw).hexdigest())
+        mutations = (
+            ("missing run manifest", lambda: routes.__setitem__(listing_path, {"total_count": 0, "artifacts": []})),
+            ("foreign run", lambda: routes[listing_path]["artifacts"][0]["workflow_run"].update(id=run_id+1)),
+            ("foreign producer", lambda: routes[listing_path]["artifacts"][0]["workflow_run"].update(head_sha="0"*40)),
+            ("archive digest", lambda: routes.__setitem__(archive_path, routes[archive_path] + b"tamper")),
+            ("comment identity with valid archive digest", lambda: replace_entry(lambda row: row.update(id=entry["id"]+1))),
+            ("candidate with valid archive digest", lambda: replace_entry(lambda row: row.update(number=entry["number"]+1))),
+        )
+        for label, mutate in mutations:
+            try:
+                mutate()
+                try:
+                    verify()
+                except VerticalInvariantError:
+                    pass
+                else:
+                    raise AssertionError("production Gate manifest reader accepted " + label)
+            finally:
+                routes.clear()
+                routes.update(deepcopy(original_routes))
+        expect(verify() == proof, "restored Gate artifact proof changed")
+    expect(state["posts"] == before_posts, "manifest negative tests dispatched another Worker")
+    print("- selected Reviewer/QA run-owned manifest identity/source/content negatives fail closed")
+
+
+
+def reviewer_replacement_admission_tests():
+    from copy import deepcopy
+    from operator_store import StoreCommandError
+    from operator_store_git import CasConflict
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical import VerticalInvariantError
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    errors = (StoreCommandError, VerticalInvariantError, d.V03DogfoodRuntimeDriverError, ValueError)
+    def reject(pf, gates, feature, label):
+        runtime = pf.composition.runtime
+        before = (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
+                  runtime.backend.commit_count, len(gates.state["posts"]), feature.state["puts"])
+        try:
+            d.recover_reviewer_pre_model(pf)
+        except errors:
+            pass
+        else:
+            raise AssertionError("Reviewer replacement accepted " + label)
+        expect(before == (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
+                          runtime.backend.commit_count, len(gates.state["posts"]), feature.state["puts"]),
+               "Reviewer rejected " + label + " after an unauthorized mutation")
+    for path in c.REVIEWER_PATHS:
+        for value in (None, {}, []):
+            pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+            pf.composition.runtime.backend.snapshot.files[path] = value
+            reject(pf, gates, feature, "partial/null route " + path)
+    for label, mutate in (
+        ("predecessor event", lambda pf,p: operation_events(pf.composition.runtime.backend.snapshot,c.RECOVERY_OPERATION_ID)[29]["payload"].update(receipt_id="1")),
+        ("old attempt two", lambda pf,p: p.state["reviewer_observed"]["run"].update(run_attempt=2)),
+        ("old active", lambda pf,p: p.state["reviewer_observed"]["run"].update(status="in_progress")),
+        ("old source", lambda pf,p: p.state["reviewer_observed"]["run"].update(head_sha="9"*40)),
+        ("candidate drift", lambda pf,p: p.state.update(head="9"*40)),
+        ("new main drift", lambda pf,p: p.state.update(controller_source="9"*40)),
+    ):
+        pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+        mutate(pf,provider)
+        reject(pf,gates,feature,label)
+    for job_name, step_name in (("agent","Execute GitHub Copilot CLI"),("safe_outputs","Process Safe Outputs")):
+        pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+        job = next(j for j in provider.state["reviewer_observed"]["jobs"]["jobs"] if j["name"] == job_name)
+        next(s for s in job["steps"] if s["name"] == step_name)["conclusion"] = "success"
+        reject(pf,gates,feature,"predecessor executed "+step_name)
+
+    pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+    runtime = pf.composition.runtime
+    original = deepcopy(runtime.backend.read_snapshot())
+    proof = d._observe_reviewer_pre_model_failure(pf)
+    binding = c.recovery_execution_binding(pf.composition.policy_authority)
+    def planner(snapshot):
+        return c.plan_reviewer_replacement(snapshot,consumer_binding=binding,
+            worker_blobs=d._reviewer_worker_blobs(),failure_proof=proof)
+    first, second = planner(original), planner(original)
+    expect(len(first.mutations)==2 and all(m.kind=="create_immutable" for m in first.mutations),
+           "Reviewer CAS is not one immutable authorization+consumed claim")
+    runtime.backend.commit(first,runtime.protected_receipt())
+    try: runtime.backend.commit(second,runtime.protected_receipt())
+    except CasConflict: pass
+    else: raise AssertionError("two Reviewer CAS winners")
+    expect(planner(runtime.backend.read_snapshot()).result["acquired"] is False,
+           "Reviewer CAS loser acquired a new creation slot")
+    reject(pf,gates,feature,"crash after claim with no observed run")
+    expect(operation_events(runtime.backend.read_snapshot(),c.RECOVERY_OPERATION_ID)==provider.frozen_events,
+           "Reviewer claim altered original logical launch history")
+    pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+    pf.composition.runtime.backend.inject_conflict_once()
+    result = d.recover_reviewer_pre_model(pf)
+    expect(len(gates.state["posts"]) == 1 and result["sealed"]["run_id"] != c.REVIEWER_FAILED_RUN,
+           "Reviewer CAS retry did not produce one distinct first attempt")
+    before = (pf.composition.runtime.backend.commit_count,len(gates.state["posts"]))
+    d.recover_reviewer_pre_model(pf)
+    expect(before == (pf.composition.runtime.backend.commit_count,len(gates.state["posts"])),
+           "Reviewer sealed replay changed Store or POST count")
+    gates.state["runs"][0]["conclusion"] = "failure"
+    reject(pf,gates,feature,"subsequently failed replacement")
+    pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+    original_http = gates.transport.http
+    lost = {"once":True}
+    def lost_ack(**kwargs):
+        result = original_http(**kwargs)
+        if kwargs["method"] == "POST" and lost["once"]:
+            lost["once"] = False
+            raise OSError("fixture lost dispatch acknowledgement")
+        return result
+    gates.transport.http = lost_ack
+    d.recover_reviewer_pre_model(pf)
+    expect(len(gates.state["posts"]) == 1,"Reviewer acknowledgement loss retried POST")
+    print("- Reviewer fixed CAS, pre-model proof, partial routes, replay and acknowledgement loss fail closed")
+
+
+def reviewer_replacement_full_pipeline_tests():
+    from copy import deepcopy
+    from operator_store_model import operation_events
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    from validate_v03_dogfood_runtime_composition import assert_post_handoff_authority_graph
+    pf, provider, feature, gates, _ = reviewer_runtime_fixture()
+    original = deepcopy(pf.composition.runtime.backend.read_snapshot().files)
+    # The read-only no-sidecar bridge must work before any creation.
+    old = c.validate_reviewer_controller_bridge(pf.composition.runtime.backend.read_snapshot(),
+        c.recovery_execution_binding(pf.composition.policy_authority),inspection_only=True)
+    expect(old["execution_source_head_sha"] == c.REVIEWER_PREDECESSOR_SOURCE,
+           "preclaim bridge silently relabeled old controller source")
+    result = d.recover_reviewer_pre_model(pf)
+    expect(len(gates.state["posts"]) == 1 and result["sealed"]["run_attempt"] == 1,
+           "actual Reviewer transport did not consume exactly one first-attempt slot")
+    expect(operation_events(pf.composition.runtime.backend.read_snapshot(),c.RECOVERY_OPERATION_ID)==provider.frozen_events,
+           "Reviewer physical execution rewrote or fabricated logical launch facts")
+    finish_reviewer_replacement_pipeline_tests(pf,gate_fixture=gates,feature_fixture=feature,
+        read_ref=provider.read_ref,effect_counts=provider.effect_counts,adapter=pf.composition.responses.adapter)
+    snapshot=pf.composition.runtime.backend.read_snapshot()
+    expect(operation_events(snapshot,c.RECOVERY_OPERATION_ID)[:30]==provider.frozen_events,
+           "Reviewer/QA pipeline changed frozen thirty-event history")
+    for path,value in original.items():
+        if "/projections/" not in path and "/operations/" not in path.rsplit("/",1)[-1]:
+            if path.startswith("state/operator/v1/operations/") and path.endswith("/projection.json"):
+                continue
+            expect(snapshot.get(path)==value,"Reviewer pipeline rewrote predecessor "+path)
+    assert_post_handoff_authority_graph(pf.composition.graph_before,pf.composition.responses,
+        pf.composition.policy_authority,predecessor_events=provider.frozen_events[:15])
+    selected_gate_manifest_negative_tests(gates)
+    print("- actual selected Reviewer replacement/status/Persist/QA/Notification/finalizer pipeline passes")
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -4867,6 +6078,9 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("selected paid DeepSeek source/lock contracts", lambda: selected_dogfood_worker_contract_tests(validation_root)),
+        ("Reviewer replacement CAS and authority", reviewer_replacement_admission_tests),
+        ("Reviewer replacement actual full pipeline", reviewer_replacement_full_pipeline_tests),
         ("installation transition", installation_transition_tests),
         ("pre-HTTP recovery fence", prehttp_recovery_fence_tests),
         ("provider revocation", pinned_provider_revocation_tests),
