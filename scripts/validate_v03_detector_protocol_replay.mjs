@@ -135,6 +135,7 @@ async function runCase(options, label, cap, retries) {
   fs.mkdirSync(path.join(root, "home"), {recursive: true});
   fs.mkdirSync(path.join(root, "bin"), {recursive: true});
   fs.symlinkSync(actionsRoot, path.join(root, "runner", "gh-aw", "actions"));
+  fs.symlinkSync("/inputs/prompts", path.join(root, "runner", "gh-aw", "prompts"));
   fs.symlinkSync(copilotBinary, path.join(root, "bin", "copilot"));
   fs.symlinkSync(detectorBinary, path.join(root, "bin", "threat-detect"));
   fs.writeFileSync(path.join(root, "artifacts", "aw-prompts", "prompt.txt"),
@@ -229,6 +230,31 @@ async function runCase(options, label, cap, retries) {
     const startupLog = fs.readFileSync(detectionLog, "utf8");
     const moduleAllowlist = [["shim.cjs","HARNESS_DEP_01"],["error_helpers.cjs","HARNESS_DEP_02"],["actions_secret_masking.cjs","HARNESS_DEP_03"],["messages_core.cjs","HARNESS_DEP_04"],["process_runner.cjs","HARNESS_DEP_05"],["copilot_sdk_sidecar.cjs","HARNESS_DEP_06"],["harness_retry_config.cjs","HARNESS_DEP_07"],["harness_retry_runner.cjs","HARNESS_DEP_08"],["awf_reflect.cjs","HARNESS_DEP_09"],["safeoutputs_cli.cjs","HARNESS_DEP_10"],["permission_denied_helpers.cjs","HARNESS_DEP_11"],["harness_retry_guard.cjs","HARNESS_DEP_12"],["harness_crash_signals.cjs","HARNESS_DEP_13"],["detect_agent_errors.cjs","HARNESS_DEP_14"],["model_fallback.cjs","HARNESS_DEP_15"],["model_costs.cjs","HARNESS_DEP_16"],["resolve_model_alias.cjs","HARNESS_DEP_17"],["ai_credits_context.cjs","HARNESS_DEP_18"]];
     const missingSpecifiers = [...startupLog.matchAll(/Cannot find module ['"]([^'"]+)['"]/g)].map(match => match[1]);
+    const publicSources = fs.readdirSync(actionsRoot).filter(name => /^[a-zA-Z0-9_.-]+\.cjs$/.test(name)).sort();
+    const literalInventory = [];
+    for (const [sourceIndex, name] of publicSources.entries()) {
+      const filename = path.join(actionsRoot, name);
+      ensure(fs.realpathSync(filename).startsWith(fs.realpathSync(actionsRoot) + "/"), "STATIC_INVENTORY_BOUNDARY");
+      const stat = fs.statSync(filename);
+      ensure(stat.isFile() && stat.size < 4 * 1024 * 1024, "STATIC_INVENTORY_BOUND");
+      const source = fs.readFileSync(filename, "utf8");
+      const literals = [...new Set([...source.matchAll(/require\(\s*["']([^"'\n]+)["']\s*\)/g)].map(match => match[1]))].sort();
+      for (const [literalIndex, literal] of literals.entries()) literalInventory.push({sourceIndex, literalIndex, literal});
+    }
+    const staticModuleMatches = [...new Set(missingSpecifiers)].map(specifier => {
+      const matches = literalInventory.filter(entry => specifier === entry.literal ||
+        (entry.literal.startsWith("./") && specifier === path.resolve(actionsRoot, entry.literal)));
+      if (matches.length) return {kind: "PINNED_LITERAL", indices: matches.map(entry => [entry.sourceIndex, entry.literalIndex])};
+      const family = specifier.startsWith(path.join(root, "bin") + "/") ? "FIXTURE_BIN_CHILD" :
+        specifier.startsWith("/inputs/copilot/") ? "INPUT_CLI_CHILD" :
+        specifier.startsWith(actionsRoot + "/") || specifier.startsWith(path.join(root, "runner", "gh-aw", "actions") + "/") ? "ACTIONS_CHILD" :
+        specifier.startsWith(root + "/") ? "CASE_WORKSPACE" :
+        specifier.startsWith("/inputs/") ? "READONLY_INPUT" :
+        specifier.startsWith("/tmp/") ? "TEMPORARY" :
+        specifier.startsWith("/") ? "OTHER_ABSOLUTE" :
+        specifier.startsWith(".") ? "RELATIVE" : "BARE_PACKAGE";
+      return {kind: "UNKNOWN_MODULE", family};
+    });
     const moduleClasses = missingSpecifiers.map(specifier => {
       const entry = moduleAllowlist.find(([name]) => specifier === "./" + name || specifier === path.join(actionsRoot, name));
       if (entry) return entry[1];
@@ -249,7 +275,7 @@ async function runCase(options, label, cap, retries) {
     ].filter(([, pattern]) => pattern.test(startupLog)).map(([name]) => name);
     executionSummary = {detector_exit: execution.code, detector_termination_reason: terminationReason,
       startup_classes: startupClasses.length ? startupClasses : ["UNCLASSIFIED"],
-      missing_module_classes: moduleClasses, missing_direct_dependencies: missingDirectDependencies,
+      missing_module_classes: [...new Set(moduleClasses)], static_module_matches: staticModuleMatches, missing_direct_dependencies: missingDirectDependencies,
       official_prompt_directory_present: fs.existsSync(path.join(root, "runner", "gh-aw", "prompts"))};
     const statsPromise = childMessage(proxy, "stats");
     proxy.send("stats");
