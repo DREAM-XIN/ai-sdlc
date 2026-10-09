@@ -349,6 +349,28 @@ def _plan_handoff_intent(snapshot, *, binding):
         return StoreMutationPlan(snapshot.ref_sha, (), {"intent": existing, "created": False})
     if snapshot.get(applied_path) is not None:
         raise V03DogfoodCompositionError("applied handoff lacks intent")
+    # A different callback cannot race another unresolved handoff on this
+    # same operation/ref. Re-evaluate from each protected CAS snapshot.
+    prefix = f"state/operator/v1/operations/{operation_id}/dogfood-candidate-handoffs/"
+    for path, other in snapshot.files.items():
+        if not path.startswith(prefix) or not path.endswith("/intent.json") or path == intent_path:
+            continue
+        if not isinstance(other, dict):
+            raise V03DogfoodCompositionError("conflicting handoff intent is malformed")
+        other_id = str(other.get("callback_id") or "")
+        fact = read_dogfood_handoff(snapshot, operation_id, other_id)
+        if (fact is None or path != _handoff_paths(operation_id, other_id)[0]
+                or fact["intent"] != other):
+            raise V03DogfoodCompositionError("conflicting handoff intent is incomplete")
+        if fact["intent"]["target_ref"] != binding["target_ref"]:
+            continue
+        translated = {str((event.get("payload") or {}).get("feature_event_id") or "")
+                      for event in events if event.get("event_type") == "feature.event.translated"
+                      and (event.get("payload") or {}).get("callback_id") == other_id}
+        confirmed = {str((event.get("payload") or {}).get("feature_event_id") or "")
+                     for event in events if event.get("event_type") == "persist.confirmed"}
+        if not (translated & confirmed) - {""}:
+            raise V03DogfoodCompositionError("another callback handoff remains unresolved for this target")
     projection = rebuild_projection(snapshot, operation_id)
     if (projection.get("generation") != binding["operation_generation"]
             or projection.get("operation_profile") != VERTICAL_PROFILE

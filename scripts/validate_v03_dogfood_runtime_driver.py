@@ -1600,9 +1600,11 @@ def armed_recovery_source_proof_tests():
         except V03DogfoodRuntimeDriverError: pass
         else: raise AssertionError("source proof accepted drifted/malformed evidence")
     for path, field, value in (
-        (run_path, "run_attempt", 2), (run_path, "head_sha", "0" * 40),
+        (run_path, "run_attempt", 2), (run_path, "run_attempt", True),
+        (run_path, "head_sha", "0" * 40),
         (run_path, "status", "in_progress"), (run_path, "event", "push"),
-        (job_path, "run_attempt", 2), (job_path, "head_sha", "0" * 40),
+        (job_path, "run_attempt", 2), (job_path, "run_attempt", True),
+        (job_path, "head_sha", "0" * 40),
         (job_path, "run_id", 1), (job_path, "conclusion", "success"),
     ):
         changed = deepcopy(facts); changed[path][field] = value; reject(changed)
@@ -1718,6 +1720,56 @@ def recovery_continuation_cas_tests():
             reject(lambda: planner(snapshot), "changed Worker sources")
     print("- protected continuation CAS proves one winner, retry, crash fencing and immutable originals")
 
+
+def recovery_callback_validation_fence_tests(runtime, executor, callback, content_loader):
+    """Real coordinator rejects receipt/Feature drift before any handoff."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from operator_vertical import FeatureSnapshot, VerticalInvariantError
+    from v03_dogfood_full_composition import DogfoodTrustedCallbackCoordinator
+    context = callback["context"]
+    valid_feature = FeatureSnapshot(
+        repository=context.target_repository, feature_id=context.feature_id,
+        target_ref=context.target_ref, revision=context.expected_revision,
+        manifest_digest="", current_stage=context.feature_stage,
+        stages={"implementation": "WORKING"}, gates={}, remediation_tasks=(), artifacts=(),
+        candidate_pr_number=None, candidate_head_sha=context.candidate_head_sha)
+    saved_snapshot, saved_gateway = runtime.backend.snapshot, executor.feature_gateway
+    handoffs = []
+    def forbidden_handoff(**kwargs):
+        handoffs.append(kwargs)
+        raise AssertionError("invalid callback crossed candidate handoff boundary")
+    coordinator = DogfoodTrustedCallbackCoordinator(
+        delegate=SimpleNamespace(executor=executor, content_loader=content_loader),
+        candidate_handoff=SimpleNamespace(adopt=forbidden_handoff))
+    try:
+        for label in ("feature-revision", "receipt-digest"):
+            from dataclasses import replace
+            runtime.backend.snapshot = deepcopy(saved_snapshot)
+            feature = (replace(valid_feature, revision=context.expected_revision + 1)
+                       if label == "feature-revision" else valid_feature)
+            executor.feature_gateway = SimpleNamespace(
+                read_feature=lambda **kwargs: (feature, {}))
+            receipts = deepcopy(callback["receipts"])
+            if label == "receipt-digest":
+                receipts[0]["sha256"] = "0" * 64
+            try:
+                coordinator.handle(
+                    context=context, callback_id="negative-" + label,
+                    worker_payload=callback["worker_payload"], receipts=receipts)
+            except VerticalInvariantError:
+                pass
+            else:
+                raise AssertionError("coordinator accepted invalid " + label)
+            expect(not handoffs, label + " reached handoff or PATCH")
+            added = set(runtime.backend.snapshot.files) - set(saved_snapshot.files)
+            expect(not any("handoff" in path for path in added),
+                   label + " created a handoff sidecar")
+    finally:
+        runtime.backend.snapshot = saved_snapshot
+        executor.feature_gateway = saved_gateway
+
+
 def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback):
     """Real finalizer/provenance/source pipeline over HTTP and Store fixtures only."""
     from copy import deepcopy
@@ -1737,7 +1789,8 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
     from operator_vertical_gh_aw_attempt_binding import FirstAttemptDigestBoundGhAwResultSource
     from operator_vertical_gh_aw_github_source import _GATE_START, _GATE_END
     from operator_vertical_gh_aw_collector import _build_receipts
-    from v03_dogfood_full_composition import DogfoodGitHubCandidateProvider, DogfoodCandidateHandoff
+    from v03_dogfood_full_composition import (
+        DogfoodGitHubCandidateProvider, DogfoodCandidateHandoff, DogfoodRecoveryBoundContentLoader)
 
     runtime = preflight.composition.runtime
     saved_snapshot = runtime.backend.snapshot
@@ -1812,6 +1865,10 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
 
     normal_source = FirstAttemptDigestBoundGhAwResultSource(
         recovery_source.config, target_repository=repository, http=source_http)
+    bound_loader = DogfoodRecoveryBoundContentLoader(
+        result_source=normal_source, recovery_result_source=recovery_source,
+        policy_authority=preflight.composition.policy_authority)
+    bound_loader.bind_runtime(runtime)
     final_preflight = SimpleNamespace(
         execution=preflight.execution, slot=slot, workflows=workflows,
         candidate_pr_number=h["candidate_pr_number"], candidate_head_sha=new_head,
@@ -1895,7 +1952,8 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
                 trusted_context_digest=preflight.trusted_context_digest, legacy_compatibility_mode=True))
         handoff = DogfoodCandidateHandoff(slot=slot, repository=repository, token="fixture",
             candidate_provider=provider, http_request=handoff_http)
-        handoff.content_loader = recovery_source.load_content
+        handoff.content_loader = bound_loader
+        recovery_callback_validation_fence_tests(runtime, executor, developer_callback, bound_loader)
         handoff.adopt(executor=executor, context=dev_context,
             callback_id=developer_callback["callback_id"], receipts=developer_callback["receipts"])
         expect(vertical_projection(runtime.backend.read_snapshot(), operation_id)["generation"] == h["generation"],
@@ -2025,6 +2083,13 @@ def happy_path_recovery_finalization_tests(preflight, sealed, developer_callback
                 except (finalizer.V03DogfoodPostRunFinalizerError,
                         provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
                     pass
+                except AssertionError as exc:
+                    expected_reason = (
+                        "candidate head changed after dogfood evidence was recorded"
+                        if label == "final-candidate-head" else
+                        "real run differs from protected exact-main launch binding")
+                    expect(str(exc) == "real dogfood happy_path: trusted provenance verification failed: " + expected_reason,
+                           "negative finalizer failed for an unexpected assertion: " + str(exc))
                 else:
                     raise AssertionError("actual finalizer accepted tampered " + label)
                 finally:
@@ -2251,6 +2316,31 @@ def bounded_recovery_execution_tests():
         # and receipt materialization. Only the pre-existing projection is a
         # harness input; never replace _validate_run or _build_receipts.
         import v03_dogfood_full_composition as composition_subject
+        bound_loader = composition_subject.DogfoodRecoveryBoundContentLoader(
+            result_source=pf.composition.result_source,
+            recovery_result_source=pf.composition.recovery_result_source,
+            policy_authority=pf.composition.policy_authority)
+        bound_loader.bind_runtime(pf.composition.runtime)
+        expect(isinstance(bound_loader(sealed["safe_output_uri"]), bytes),
+               "production recovery content routing rejected exact sealed output")
+        before_count = pf.composition.runtime.n
+        before_posts = gateway.fixture_http.posts
+        wrong_uri = sealed["safe_output_uri"].replace("--head-" + "5" * 40, "--head-" + "4" * 40)
+        try: bound_loader(wrong_uri)
+        except VerticalInvariantError: pass
+        else: raise AssertionError("production content routing accepted a different recovery URI")
+        live_snapshot = pf.composition.runtime.backend.snapshot
+        without_seal = deepcopy(live_snapshot)
+        del without_seal.files[subject.RECOVERY_RECEIPT_PATH]
+        pf.composition.runtime.backend.snapshot = without_seal
+        try:
+            try: bound_loader(sealed["safe_output_uri"])
+            except VerticalInvariantError: pass
+            else: raise AssertionError("production content routing accepted an unsealed recovery output")
+        finally:
+            pf.composition.runtime.backend.snapshot = live_snapshot
+        expect(pf.composition.runtime.n == before_count and gateway.fixture_http.posts == before_posts,
+               "invalid content routing caused Store or external mutation")
         callback_calls = []
         def callback(**kwargs):
             from operator_vertical import FeatureSnapshot, validate_collected_outputs
@@ -2264,7 +2354,7 @@ def bounded_recovery_execution_tests():
             validated = validate_collected_outputs(
                 context=context, feature=feature, worker_payload=kwargs["worker_payload"],
                 receipts=kwargs["receipts"],
-                content_loader=pf.composition.recovery_result_source.load_content)
+                content_loader=bound_loader)
             expect(len(validated) == 1, "real collected-output validation rejected recovery receipt")
             expect(composition_subject.DogfoodGitHubCandidateProvider._developer_receipt({
                 "collected_outputs": kwargs["receipts"]}) == (901, "7" * 40),
@@ -2275,7 +2365,7 @@ def bounded_recovery_execution_tests():
             executor=SimpleNamespace(
                 runtime=pf.composition.runtime,
                 config=SimpleNamespace(target_ref=h["target_ref"])),
-            content_loader=pf.composition.recovery_result_source.load_content,
+            content_loader=bound_loader,
             handle=callback)
         collector = composition_subject.DogfoodRecoveryCollector(
             callback_coordinator=coordinator,

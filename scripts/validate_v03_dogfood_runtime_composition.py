@@ -335,6 +335,89 @@ def handoff_and_supersession_tests() -> None:
     denied(lambda: adopt(loser), "CAS loser gained original winner mutation authority")
     require(loser.state["patches"] == 0, "CAS loser sent a PATCH")
 
+    # Distinct callback IDs cannot independently adopt against one unresolved fixture handoff.
+    competing_callback = fixture()
+    competing_callback.runtime.commit_replanned(lambda snap: _plan_handoff_intent(
+        snap, binding=_handoff_binding(snap, competing_callback.operation_id, "callback-1", 431)))
+    competing_callback.runtime.commit_replanned(lambda snap: plan_vertical_callback_record(
+        snap, context=competing_callback.context, callback_id="callback-2",
+        worker_payload={"status": "COMPLETED", "summary": "done",
+                        "outputs": [{"label": "implementation", "kind": "artifact"}]},
+        receipts=receipts, occurred_at=now, trusted_context_digest="trusted",
+    ))
+    before_second = competing_callback.backend.read_snapshot()
+    denied(lambda: competing_callback.handoff.adopt(
+        executor=competing_callback.executor, context=competing_callback.context,
+        callback_id="callback-2", receipts=receipts),
+        "different callback ID bypassed the unresolved same-ref handoff")
+    after_second = competing_callback.backend.read_snapshot()
+    second_intent, second_applied = _handoff_paths(competing_callback.operation_id, "callback-2")
+    require(competing_callback.state["patches"] == 0, "competing callback sent a PATCH")
+    require(after_second.get(second_intent) is None and after_second.get(second_applied) is None,
+            "competing callback created sidecar authority")
+    require(after_second.files == before_second.files and after_second.ref_sha == before_second.ref_sha,
+            "rejected competing callback changed protected Store")
+    require(rebuild_projection(after_second, competing_callback.operation_id)["status"] == "RUNNING",
+            "valid two-callback fixture damaged the shared projection")
+
+    # The completed first handoff must not permanently fence a later Developer round.
+    # Seed a distinct, valid later launch using the real planners; sidecar admission
+    # itself still executes through the protected runtime and active write guard.
+    from dataclasses import replace
+    sequential_snapshot = f.backend.read_snapshot()
+    sequential_step = 100
+    first_completed = read_dogfood_handoff(
+        sequential_snapshot, f.operation_id, "callback-1", require_applied=True)
+    require(any(e["event_type"] == "persist.confirmed" and e["payload"]["feature_event_id"] == "EVT-1"
+                for e in operation_events(sequential_snapshot, f.operation_id)),
+            "sequential admission fixture lacks exact predecessor Persist confirmation")
+    def sequential_apply(plan):
+        nonlocal sequential_snapshot, sequential_step
+        sequential_step += 1
+        sequential_snapshot = apply_plan_to_snapshot(
+            sequential_snapshot, plan, new_ref_sha=f"{sequential_step:040x}")
+        return plan.result
+    second_reservation = sequential_apply(plan_vertical_semantic_reservation(
+        sequential_snapshot, operation_id=f.operation_id, generation=0, target_repository=REPOSITORY,
+        feature_id=slot.feature_id, expected_revision=11, current_stage="implementation",
+        task_identity="vertical:implementation:11", role="developer", candidate_head_sha=developer,
+        occurred_at=now, trusted_context_digest="trusted"))
+    second_claim = sequential_apply(plan_dispatch_claim(
+        sequential_snapshot, operation_id=f.operation_id, generation=0,
+        effect_key=second_reservation["semantic_effect_key"],
+        occurred_at=now, trusted_context_digest="trusted"))
+    sequential_apply(plan_authorize_launch(
+        sequential_snapshot, operation_id=f.operation_id, generation=0, claim_id=second_claim["claim_id"],
+        dispatch_id="vertical-dispatch-2", occurred_at=now, trusted_context_digest="trusted",
+        verified_expected_revision=11, verified_stage="implementation", verified_candidate_head_sha=developer))
+    sequential_apply(plan_launch_lookup(
+        sequential_snapshot, operation_id=f.operation_id, generation=0,
+        external_dispatch_key_value=second_claim["external_dispatch_key"], lookup_state="LAUNCHED",
+        receipt_id="9002", occurred_at=now, trusted_context_digest="trusted"))
+    second_context = replace(
+        f.context, semantic_effect_key=second_reservation["semantic_effect_key"],
+        external_dispatch_key=second_claim["external_dispatch_key"], dispatch_id="vertical-dispatch-2",
+        runtime_receipt_identity="9002", expected_revision=11, task_id="vertical:implementation:11",
+        candidate_head_sha=developer)
+    second_uri = f"docs/features/{slot.feature_id}/worker-runs/vertical-dispatch-2/developer-pr-901-{persisted}.json"
+    second_receipts = [dict(receipts[0], trusted_uri=second_uri)]
+    sequential_apply(plan_vertical_callback_record(
+        sequential_snapshot, context=second_context, callback_id="callback-next-round",
+        worker_payload={"status": "COMPLETED", "summary": "second round done",
+                        "outputs": [{"label": "implementation", "kind": "artifact"}]},
+        receipts=second_receipts, occurred_at=now, trusted_context_digest="trusted"))
+    f.backend.snapshot = sequential_snapshot
+    admitted = f.runtime.commit_replanned(lambda snap: _plan_handoff_intent(
+        snap, binding=_handoff_binding(snap, f.operation_id, "callback-next-round", 431))).result
+    require(admitted["created"] is True, "completed predecessor permanently fenced next Developer round")
+    require(admitted["intent"]["prior_candidate_head_sha"] == developer
+            and admitted["intent"]["source_candidate_head_sha"] == persisted,
+            "next round lost distinct candidate lineage")
+    require(read_dogfood_handoff(f.backend.read_snapshot(), f.operation_id, "callback-1", require_applied=True)
+            == first_completed, "next round rewrote first immutable handoff")
+    require(rebuild_projection(f.backend.read_snapshot(), f.operation_id)["status"] == "RUNNING",
+            "sequential sidecar admission damaged shared projection")
+
     divergent = fixture()
     divergent.runtime.commit_replanned(lambda snap: _plan_handoff_intent(
         snap, binding=_handoff_binding(snap, divergent.operation_id, "callback-1", 431)))
@@ -342,6 +425,12 @@ def handoff_and_supersession_tests() -> None:
     denied(lambda: adopt(divergent), "unrelated live head gained handoff authority")
     denied(lambda: candidate(divergent), "unrelated live head was masked to prior")
     require(divergent.state["patches"] == 0, "unrelated head triggered PATCH")
+
+    ambiguous = fixture()
+    denied(lambda: ambiguous.handoff.adopt(
+        executor=ambiguous.executor, context=ambiguous.context, callback_id="callback-1",
+        receipts=receipts + receipts), "ambiguous Developer outputs gained handoff authority")
+    require(ambiguous.state["patches"] == 0, "ambiguous outputs triggered PATCH")
 
     corrupt = fixture()
     corrupt.handoff.content_loader = lambda _uri: b"corrupt"
