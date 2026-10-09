@@ -3857,6 +3857,53 @@ def build_post_handoff_gate_fixture(preflight, *, read_ref, fallback_http):
                            result_source=source, state=state, http=http)
 
 
+def build_post_handoff_responses_host(preflight, *, adapter, expected_revision):
+    """Real Responses host and adapter; only OpenAI HTTP replies are fake."""
+    import json
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from operator_api import API_VERSION
+    from operator_openai_responses import OpenAIResponsesOperatorAdapter
+    from v03_dogfood_openai_host import V03DogfoodOpenAIHostConfig, V03DogfoodOpenAIResponsesHost
+
+    expect(isinstance(adapter, OpenAIResponsesOperatorAdapter),
+           "post-handoff entrypoint test requires the actual Responses adapter")
+    expect(type(expected_revision) is int and expected_revision >= 1,
+           "post-handoff start needs actual trusted Feature revision")
+    call_id = "post-handoff-reobserve-operation-start"
+    responses = [
+        {"id": "resp_post_handoff_start", "status": "completed", "output": [{
+            "type": "function_call", "id": "fc_post_handoff_start", "call_id": call_id,
+            "name": "aisdlc_v1_operation_start", "status": "completed",
+            "arguments": json.dumps({"api_version": API_VERSION,
+                "feature_id": preflight.slot.feature_id,
+                "expected_feature_revision": expected_revision, "mode": "ASSISTED"})}]},
+        {"id": "resp_post_handoff_waiting", "status": "completed", "output": [{
+            "type": "message", "id": "msg_post_handoff_waiting", "role": "assistant",
+            "content": [{"type": "output_text", "text": "The trusted operation reached its durable boundary."}]}]},
+    ]
+    requests = []
+    def post(url, headers, body):
+        expect(url == "https://openai.fixture/v1/responses"
+               and headers["Authorization"] == "Bearer fixture-openai"
+               and body["parallel_tool_calls"] is False and body["tools"],
+               "real Responses host escaped fixed provider request profile")
+        expect(len(requests) < 2, "post-handoff host requested an extra model continuation")
+        requests.append(deepcopy(body))
+        if len(requests) == 2:
+            outputs = [item for item in body["input"] if item.get("type") == "function_call_output"]
+            expect(len(outputs) == 1 and outputs[0]["call_id"] == call_id,
+                   "real adapter did not return the one operation.start result to host")
+            response = json.loads(outputs[0]["output"])
+            expect(response.get("ok") is True, "real operation.start adapter returned error: " + str(response))
+        return 200, responses[len(requests) - 1]
+    host = V03DogfoodOpenAIResponsesHost(
+        config=V03DogfoodOpenAIHostConfig(api_key="fixture-openai", model="fixture-model",
+            api_base="https://openai.fixture/v1", max_tool_turns=2),
+        adapter=adapter, http_post=post)
+    return SimpleNamespace(host=host, requests=requests)
+
+
 def assert_post_handoff_reconciled_callback(preflight, callback, *, coordinator,
                                              feature_fixture, read_source_pr, effect_counts):
     """Execute admitted re-observation through real coordinator and real Persist.
@@ -3937,11 +3984,13 @@ def assert_post_handoff_reconciled_callback(preflight, callback, *, coordinator,
 
 
 def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixture,
-                                       read_ref, effect_counts):
+                                       read_ref, effect_counts, adapter):
     """Continue real scenario collection through Reviewer/QA and real finalizer.
 
-    Must follow assert_post_handoff_reconciled_callback. Provider routes alone are
-    fake; all claims, callback facts, translation, Persist and DONE are production.
+    Call immediately after atomic reconciliation, before processing its new callback.
+    The actual Responses host/adapter/start backend must invoke the bound recovering
+    executor. Provider routes alone are fake; all claims, callback facts, translation,
+    Persist and DONE are production.
     """
     import json
     from copy import deepcopy
@@ -3961,19 +4010,16 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
     operation_id = h["operation_id"]
     frozen_prefix = deepcopy(operation_events(runtime.backend.read_snapshot(), operation_id)[:15])
     before_effects = dict(effect_counts())
-    consumed = 1  # Same Developer execution was consumed by the reconciled observation.
-    for role in ("reviewer", "qa"):
-        projection = vertical_projection(runtime.backend.read_snapshot(), operation_id)
-        expect(projection["status"] == "WAITING_EXTERNAL",
-               "real callback executor did not stop at next Gate launch: " + role)
-        claims = runner._dispatch_rows(preflight, operation_id)
-        expect(len(claims) == consumed + 1 and runner._dispatch_role(claims[-1]) == role,
-               "production scenario selected wrong downstream role")
-        inputs = gate_fixture.state["inputs"][-1]
-        expect(inputs["role"] == role and inputs["candidate_head_sha"] == read_ref()
-               and int(inputs["expected_revision"]) == feature_fixture.state["manifest"]["revision"],
-               "Gate did not bind actual post-Persist candidate/revision")
-        consumed = runner._collect_next(preflight, operation_id, consumed)
+    host_fixture = build_post_handoff_responses_host(
+        preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"])
+    scenario = runner.run_scenario(preflight=preflight, host=host_fixture.host)
+    expect(len(host_fixture.requests) == 2
+           and scenario.operation_id == operation_id
+           and scenario.worker_results_consumed == 3
+           and scenario.function_call_ids == ("post-handoff-reobserve-operation-start",)
+           and scenario.dispatch_roles == ("developer", "reviewer", "qa"),
+           "actual host/start/scenario entry failed to consume the reconciled prefix exactly once")
+    consumed = scenario.worker_results_consumed
     projection = vertical_projection(runtime.backend.read_snapshot(), operation_id)
     expect(projection["status"] == "DONE" and consumed == 3,
            "actual Reviewer/QA callback and lifecycle paths did not finish DONE")
@@ -4156,11 +4202,30 @@ def post_handoff_runtime_fixture():
             old_writers_quiesced=True, rollout_policy_digest=rollout.policy_digest,
             writer_fence_receipt_digest=rollout.writer_fence_receipt_digest, max_auto_steps=64),
         resolution_policy_verifier=resolution)
-    executor = composition.DogfoodPostHandoffRecoveringExecutor(base_executor=base, content_loader=loader,
-        trusted_role_policy="fixture-independent-role-policy", collector_namespace_policy="fixture-collector-namespace")
-    executor.post_handoff_policy_authority = policy
-    delegate = TrustedVerticalCallbackCoordinator(executor=executor, content_loader=loader,
-        trusted_role_policy=executor.trusted_role_policy, collector_namespace_policy=executor.collector_namespace_policy)
+    from pathlib import Path
+    from operator_production_runtime import TrustedOperatorRuntimeConfig, TrustedFeatureBinding
+    from operator_decision_policy import ProtectedDecisionPolicyVerifier
+    from validate_v03_dogfood_runtime_composition import assemble_post_handoff_responses_graph, assert_post_handoff_authority_graph
+    config = TrustedOperatorRuntimeConfig(target_repository=pf.execution.repository,
+        store_repository=pf.execution.repository, installation_ref="main", store_checkout=Path("."),
+        principal="post-handoff-fixture",
+        feature_bindings=(TrustedFeatureBinding(pf.slot.feature_id, pf.slot.target_ref),))
+    decision = ProtectedDecisionPolicyVerifier(repository=config.store_repository, state_ref=config.state_ref,
+        operation_profile=VERTICAL_PROFILE,
+        policy_loader=lambda *_: deepcopy(files[policy_path + "decision-policy.json"]))
+    def reader_get(url, headers):
+        if "/contents/state/features/" in url:
+            return feature.http("GET", url.replace("https://api.github.com", "https://api.github.test"), headers, None)
+        return get_json(url, headers)
+    responses, graph_before = assemble_post_handoff_responses_graph(
+        runtime=runtime, base_executor=base, content_loader=loader, slot=pf.slot, config=config,
+        policy_authority=policy, decision_policy_verifier=decision,
+        trusted_role_policy="fixture-independent-role-policy", collector_namespace_policy="fixture-collector-namespace",
+        reader_http_get=reader_get)
+    executor = responses.operator_bundle.executor
+    delegate = responses.operator_bundle.callback_coordinator
+    predecessor_events = deepcopy(operation_events(runtime.backend.read_snapshot(), composition.RECOVERY_OPERATION_ID))
+    assert_post_handoff_authority_graph(graph_before, responses, policy, predecessor_events=predecessor_events)
     def forbidden_handoff_http(*args, **kwargs):
         raise AssertionError("post-handoff reconciliation attempted another fixture PATCH")
     handoff = composition.DogfoodCandidateHandoff(slot=pf.slot, repository=pf.execution.repository,
@@ -4175,7 +4240,8 @@ def post_handoff_runtime_fixture():
         clock=runtime.clock, policy_authority=policy)
     pf.composition.__dict__.update(candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
         result_source=gates.result_source, collector=collector, recovery_collector=recovery_collector,
-        actions_transport=gates.transport, bundle=SimpleNamespace(executor=executor),
+        actions_transport=gates.transport, bundle=responses.operator_bundle,
+        responses=responses, graph_before=graph_before, predecessor_events=predecessor_events,
         callback_coordinator=coordinator)
     return pf, provider, feature, gates, coordinator
 
@@ -4464,22 +4530,15 @@ def post_handoff_admission_tests():
 
 
 def post_handoff_full_pipeline_tests():
-    from copy import deepcopy
-    from operator_vertical import TrustedDispatchContext
     from v03_dogfood_runtime_driver import reconcile_post_handoff
+    from validate_v03_dogfood_runtime_composition import assert_post_handoff_authority_graph
     pf, provider, feature, gates, coordinator = post_handoff_runtime_fixture()
-    result = reconcile_post_handoff(pf)
-    raw = result["callback"]
-    envelope = raw["trusted_callback_envelope"]
-    callback = {"callback_id": raw["callback_id"],
-        "context": TrustedDispatchContext(**envelope["trusted_context"]),
-        "worker_payload": deepcopy(envelope["worker_payload"]),
-        "receipts": deepcopy(envelope["collected_outputs"])}
-    assert_post_handoff_reconciled_callback(pf, callback, coordinator=coordinator,
-        feature_fixture=feature, read_source_pr=provider.read_source_pr,
-        effect_counts=provider.effect_counts)
+    reconcile_post_handoff(pf)
     finish_post_handoff_pipeline_tests(pf, gate_fixture=gates, feature_fixture=feature,
-        read_ref=provider.read_ref, effect_counts=provider.effect_counts)
+        read_ref=provider.read_ref, effect_counts=provider.effect_counts,
+        adapter=pf.composition.responses.adapter)
+    assert_post_handoff_authority_graph(pf.composition.graph_before, pf.composition.responses,
+        pf.composition.policy_authority, predecessor_events=pf.composition.predecessor_events)
 
 
 
@@ -4533,7 +4592,7 @@ def main():
         ("fixed replacement admission and negatives", fixed_replacement_admission_tests),
         ("fixed replacement full pipeline", replacement_pipeline),
         ("post-handoff admission", post_handoff_admission_tests),
-        ("post-handoff actual callback/Persist pipeline", post_handoff_full_pipeline_tests),
+        ("post-handoff actual host/Persist pipeline", post_handoff_full_pipeline_tests),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
     for name, execute in groups:
