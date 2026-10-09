@@ -1904,6 +1904,11 @@ def reconcile_post_handoff(preflight):
     def planner(current):
         if not post_handoff_present(current):
             _require_recovery_execution_source(preflight, binding["execution_source_head_sha"])
+            source.resolve(external_dispatch_key=sealed["recovery_dispatch_key"],
+                expected_receipt_identity=str(POST_HANDOFF_RUN), trusted_context=trusted)
+            _, _, fresh_closed, fresh_historical = observe_post_handoff_pr(source, current)
+            if fresh_closed != closed or fresh_historical != historical:
+                raise V03DogfoodRuntimeDriverError("post-handoff proof changed before CAS")
             ref = source._json(preflight.execution.repository,
                 "/git/ref/heads/" + parse.quote(sealed["target_ref"], safe=""), source.config.target_token)
             if not isinstance(ref, dict) or (ref.get("object") or {}).get("sha") != POST_HANDOFF_HEAD:
