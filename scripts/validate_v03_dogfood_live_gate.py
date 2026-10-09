@@ -44,8 +44,8 @@ def ready_env():
     }
     for identity in credential_identities(registry):
         env[f"HAS_{identity}"] = "false"
-    # Reproduce the current production fallback shape: Developer uses
-    # Copilot, Reviewer uses DeepSeek, and QA uses first-choice Gemini.
+    # Other configured providers must not override the explicit paid DeepSeek
+    # choice for current dogfood; their shared support remains unchanged.
     env["HAS_COPILOT_GITHUB_TOKEN"] = "true"
     env["HAS_GEMINI_API_KEY"] = "true"
     env["HAS_DEEPSEEK_API_KEY"] = "true"
@@ -172,9 +172,25 @@ def main():
         require(gate.issue221.satisfied_scenario_count == 13, "#221 closure lost 13-row proof")
         require(len(gate.issue221.workflow_run_ids) == 11, "#221 closure lost 11 source runs")
         bindings = {row.role: row for row in gate.bindings}
-        require(bindings["developer"].selected_profile == "copilot", "Developer fallback drifted")
-        require(bindings["reviewer"].selected_profile == "deepseek", "Reviewer fallback drifted")
-        require(bindings["qa"].selected_profile == "gemini", "QA binding drifted")
+        expected_workflows = {
+            "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
+            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+        }
+        for role, workflow in expected_workflows.items():
+            require(bindings[role].selected_profile == "deepseek", role + " current paid provider drifted")
+            require(bindings[role].candidate_order == ("deepseek",), role + " current route is not explicit")
+            require(bindings[role].worker_workflow == workflow, role + " actual selected workflow drifted")
+            require(bindings[role].accepted_credential_identities == ("DEEPSEEK_API_KEY",),
+                    role + " credential identity was relabeled")
+        only_paid = ready_env()
+        only_paid["HAS_COPILOT_GITHUB_TOKEN"] = "false"
+        only_paid["HAS_GEMINI_API_KEY"] = "false"
+        paid_gate = assemble_dogfood_live_gate(
+            scenario=scenario, env=only_paid, checkout_sha=SHA, issue221_verifier=closure,
+        )
+        require(paid_gate.bindings == gate.bindings,
+                "unselected provider absence changed current dogfood binding")
         rendered = public_gate(gate)
         require(rendered["status"] == "READY", "public gate did not render READY")
         require(rendered["model_called"] is False, "gate claimed a model call")
@@ -192,12 +208,11 @@ def main():
     wrong_repo["GITHUB_REPOSITORY"] = "DREAM-XIN/other"
     expect_failure(env=wrong_repo, label="wrong repository")
 
-    no_qa = ready_env()
-    no_qa["HAS_GEMINI_API_KEY"] = "false"
-    # Copilot is a legitimate QA fallback, so remove that too to prove the gate
-    # rejects before any live action when the complete QA route is unavailable.
-    no_qa["HAS_COPILOT_GITHUB_TOKEN"] = "false"
-    expect_failure(env=no_qa, label="missing production role credential")
+    no_paid = ready_env()
+    no_paid["HAS_DEEPSEEK_API_KEY"] = "false"
+    # Other credentials remain present: no silent switch to unavailable quota.
+    for scenario in ("happy_path", "review_remediation", "session_recovery"):
+        expect_failure(scenario=scenario, env=no_paid, label="missing paid DeepSeek credential")
 
     def not_closed(**kwargs):
         raise V03DogfoodLiveGateError("Issue #221 final live ledger is not 13/13 PASS")
