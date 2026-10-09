@@ -371,6 +371,47 @@ def _verify_fresh_session_discovery(
     return matches[0]
 
 
+
+def _resume_post_handoff(preflight, host):
+    """Discover the existing fixed Operation, then use its original server backend."""
+    runtime = preflight.composition.runtime
+    snapshot = runtime.backend.read_snapshot()
+    attestation, _, _ = validate_post_handoff_reconciliation(snapshot,
+        consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    rows = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    if any(row.get("event_type") == "worker.result.rejected"
+           and (row.get("payload") or {}).get("callback_id") == attestation["observation_callback_id"]
+           for row in rows[16:]):
+        raise V03DogfoodScenarioRunnerError("single reconciled observation was rejected")
+    original = _projection(preflight, RECOVERY_OPERATION_ID)
+    instruction = (
+        "Read the existing authenticated Operation " + RECOVERY_OPERATION_ID + ". "
+        "Call operation.status exactly once and then return control. Do not call operation.start, "
+        "do not request a new execution, and do not choose a lifecycle action."
+    )
+    trace = host.run(scenario_instruction=instruction)
+    if (tuple(trace.function_call_names) != ("aisdlc_v1_operation_status",)
+            or len(trace.function_outputs) != 1):
+        raise V03DogfoodScenarioRunnerError("reconciliation host did not observe the exact existing Operation")
+    payload = _decode_output(trace.function_outputs[0])
+    result = payload.get("result") if payload.get("ok") is True else None
+    if result != {key: original[key] for key in ("operation_id", "generation", "status")}:
+        raise V03DogfoodScenarioRunnerError("reconciliation status observation differs from protected state")
+    bundle = preflight.composition.bundle
+    backend = bundle.vertical_bundle.api_backends["operation.resume"]
+    if backend.runtime is not runtime or backend.executor is not bundle.executor:
+        raise V03DogfoodScenarioRunnerError("reconciliation resume split the protected authority graph")
+    feature, _ = bundle.executor.feature_gateway.read_feature(operation_id=RECOVERY_OPERATION_ID)
+    resumed = backend.invoke({"context": {"operation_id": RECOVERY_OPERATION_ID,
+        "expected_feature_revision": feature.revision}},
+        preflight.composition.responses.registration.trusted_context)
+    current = _projection(preflight, RECOVERY_OPERATION_ID)
+    if (resumed.get("operation_id") != RECOVERY_OPERATION_ID or resumed.get("generation") != 1
+            or resumed.get("status") != current["status"]):
+        raise V03DogfoodScenarioRunnerError("reconciliation resume changed Operation identity")
+    return trace, RECOVERY_OPERATION_ID, str(current["status"])
+
+
 def run_scenario(
     *,
     preflight: Any,
@@ -391,11 +432,17 @@ def run_scenario(
             consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
     expected_manifest_revision = (int(_projection(preflight, RECOVERY_OPERATION_ID)["expected_feature_revision"])
                                   if reconciliation is not None else 1)
-    if not isinstance(manifest, dict) or int(manifest.get("revision", -1)) != expected_manifest_revision:
+    if not isinstance(manifest, dict) or (reconciliation is None and int(manifest.get("revision", -1)) != expected_manifest_revision):
         raise V03DogfoodScenarioRunnerError("dogfood fixture is not the exact active revision-1 slot")
 
-    trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=expected_manifest_revision))
-    operation_id, start_status = _operation_start(trace)
+    if reconciliation is not None:
+        trace, operation_id, start_status = _resume_post_handoff(preflight, host)
+        converged = preflight.composition.feature_event_gateway.read_feature(feature_id=preflight.slot.feature_id)
+        if int(converged.get("revision", -1)) != int(_projection(preflight, operation_id)["expected_feature_revision"]):
+            raise V03DogfoodScenarioRunnerError("reconciled canonical Persist and Feature revision have not converged")
+    else:
+        trace = host.run(scenario_instruction=scenario_instruction(preflight.slot, expected_revision=expected_manifest_revision))
+        operation_id, start_status = _operation_start(trace)
     projection = _projection(preflight, operation_id)
     status = str(projection.get("status") or "")
     if status != start_status:

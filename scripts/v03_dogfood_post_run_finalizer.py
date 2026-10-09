@@ -714,6 +714,21 @@ def _canonical_persist_roles(events, cycles, accepted_callbacks, observation):
             if (selected.get("kind") != "persist" or selected.get("feature_revision") != cycle["expected_revision"]
                     or changes != expected_changes or event["id"] != expected_id):
                 raise V03DogfoodPostRunFinalizerError("controller stage/task start Event differs")
+            dependents = [d for d in _selected_dispatches(events)
+                          if d["claim_sequence"] > cycle["requested_sequence"]]
+            dependent = dependents[0] if dependents else None
+            role = {"CODE_REVIEW": "reviewer", "VERIFICATION_QA": "qa", "CODE_REMEDIATION": "developer"}[step]
+            consumers = [callback_events[a["callback_id"]]["trusted_context"] for a in accepted_callbacks
+                         if a["callback_sequence"] > cycle["confirmed_sequence"]
+                         and callback_events[a["callback_id"]]["trusted_context"].get("expected_revision")
+                             == cycle["result_revision"]]
+            if (dependent is None or dependent["step"] != step
+                    or cycle["confirmed_sequence"] >= dependent["claim_sequence"]
+                    or len(consumers) != 1 or consumers[0].get("role") != role
+                    or consumers[0].get("feature_stage") != stage
+                    or consumers[0].get("target_ref") != cycle["target_ref"]
+                    or (step == "CODE_REMEDIATION" and consumers[0].get("task_id") != expected_changes[0]["id"])):
+                raise V03DogfoodPostRunFinalizerError("controller start lacks exact dependent dispatch/task")
         for change in changes:
             if change.get("kind") == "artifact":
                 identity = change.get("id")

@@ -3875,10 +3875,9 @@ def build_post_handoff_responses_host(preflight, *, adapter, expected_revision, 
     responses = [
         {"id": response_prefix + "_start", "status": "completed", "output": [{
             "type": "function_call", "id": "fc_post_handoff_start", "call_id": call_id,
-            "name": "aisdlc_v1_operation_start", "status": "completed",
+            "name": "aisdlc_v1_operation_status", "status": "completed",
             "arguments": json.dumps({"api_version": API_VERSION,
-                "feature_id": preflight.slot.feature_id,
-                "expected_feature_revision": expected_revision, "mode": "ASSISTED"})}]},
+                "operation_id": "op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4"})}]},
         {"id": response_prefix + "_waiting", "status": "completed", "output": [{
             "type": "message", "id": "msg_post_handoff_waiting", "role": "assistant",
             "content": [{"type": "output_text", "text": "The trusted operation reached its durable boundary."}]}]},
@@ -3894,9 +3893,9 @@ def build_post_handoff_responses_host(preflight, *, adapter, expected_revision, 
         if len(requests) == 2:
             outputs = [item for item in body["input"] if item.get("type") == "function_call_output"]
             expect(len(outputs) == 1 and outputs[0]["call_id"] == call_id,
-                   "real adapter did not return the one operation.start result to host")
+                   "real adapter did not return the one operation.status result to host")
             response = json.loads(outputs[0]["output"])
-            expect(response.get("ok") is True, "real operation.start adapter returned error: " + str(response))
+            expect(response.get("ok") is True, "real operation.status adapter returned error: " + str(response))
         return 200, responses[len(requests) - 1]
     host = V03DogfoodOpenAIResponsesHost(
         config=V03DogfoodOpenAIHostConfig(api_key="fixture-openai", model="fixture-model",
@@ -4014,9 +4013,24 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
     first_host = build_post_handoff_responses_host(
         preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
         session_label="first-observation")
-    first_trace = first_host.host.run(scenario_instruction=runner.scenario_instruction(
-        preflight.slot, expected_revision=feature_fixture.state["manifest"]["revision"]))
-    first_operation, first_status = runner._operation_start(first_trace)
+    crash_expected = runtime.backend.fail_confirmation_once
+    try:
+        first_trace, first_operation, first_status = runner._resume_post_handoff(preflight, first_host.host)
+    except OSError as exc:
+        expect(crash_expected and str(exc) == "fixture crash before protected Persist confirmation",
+               "unexpected error escaped real resume")
+        interrupted = operation_events(runtime.backend.read_snapshot(), operation_id)
+        expect(feature_fixture.state["applied"] == 1
+               and any(e["event_type"] == "persist.linearized" for e in interrupted)
+               and not any(e["event_type"] == "persist.confirmed" for e in interrupted)
+               and not gate_fixture.state["inputs"],
+               "crash fixture did not stop after real provider apply and before Store confirmation")
+        first_host = build_post_handoff_responses_host(
+            preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
+            session_label="after-confirmation-crash")
+        first_trace, first_operation, first_status = runner._resume_post_handoff(preflight, first_host.host)
+    else:
+        expect(not crash_expected, "requested protected confirmation crash was not exercised")
     expect(first_operation == operation_id and first_status == "WAITING_EXTERNAL"
            and len(first_host.requests) == 2
            and feature_fixture.state["manifest"]["revision"] > 1
@@ -4034,7 +4048,7 @@ def finish_post_handoff_pipeline_tests(preflight, *, gate_fixture, feature_fixtu
            and scenario.worker_results_consumed == 3
            and scenario.function_call_ids == (host_fixture.call_id,)
            and scenario.dispatch_roles == ("developer", "reviewer", "qa"),
-           "actual host/start/scenario entry failed to consume the reconciled prefix exactly once")
+           "actual host/status/resume/scenario entry failed to consume the reconciled prefix exactly once")
     consumed = scenario.worker_results_consumed
     projection = vertical_projection(runtime.backend.read_snapshot(), operation_id)
     expect(projection["status"] == "DONE" and consumed == 3,
@@ -4201,7 +4215,12 @@ def post_handoff_runtime_fixture():
             super().__init__(repository="dream-xin/ai-sdlc", state_ref="refs/heads/ai-sdlc-operator-state",
                              snapshot=deepcopy(provider.snapshot))
             self.commit_count = 0
+            self.fail_confirmation_once = False
         def commit(self, plan, receipt):
+            if self.fail_confirmation_once and any(isinstance(m.value, dict)
+                    and m.value.get("event_type") == "persist.confirmed" for m in plan.mutations):
+                self.fail_confirmation_once = False
+                raise OSError("fixture crash before protected Persist confirmation")
             result = super().commit(plan, receipt)
             self.commit_count += 1
             self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
@@ -4531,6 +4550,31 @@ def normal_and_remediation_autoclose_tests(template_preflight):
             expect(runtime.backend.snapshot.files == saved_snapshot.files and state["patches"] == 1,
                    "read-only handoff verification changed Store or repeated PATCH")
         source.load_content(uri)
+        if remediation:
+            from dataclasses import asdict
+            context = callback["payload"]["trusted_callback_envelope"]["trusted_context"]
+            trusted = dict(context, launch_candidate_head_sha=context["candidate_head_sha"])
+            log_path = next(path for path in state["routes"] if path.startswith("/actions/jobs/") and path.endswith("/logs"))
+            original_log = state["routes"][log_path]
+            mutations = (
+                ("wrong wire stage", b"STAGE: implementation", b"STAGE: code-review"),
+                ("wrong task kind", b'"kind":"remediation"', b'"kind":"stage"'),
+                ("wrong task identity", b'code-remediation:', b'code-remediation-forged:'),
+            )
+            for label, needle, replacement in mutations:
+                expect(needle in original_log, "remediation mutation did not exercise real logged input")
+                state["routes"][log_path] = original_log.replace(needle, replacement)
+                try:
+                    source.resolve(external_dispatch_key=context["external_dispatch_key"],
+                        expected_receipt_identity=context["runtime_receipt_identity"], trusted_context=trusted)
+                except VerticalInvariantError:
+                    pass
+                else:
+                    raise AssertionError("remediation source accepted " + label)
+                finally:
+                    state["routes"][log_path] = original_log
+                expect(state["developer_posts"] == 1 and state["patches"] == 1,
+                       "rejected remediation mapping repeated an external effect")
     print("- normal and remediation Developer auto-close cross real coordinator/reducer/Persist")
 
 
@@ -4579,11 +4623,12 @@ def post_handoff_admission_tests():
     print("- exact frozen post-handoff admission and immutable replay verified")
 
 
-def post_handoff_full_pipeline_tests():
+def post_handoff_full_pipeline_tests(*, crash_before_confirmation=False):
     from v03_dogfood_runtime_driver import reconcile_post_handoff
     from validate_v03_dogfood_runtime_composition import assert_post_handoff_authority_graph
     pf, provider, feature, gates, coordinator = post_handoff_runtime_fixture()
     reconcile_post_handoff(pf)
+    pf.composition.runtime.backend.fail_confirmation_once = crash_before_confirmation
     finish_post_handoff_pipeline_tests(pf, gate_fixture=gates, feature_fixture=feature,
         read_ref=provider.read_ref, effect_counts=provider.effect_counts,
         adapter=pf.composition.responses.adapter)
@@ -4729,6 +4774,7 @@ def main():
         ("post-handoff admission", post_handoff_admission_tests),
         ("post-handoff required negatives", post_handoff_reconciliation_negative_tests),
         ("post-handoff actual host/Persist pipeline", post_handoff_full_pipeline_tests),
+        ("post-handoff provider-applied confirmation crash", lambda: post_handoff_full_pipeline_tests(crash_before_confirmation=True)),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
     for name, execute in groups:
