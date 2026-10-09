@@ -1395,7 +1395,7 @@ def recovery_actions_transport_tests(*, create_only=False):
     expect(receipt == {"lookup_state": "LAUNCHED", "receipt_id": "40000000002"}
            and http.posts == 1, "real recovery gateway/transport failed exact one-POST launch")
     first_post = next(i for i, call in enumerate(http.calls) if call[0] == "POST")
-    expect([w for m, w, _ in http.calls[:first_post] if m == "GET"] == list(roles),
+    expect([w for m, w, _ in http.calls[:first_post] if m == "GET" and w in roles] == list(roles),
            "recovery POST preceded exhaustive all-role absence")
     denied(lambda: gateway.launch(dispatch=dispatch), http,
            "consumed continuation capability admitted a second launch")
@@ -1466,7 +1466,7 @@ def recovery_actions_transport_tests(*, create_only=False):
     expect(gateway.launch(dispatch=dispatch)["lookup_state"] == "LAUNCHED" and http.posts == 1,
            "paginated all-role absence failed exact recovery dispatch")
     before = http.calls[:next(i for i, call in enumerate(http.calls) if call[0] == "POST")]
-    expect([w for m, w, _ in before] == [w for w in roles for _ in range(2)],
+    expect([w for m, w, _ in before if w in roles] == [w for w in roles for _ in range(2)],
            "recovery POST did not exhaust every role page")
     for collision in ("cross-role", "duplicate", "unknown", "page-bound"):
         http, transport, gateway, dispatch = fixture()
@@ -1481,6 +1481,16 @@ def recovery_actions_transport_tests(*, create_only=False):
             http.fail.add(roles[2])
         expect(gateway.launch(dispatch=dispatch)["lookup_state"] == "UNKNOWN" and http.posts == 0,
                collision + " recovery lookup crossed POST boundary")
+    http, transport, gateway, dispatch = fixture()
+    http.main_sources = ["4" * 40]
+    try:
+        changed_source = gateway.launch(dispatch=dispatch)
+    except VerticalInvariantError:
+        pass
+    else:
+        expect(changed_source["lookup_state"] == "UNKNOWN",
+               "scan-time main drift became a launched receipt")
+    expect(http.posts == 0, "scan-time main drift crossed actual HTTP POST boundary")
     http, transport, gateway, dispatch = fixture()
     http.ack_loss = True
     expect(gateway.launch(dispatch=dispatch)["lookup_state"] == "LAUNCHED" and http.posts == 1,
@@ -2083,6 +2093,7 @@ def bounded_recovery_execution_tests():
     def Gateway(ack_loss=False):
         http, transport, gateway, _ = transport_fixture()
         http.ack_loss = ack_loss
+        gateway.fixture_http = http
         return gateway
     def ResultSource():
         from urllib.parse import urlparse
@@ -2161,10 +2172,10 @@ def bounded_recovery_execution_tests():
     try:
         gateway = Gateway(); pf = preflight(gateway)
         sealed = subject.recover_historical_prehttp_attempt(pf)
-        expect(gateway.transport.http.posts == 1 and sealed["receipt_id"] == "40000000002",
+        expect(gateway.fixture_http.posts == 1 and sealed["receipt_id"] == "40000000002",
                "bounded recovery did not make exactly one POST and seal")
         replay = subject.recover_historical_prehttp_attempt(pf)
-        expect(replay == sealed and gateway.transport.http.posts == 1, "bounded recovery replay repeated POST")
+        expect(replay == sealed and gateway.fixture_http.posts == 1, "bounded recovery replay repeated POST")
         from v03_dogfood_post_run_finalizer import (
             V03DogfoodPostRunFinalizerError, _validated_recovery_chain,
         )
@@ -2392,7 +2403,7 @@ def bounded_recovery_execution_tests():
             else:
                 broken_snapshot.files[RECOVERY_CONTINUATION_PATH]["execution_source_head_sha"] = "4" * 40
             pf.composition.runtime.backend.snapshot = broken_snapshot
-            before_post, before_store = gateway.transport.http.posts, pf.composition.runtime.n
+            before_post, before_store = gateway.fixture_http.posts, pf.composition.runtime.n
             with (
                 patch.object(subject, "assemble_preflight", return_value=pf),
                 patch.object(subject, "_head", return_value="5" * 40),
@@ -2405,14 +2416,14 @@ def bounded_recovery_execution_tests():
                 else:
                     raise AssertionError(corrupt + " crossed the live pre-host boundary")
                 expect(not host_constructor.called, corrupt + " constructed a model host")
-            expect(gateway.transport.http.posts == before_post
+            expect(gateway.fixture_http.posts == before_post
                    and pf.composition.runtime.n == before_store,
                    corrupt + " caused a POST or Store commit")
         pf.composition.runtime.backend.snapshot = clean_snapshot
 
         lost = Gateway(ack_loss=True); pf_lost = preflight(lost)
         sealed_lost = subject.recover_historical_prehttp_attempt(pf_lost)
-        expect(lost.transport.http.posts == 1 and sealed_lost["receipt_id"] == "40000000002",
+        expect(lost.fixture_http.posts == 1 and sealed_lost["receipt_id"] == "40000000002",
                "ack-loss lookup did not seal without a second POST")
         # Fresh main and real configuration/payload validation must fail before
         # arming a continuation. Drift after the claim still forbids POST.
@@ -2421,9 +2432,9 @@ def bounded_recovery_execution_tests():
             denied_gateway = Gateway()
             denied_pf = preflight(denied_gateway)
             if drift == "main-before-claim":
-                denied_gateway.transport.http.main_sources = ["4" * 40]
+                denied_gateway.fixture_http.main_sources = ["4" * 40]
             elif drift == "main-before-post":
-                denied_gateway.transport.http.main_sources = ["5" * 40, "4" * 40]
+                denied_gateway.fixture_http.main_sources = ["5" * 40, "4" * 40]
             else:
                 denied_gateway.transport.config = replace(
                     denied_gateway.transport.config, api_url="https://other.invalid")
@@ -2433,7 +2444,7 @@ def bounded_recovery_execution_tests():
                 pass
             else:
                 raise AssertionError(drift + " acquired a recovery POST")
-            expect(denied_gateway.transport.http.posts == 0,
+            expect(denied_gateway.fixture_http.posts == 0,
                    drift + " caused a recovery POST")
             expect(denied_pf.composition.runtime.n == (1 if drift == "main-before-post" else 0),
                    drift + " crossed an unauthorized Store claim boundary")
@@ -2445,7 +2456,7 @@ def bounded_recovery_execution_tests():
         try: subject.recover_historical_prehttp_attempt(pf_loser)
         except subject.V03DogfoodRuntimeDriverError: pass
         else: raise AssertionError("CAS loser without receipt was allowed to POST")
-        expect(loser.transport.http.posts == 0, "CAS loser/unknown receipt performed a POST")
+        expect(loser.fixture_http.posts == 0, "CAS loser/unknown receipt performed a POST")
         broken = deepcopy(fence); broken["historical_status"] = 200
         try: subject._validate_provider_rotation_fence(broken)
         except subject.V03DogfoodRuntimeDriverError: pass
