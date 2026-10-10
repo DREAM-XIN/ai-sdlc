@@ -1,503 +1,15 @@
-name: Validate v0.3 Dogfood Live Gate
-
+name: Fixed QA detector archive inspection (no model)
 on:
   pull_request:
     paths:
-      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md'
-      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml'
-      - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md'
-      - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml'
-      - '.github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.md'
-      - '.github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml'
-      - '.github/workflows/v03-dogfood-readiness.yml'
-      - 'scripts/v03_dogfood_issue221_compatibility.py'
-      - 'scripts/validate_v03_dogfood_issue221_compatibility.py'
-      - 'release/v0.3-dogfood-session-policy.json'
-      - 'scripts/v03_dogfood_session_policy.py'
-      - 'scripts/validate_v03_dogfood_session_policy.py'
-      - 'scripts/v03_dogfood_live_gate.py'
-      - 'scripts/validate_v03_dogfood_live_gate.py'
-      - 'scripts/v03_dogfood_fixture_pool.py'
-      - 'scripts/validate_v03_dogfood_fixture_pool.py'
-      - 'scripts/v03_dogfood_fixture_pr_authority.py'
-      - 'scripts/provision_v03_dogfood_fixture.py'
-      - 'scripts/v03_dogfood_full_composition.py'
-      - 'scripts/v03_dogfood_runtime_preflight.py'
-      - 'scripts/validate_v03_dogfood_runtime_composition.py'
-      - 'scripts/v03_dogfood_openai_host.py'
-      - 'scripts/validate_v03_dogfood_openai_host.py'
-      - 'scripts/v03_dogfood_production_provenance.py'
-      - 'scripts/validate_v03_dogfood_production_provenance.py'
-      - 'scripts/v03_dogfood_scenario_runner.py'
-      - 'scripts/validate_v03_dogfood_scenario_runner.py'
-      - 'scripts/v03_dogfood_runtime_driver.py'
-      - 'scripts/validate_v03_dogfood_runtime_driver.py'
-      - 'scripts/v03_dogfood_release_finalizer.py'
-      - 'scripts/validate_v03_dogfood_release_finalizer.py'
-      - 'scripts/v03_dogfood_post_run_finalizer.py'
-      - 'scripts/v03_dogfood_execution_bindings.py'
-      - 'scripts/v03_effect_safety_final_live_ledger.py'
-      - 'scripts/operator_openai_responses_production.py'
-      - 'scripts/v03_dogfood_trusted_provenance.py'
-      - 'scripts/validate_v03_dogfood_evidence.py'
-      - 'runtimes/gh-aw/engine-profiles.yaml'
-      - '.github/workflows/v03-real-dogfood-scenario.yml'
-      - '.github/workflows/v03-finalize-real-dogfood-scenario.yml'
       - '.github/workflows/validate-v03-dogfood-live-gate.yml'
-
 permissions:
   contents: read
   actions: read
-
 jobs:
-  fixed-reviewer-detector-diagnostic:
-    name: Fixed failed Reviewer detector diagnostic
-    needs: [manifest-fixed-detector-inputs, compile-detector-budget-probe]
-    if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      actions: read
-      contents: read
-      issues: read
-      pull-requests: read
-    env:
-      GH_AW_RUNTIME_FEATURES: ""
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Setup pinned detector scripts
-        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
-        with:
-          destination: ${{ runner.temp }}/gh-aw/actions
-          job-name: ${{ github.job }}
-      - name: Materialize authenticated original inputs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/gh-aw/actions
-        run: python scripts/v03_detector_diagnostic_admission.py prepare
-      - name: Clear inherited MCP configuration for isolated detection
-        run: |
-          rm -f "$RUNNER_TEMP/gh-aw/mcp-config/mcp-servers.json"
-          rm -f "$HOME/.copilot/mcp-config.json"
-          rm -f "$GITHUB_WORKSPACE/.gemini/settings.json"
-      - name: Prepare original inputs through pinned official script privately
-        run: |
-          set -euo pipefail
-          umask 077
-          bash "$RUNNER_TEMP/gh-aw/actions/prepare_threat_detection_files.sh" > /tmp/v03-fixed-detector-diagnostic/prepare-private.log 2>&1
-      - name: Setup threat detection privately
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        env:
-          WORKFLOW_NAME: "AI-SDLC gh-aw Code Reviewer (deepseek v0.3 release local)"
-          WORKFLOW_DESCRIPTION: "No description provided"
-          HAS_PATCH: "false"
-          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"
-          CUSTOM_PROMPT: "Complete the full security analysis of the original instructions, agent output,\npatch and bundle. Preserve every built-in threat criterion and verdict rule.\nDo not repeat an identical failed inspection command. Inspect its error once,\nuse a different bounded read-only inspection if necessary, and stop that path\nwhen it cannot provide new evidence. A Git bundle includes a header and may\nrequire prerequisite objects; do not repeatedly feed the entire bundle to\ngit index-pack as though it were a standalone pack file.\nMissing or uninspectable required evidence is not evidence of safety. If a\ncomplete verdict cannot be established, fail closed through the detector's\nexisting result protocol; never invent a clean verdict or suppress a finding.\nTrack which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
-          GH_AW_DETECTION_SKIP_PROMPT_SUMMARY: "true"
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const root='/tmp/v03-fixed-detector-diagnostic';
-            fs.mkdirSync(root,{recursive:true,mode:0o700});
-            for (const name of ['GITHUB_OUTPUT','GITHUB_ENV','GITHUB_STEP_SUMMARY','GITHUB_PATH','GITHUB_STATE']) {
-              const file=path.join(root,'setup-'+name.toLowerCase());
-              fs.closeSync(fs.openSync(file,'wx',0o600));
-              process.env[name]=file;
-            }
-            const fd=fs.openSync(path.join(root,'setup-private.log'),'wx',0o600);
-            const out=process.stdout.write, err=process.stderr.write;
-            const capture=(chunk,encoding,callback)=>{fs.writeSync(fd,chunk); const done=typeof encoding==='function'?encoding:callback; if(done)done(); return true;};
-            let failed=false;
-            try {
-              process.stdout.write=capture; process.stderr.write=capture;
-              const actionsDir=path.join(process.env.RUNNER_TEMP,'gh-aw','actions');
-              const {setupGlobals}=require(path.join(actionsDir,'setup_globals.cjs'));
-              setupGlobals(core,github,context,exec,io,getOctokit);
-              const {main}=require(path.join(actionsDir,'setup_threat_detection.cjs'));
-              await main();
-            } catch (_) {failed=true;}
-            finally {process.stdout.write=out;process.stderr.write=err;fs.closeSync(fd);}
-            if(failed)throw new Error('private detector setup failed');
-      - name: Initialize empty diagnostic execution evidence
-        run: |
-          set -euo pipefail
-          umask 077
-          mkdir -p /tmp/gh-aw/threat-detection
-          printf '{"version":1,"component":"detection","run_id":%s,"run_attempt":%s,"state":"not_started"}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > /tmp/gh-aw/threat-detection/execution.json
-          test ! -e /tmp/gh-aw/threat-detection/detection.log
-          touch /tmp/gh-aw/threat-detection/detection.log
-      - name: Download pinned detector container images
-        run: bash "$RUNNER_TEMP/gh-aw/actions/download_docker_images.sh" ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64 ghcr.io/github/gh-aw-firewall/squid:0.28.23@sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0
-      - name: Install pinned AWF
-        run: bash "$RUNNER_TEMP/gh-aw/actions/install_awf_binary.sh" v0.28.23 --rootless
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Install exact observed Copilot CLI
-        env:
-          GH_HOST: github.com
-          GH_AW_COMPILED_VERSION: v0.89.21
-        run: bash "$RUNNER_TEMP/gh-aw/actions/install_copilot_cli.sh" 1.0.90
-      - name: Verify CLI bytes against authenticated official archive
-        run: |
-          python - <<'PY'
-          import hashlib, io, os, shutil, stat, subprocess, tarfile, urllib.request
-          url = "https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz"
-          with urllib.request.urlopen(url, timeout=60) as response:
-              archive = response.read(109207185)
-          assert len(archive) == 109207184
-          assert hashlib.sha256(archive).hexdigest() == "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6"
-          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
-              members = tar.getmembers()
-              assert len(members) <= 64 and sum(m.size for m in members) <= 524288000
-              assert all(m.isfile() or m.isdir() for m in members)
-              assert all(not m.name.startswith("/") and chr(92) not in m.name and ".." not in m.name.split("/") for m in members)
-              candidates = [m for m in members if m.name in ("copilot", "./copilot") and m.isfile()]
-              assert len(candidates) == 1 and candidates[0].size <= 314572800
-              source = tar.extractfile(candidates[0])
-              expected = hashlib.file_digest(source, "sha256").hexdigest()
-          installed = shutil.which("copilot")
-          assert installed and os.path.isfile(installed)
-          with open(installed, "rb") as source:
-              assert hashlib.file_digest(source, "sha256").hexdigest() == expected
-          version = subprocess.check_output([installed, "--version"], text=True, timeout=15)
-          assert "1.0.90" in version
-          print("PASS: installed Copilot CLI matches authenticated official 1.0.90 archive")
-          PY
-      - name: Install pinned threat detector
-        id: threat_detect_install
-        run: bash "$RUNNER_TEMP/gh-aw/actions/install_threat_detect_binary.sh" v0.5.2 --artifact-base-url https://github.com/github/gh-aw-threat-detection/releases/download --sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9 --sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904
-      - name: Wait for one exact assistant-issued diagnostic admission
-        id: admission
-        env:
-          GH_TOKEN: ${{ github.token }}
-          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/gh-aw/actions
-        run: python scripts/v03_detector_diagnostic_admission.py wait
-      - name: Invoke admitted detector once with private output
-        id: scanner
-        timeout-minutes: 10
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/gh-aw/actions
-          AWF_REFLECT_ENABLED: 1
-          COPILOT_AGENT_RUNNER_TYPE: STANDALONE
-          COPILOT_DUMMY_BYOK: dummy-byok-key-for-offline-mode
-          COPILOT_MODEL: deepseek-chat
-          COPILOT_PROVIDER_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          COPILOT_PROVIDER_BASE_URL: https://api.deepseek.com
-          COPILOT_PROVIDER_TYPE: openai
-          COPILOT_PROVIDER_WIRE_API: completions
-          GH_AW_HARNESS_BACKOFF_MULTIPLIER: 2
-          GH_AW_HARNESS_INITIAL_DELAY_MS: 10000
-          GH_AW_HARNESS_MAX_DELAY_MS: 120000
-          GH_AW_HARNESS_MAX_RETRIES: 0
-          GH_AW_LLM_PROVIDER: github
-          GH_AW_MAX_AI_CREDITS: "400"
-          GH_AW_MAX_TURNS: 50
-          GH_AW_PHASE: detection
-          GH_AW_PROMPT: /tmp/gh-aw/aw-prompts/prompt.txt
-          GH_AW_TIMEOUT_MINUTES: 10
-          GH_AW_VERSION: v0.89.21
-          GITHUB_API_URL: ${{ github.api_url }}
-          GITHUB_AW: true
-          GITHUB_COPILOT_INTEGRATION_ID: agentic-workflows
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_STEP_SUMMARY: /tmp/gh-aw/agent-step-summary.md
-          GITHUB_WORKSPACE: ${{ github.workspace }}
-          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions[bot]
-          RUNNER_TEMP: ${{ runner.temp }}
-          TRACEPARENT: ""
-          WORKFLOW_NAME: "AI-SDLC gh-aw Code Reviewer (deepseek v0.3 release local)"
-          WORKFLOW_DESCRIPTION: "No description provided"
-          HAS_PATCH: "false"
-          GH_AW_DETECTION_CONTINUE_ON_ERROR: "false"
-          CUSTOM_PROMPT: "Complete the full security analysis of the original instructions, agent output,\npatch and bundle. Preserve every built-in threat criterion and verdict rule.\nDo not repeat an identical failed inspection command. Inspect its error once,\nuse a different bounded read-only inspection if necessary, and stop that path\nwhen it cannot provide new evidence. A Git bundle includes a header and may\nrequire prerequisite objects; do not repeatedly feed the entire bundle to\ngit index-pack as though it were a standalone pack file.\nMissing or uninspectable required evidence is not evidence of safety. If a\ncomplete verdict cannot be established, fail closed through the detector's\nexisting result protocol; never invent a clean verdict or suppress a finding.\nTrack which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
-        run: python scripts/v03_detector_diagnostic_admission.py invoke
-      - name: Parse pinned verdict privately and report bounded diagnostic result
-        if: always() && steps.scanner.outcome != 'skipped'
-        env:
-          SCANNER_OUTCOME: ${{ steps.scanner.outcome }}
-          INSTALL_OUTCOME: ${{ steps.threat_detect_install.outcome }}
-        run: python scripts/v03_detector_diagnostic_admission.py summarize
-  manifest-fixed-detector-inputs:
-    name: Manifest fixed detector inputs (read-only, no model)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          persist-credentials: false
-      - uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
-        with:
-          destination: ${{ runner.temp }}/v03-manifest-actions
-      - name: Verify immutable archives and hash five consumed files
-        env:
-          GH_TOKEN: ${{ github.token }}
-          V03_DETECTOR_ACTIONS_ROOT: ${{ runner.temp }}/v03-manifest-actions
-        run: python scripts/v03_detector_input_manifest.py
-      - name: Emit public source bindings for later run-specific admission
-        run: |
-          python - <<'PY'
-          import hashlib, json, os, subprocess
-          from pathlib import Path
-          paths = [".github/workflows/validate-v03-dogfood-live-gate.yml",
-                   "scripts/v03_detector_diagnostic_admission.py",
-                   "scripts/v03_detector_input_manifest.py",
-                   "scripts/v03_detector_diagnostic_config.json",
-                   "scripts/v03_detector_diagnostic_execution.sh",
-                   "scripts/v03_detector_awf_config.json"]
-          def git(*args):
-              return subprocess.check_output(["git", *args], text=True).strip()
-          checkout = git("rev-parse", "HEAD")
-          assert checkout == os.environ["GITHUB_SHA"]
-          print(json.dumps({"schema":"v03-detector-preflight-source/v1",
-              "checkout_sha":checkout, "checkout_tree":git("rev-parse", "HEAD^{tree}"),
-              "workflow_sha":os.environ["GITHUB_WORKFLOW_SHA"],
-              "run_id":int(os.environ["GITHUB_RUN_ID"]), "run_attempt":int(os.environ["GITHUB_RUN_ATTEMPT"]),
-              "source_blobs":{path:git("rev-parse", "HEAD:"+path) for path in paths},
-              "config_sha256":hashlib.sha256(json.dumps(json.loads(Path(paths[3]).read_text()),
-                  sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()},sort_keys=True))
-          PY
-  replay-pinned-detector-protocol:
-    name: Replay pinned detector protocol (offline, no model)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: github/gh-aw-firewall
-          ref: 744bd7387c4ae8a6c2d38200f6f63a781804e892
-          path: replay-awf
-          persist-credentials: false
-      - uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
-        with:
-          destination: ${{ runner.temp }}/v03-detector-replay/actions
-      - name: Install exact official offline inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/v03-detector-replay"
-          mkdir -p "$root/copilot"
-          test "$(git -C replay-awf rev-parse HEAD)" = 744bd7387c4ae8a6c2d38200f6f63a781804e892
-          npm ci --ignore-scripts --omit=dev --prefix replay-awf/containers/api-proxy
-          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-            https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz \
-            -o "$root/copilot.tar.gz"
-          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $root/copilot.tar.gz" | sha256sum --check --status
-          python - <<'PY'
-          import os, tarfile
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "v03-detector-replay"
-          with tarfile.open(root / "copilot.tar.gz", "r:gz") as archive:
-              members = archive.getmembers()
-              assert len(members) <= 64 and sum(m.size for m in members) <= 524288000
-              for member in members:
-                  assert member.isfile() or member.isdir()
-                  assert not member.name.startswith("/") and chr(92) not in member.name
-                  assert ".." not in member.name.split("/") and member.size <= 314572800
-              archive.extractall(root / "copilot", filter="data")
-          PY
-          test -x "$root/copilot/copilot"
-          bash "$root/actions/install_threat_detect_binary.sh" v0.5.2 \
-            --artifact-base-url https://github.com/github/gh-aw-threat-detection/releases/download \
-            --sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9 \
-            --sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904 --rootless
-          cp "$HOME/.local/bin/threat-detect" "$root/threat-detect"
-          test -x "$root/threat-detect"
-          echo "b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9  $root/threat-detect" | sha256sum --check --status
-          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
-      - name: Run real pinned protocol with loopback-only synthetic provider
-        shell: bash
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/v03-detector-replay"
-          name="v03-detector-replay-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
-          timeout --signal=TERM --kill-after=10s 700s docker run --rm --init \
-            --name "$name" --network none --cap-drop ALL --workdir /tmp \
-            --security-opt no-new-privileges --user "$(id -u):$(id -g)" --read-only \
-            --tmpfs "/tmp:rw,nosuid,nodev,exec,uid=$(id -u),gid=$(id -g),mode=700" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/replay-awf,dst=/inputs/awf,readonly" \
-            --mount "type=bind,src=$root/actions,dst=/inputs/actions,readonly" \
-            --mount "type=bind,src=$RUNNER_TEMP/gh-aw/prompts,dst=/inputs/prompts,readonly" \
-            --mount "type=bind,src=$RUNNER_TEMP/gh-aw/safeoutputs,dst=/inputs/safeoutputs,readonly" \
-            --mount "type=bind,src=$RUNNER_TEMP/gh-aw/mcp-scripts,dst=/inputs/mcp-scripts,readonly" \
-            --mount "type=bind,src=$root/copilot,dst=/inputs/copilot,readonly" \
-            --mount "type=bind,src=$root/threat-detect,dst=/inputs/threat-detect,readonly" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/validate_v03_detector_protocol_replay.mjs,dst=/inputs/replay.mjs,readonly" \
-            --env HOME=/tmp/home --env PATH=/inputs/copilot:/usr/local/bin:/usr/bin:/bin \
-            --entrypoint /usr/local/bin/node \
-            ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 \
-            /inputs/replay.mjs /inputs/awf/containers/api-proxy /inputs/actions \
-            /inputs/threat-detect /inputs/copilot/copilot /tmp/replay
-  compile-detector-budget-probe:
-    name: Compile fixed detector budget probe (no model)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - name: Install pinned official compiler
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh extension install github/gh-aw --pin v0.89.21 --force
-      - name: Prepare fixed uncommitted detector-only budget
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path(".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md")
-          source = path.read_text()
-          engine = source.split("\nengine:\n", 1)[1].split("\nnetwork:\n", 1)[0]
-          assert engine.count("    max-retries: 6") == 1
-          engine = engine.replace("    max-retries: 6", "    max-retries: 0")
-          assert engine.count("  id: copilot") == 1
-          engine = engine.replace("  id: copilot", "  id: copilot\n  max-turns: 50")
-          marker = "  threat-detection:\n    enabled: true\n"
-          assert source.count(marker) == 1
-          addition = "    retries: 0\n    engine:\n" + "\n".join("    " + line for line in engine.splitlines()) + "\n"
-          source = source.replace(marker, marker + addition)
-          prompt_end = "  github-token: $" + "{{ secrets.GITHUB_TOKEN }}\n  add-comment:"
-          assert source.count(prompt_end) == 1
-          supplemental = "Track which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
-          source = source.replace(prompt_end, "".join("      " + line + "\n" for line in supplemental.splitlines()) + prompt_end)
-          path.write_text(source)
-          PY
-      - name: Strict compile fixed uncommitted probe
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh aw compile ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local --strict
-      - name: Verify generated detector budget and unchanged safety
-        run: |
-          python -m pip install -r requirements-dev.txt
-          python - <<'PY'
-          import base64, hashlib, json, shlex, subprocess, yaml
-          from pathlib import Path
-          path = ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml"
-          before = yaml.safe_load(subprocess.check_output(["git", "show", "HEAD:" + path]))
-          raw = Path(path).read_text()
-          after = yaml.safe_load(raw)
-          metadata = json.loads(raw.splitlines()[0].split(": ", 1)[1])
-          assert metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True
-          assert before["jobs"]["agent"] == after["jobs"]["agent"]
-          assert before["jobs"]["safe_outputs"] == after["jobs"]["safe_outputs"]
-          old = before["jobs"]["detection"]
-          new = after["jobs"]["detection"]
-          before_md = yaml.safe_load(subprocess.check_output(["git", "show", "HEAD:.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md"]).decode().split("---", 2)[1])
-          old_prompt = before_md["safe-outputs"]["threat-detection"]["prompt"]
-          expected_prompt = old_prompt + "Track which evidence has already been inspected. Do not repeat an identical\ninspection against unchanged input, whether the previous command succeeded or\nfailed. When a result adds no new evidence, move to the remaining required\nevidence or synthesize the complete analysis. Do not rescan the same comment\nbody for identical indicators. Inspect execution/usage logs only to diagnose\ntool availability or errors, never as agent security evidence. After complete\nanalysis, submit through threat_detection_result. If it returns\nTHREAT_DETECTION_RESULT_ERROR, correct the stated schema problem without\nrepeating completed scans. Stop immediately on THREAT_DETECTION_RESULT_RECORDED.\nReaching a budget or deadline is never grounds for a clean verdict.\n"
-          def update_prompt(value):
-              if isinstance(value, dict):
-                  return {key: update_prompt(item) for key, item in value.items()}
-              if isinstance(value, list):
-                  return [update_prompt(item) for item in value]
-              return expected_prompt if value == old_prompt else value
-          old = update_prompt(old)
-          old_steps = {s.get("id", s.get("name")): s for s in old["steps"]}
-          new_steps = {s.get("id", s.get("name")): s for s in new["steps"]}
-          step = new_steps["detection_agentic_execution"]
-          new_agent_steps = after["jobs"]["agent"]["steps"]
-          def unique_object(pairs):
-              result = {}
-              for key, value in pairs:
-                  assert key not in result
-                  result[key] = value
-              return result
-          def require_native_fifty(raw):
-              config = json.loads(raw, object_pairs_hook=unique_object)
-              proxy = config["apiProxy"]
-              assert "maxTurns" not in proxy and type(proxy.get("maxRuns")) is int and proxy["maxRuns"] == 50
-          require_native_fifty('{"apiProxy":{"maxRuns":50}}')
-          for invalid in ('{"apiProxy":{"maxRuns":500}}', '{"apiProxy":{"maxRuns":5000}}',
-                          '{"apiProxy":{"maxRuns":true}}', '{"apiProxy":{"maxRuns":"50"}}',
-                          '{"apiProxy":{"maxRuns":50.0}}', '{"apiProxy":{"maxRuns":50,"maxRuns":500}}'):
-              try:
-                  require_native_fifty(invalid)
-              except AssertionError:
-                  pass
-              else:
-                  raise AssertionError("invalid native budget admitted")
-          def native_proxy_config(body):
-              lines = [line.strip() for line in body.splitlines()
-                       if line.strip().startswith("printf ") and "awf-config.json" in line
-                       and "apiProxy" in line]
-              assert len(lines) == 1
-              words = shlex.split(lines[0], posix=True)
-              assert len(words) == 5 and words[0] == "printf" and words[1] == "%s\\n"
-              assert words[3:] == [">", "${RUNNER_TEMP}/gh-aw/awf-config.json"]
-              literal = words[2]
-              assert literal.count("${GH_AW_MAX_AI_CREDITS}") == 1
-              literal = literal.replace("${GH_AW_MAX_AI_CREDITS}", "400").replace("\\$schema", "$schema")
-              assert "${" not in literal and "$(" not in literal
-              config = json.loads(literal, object_pairs_hook=unique_object)
-              proxy = config["apiProxy"]
-              assert "maxTurns" not in proxy and type(proxy.get("maxRuns")) is int
-              calls = [line.strip() for line in body.splitlines() if line.strip().startswith("awf ")]
-              assert len(calls) == 1 and calls[0].startswith('awf --config "${RUNNER_TEMP}/gh-aw/awf-config.json" ')
-              return proxy
-          detector_proxy = native_proxy_config(step["run"])
-          agent_steps = [item for item in new_agent_steps if item.get("id") == "agentic_execution"]
-          assert len(agent_steps) == 1
-          agent_proxy = native_proxy_config(agent_steps[0]["run"])
-          print(json.dumps({"schema":"v03-native-budget-structural-proof/v1",
-                            "detector_max_runs": detector_proxy["maxRuns"],
-                            "agent_max_runs": agent_proxy["maxRuns"],
-                            "agent_unchanged": before["jobs"]["agent"] == after["jobs"]["agent"]}))
-          assert agent_proxy["maxRuns"] == 500
-          assert detector_proxy["maxRuns"] == 500
-          assert str(step["env"]["GH_AW_HARNESS_MAX_RETRIES"]) == "0"
-          assert new.get("timeout-minutes") == old.get("timeout-minutes")
-          assert "--engine-timeout" not in step["run"]
-          for key, value in step["env"].items():
-              if key not in {"GH_AW_HARNESS_MAX_RETRIES", "GH_AW_MAX_TURNS"}:
-                  assert value == old_steps["detection_agentic_execution"]["env"][key]
-          for key in old_steps:
-              if key != "detection_agentic_execution":
-                  assert old_steps[key] == new_steps[key]
-          assert step["env"]["CUSTOM_PROMPT"] == expected_prompt
-          print("DIAGNOSTIC_COMPILED_SHA256=" + hashlib.sha256(raw.encode()).hexdigest())
-          print("DIAGNOSTIC_COMPILED_BASE64=" + base64.b64encode(raw.encode()).decode())
-          print(json.dumps({"schema":"v03-detector-budget-compile-probe/v1","strict_compiler":"v0.89.21","detector_max_runs":500,"compiler_native_cap_override":False,"detector_harness_retries":0,"agent_unchanged":True,"safe_outputs_unchanged":True,"timeout_unchanged":True}))
-          PY
-      - name: Validate separately authored detector budget and admission (no model)
-        run: |
-          python - <<'PY'
-          import hashlib, os, subprocess, urllib.request
-          from pathlib import Path
-          url = "https://raw.githubusercontent.com/github/gh-aw-firewall/744bd7387c4ae8a6c2d38200f6f63a781804e892/src/awf-config-schema.json"
-          with urllib.request.urlopen(url, timeout=30) as response:
-              schema = response.read(1048577)
-          assert len(schema) <= 1048576
-          assert hashlib.sha1(b"blob " + str(len(schema)).encode() + b"\0" + schema).hexdigest() == "f2938160535d5611a44b45d8e0ff1bff69d60832"
-          path = Path(os.environ["RUNNER_TEMP"]) / "v03-official-awf-schema.json"
-          path.write_bytes(schema)
-          subprocess.run(["python", "scripts/validate_v03_detector_diagnostic.py",
-              "--compiled-lock", ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
-              "--awf-schema", str(path)], check=True)
-          PY
   inspect-fixed-detector-artifact:
-    name: Inspect fixed detector artifact (redacted, no model)
+    name: Inspect fixed QA detector artifact (redacted, no model)
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -513,10 +25,10 @@ jobs:
           try:
               import collections, hashlib, io, json, os, re, stat, urllib.request, urllib.parse, zipfile
               BASE = "https://api.github.com/repos/DREAM-XIN/ai-sdlc"
-              RUN = 37927328438
-              ARTIFACT = 11615291183
-              SOURCE = "193d96474529556cc0d805bb9be2b0a96909777b"
-              DIGEST = "ba7d688ef4a4e6a11953e05ba55b02ba3a7a3c5d7b4c3adeb3a7d2181172dbe8"
+              RUN = 38074618111
+              ARTIFACT = 11677309324
+              SOURCE = "868d3dc25e5331392063b674496eb16b01208b42"
+              DIGEST = "a40043cbbe0e9e8ae74e4e9c71eb00c48b2dae3f92d8f2d87d239f0c899ea754"
               class NoRedirect(urllib.request.HTTPRedirectHandler):
                   def redirect_request(self, *args, **kwargs):
                       return None
@@ -543,12 +55,29 @@ jobs:
                       if error.code in (301, 302, 303, 307, 308):
                           return error.code, b"", error.headers.get("Location")
                       raise ValueError("http_failure") from None
+              def verify_run():
+                  status, raw, _ = get(BASE + f"/actions/runs/{RUN}", True)
+                  if status != 200:
+                      raise ValueError("run_read")
+                  run = json.loads(raw)
+                  if not (type(run.get("id")) is int and run["id"] == RUN
+                          and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
+                          and run.get("head_sha") == SOURCE and run.get("head_branch") == "main"
+                          and run.get("event") == "workflow_dispatch"
+                          and run.get("status") == "completed" and run.get("conclusion") == "failure"
+                          and run.get("path") == ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml"
+                          and run.get("repository", {}).get("id") == 1326302284
+                          and run.get("head_repository", {}).get("id") == 1326302284):
+                      raise ValueError("run_binding")
+              verify_run()
               status, raw, redirect = get(BASE + f"/actions/runs/{RUN}/artifacts?per_page=100", True)
               if status != 200:
                   raise ValueError("artifact_listing")
               listing = json.loads(raw)
               if listing.get("total_count") != 6 or len(listing.get("artifacts", [])) != 6:
                   raise ValueError("artifact_pagination")
+              if len({a.get("id") for a in listing["artifacts"]}) != 6 or len({a.get("name") for a in listing["artifacts"]}) != 6:
+                  raise ValueError("artifact_duplicates")
               rows = [a for a in listing["artifacts"] if a.get("id") == ARTIFACT]
               if len(rows) != 1:
                   raise ValueError("artifact_identity")
@@ -556,7 +85,7 @@ jobs:
               w = a.get("workflow_run", {})
               if not (all(type(a.get(k)) is int for k in ("id", "size_in_bytes"))
                       and all(type(w.get(k)) is int for k in ("id", "repository_id", "head_repository_id"))
-                      and a.get("name") == "detection" and a.get("size_in_bytes") == 47356
+                      and a.get("name") == "detection" and a.get("size_in_bytes") == 31065
                       and a.get("digest") == "sha256:" + DIGEST and a.get("expired") is False
                       and w.get("id") == RUN and w.get("head_sha") == SOURCE and w.get("head_branch") == "main"
                       and w.get("repository_id") == 1326302284 and w.get("head_repository_id") == 1326302284):
@@ -568,7 +97,7 @@ jobs:
                   if not location:
                       raise ValueError("archive_redirect")
                   status, data, location = get(location, False)
-              if status != 200 or len(data) != 47356 or hashlib.sha256(data).hexdigest() != DIGEST:
+              if status != 200 or len(data) != 31065 or hashlib.sha256(data).hexdigest() != DIGEST:
                   raise ValueError("archive_digest")
               allowed = {
                   "execution.json": "execution",
@@ -591,6 +120,9 @@ jobs:
               counts = collections.Counter()
               calls = collections.Counter()
               statuses = collections.Counter()
+              argument_strings = collections.Counter()
+              result_strings = collections.Counter()
+              explicit_failure_codes = collections.Counter()
               call_ids = {}
               completions = []
               verdict = {"shape_valid": False}
@@ -606,6 +138,8 @@ jobs:
                   elif isinstance(value, dict):
                       if value.get("role") == "tool":
                           counts["tool_feedback_records"] += 1
+                          if isinstance(value.get("content"), str):
+                              result_strings[hashlib.sha256(value["content"].encode("utf-8")).digest()] += 1
                       if value.get("type") in ("tool_result", "tool.execution_complete", "tool_execution_end"):
                           counts["tool_feedback_records"] += 1
                       fn = value.get("function")
@@ -613,6 +147,8 @@ jobs:
                       args = fn.get("arguments") if isinstance(fn, dict) else value.get("arguments")
                       if isinstance(name, str):
                           tool = tool_names.get(name, "unknown")
+                          if isinstance(args, str):
+                              argument_strings[(tool, hashlib.sha256(args.encode("utf-8")).digest())] += 1
                           counts["tool_call_" + tool] += 1
                           if args is not None:
                               payload = json.dumps(args, sort_keys=True, separators=(",", ":")).encode()
@@ -624,6 +160,9 @@ jobs:
                       if isinstance(call_id, str) and len(call_id) <= 256:
                           code = value.get("exit_code", value.get("exitCode"))
                           completions.append((call_id, code if type(code) is int else None))
+                      if type(value.get("exit_code", value.get("exitCode"))) is int:
+                          code = value.get("exit_code", value.get("exitCode"))
+                          explicit_failure_codes["zero" if code == 0 else "nonzero"] += 1
                       # Decode structured JSON strings only at known provider container fields.
                       for key, child in value.items():
                           if key in ("body", "request_body", "response_body", "content") and isinstance(child, str):
@@ -673,7 +212,19 @@ jobs:
               for (tool, _), count in calls.items():
                   if count > 1:
                       repetitions[tool] += count
-              print(json.dumps({"schema": "v03-detector-redacted-diagnostic/v1", "provenance": "unverified_structured_occurrences",
+              verify_run()
+              print(json.dumps({"schema": "v03-detector-redacted-diagnostic/v1",
+                  "scope": "fixed_qa_detection_archive_only",
+                  "protocol_assessment": "inconclusive",
+                  "record_completeness_proven": False,
+                  "provenance": "unverified_structured_occurrences",
+                  "recognized_call_ids": len(call_ids),
+                  "recognized_completion_occurrences": len(completions),
+                  "argument_string_occurrences": sum(argument_strings.values()),
+                  "argument_string_duplicate_occurrences": sum(n for n in argument_strings.values() if n > 1),
+                  "result_string_occurrences": sum(result_strings.values()),
+                  "result_string_duplicate_occurrences": sum(n for n in result_strings.values() if n > 1),
+                  "explicit_exit_code_occurrences": dict(sorted(explicit_failure_codes.items())),
                   "counts": dict(sorted(counts.items())),
                   "candidate_tool_status_unverified": [{"tool": t, "status": s, "count": n} for (t, s), n in sorted(statuses.items())],
                   "candidate_repeated_call_counts": dict(sorted(repetitions.items())),
@@ -685,365 +236,3 @@ jobs:
               raise SystemExit(1)
           
           PY
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
-        with:
-          python-version: '3.12'
-      - run: pip install -r requirements-dev.txt
-      - name: Validate immutable Issue 221 evidence compatibility
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_issue221_compatibility.py
-      - name: Validate closed real-dogfood upstream gate
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_live_gate.py
-      - name: Validate exact default-branch session Decision policy
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_session_policy.py
-      - name: Validate independent real-dogfood fixture pool
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_fixture_pool.py
-      - name: Validate Responses-only real-dogfood production composition
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_composition.py
-      - name: Validate bounded real OpenAI Responses dogfood host
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_openai_host.py
-      - name: Validate bounded production dogfood scenario runner
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_scenario_runner.py
-      - name: Setup pinned detector conclusion scripts
-        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
-        with:
-          destination: ${{ runner.temp }}/v03-detector-test-actions
-      - name: Validate pinned detector semantic failures before Safe Outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash "$RUNNER_TEMP/v03-detector-test-actions/install_threat_detect_binary.sh" v0.5.2 --artifact-base-url https://github.com/github/gh-aw-threat-detection/releases/download --sha256-amd64 b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9 --sha256-arm64 f6260a0f9ad72bcb67c7af19c4ce262ca34e2c3d5ccbf912832a8bd277200904 --rootless
-          PYTHONPATH=scripts python - <<'PY'
-          import os
-          from pathlib import Path
-          from validate_v03_dogfood_runtime_driver import recovery_pinned_detector_semantic_tests
-          recovery_pinned_detector_semantic_tests(
-              Path('.'), Path.home() / '.local/bin/threat-detect',
-              Path(os.environ['RUNNER_TEMP']) / 'v03-detector-test-actions/conclude_threat_detection.sh',
-          )
-          PY
-      - name: Validate trusted-main dogfood runtime driver
-        if: ${{ !cancelled() }}
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
-      - name: Observe immutable historical Worker through read-only GitHub API
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
-        run: |
-          PYTHONPATH=scripts python - <<'PY'
-          import json, os
-          from pathlib import Path
-          from v03_dogfood_runtime_driver import observe_historical_worker_for_review
-          doc = observe_historical_worker_for_review(
-              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
-          )
-          assert doc["recovery_authority"] is False and doc["future_attempts_fenced"] is False
-          assert doc["provider_invalidation"] is False and doc["release_eligible"] is False
-          Path("evidence").mkdir(exist_ok=True)
-          Path("evidence/historical-worker-observation.json").write_text(
-              json.dumps(doc, indent=2, sort_keys=True) + chr(10),
-          )
-          print(json.dumps(doc, sort_keys=True))
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        with:
-          name: v03-historical-worker-observation
-          path: evidence/historical-worker-observation.json
-          if-no-files-found: error
-      - name: Validate trusted production dogfood provenance
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_production_provenance.py
-      - name: Validate closed dogfood release-run finalizer
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_release_finalizer.py
-      - name: Validate trusted post-run finalizer imports
-        run: PYTHONPATH=scripts python -m py_compile scripts/v03_dogfood_post_run_finalizer.py
-
-      - name: Validate embedded read-only readiness diagnostic
-        run: |
-          python - <<'PY'
-          import io
-          import json
-          from pathlib import Path
-          from types import SimpleNamespace
-          from urllib import error
-          import yaml
-
-          workflow = yaml.safe_load(Path(".github/workflows/v03-dogfood-readiness.yml").read_text())
-          step = next(row for row in workflow["jobs"]["inspect"]["steps"]
-                      if row.get("name") == "Inspect presence and reverify immutable upstream evidence without effects")
-          source = step["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
-          compile(source, "readiness-diagnostic", "exec")
-          pure = source.split("# READ_ONLY_ACTIONS_DIAGNOSTIC_BEGIN\n", 1)[1].split(
-              "# READ_ONLY_ACTIONS_DIAGNOSTIC_END", 1
-          )[0]
-          namespace = {"json": json}
-          exec(pure, namespace)
-          NoRedirect = namespace["NoRedirect"]
-          make_actions_get = namespace["make_actions_get"]
-          scan_actions_runs = namespace["scan_actions_runs"]
-          diagnose_dispatch = namespace["diagnose_dispatch"]
-
-          assert NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://example.invalid") is None
-
-          class Response(io.BytesIO):
-              status = 200
-              def __enter__(self):
-                  return self
-              def __exit__(self, *args):
-                  self.close()
-
-          class RecordingOpener:
-              def __init__(self, payload=None, exc=None):
-                  self.payload, self.exc, self.requests = payload, exc, []
-              def open(self, req, timeout):
-                  self.requests.append((req, timeout))
-                  if self.exc:
-                      raise self.exc
-                  return Response(json.dumps(self.payload).encode())
-
-          token = "diagnostic-test-token"
-          opener = RecordingOpener({"ok": True})
-          assert make_actions_get(token, opener)("/probe") == (200, {"ok": True})
-          req, timeout = opener.requests[0]
-          assert req.get_method() == "GET" and req.data is None and timeout == 20
-          assert req.full_url.endswith("/probe")
-          assert token in req.get_header("Authorization")
-          http_error = error.HTTPError("https://example.invalid", 403, "private-error", {},
-                                       io.BytesIO(b"private-response-body"))
-          failure = make_actions_get(token, RecordingOpener(exc=http_error))("/probe")
-          assert failure == (403, None)
-          assert token not in repr(failure) and "private-response-body" not in repr(failure)
-
-          binding = SimpleNamespace(role="Developer", worker_workflow="worker.yml")
-          registration = {"id": 77, "path": ".github/workflows/worker.yml", "state": "active"}
-          key = "dispatch-test"
-          def reader_for(scans, registration_payload=registration, registration_status=200):
-              pages = list(scans)
-              def read(suffix):
-                  if suffix.startswith("/actions/workflows/"):
-                      return registration_status, registration_payload
-                  assert pages, "unexpected scan request"
-                  return 200, pages.pop(0)
-              return read
-
-          exact = {"id": 10, "workflow_id": 77, "path": ".github/workflows/worker.yml",
-                   "event": "workflow_dispatch", "display_title": "AI-SDLC gh-aw " + key,
-                   "head_branch": "main", "head_sha": "a" * 40, "status": "completed",
-                   "conclusion": "success"}
-          stable = [{"total_count": 1, "workflow_runs": [exact]},
-                    {"total_count": 1, "workflow_runs": [dict(exact)]}]
-          result = diagnose_dispatch([binding], key, reader_for(stable))
-          assert result["collection_complete"] is True
-          assert [row["id"] for row in result["matching_runs"]] == [10]
-          assert result["mismatched_runs"] == []
-          assert result["resolution_authority"] is False and result["release_eligible"] is False
-
-          collision = dict(exact, id=11, workflow_id=88, path=".github/workflows/other.yml")
-          result = diagnose_dispatch(
-              [binding], key,
-              reader_for([{"total_count": 1, "workflow_runs": [collision]},
-                          {"total_count": 1, "workflow_runs": [dict(collision)]}]),
-          )
-          assert result["matching_runs"] == []
-          assert result["mismatched_runs"][0]["mismatch_reason"] == "workflow_identity_or_event_mismatch"
-
-          malformed = lambda suffix: (200, {"total_count": "1", "workflow_runs": []})
-          assert scan_actions_runs(malformed)["complete"] is False
-          duplicate_payload = {"total_count": 2, "workflow_runs": [exact, dict(exact)]}
-          assert scan_actions_runs(lambda suffix: (200, duplicate_payload))["error"]["reason"] == "duplicate_run_ids"
-
-          changing_pages = iter([
-              (200, {"total_count": 2, "workflow_runs": [exact]}),
-              (200, {"total_count": 3, "workflow_runs": [dict(exact, id=12)]}),
-          ])
-          changed = scan_actions_runs(lambda suffix: next(changing_pages))
-          assert changed["error"]["reason"] == "changing_total_count"
-
-          capped = scan_actions_runs(
-              lambda suffix: (200, {"total_count": 2, "workflow_runs": [exact]}),
-              max_pages=1,
-          )
-          assert capped["error"]["reason"] == "page_cap_exhausted"
-
-          drift_a, drift_b = dict(exact, id=20), dict(exact, id=21)
-          drift = diagnose_dispatch(
-              [binding], key,
-              reader_for([{"total_count": 1, "workflow_runs": [drift_a]},
-                          {"total_count": 1, "workflow_runs": [drift_b]}]),
-          )
-          assert drift["collection_complete"] is False
-          assert drift["collection_error"]["reason"] == "unstable_or_incomplete_collection"
-
-          empty = diagnose_dispatch(
-              [binding], key,
-              reader_for([{"total_count": 0, "workflow_runs": []},
-                          {"total_count": 0, "workflow_runs": []}]),
-          )
-          assert empty["collection_complete"] is True and empty["matching_runs"] == []
-          assert empty["resolution_authority"] is False and empty["release_eligible"] is False
-
-          unresolved = diagnose_dispatch(
-              [binding], key,
-              reader_for([{"total_count": 1, "workflow_runs": [exact]},
-                          {"total_count": 1, "workflow_runs": [dict(exact)]}],
-                         registration_payload=None, registration_status=404),
-          )
-          assert unresolved["matching_runs"] == [] and len(unresolved["mismatched_runs"]) == 1
-          assert unresolved["workflow_registration"][0]["binding_valid"] is False
-          print("Readiness diagnostic security and stability tests: PASS")
-          PY
-
-  compile-recovery-developer:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - name: Install pinned recovery compiler
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh extension install github/gh-aw --pin v0.89.21 --force
-      - name: Strict compile fixed recovery Developer source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh aw compile ai-sdlc-gh-aw-developer-deepseek-v03-local --strict
-      - name: Export mechanically hardened recovery lock
-        run: |
-          python3 - <<'PY'
-          import base64, hashlib, json, subprocess
-          from pathlib import Path
-          path = Path(".github/workflows/ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml")
-          raw = path.read_bytes()
-          upstream = raw.decode()
-          metadata = json.loads(upstream.splitlines()[0].split(": ", 1)[1])
-          assert metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True
-          source = path.with_suffix("").with_suffix(".md").read_text()
-          body_hash = hashlib.sha256(source.split("\n---\n", 1)[1].rstrip("\n").encode()).hexdigest()
-          assert metadata["body_hash"] == body_hash
-          trigger = "          GH_AW_CI_TRIGGER_TOKEN: $" + "{{ secrets.GH_AW_CI_TRIGGER_TOKEN }}\n"
-          # Inspected compiler input text, never a checkout setting in this workflow.
-          old_persist_scalar = "persist-credentials: " + str(True).lower()
-          replacements = [
-              (',"GH_AW_CI_TRIGGER_TOKEN"', "", 1),
-              ("#   - GH_AW_CI_TRIGGER_TOKEN\n", "", 1),
-              (trigger, "", 1),
-              (old_persist_scalar, "persist-credentials: false", 2),
-          ]
-          hardened = upstream
-          for old, new, count in replacements:
-              assert hardened.count(old) == count, (old, hardened.count(old), count)
-              hardened = hardened.replace(old, new)
-          assert "GH_AW_CI_TRIGGER_TOKEN" not in hardened
-          assert old_persist_scalar not in hardened
-          upstream_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
-          proof = {
-              "schema": "ai-sdlc.v03-recovery-lock-transform/v1",
-              "compiler": "gh-aw-v0.89.21-strict", "upstream_blob_sha": upstream_blob,
-              "persist_credentials_false": 2, "removed_trigger_lines": 3,
-              "removed_trigger_references": 4,
-              "body_hash_from": body_hash, "body_hash_to": body_hash,
-          }
-          lines = hardened.splitlines(keepends=True)
-          lines.insert(1, "# ai-sdlc-recovery-lock-transform: " + json.dumps(proof, separators=(",", ":")) + "\n")
-          hardened = "".join(lines).encode()
-          Path("evidence").mkdir(exist_ok=True)
-          Path("evidence/recovery-developer.upstream.lock.yml").write_bytes(raw)
-          Path("evidence/recovery-developer.hardened.lock.yml").write_bytes(hardened)
-          Path("evidence/recovery-developer-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
-          print("RECOVERY_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
-          print("RECOVERY_LOCK_BASE64=" + base64.b64encode(hardened).decode())
-          checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
-          assert checked_in == hardened, "checked-in recovery lock differs from strict compiled hardening"
-          PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: v03-recovery-developer-compiled
-          path: evidence/recovery-developer*
-          if-no-files-found: error
-
-  compile-release-gates:
-    strategy:
-      fail-fast: false
-      matrix:
-        role: [reviewer, qa]
-    env:
-      GATE_ROLE: ${{ matrix.role }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - name: Install pinned release Gate compiler
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh extension install github/gh-aw --pin v0.89.21 --force
-      - name: Strict compile fixed release Gate source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          case "$GATE_ROLE" in reviewer|qa) ;; *) exit 1 ;; esac
-          gh aw compile "ai-sdlc-gh-aw-$GATE_ROLE-deepseek-v03-release-local" --strict
-      - name: Export mechanically hardened release Gate lock
-        run: |
-          python3 - <<'PY'
-          import base64, hashlib, json, os, re, subprocess
-          from pathlib import Path
-          role = os.environ["GATE_ROLE"]
-          assert role in {"reviewer", "qa"}
-          path = Path(f".github/workflows/ai-sdlc-gh-aw-{role}-deepseek-v03-release-local.lock.yml")
-          raw = path.read_bytes()
-          upstream = raw.decode()
-          metadata = json.loads(upstream.splitlines()[0].split(": ", 1)[1])
-          assert metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True
-          source = path.with_suffix("").with_suffix(".md").read_text()
-          body_hash = hashlib.sha256(source.split("\n---\n", 1)[1].rstrip("\n").encode()).hexdigest()
-          assert metadata["body_hash"] == body_hash
-          assert "GH_AW_CI_TRIGGER_TOKEN" not in upstream
-          # Inspected compiler input text, never a checkout setting in this workflow.
-          old_persist_scalar = "persist-credentials: " + str(True).lower()
-          assert old_persist_scalar not in upstream
-          checkout_scalars = re.findall(r"(?m)^\s+persist-credentials: ([^\n]+)$", upstream)
-          assert checkout_scalars and all(value == "false" for value in checkout_scalars)
-          replacements = []
-          hardened = upstream
-          for old, new, count in replacements:
-              assert hardened.count(old) == count, (old, hardened.count(old), count)
-              hardened = hardened.replace(old, new)
-          assert "GH_AW_CI_TRIGGER_TOKEN" not in hardened
-          assert old_persist_scalar not in hardened
-          upstream_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
-          proof = {
-              "schema": "ai-sdlc.v03-release-gate-lock-transform/v1",
-              "compiler": "gh-aw-v0.89.21-strict", "upstream_blob_sha": upstream_blob,
-              "persist_credentials_false": 0, "removed_trigger_lines": 0,
-              "removed_trigger_references": 0,
-              "body_hash_from": body_hash, "body_hash_to": body_hash,
-          }
-          lines = hardened.splitlines(keepends=True)
-          lines.insert(1, "# ai-sdlc-release-gate-lock-transform: " + json.dumps(proof, separators=(",", ":")) + "\n")
-          hardened = "".join(lines).encode()
-          Path("evidence").mkdir(exist_ok=True)
-          Path(f"evidence/release-{role}.upstream.lock.yml").write_bytes(raw)
-          Path(f"evidence/release-{role}.hardened.lock.yml").write_bytes(hardened)
-          Path(f"evidence/release-{role}-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
-          print("RELEASE_GATE_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
-          print("RELEASE_GATE_LOCK_BASE64=" + base64.b64encode(hardened).decode())
-          checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
-          assert checked_in == hardened, "checked-in release Gate lock differs from strict compiled hardening"
-          PY
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: v03-release-${{ matrix.role }}-compiled
-          path: evidence/release-${{ matrix.role }}*
-          if-no-files-found: error
