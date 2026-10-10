@@ -1,238 +1,57 @@
-name: Fixed QA detector archive inspection (no model)
+name: Synthetic CLI observability proof (no model)
 on:
   pull_request:
     paths:
       - '.github/workflows/validate-v03-dogfood-live-gate.yml'
+      - 'scripts/validate_v03_detector_protocol_replay.mjs'
 permissions:
   contents: read
-  actions: read
 jobs:
-  inspect-fixed-detector-artifact:
-    name: Inspect fixed QA detector artifact (redacted, no model)
+  synthetic-cli-observability:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
     steps:
-      - name: Read fixed artifact and emit bounded redacted metrics
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Install pinned CLI and isolated image
         shell: bash
         run: |
-          python - <<'PY'
-          try:
-              import collections, hashlib, io, json, os, re, stat, urllib.request, urllib.parse, zipfile
-              BASE = "https://api.github.com/repos/DREAM-XIN/ai-sdlc"
-              RUN = 38074618111
-              ARTIFACT = 11677309324
-              SOURCE = "868d3dc25e5331392063b674496eb16b01208b42"
-              DIGEST = "a40043cbbe0e9e8ae74e4e9c71eb00c48b2dae3f92d8f2d87d239f0c899ea754"
-              class NoRedirect(urllib.request.HTTPRedirectHandler):
-                  def redirect_request(self, *args, **kwargs):
-                      return None
-              opener = urllib.request.build_opener(NoRedirect)
-              def get(url, auth=False, limit=65536):
-                  p = urllib.parse.urlsplit(url)
-                  if p.scheme != "https" or p.username or p.password or (auth and p.netloc != "api.github.com"):
-                      raise ValueError("invalid_transport")
-                  if not auth and not (re.fullmatch(r"productionresultssa[a-z0-9]+\.blob\.core\.windows\.net", p.hostname or "")
-                                       or re.fullmatch(r"[a-z0-9-]+\.actions\.githubusercontent\.com", p.hostname or "")):
-                      raise ValueError("redirect_host")
-                  if p.port not in (None, 443):
-                      raise ValueError("redirect_port")
-                  headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-                  if auth:
-                      headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
-                  try:
-                      with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
-                          data = response.read(limit + 1)
-                          if len(data) > limit:
-                              raise ValueError("response_bound")
-                          return response.status, data, None
-                  except urllib.error.HTTPError as error:
-                      if error.code in (301, 302, 303, 307, 308):
-                          return error.code, b"", error.headers.get("Location")
-                      raise ValueError("http_failure") from None
-              def verify_run():
-                  status, raw, _ = get(BASE + f"/actions/runs/{RUN}", True)
-                  if status != 200:
-                      raise ValueError("run_read")
-                  run = json.loads(raw)
-                  if not (type(run.get("id")) is int and run["id"] == RUN
-                          and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
-                          and run.get("head_sha") == SOURCE and run.get("head_branch") == "main"
-                          and run.get("event") == "workflow_dispatch"
-                          and run.get("status") == "completed" and run.get("conclusion") == "failure"
-                          and run.get("path") == ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml"
-                          and run.get("repository", {}).get("id") == 1326302284
-                          and run.get("head_repository", {}).get("id") == 1326302284):
-                      raise ValueError("run_binding")
-              verify_run()
-              status, raw, redirect = get(BASE + f"/actions/runs/{RUN}/artifacts?per_page=100", True)
-              if status != 200:
-                  raise ValueError("artifact_listing")
-              listing = json.loads(raw)
-              if listing.get("total_count") != 6 or len(listing.get("artifacts", [])) != 6:
-                  raise ValueError("artifact_pagination")
-              if len({a.get("id") for a in listing["artifacts"]}) != 6 or len({a.get("name") for a in listing["artifacts"]}) != 6:
-                  raise ValueError("artifact_duplicates")
-              rows = [a for a in listing["artifacts"] if a.get("id") == ARTIFACT]
-              if len(rows) != 1:
-                  raise ValueError("artifact_identity")
-              a = rows[0]
-              w = a.get("workflow_run", {})
-              if not (all(type(a.get(k)) is int for k in ("id", "size_in_bytes"))
-                      and all(type(w.get(k)) is int for k in ("id", "repository_id", "head_repository_id"))
-                      and a.get("name") == "detection" and a.get("size_in_bytes") == 31065
-                      and a.get("digest") == "sha256:" + DIGEST and a.get("expired") is False
-                      and w.get("id") == RUN and w.get("head_sha") == SOURCE and w.get("head_branch") == "main"
-                      and w.get("repository_id") == 1326302284 and w.get("head_repository_id") == 1326302284):
-                  raise ValueError("artifact_binding")
-              status, data, location = get(BASE + f"/actions/artifacts/{ARTIFACT}/zip", True)
-              for _ in range(3):
-                  if status == 200:
-                      break
-                  if not location:
-                      raise ValueError("archive_redirect")
-                  status, data, location = get(location, False)
-              if status != 200 or len(data) != 31065 or hashlib.sha256(data).hexdigest() != DIGEST:
-                  raise ValueError("archive_digest")
-              allowed = {
-                  "execution.json": "execution",
-                  "detection_result.json": "verdict",
-                  "detection_usage.json": "usage",
-                  "detection_usage.jsonl": "usage",
-                  "sandbox/firewall/logs/audit.jsonl": "audit",
-                  "sandbox/firewall/logs/api-proxy-logs/otel.jsonl": "telemetry",
-                  "sandbox/firewall/logs/api-proxy-logs/token-tracker-audit.jsonl": "token_audit",
-                  "sandbox/firewall/logs/api-proxy-logs/token-usage.jsonl": "usage",
-                  "sandbox/firewall/logs/api-proxy-logs/models.json": "models",
-                  "sandbox/firewall/logs/access.log": "unparsed",
-                  "sandbox/firewall/logs/cache.log": "unparsed",
-                  "sandbox/firewall/audit/awf-resolved-config.json": "unparsed",
-                  "sandbox/firewall/audit/docker-compose.redacted.yml": "unparsed",
-                  "sandbox/firewall/audit/image-manifest.json": "unparsed",
-                  "sandbox/firewall/audit/policy-manifest.json": "unparsed",
-                  "sandbox/firewall/audit/squid.conf": "unparsed",
-              }
-              counts = collections.Counter()
-              calls = collections.Counter()
-              statuses = collections.Counter()
-              argument_strings = collections.Counter()
-              result_strings = collections.Counter()
-              explicit_failure_codes = collections.Counter()
-              call_ids = {}
-              completions = []
-              verdict = {"shape_valid": False}
-              tool_names = {"bash": "shell", "shell": "shell", "read_file": "read", "read": "read",
-                            "write_file": "write", "write": "write", "threat_detection_result": "verdict"}
-              def walk(value, depth=0):
-                  counts["nodes"] += 1
-                  if depth > 32 or counts["nodes"] > 200000:
-                      raise ValueError("json_bound")
-                  if isinstance(value, list):
-                      for child in value:
-                          walk(child, depth + 1)
-                  elif isinstance(value, dict):
-                      if value.get("role") == "tool":
-                          counts["tool_feedback_records"] += 1
-                          if isinstance(value.get("content"), str):
-                              result_strings[hashlib.sha256(value["content"].encode("utf-8")).digest()] += 1
-                      if value.get("type") in ("tool_result", "tool.execution_complete", "tool_execution_end"):
-                          counts["tool_feedback_records"] += 1
-                      fn = value.get("function")
-                      name = fn.get("name") if isinstance(fn, dict) else value.get("tool_name")
-                      args = fn.get("arguments") if isinstance(fn, dict) else value.get("arguments")
-                      if isinstance(name, str):
-                          tool = tool_names.get(name, "unknown")
-                          if isinstance(args, str):
-                              argument_strings[(tool, hashlib.sha256(args.encode("utf-8")).digest())] += 1
-                          counts["tool_call_" + tool] += 1
-                          if args is not None:
-                              payload = json.dumps(args, sort_keys=True, separators=(",", ":")).encode()
-                              calls[(tool, hashlib.sha256(payload).digest())] += 1
-                          call_id = value.get("id", value.get("tool_call_id"))
-                          if isinstance(call_id, str) and len(call_id) <= 256:
-                              call_ids[call_id] = tool
-                      call_id = value.get("tool_call_id", value.get("toolCallId"))
-                      if isinstance(call_id, str) and len(call_id) <= 256:
-                          code = value.get("exit_code", value.get("exitCode"))
-                          completions.append((call_id, code if type(code) is int else None))
-                      if type(value.get("exit_code", value.get("exitCode"))) is int:
-                          code = value.get("exit_code", value.get("exitCode"))
-                          explicit_failure_codes["zero" if code == 0 else "nonzero"] += 1
-                      # Decode structured JSON strings only at known provider container fields.
-                      for key, child in value.items():
-                          if key in ("body", "request_body", "response_body", "content") and isinstance(child, str):
-                              if len(child) <= 2097152 and child[:1] in ("{", "["):
-                                  try:
-                                      walk(json.loads(child), depth + 1)
-                                  except json.JSONDecodeError:
-                                      counts["embedded_json_unparsed"] += 1
-                          elif isinstance(child, (list, dict)):
-                              walk(child, depth + 1)
-              with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                  entries = archive.infolist()
-                  if len(entries) > 32 or len({x.filename for x in entries}) != len(entries):
-                      raise ValueError("zip_count")
-                  if sum(x.file_size for x in entries) > 8388608:
-                      raise ValueError("zip_total")
-                  for entry in entries:
-                      name = entry.filename
-                      if (entry.is_dir() or chr(92) in name or any(x in ("", ".", "..") for x in name.split("/")) or name not in allowed or entry.flag_bits & 1
-                              or stat.S_ISLNK(entry.external_attr >> 16) or entry.file_size > 2097152
-                              or entry.file_size > max(entry.compress_size, 1) * 200):
-                          raise ValueError("zip_member")
-                      category = allowed[name]
-                      counts["members_" + category] += 1
-                      if category == "unparsed":
-                          continue
-                      uncompressed = archive.read(entry)
-                      if len(uncompressed) != entry.file_size:
-                          raise ValueError("zip_length")
-                      raw = uncompressed.decode("utf-8")
-                      try:
-                          documents = [json.loads(line) for line in raw.splitlines() if line.strip()] if name.endswith(".jsonl") else [json.loads(raw)]
-                      except (ValueError, UnicodeError):
-                          raise ValueError("structured_parse") from None
-                      counts["records_" + category] += len(documents)
-                      for document in documents:
-                          if category == "verdict" and isinstance(document, dict):
-                              fields = ("prompt_injection", "secret_leak", "malicious_patch")
-                              if all(type(document.get(k)) is bool for k in fields) and isinstance(document.get("reasons"), list):
-                                  verdict = {"shape_valid": True, **{k: document[k] for k in fields}}
-                          walk(document)
-              for call_id, code in completions:
-                  if call_id in call_ids:
-                      statuses[(call_ids[call_id], "success" if code == 0 else ("failure" if code is not None else "unknown"))] += 1
-              counts["linked_completion_records"] = sum(statuses.values())
-              repetitions = collections.Counter()
-              for (tool, _), count in calls.items():
-                  if count > 1:
-                      repetitions[tool] += count
-              verify_run()
-              print(json.dumps({"schema": "v03-detector-redacted-diagnostic/v1",
-                  "scope": "fixed_qa_detection_archive_only",
-                  "protocol_assessment": "inconclusive",
-                  "record_completeness_proven": False,
-                  "provenance": "unverified_structured_occurrences",
-                  "recognized_call_ids": len(call_ids),
-                  "recognized_completion_occurrences": len(completions),
-                  "argument_string_occurrences": sum(argument_strings.values()),
-                  "argument_string_duplicate_occurrences": sum(n for n in argument_strings.values() if n > 1),
-                  "result_string_occurrences": sum(result_strings.values()),
-                  "result_string_duplicate_occurrences": sum(n for n in result_strings.values() if n > 1),
-                  "explicit_exit_code_occurrences": dict(sorted(explicit_failure_codes.items())),
-                  "counts": dict(sorted(counts.items())),
-                  "candidate_tool_status_unverified": [{"tool": t, "status": s, "count": n} for (t, s), n in sorted(statuses.items())],
-                  "candidate_repeated_call_counts": dict(sorted(repetitions.items())),
-                  "verdict_member_present": bool(counts["members_verdict"]), "structured_verdict": verdict,
-                  "candidate_verdict_call_present": bool(counts["tool_call_verdict"])}, sort_keys=True))
-              
-          except Exception:
-              print('{"schema":"v03-detector-redacted-diagnostic/v1","error":"diagnostic_validation_failed"}')
-              raise SystemExit(1)
-          
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 120 https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz -o "$RUNNER_TEMP/v03-joined-copilot.tar.gz"
+          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $RUNNER_TEMP/v03-joined-copilot.tar.gz" | sha256sum --check --status
+          python3 - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          dest = Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot"
+          dest.mkdir(mode=0o700)
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot.tar.gz", "r:gz") as archive:
+              entries = archive.getmembers()
+              assert 0 < len(entries) <= 64 and sum(e.size for e in entries) <= 524288000
+              for entry in entries:
+                  path = PurePosixPath(entry.name)
+                  assert not path.is_absolute() and ".." not in path.parts and "\\" not in entry.name
+                  assert entry.isdir() or entry.isfile()
+                  assert 0 <= entry.size <= 314572800
+              archive.extractall(dest, filter="data")
+          assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
           PY
+          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
+      - name: Verify native protocol capture with isolated synthetic tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="v03-observe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          timeout --signal=TERM --kill-after=15s 120s docker run --name "$name" --pull=never --rm --init \
+            --network none --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" --read-only --workdir /tmp \
+            --tmpfs "/tmp:rw,nosuid,nodev,exec,uid=$(id -u),gid=$(id -g),mode=700" \
+            --mount "type=bind,src=$RUNNER_TEMP/v03-joined-copilot,dst=/inputs/copilot,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/validate_v03_detector_protocol_replay.mjs,dst=/inputs/replay.mjs,readonly" \
+            --env HOME=/tmp/home --env PATH=/usr/local/bin:/usr/bin:/bin \
+            --entrypoint node \
+            ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 \
+            /inputs/replay.mjs /inputs/copilot/copilot /tmp/observe
