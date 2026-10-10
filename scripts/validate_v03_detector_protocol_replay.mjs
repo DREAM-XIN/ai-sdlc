@@ -113,9 +113,7 @@ function analyze(events) {
    categories.start++;
    ensure(typeof d.toolCallId==="string"&&ids.includes(d.toolCallId)
     &&d.toolName==="bash"&&!starts.has(d.toolCallId),"START_SHAPE");
-   const command=typeof d.command==="string"?d.command:
-    (d.input&&typeof d.input.command==="string"?d.input.command:
-     (d.parameters&&typeof d.parameters.command==="string"?d.parameters.command:undefined));
+   const command=d.arguments&&typeof d.arguments.command==="string"?d.arguments.command:undefined;
    ensure(typeof command==="string","START_SHAPE");
    starts.set(d.toolCallId,{command});
   }else if(event.type==="tool.execution_complete"){
@@ -123,11 +121,11 @@ function analyze(events) {
    ensure(typeof d.toolCallId==="string"&&ids.includes(d.toolCallId)
     &&!completes.has(d.toolCallId),"COMPLETE_SHAPE");
    ensure(typeof d.success==="boolean","EXPLICIT_STATUS");
-   const output=typeof d.output==="string"?d.output:
-    (typeof d.result==="string"?d.result:
-     (d.result&&typeof d.result.content==="string"?d.result.content:undefined));
+   const output=d.result&&typeof d.result.content==="string"?d.result.content:undefined;
    ensure(typeof output==="string","RESULT_VALUE");
-   completes.set(d.toolCallId,{success:d.success,output});
+   const shellExit=d.shellExecution?.exitCode;
+   ensure(shellExit===undefined||Number.isInteger(shellExit),"EXPLICIT_STATUS");
+   completes.set(d.toolCallId,{success:d.success,output,shellExit});
   }else if(event.type==="assistant.message"){
    categories.assistant++;
   }else if(["session.result","session.shutdown","session.end"].includes(event.type)){
@@ -135,12 +133,15 @@ function analyze(events) {
   }else categories.other++;
  }
  ensure(starts.size===3&&completes.size===3,"TOOL_LINKAGE");
- const commandHashes=[],resultHashes=[];
+ const commandHashes=[],resultHashes=[],nativeShellExits=[];
  for(let i=0;i<ids.length;i++){
   ensure(starts.has(ids[i])&&completes.has(ids[i]),"TOOL_LINKAGE");
   const start=starts.get(ids[i]),complete=completes.get(ids[i]);
   ensure(start.command===commands[i],"COMMAND_IDENTITY");
-  ensure(complete.success===(i!==1),"EXPLICIT_STATUS");
+  // Native success is tool completion, not the shell process exit status.
+  ensure(complete.success===true,"EXPLICIT_STATUS");
+  if(complete.shellExit!==undefined)ensure(complete.shellExit===(i===1?7:0),"EXPLICIT_STATUS");
+  nativeShellExits.push(complete.shellExit===undefined?"unknown":complete.shellExit);
   ensure(complete.output.includes(markers[i]),"RESULT_VALUE");
   commandHashes.push(fingerprint(Buffer.from(start.command,"utf8")));
   resultHashes.push(fingerprint(Buffer.from(complete.output,"utf8")));
@@ -148,7 +149,9 @@ function analyze(events) {
  ensure(commandHashes[0]===commandHashes[2]&&commandHashes[0]!==commandHashes[1],"COMMAND_IDENTITY");
  // Completion is additionally authenticated by actual CLI exit0 and the final
  // fake-provider assistant stop. Native end-event absence is reported, never inferred.
- return {categories,linked_calls:3,explicit_success:2,explicit_failure:1,
+ return {categories,linked_calls:3,native_tool_status_source:"explicit_data_success",
+  native_tool_success:3,native_tool_failure:0,native_shell_exit_source:"optional_typed_shellExecution_exitCode",
+  native_shell_exit_codes:nativeShellExits,synthetic_nonzero_exit_requested:true,
   identical_command_pair:true,identical_result_pair:resultHashes[0]===resultHashes[2],
   native_terminal_event_present:categories.session_end>0};
 }
