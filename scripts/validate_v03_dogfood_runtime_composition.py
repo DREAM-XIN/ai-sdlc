@@ -859,7 +859,7 @@ def _current_execution_fixture(scenario="happy_path"):
     require_slot(scenario)
     presence = {identity: identity == "DEEPSEEK_API_KEY"
                 for identity in credential_identities(load_registry())}
-    rows = resolve_current_dogfood_bindings(presence)
+    rows = resolve_current_dogfood_bindings(presence, scenario=scenario)
     gate = SimpleNamespace(scenario=scenario, bindings=rows)
     workflows = _workflow_map(gate)
     return gate, workflows, _execution_bindings(gate, workflows)
@@ -868,7 +868,7 @@ def _current_execution_fixture(scenario="happy_path"):
 def readiness_execution_binding_test() -> None:
     from dataclasses import replace
     from v03_dogfood_live_gate import (
-        ALLOWED_SCENARIOS, CURRENT_DOGFOOD_POLICY, CURRENT_DOGFOOD_WORKFLOWS,
+        ALLOWED_SCENARIOS, INLINE_DOGFOOD_POLICY, INLINE_DOGFOOD_WORKFLOWS,
         V03DogfoodLiveGateError, resolve_current_dogfood_bindings,
     )
     from v03_dogfood_runtime_preflight import V03DogfoodRuntimePreflightError
@@ -880,15 +880,15 @@ def readiness_execution_binding_test() -> None:
         for row in gate.bindings:
             role = row.role
             binding = bindings[role]
-            require(row.rule_id == CURRENT_DOGFOOD_POLICY
+            require(row.rule_id == INLINE_DOGFOOD_POLICY
                     and row.candidate_order == ("deepseek",)
                     and row.selected_profile == "deepseek" and row.fallback is False,
                     "current route was relabeled as a historical shared policy")
             require(binding == {
-                "worker_id": CURRENT_DOGFOOD_WORKFLOWS[role].removesuffix(".lock.yml"),
+                "worker_id": INLINE_DOGFOOD_WORKFLOWS[role].removesuffix(".lock.yml"),
                 "role": role, "profile": "deepseek",
-                "workflow_file": CURRENT_DOGFOOD_WORKFLOWS[role],
-                "selection_policy_id": CURRENT_DOGFOOD_POLICY, "default_branch": "main",
+                "workflow_file": INLINE_DOGFOOD_WORKFLOWS[role],
+                "selection_policy_id": INLINE_DOGFOOD_POLICY, "default_branch": "main",
                 "credential_name": "DEEPSEEK_API_KEY",
             }, "resolved current execution identity drifted for " + scenario + "/" + role)
             require(workflows.workflow_for(role) == row.worker_workflow,
@@ -898,7 +898,7 @@ def readiness_execution_binding_test() -> None:
 
     for unavailable in (False, None, "true"):
         try:
-            resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": unavailable})
+            resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": unavailable}, scenario="happy_path")
         except V03DogfoodLiveGateError:
             pass
         else:
@@ -918,13 +918,13 @@ def readiness_execution_binding_test() -> None:
     for label, changes in mutations:
         changed = tuple(replace(row, **changes) if row.role == "qa" else row for row in rows)
         try:
-            _execution_bindings(SimpleNamespace(bindings=changed), workflows)
+            _execution_bindings(SimpleNamespace(scenario=gate.scenario, bindings=changed), workflows)
         except V03DogfoodRuntimePreflightError:
             pass
         else:
             raise AssertionError(label + " escaped current execution binding fence")
     try:
-        _execution_bindings(SimpleNamespace(bindings=rows[:-1]), workflows)
+        _execution_bindings(SimpleNamespace(scenario=gate.scenario, bindings=rows[:-1]), workflows)
     except V03DogfoodRuntimePreflightError:
         pass
     else:
@@ -1094,6 +1094,162 @@ def early_adapter_gate_test() -> None:
     require("adapter_id" in signature.parameters, "dogfood builder lost explicit adapter binding")
 
 
+
+def actual_top_level_structured_factory_tests() -> None:
+    """Constructor smoke through the unchanged Responses/full-Vertical factories.
+
+    Policy/Git/protection/provider boundaries are synthetic. No lifecycle, model,
+    remote Store access, external POST or production protection claim is exercised.
+    """
+    from contextlib import ExitStack
+    from copy import deepcopy
+    from unittest.mock import patch
+    import socket
+    import urllib.request
+    import v03_dogfood_full_composition as composition
+    from materialize_v03_vertical_policy_state import _policy_documents
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_policy_state import ProtectedVerticalPolicyBundleLoader, protected_ref, seal_receipt
+    from operator_store_git import GitStateRefBackend
+    from operator_store_remote_git import RemoteGitStateRefBackend
+    from operator_store_github_protection_v03_trusted import GitHubRepositoryProtectionVerifier
+    from operator_v03_vertical_production_runtime import _DeferredExactVerticalPersistGateway
+    from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+    from operator_decision_feature_truth import DurableDecisionFeatureTruthGateway
+    from v03_real_runtime_full_composition import DeferredFixtureFeatureTruthGateway
+    from operator_openai_responses_production import ResponsesProductionBindingError
+
+    installation, materialization = "5" * 40, "4" * 40
+    state_ref = "refs/heads/ai-sdlc-operator-state"
+    documents = _policy_documents(
+        repository=REPOSITORY, installation_commit_sha=installation, state_ref=state_ref,
+        issued_at="2026-10-10T13:00:00Z",
+        writer_fence_proof={"installation_commit_sha": installation,
+                            "fixture": "synthetic protected policy boundary"},
+        protected_ref_fn=protected_ref, seal_receipt_fn=seal_receipt)
+    files = {row.path: deepcopy(row.value) for row in documents}
+    def exact(sha, path):
+        require(sha == materialization and path in files, "factory policy escaped exact fixture anchor")
+        return deepcopy(files[path])
+    def current(repo, ref, path):
+        require(repo == REPOSITORY and ref == state_ref and path in files,
+                "factory policy escaped protected fixture scope")
+        return deepcopy(files[path])
+    policy = ProtectedVerticalPolicyBundleLoader(
+        repository=REPOSITORY, installation_commit_sha=installation,
+        materialization_commit_sha=materialization, state_ref=state_ref,
+        operation_profile=VERTICAL_PROFILE,
+        receipt_path="config/operator/v03-vertical-policy/bundle-receipt.json",
+        document_loader=exact, protected_document_loader=current,
+        installation_commit_verifier=lambda repo, sha: repo == REPOSITORY and sha == installation,
+        materialization_commit_verifier=lambda repo, ref, sha: (
+            repo == REPOSITORY and ref == state_ref and sha == materialization),
+    ).load()
+    forbidden = []
+    def no_effect(*args, **kwargs):
+        forbidden.append("forbidden construction I/O")
+        raise AssertionError("top-level construction attempted Git/provider/Store execution")
+    protection = GitHubRepositoryProtectionVerifier(
+        token="synthetic-protection-token", operator_app_slug="synthetic-operator",
+        branch_http_get=no_effect)
+    def build(scenario):
+        slot = require_slot(scenario)
+        _gate, workflows, bindings = _current_execution_fixture(scenario)
+        config = TrustedOperatorRuntimeConfig(
+            target_repository=REPOSITORY, store_repository=REPOSITORY,
+            installation_ref="main", store_checkout=ROOT, principal="factory-smoke",
+            feature_bindings=(TrustedFeatureBinding(slot.feature_id, slot.target_ref),))
+        return build_v03_dogfood_full_composition(
+            slot=slot, config=config, adapter_id=ADAPTER_ID,
+            target_read_token="synthetic-read-token", actions_token="synthetic-actions-token",
+            event_write_token="synthetic-event-token", control_repository=REPOSITORY,
+            workflows=workflows, execution_bindings=bindings,
+            protection_verifier=protection, policy_authority=policy,
+            trusted_context_digest="6" * 64, collector_namespace_policy="factory-collector",
+            trusted_role_policy="factory-roles", clock=lambda: "2026-10-10T13:00:00Z")
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(GitStateRefBackend, "_git", side_effect=no_effect))
+        stack.enter_context(patch.object(RemoteGitStateRefBackend, "commit", side_effect=no_effect))
+        stack.enter_context(patch.object(urllib.request, "urlopen", side_effect=no_effect))
+        stack.enter_context(patch.object(socket, "create_connection", side_effect=no_effect))
+        results = []
+        for scenario in ("happy_path", "review_remediation", "session_recovery"):
+            result = build(scenario)
+            runtime, executor = result.runtime, result.bundle.executor
+            require(type(runtime.backend) is RemoteGitStateRefBackend,
+                    "factory smoke bypassed the real RemoteGit backend")
+            require(runtime.protection_verifier is protection
+                    and result.responses.runtime is runtime
+                    and result.bundle.write_bundle.runtime is runtime
+                    and result.bundle.vertical_bundle.runtime is runtime
+                    and executor.runtime is runtime,
+                    "actual top-level construction split Store authority")
+            feature_bridge = executor.feature_gateway
+            persist_bridge = executor.persist_gateway
+            require(type(feature_bridge) is DeferredFixtureFeatureTruthGateway
+                    and feature_bridge is result.feature_truth_gateway
+                    and type(feature_bridge.delegate) is DurableDecisionFeatureTruthGateway
+                    and type(persist_bridge) is _DeferredExactVerticalPersistGateway
+                    and type(persist_bridge.delegate) is DurableVerticalFeaturePersistGateway,
+                    "real factory lost its exact typed deferred bridges")
+            gateway = result.dispatch_gateway.delegate
+            require(isinstance(gateway, composition.DogfoodCurrentStructuredDispatchGateway),
+                    "actual selected scenario did not install structured dispatch")
+            builder = gateway.context_builder
+            require(builder.runtime is runtime
+                    and builder.feature_gateway is feature_bridge.delegate
+                    and builder.persist_gateway is persist_bridge.delegate
+                    and builder.feature_gateway.runtime is runtime
+                    and builder.persist_gateway.runtime is runtime
+                    and builder.candidate_provider is result.candidate_provider
+                    and builder.content_loader.runtime is runtime
+                    and builder.policy_authority is policy,
+                    "structured builder received an unbound bridge or foreign concrete delegate")
+            require(isinstance(result.result_source, composition.DogfoodStructuredGateResultSource)
+                    and result.result_source.reviewer_runtime is runtime
+                    and result.result_source.reviewer_policy_authority is policy
+                    and result.result_source.handoff_runtime is runtime
+                    and result.recovery_result_source.post_handoff_runtime is runtime
+                    and callable(result.result_source._structured_inputs)
+                    and builder.content_loader.result_source is result.result_source
+                    and builder.content_loader.recovery_result_source is result.recovery_result_source,
+                    "factory source/loader binding escaped its protected runtime")
+            require(result.collector.callback_coordinator.executor is executor
+                    and result.bundle.decision_notification_coordinator.runtime is runtime
+                    and executor.dispatch_gateway.runtime is runtime
+                    and executor.dispatch_gateway.delegate is result.dispatch_gateway
+                    and "operation.resume" not in result.responses.backends,
+                    "actual collector/dispatch/adapter graph drifted")
+            if scenario == "review_remediation":
+                authority = executor.remediation_rereview_authority
+                require(gateway.remediation_rereview_authority is authority
+                        and result.collector.callback_coordinator.remediation_rereview_authority is authority,
+                        "rereview authority split across real factory components")
+            results.append(result)
+        # Fault only the real one-time bind seams; no factory or graph is replaced.
+        foreign_runtime = results[0].runtime
+        for bridge in (DeferredFixtureFeatureTruthGateway, _DeferredExactVerticalPersistGateway):
+            real_bind = bridge.bind
+            for fault in ("unbound", "wrong-type", "foreign-runtime"):
+                def broken_bind(self, delegate, *, fault=fault, real_bind=real_bind):
+                    if fault == "unbound":
+                        return
+                    if fault == "wrong-type":
+                        self._delegate = SimpleNamespace(runtime=delegate.runtime)
+                        return
+                    real_bind(self, delegate)
+                    delegate.runtime = foreign_runtime
+                with patch.object(bridge, "bind", new=broken_bind):
+                    try:
+                        build("happy_path")
+                    except (V03DogfoodCompositionError, ResponsesProductionBindingError, RuntimeError, ValueError):
+                        pass
+                    else:
+                        raise AssertionError("actual factory accepted " + bridge.__name__ + "/" + fault)
+        require(not forbidden, "factory smoke attempted an external or Store effect")
+    print("- actual top-level factory: all three structured scenarios and typed bridge fault rejection passed")
+
+
 def main() -> None:
     candidate_tests()
     handoff_and_supersession_tests()
@@ -1103,6 +1259,7 @@ def main() -> None:
     execution_binding_wrapper_test()
     developer_candidate_transport_tests()
     early_adapter_gate_test()
+    actual_top_level_structured_factory_tests()
     print("v0.3 real-dogfood Responses production composition: PASS")
 
 

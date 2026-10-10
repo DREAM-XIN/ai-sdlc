@@ -330,7 +330,7 @@ def verify_issue_221_closed(
 
 
 
-CURRENT_DOGFOOD_BLOBS = {
+HISTORICAL_RELEASE_DOGFOOD_BLOBS = {
     "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
     "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
     "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md": "f0774cacba7b4e357317d5014149bccb4fb6edc7",
@@ -338,25 +338,90 @@ CURRENT_DOGFOOD_BLOBS = {
     "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md": "e8727e4e063e91e68373951fb9aa7059ed5de2ba",
     "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml": "41f8d6dc29a76221ac86ccf5bc11e170bc24ddaa"
 }
-CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-local/v1"
+CURRENT_DOGFOOD_BLOBS = {
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md": "d4cedb1da8549861d86023348d306f8ab60bdef0",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml": "ff68923c95dbbf7d4bc206f2d2bb03fa81fe5578",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.md": "6f5d97d64ed791a185451bd6dc4f9dbdf422f70b",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml": "d44df9ab47dc45961865c4eabdd17783612e9063"
+}
+CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-bounded-local/v1"
 CURRENT_DOGFOOD_WORKFLOWS = {
     "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
-    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
-    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml",
 }
 
 
-def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[DogfoodExecutionBinding, ...]:
-    """Explicit current dogfood choice, separate from the frozen shared routing policy."""
+# Versioned structured routes are selected only with an explicit frozen scenario.
+# The bounded CURRENT_* map above remains the immutable historical producer map.
+STRUCTURED_DOGFOOD_POLICY = "v03-current-paid-deepseek-structured-local/v1"
+STRUCTURED_DOGFOOD_WORKFLOWS = {
+    "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml",
+}
+STRUCTURED_DOGFOOD_BLOBS = {
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.md": "75797e4bb6d35e7af670cfa5464f487b35b0fd45",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml": "0ad5cdb3f16eb4fe4047976910d79414461fc8a9",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.md": "74f9afbaed1e3c0cc7cb46c40da0f88ba4342e20",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml": "bd235c46a54e6e6307965cc0d340312aaf41f895",
+}
+STRUCTURED_GATE_HELPER_BLOB = "3a59d4c313f957e08a17638247ee74e452fbd829"
+
+
+# Inline producers are a new active map; consumed structured producers remain immutable.
+INLINE_DOGFOOD_POLICY = "v03-current-paid-deepseek-structured-inline-local/v1"
+INLINE_DOGFOOD_WORKFLOWS = {
+    "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml",
+}
+INLINE_DOGFOOD_BLOBS = {
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.md": "a67fc4fd82c4ac492e96f7d156ecb34e64316d3b",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml": "3e3c54a66f47e38a83da5e15c2579ff6d4b722a8",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.md": "d71f61be9ac2225f967557901c5c0c4a0c9ff403",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml": "f704a543e11e2f768888e49a84447d666f659537",
+}
+INLINE_GATE_HELPER_BLOB = "ca1eb32a23f4e3d4874b52df92867b315fadd019"
+
+
+def dogfood_selection_for_scenario(scenario: str) -> tuple[str, dict[str, str]]:
+    """Select installed producers, never grant dispatch or recovery authority."""
+    if not isinstance(scenario, str) or scenario not in ALLOWED_SCENARIOS:
+        raise V03DogfoodLiveGateError("active dogfood selection requires an exact frozen scenario")
+    return INLINE_DOGFOOD_POLICY, dict(INLINE_DOGFOOD_WORKFLOWS)
+
+
+def resolve_current_dogfood_bindings(
+    presence: Mapping[str, object], *, scenario: str | None = None,
+) -> tuple[DogfoodExecutionBinding, ...]:
+    """Explicit scenario selection; omitted scenario is the historical bounded reader."""
     from pathlib import Path
     registry = load_registry()
     profile = next((p for p in registry.profiles if p.profile_id == "deepseek"), None)
     if profile is None or presence.get("DEEPSEEK_API_KEY") is not True:
         raise V03DogfoodLiveGateError("current dogfood requires the existing paid DeepSeek credential")
     root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    if scenario is None:
+        policy, workflows, blobs = CURRENT_DOGFOOD_POLICY, CURRENT_DOGFOOD_WORKFLOWS, CURRENT_DOGFOOD_BLOBS
+    else:
+        policy, workflows = dogfood_selection_for_scenario(scenario)
+        blobs = INLINE_DOGFOOD_BLOBS
+        helper = Path(__file__).resolve().parent / "v03_dogfood_gate_output.py"
+        if not helper.is_file() or helper.is_symlink():
+            raise V03DogfoodLiveGateError("selected structured Gate helper is missing or nonregular")
+        raw = helper.read_bytes()
+        if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != INLINE_GATE_HELPER_BLOB:
+            raise V03DogfoodLiveGateError("selected reviewed structured Gate helper changed")
     result = []
     for role, stage in (("developer", "implementation"), ("reviewer", "code-review"), ("qa", "verification")):
-        workflow = CURRENT_DOGFOOD_WORKFLOWS[role]
+        workflow = workflows[role]
         lock = root / workflow
         source = root / workflow.replace(".lock.yml", ".md")
         if any(not p.is_file() or p.is_symlink() for p in (source, lock)):
@@ -364,7 +429,7 @@ def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[Do
         for path in (source, lock):
             raw = path.read_bytes()
             blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
-            if blob != CURRENT_DOGFOOD_BLOBS[path.name]:
+            if blob != blobs[path.name]:
                 raise V03DogfoodLiveGateError("selected reviewed dogfood Worker bytes changed")
         source_text = source.read_text(encoding="utf-8")
         lock_text = lock.read_text(encoding="utf-8")
@@ -387,13 +452,18 @@ def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[Do
                 return json.loads(rows[0])
             metadata = header("# gh-aw-metadata: ")
             manifest = header("# gh-aw-manifest: ")
-            proof_kind = "recovery" if role == "developer" else "release-gate"
+            proof_kind = "recovery" if role == "developer" else "bounded-gate"
             proof = header(f"# ai-sdlc-{proof_kind}-lock-transform: ")
             if (proof.get("schema") != f"ai-sdlc.v03-{proof_kind}-lock-transform/v1"
                     or proof.get("compiler") != "gh-aw-v0.89.21-strict"
-                    or proof.get("body_hash_to") != metadata.get("body_hash")
+                    or proof.get("body_hash_to" if role == "developer" else "body_hash") != metadata.get("body_hash")
                     or not re.fullmatch(r"[0-9a-f]{40}", str(proof.get("upstream_blob_sha") or ""))):
                 raise ValueError("compiler transform proof differs")
+            if role != "developer" and (type(proof.get("detector_native_max_runs_from")) is not int
+                    or proof["detector_native_max_runs_from"] != 500
+                    or type(proof.get("detector_native_max_runs_to")) is not int or proof["detector_native_max_runs_to"] != 50
+                    or proof.get("detector_cli_version") != "1.0.90" or proof.get("inverse_raw_equal") is not True):
+                raise ValueError("bounded detector transform differs")
         except Exception as exc:
             raise V03DogfoodLiveGateError("selected dogfood compiler proof is malformed") from exc
         if (metadata.get("schema_version") != "v4" or metadata.get("strict") is not True
@@ -403,7 +473,7 @@ def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[Do
                 or 'model: "deepseek-chat"' not in source_text):
             raise V03DogfoodLiveGateError("selected dogfood provider/compiler identity differs")
         result.append(DogfoodExecutionBinding(
-            role=role, stage=stage, rule_id=CURRENT_DOGFOOD_POLICY,
+            role=role, stage=stage, rule_id=policy,
             candidate_order=("deepseek",), selected_profile="deepseek",
             engine=profile.engine, provider=profile.provider, protocol=profile.protocol,
             model=profile.model, worker_workflow=workflow,
@@ -445,7 +515,7 @@ def assemble_dogfood_live_gate(
 
     registry = load_registry()
     presence = presence_from_environment(registry, env)
-    bindings = resolve_current_dogfood_bindings(presence)
+    bindings = resolve_current_dogfood_bindings(presence, scenario=scenario)
     if len(bindings) != 3:
         raise V03DogfoodLiveGateError("production dogfood execution binding set is incomplete")
     return DogfoodLiveGate(

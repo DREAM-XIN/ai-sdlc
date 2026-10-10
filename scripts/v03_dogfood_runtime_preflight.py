@@ -12,7 +12,7 @@ from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
 from gh_aw_role_workers import resolve_role_worker
 from v03_dogfood_fixture_pool import DogfoodSlot
 from v03_dogfood_full_composition import V03DogfoodFullComposition, build_v03_dogfood_full_composition
-from v03_dogfood_live_gate import DogfoodLiveGate, CURRENT_DOGFOOD_POLICY, CURRENT_DOGFOOD_WORKFLOWS
+from v03_dogfood_live_gate import DogfoodLiveGate, V03DogfoodLiveGateError, dogfood_selection_for_scenario
 from v03_real_runtime_live_authority import TrustedMainExecution, V03LiveAuthority
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +58,10 @@ def _workflow_map(gate: DogfoodLiveGate) -> GhAwVerticalWorkflowMap:
 
 def _execution_bindings(gate: DogfoodLiveGate, workflows: GhAwVerticalWorkflowMap) -> dict[str, dict[str, str]]:
     """Project the already-resolved production routes into dogfood-only one-shot identities."""
+    try:
+        selected_policy, selected_workflows = dogfood_selection_for_scenario(getattr(gate, "scenario", None))
+    except V03DogfoodLiveGateError as exc:
+        raise V03DogfoodRuntimePreflightError("active dogfood scenario selection differs") from exc
     by_role = {row.role: row for row in gate.bindings}
     if set(by_role) != {"developer", "reviewer", "qa"}:
         raise V03DogfoodRuntimePreflightError("dogfood execution binding set is incomplete")
@@ -67,16 +71,16 @@ def _execution_bindings(gate: DogfoodLiveGate, workflows: GhAwVerticalWorkflowMa
         workflow = workflows.workflow_for(role)
         if row.worker_workflow != workflow:
             raise V03DogfoodRuntimePreflightError(f"{role} workflow differs from resolved production binding")
-        if (row.rule_id != CURRENT_DOGFOOD_POLICY or row.selected_profile != "deepseek"
+        if (row.rule_id != selected_policy or row.selected_profile != "deepseek"
                 or row.candidate_order != ("deepseek",) or row.fallback
-                or row.worker_workflow != CURRENT_DOGFOOD_WORKFLOWS[role]
+                or row.worker_workflow != selected_workflows[role]
                 or row.accepted_credential_identities != ("DEEPSEEK_API_KEY",)
                 or row.present_credential_identities != ("DEEPSEEK_API_KEY",)):
             raise V03DogfoodRuntimePreflightError("current dogfood execution selection drifted")
         binding = {
             "worker_id": workflow.removesuffix(".lock.yml"),
             "role": role, "profile": "deepseek", "workflow_file": workflow,
-            "selection_policy_id": CURRENT_DOGFOOD_POLICY,
+            "selection_policy_id": selected_policy,
             "default_branch": workflows.default_branch,
             "credential_name": "DEEPSEEK_API_KEY",
         }
@@ -117,6 +121,10 @@ def build_v03_dogfood_runtime_preflight(
         raise V03DogfoodRuntimePreflightError("Actions/read and Feature Event write authority must remain split")
     if not all((adapter_id, target_read_token, actions_token, event_write_token)) or not callable(clock):
         raise V03DogfoodRuntimePreflightError("dogfood runtime credentials/adapter/clock are incomplete")
+
+    if slot.scenario == "review_remediation":
+        from v03_dogfood_full_composition import verify_dogfood_rereview_capability
+        verify_dogfood_rereview_capability(policy_authority=live_authority.policy)
 
     repository = normalize_repository(execution.repository)
     workflows = _workflow_map(live_gate)

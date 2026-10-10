@@ -144,6 +144,14 @@ def _policy_documents(
     )
 
     facts: dict[str, dict] = {}
+    if repository == "dream-xin/ai-sdlc" and state_ref == DEFAULT_STATE_REF:
+        from v03_dogfood_full_composition import (
+            DOGFOOD_REREVIEW_EVIDENCE_REF,
+            build_dogfood_rereview_capability,
+        )
+        facts[DOGFOOD_REREVIEW_EVIDENCE_REF] = build_dogfood_rereview_capability(
+            installation_commit_sha=installation_commit_sha,
+        )
     source_digest = digest_json(facts)
     evidence = {
         "source_id": EVIDENCE_SOURCE_ID,

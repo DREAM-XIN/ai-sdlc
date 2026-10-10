@@ -751,9 +751,27 @@ def _canonical_persist_roles(events, cycles, accepted_callbacks, observation):
                     or (step == "CODE_REMEDIATION" and consumers[0].get("task_id") != expected_changes[0]["id"])):
                 raise V03DogfoodPostRunFinalizerError("controller start lacks exact dependent dispatch/task")
         for change in changes:
-            if change.get("kind") == "artifact":
+            if change.get("kind") == "artifact-record":
+                from operator_vertical import _receipt_changes
+                envelope = callback_events.get(callback_id)
+                if (callback_id not in primary or not isinstance(envelope, dict)
+                        or envelope["trusted_context"].get("role") != "developer"
+                        or payload.get("purpose") is not None):
+                    raise V03DogfoodPostRunFinalizerError("artifact creation lacks accepted Developer primary Persist")
+                expected, _, _ = _receipt_changes(
+                    context=TrustedDispatchContext(**envelope["trusted_context"]),
+                    receipts=tuple(envelope["collected_outputs"]), pass_status=True)
+                record = change.get("record")
+                if (not isinstance(record, dict) or change not in expected
+                        or not isinstance(record.get("id"), str) or not record["id"]
+                        or record["id"] in artifacts):
+                    raise V03DogfoodPostRunFinalizerError("artifact creation differs from exact accepted receipt")
+                artifacts[record["id"]] = dict(record)
+            elif change.get("kind") == "artifact":
                 identity = change.get("id")
-                artifacts[identity] = dict(artifacts.get(identity, {}), **change)
+                if identity not in artifacts:
+                    raise V03DogfoodPostRunFinalizerError("artifact update lacks exact accepted creation")
+                artifacts[identity] = dict(artifacts[identity], **change)
     if set(primary) != set(accepted):
         raise V03DogfoodPostRunFinalizerError("accepted callback lacks exactly one primary Persist")
     return [primary[row["callback_id"]] for row in accepted_callbacks]
@@ -1049,12 +1067,9 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     events, projection = _durable_operation_facts(preflight, observation)
     receipt = _durable_receipt(preflight, events, observation)
     categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation)
-    generation = int(projection.get("generation") or 0)
-    if generation < 1:
-        generations = [int(row.get("operation_generation") or 0) for row in events]
-        generation = max(generations or [0])
-    if generation < 1:
-        raise V03DogfoodPostRunFinalizerError("protected Store lacks positive Operation generation")
+    generation = projection.get("generation")
+    if type(generation) is not int or generation < 0:
+        raise V03DogfoodPostRunFinalizerError("protected Store lacks a valid Operation generation")
 
     worker_run_ids = list(receipt["workflow_run_ids"])
     attestation_uri = _run_uri(repository, finalizer_run_id)
@@ -1100,10 +1115,57 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     from v03_dogfood_full_composition import reviewer_replacement_present, REVIEWER_REPLACEMENT_ADMISSION, REVIEWER_FAILED_RUN
     if reviewer_replacement_present(preflight.composition.runtime.backend.read_snapshot()):
         route = _reviewer_route(preflight)
-        from v03_dogfood_runtime_driver import _observe_reviewer_pre_model_failure
-        if _observe_reviewer_pre_model_failure(preflight) != route["authorization"]["pre_model_failure_proof"]:
+        from v03_dogfood_runtime_driver import _observe_reviewer_pre_model_failure, _observe_reviewer_post_model_failure
+        from v03_dogfood_full_composition import REVIEWER_AUTH_PATH, REVIEWER_POST_MODEL_FAILED_RUN
+        if route["ordinal"] == 4:
+            from v03_dogfood_runtime_driver import observe_reviewer_inline_predecessor
+            from v03_dogfood_full_composition import (
+                REVIEWER_INLINE_PRIOR_RUN, REVIEWER_STRUCTURED_PRIOR_RUN,
+                REVIEWER_RETENTION_ADMISSION, validate_reviewer_inline_relation)
+            validate_reviewer_inline_relation(route["authorization"]["predecessor_proof"],
+                observe_reviewer_inline_predecessor(preflight))
+            evidence_uris.extend([route["authorization"]["admission"]["uri"],
+                REVIEWER_RETENTION_ADMISSION["uri"],
+                _run_uri(repository, REVIEWER_INLINE_PRIOR_RUN),
+                _run_uri(repository, REVIEWER_STRUCTURED_PRIOR_RUN),
+                f"https://github.com/{repository}/pull/552#issuecomment-6092979158",
+                _run_uri(repository, REVIEWER_POST_MODEL_FAILED_RUN),
+                f"https://github.com/{repository}/issues/580",
+                f"https://github.com/{repository}/issues/587"])
+        elif route["ordinal"] == 3:
+            from v03_dogfood_runtime_driver import observe_reviewer_retention_predecessor
+            from v03_dogfood_full_composition import (
+                REVIEWER_STRUCTURED_PRIOR_RUN, REVIEWER_RETENTION_ADMISSION, validate_reviewer_retention_relation)
+            validate_reviewer_retention_relation(route["authorization"]["predecessor_proof"],
+                observe_reviewer_retention_predecessor(preflight))
+            evidence_uris.append(REVIEWER_RETENTION_ADMISSION["uri"])
+            evidence_uris.extend([route["authorization"]["admission"]["uri"],
+                _run_uri(repository, REVIEWER_STRUCTURED_PRIOR_RUN),
+                f"https://github.com/{repository}/pull/552#issuecomment-6092979158",
+                _run_uri(repository, REVIEWER_POST_MODEL_FAILED_RUN), f"https://github.com/{repository}/issues/580"])
+        elif route["ordinal"] == 2:
+            historical=preflight.composition.runtime.backend.read_snapshot().get(REVIEWER_AUTH_PATH)
+            if (_observe_reviewer_post_model_failure(preflight)!=route["authorization"]["post_model_failure_proof"]
+                    or _observe_reviewer_pre_model_failure(preflight)!=historical["pre_model_failure_proof"]):
+                raise V03DogfoodPostRunFinalizerError("Reviewer failed predecessor observations changed")
+            evidence_uris.extend([route["authorization"]["admission"]["uri"],
+                _run_uri(repository,REVIEWER_POST_MODEL_FAILED_RUN),
+                f"https://github.com/{repository}/issues/580"])
+        elif _observe_reviewer_pre_model_failure(preflight) != route["authorization"]["pre_model_failure_proof"]:
             raise V03DogfoodPostRunFinalizerError("Reviewer failed predecessor observation changed")
         evidence_uris.extend([REVIEWER_REPLACEMENT_ADMISSION["uri"], _run_uri(repository, REVIEWER_FAILED_RUN)])
+    if scenario == "review_remediation":
+        authority = getattr(preflight.composition.bundle.executor, "remediation_rereview_authority", None)
+        if authority is None:
+            raise V03DogfoodPostRunFinalizerError("remediation lacks its scoped rereview authority")
+        binding = authority.validate_historical(operation_id=observation["operation_id"])
+        from v03_dogfood_full_composition import dogfood_rereview_paths
+        paths = dogfood_rereview_paths(observation["operation_id"])
+        current_snapshot = preflight.composition.runtime.backend.read_snapshot()
+        if paths[1] in current_snapshot.files:
+            raise V03DogfoodPostRunFinalizerError("nonpassing rereview cannot finalize")
+        evidence_uris.extend([binding["admission"]["uri"],
+            f"https://github.com/{repository}/blob/{current_snapshot.ref_sha}/{paths[0]}"])
     trusted_facts = {
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,

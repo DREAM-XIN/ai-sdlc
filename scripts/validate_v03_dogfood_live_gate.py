@@ -10,6 +10,12 @@ import zipfile
 from gh_aw_provider_registry import load_registry
 from v03_dogfood_execution_bindings import credential_identities
 from v03_dogfood_live_gate import (
+    CURRENT_DOGFOOD_POLICY,
+    CURRENT_DOGFOOD_WORKFLOWS,
+    INLINE_DOGFOOD_POLICY,
+    INLINE_DOGFOOD_WORKFLOWS,
+    dogfood_selection_for_scenario,
+    resolve_current_dogfood_bindings,
     ISSUE221_FINAL_LEDGER_ARTIFACT_DIGEST,
     ISSUE221_FINAL_LEDGER_ARTIFACT_ID,
     ISSUE221_FINAL_LEDGER_ARTIFACT_NAME,
@@ -174,10 +180,11 @@ def main():
         bindings = {row.role: row for row in gate.bindings}
         expected_workflows = {
             "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
-            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
-            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml",
+            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml",
         }
         for role, workflow in expected_workflows.items():
+            require(bindings[role].rule_id == INLINE_DOGFOOD_POLICY, role + " structured policy drifted")
             require(bindings[role].selected_profile == "deepseek", role + " current paid provider drifted")
             require(bindings[role].candidate_order == ("deepseek",), role + " current route is not explicit")
             require(bindings[role].worker_workflow == workflow, role + " actual selected workflow drifted")
@@ -197,6 +204,63 @@ def main():
         require(rendered["worker_dispatched"] is False, "gate claimed Worker dispatch")
         require(rendered["operator_store_mutated"] is False, "gate claimed Store mutation")
         require(rendered["dogfood_evidence_created"] is False, "gate fabricated dogfood evidence")
+
+    # Historical no-scenario readers remain explicit and cannot enter active projection.
+    historical = resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True})
+    require(all(row.rule_id == CURRENT_DOGFOOD_POLICY and
+                row.worker_workflow == CURRENT_DOGFOOD_WORKFLOWS[row.role]
+                for row in historical), "historical bounded mapping changed")
+    from v03_dogfood_runtime_preflight import _execution_bindings, _workflow_map, V03DogfoodRuntimePreflightError
+    from unittest.mock import patch
+    import v03_dogfood_live_gate as selection_module
+    for scenario in ("happy_path", "review_remediation", "session_recovery"):
+        gate = assemble_dogfood_live_gate(
+            scenario=scenario, env=ready_env(), checkout_sha=SHA, issue221_verifier=closure)
+        actual = resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=scenario)
+        require(gate.bindings == actual, "active gate omitted scenario selection")
+        policy, mapping = dogfood_selection_for_scenario(scenario)
+        require(policy == INLINE_DOGFOOD_POLICY and mapping == INLINE_DOGFOOD_WORKFLOWS,
+                "explicit structured selection differs")
+        projected = _execution_bindings(gate, _workflow_map(gate))
+        require(all(row["selection_policy_id"] == INLINE_DOGFOOD_POLICY for row in projected.values()),
+                "active preflight dropped structured identity")
+        old_gate = replace(gate, bindings=historical)
+        try:
+            _execution_bindings(old_gate, _workflow_map(old_gate))
+        except V03DogfoodRuntimePreflightError:
+            pass
+        else:
+            raise AssertionError("active projection admitted historical bounded mapping")
+    for invalid in (None, "", "unknown", [], True):
+        try:
+            dogfood_selection_for_scenario(invalid)
+        except V03DogfoodLiveGateError:
+            pass
+        else:
+            raise AssertionError("active selection accepted missing/unknown scenario")
+        try:
+            _execution_bindings(replace(gate, scenario=invalid), _workflow_map(gate))
+        except V03DogfoodRuntimePreflightError:
+            pass
+        else:
+            raise AssertionError("active projection accepted missing/unknown scenario")
+    with patch.object(selection_module, "INLINE_GATE_HELPER_BLOB", "0" * 40):
+        try:
+            resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario="happy_path")
+        except V03DogfoodLiveGateError:
+            pass
+        else:
+            raise AssertionError("structured helper pin drift admitted")
+    for filename in INLINE_DOGFOOD_WORKFLOWS.values():
+        pins = dict(selection_module.INLINE_DOGFOOD_BLOBS)
+        pins[filename] = "0" * 40
+        with patch.object(selection_module, "INLINE_DOGFOOD_BLOBS", pins):
+            try:
+                resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario="happy_path")
+            except V03DogfoodLiveGateError:
+                pass
+            else:
+                raise AssertionError("structured Worker pin drift admitted")
 
     expect_failure(scenario="unknown", label="unknown scenario")
 

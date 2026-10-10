@@ -6,7 +6,9 @@ from pathlib import Path
 import yaml
 
 from materialize_v03_vertical_policy_state import _policy_documents
-from operator_effect_resolution import ALLOWED_RESOLUTION_CHOICES
+from operator_effect_resolution import ALLOWED_RESOLUTION_CHOICES, ProtectedEffectResolutionPolicyVerifier
+from operator_store import StoreCommandError
+from operator_store_model import digest_json
 from operator_effect_rollout import LINEAGE_WRITER_CAPABILITY, REQUIRED_FENCED_CAPABILITIES
 from operator_protected_policy_materializer import POLICY_NAMESPACE, REQUIRED_POLICY_PATHS
 from operator_vertical import VERTICAL_PROFILE
@@ -54,15 +56,15 @@ def fake_seal_receipt(
     }
 
 
-def validate_policy_scope():
-    docs = _policy_documents(
-        repository=REPO,
-        installation_commit_sha=INSTALLATION,
-        state_ref=STATE_REF,
+def fixture_policy_documents(*, repository=REPO, installation_sha=INSTALLATION, state_ref=STATE_REF):
+    return _policy_documents(
+        repository=repository,
+        installation_commit_sha=installation_sha,
+        state_ref=state_ref,
         issued_at="2026-08-14T00:00:00Z",
         writer_fence_proof={
             "schema_version": "ai-sdlc.vertical-writer-quiescence-proof/v1",
-            "installation_commit_sha": INSTALLATION,
+            "installation_commit_sha": installation_sha,
             "pre_materialization_ref_sha": "b" * 40,
             "semantic_store_state": "bootstrap-only",
             "bootstrap_path": "state/operator/v1/.bootstrap",
@@ -72,6 +74,10 @@ def validate_policy_scope():
         protected_ref_fn=fake_protected_ref,
         seal_receipt_fn=fake_seal_receipt,
     )
+
+
+def validate_policy_scope():
+    docs = fixture_policy_documents()
     by_path = {row.path: row.value for row in docs}
     require(set(by_path) == REQUIRED_POLICY_PATHS, "live builder does not emit exact six-file policy bundle")
 
@@ -101,7 +107,14 @@ def validate_policy_scope():
     )
 
     evidence = by_path[f"{POLICY_NAMESPACE}/effect-resolution-evidence.json"]
-    require(evidence["facts"] == {}, "live materialization fabricated Effect Resolution evidence")
+    from v03_dogfood_full_composition import (
+        DOGFOOD_REREVIEW_EVIDENCE_REF, build_dogfood_rereview_capability,
+    )
+    expected_capability = build_dogfood_rereview_capability(installation_commit_sha=INSTALLATION)
+    require(evidence["facts"] == {DOGFOOD_REREVIEW_EVIDENCE_REF: expected_capability},
+            "live materialization escaped the single scoped rereview capability")
+    require(evidence["source_digest"] == digest_json(evidence["facts"]),
+            "protected capability source digest differs")
 
     resolution = by_path[f"{POLICY_NAMESPACE}/effect-resolution-policy.json"]
     require(
@@ -126,6 +139,52 @@ def validate_policy_scope():
         decision["decision_types"] == {},
         "Issue #221 policy materialization must not pre-authorize Decision types",
     )
+
+
+
+def validate_scoped_capability_supply():
+    from v03_dogfood_full_composition import (
+        DOGFOOD_REREVIEW_EVIDENCE_REF, build_dogfood_rereview_capability,
+    )
+    docs = {row.path: row.value for row in fixture_policy_documents()}
+    evidence = docs[f"{POLICY_NAMESPACE}/effect-resolution-evidence.json"]
+    policy = docs[f"{POLICY_NAMESPACE}/effect-resolution-policy.json"]
+    require(policy["evidence_source_digest"] == digest_json(evidence["facts"]),
+            "resolution policy omitted scoped evidence digest")
+    generic = ProtectedEffectResolutionPolicyVerifier(
+        repository=REPO, state_ref=STATE_REF, operation_profile=VERTICAL_PROFILE,
+        policy_loader=lambda *_: policy,
+        evidence_fact_loader=lambda source_id, ref: evidence["facts"].get(ref),
+    ).verify_current()
+    require(generic.evidence_verifier.strong_evidence_types == frozenset(),
+            "generic verifier gained strong evidence authority")
+    try:
+        generic.evidence_verifier.verify(
+            [DOGFOOD_REREVIEW_EVIDENCE_REF], predecessor_external_dispatch_key="fixture-predecessor")
+    except StoreCommandError as exc:
+        require(exc.code == "INVALID_EVIDENCE" and "unsupported" in str(exc),
+                "generic verifier rejected the envelope for an unrelated reason")
+    else:
+        raise AssertionError("generic verifier accepted a dogfood capability as execution evidence")
+
+    later = {row.path: row.value for row in fixture_policy_documents(installation_sha="e" * 40)}
+    refreshed = later[f"{POLICY_NAMESPACE}/effect-resolution-evidence.json"]["facts"]
+    original = evidence["facts"][DOGFOOD_REREVIEW_EVIDENCE_REF]
+    require(refreshed == {DOGFOOD_REREVIEW_EVIDENCE_REF:
+                         build_dogfood_rereview_capability(installation_commit_sha="e" * 40)},
+            "rematerialized capability differs from current reviewed source")
+    require(refreshed[DOGFOOD_REREVIEW_EVIDENCE_REF]["capability_id"] == original["capability_id"],
+            "installation refresh renewed the stable capability identity")
+    require(set(later) == REQUIRED_POLICY_PATHS,
+            "policy refresh writes outside existing protected policy files")
+
+    for repository, state_ref in (("example/other", STATE_REF), (REPO, "refs/heads/other-state")):
+        outside = {row.path: row.value for row in fixture_policy_documents(
+            repository=repository, state_ref=state_ref)}
+        require(outside[f"{POLICY_NAMESPACE}/effect-resolution-evidence.json"]["facts"] == {},
+                "scoped capability escaped repository or state-ref")
+        require(outside[f"{POLICY_NAMESPACE}/effect-resolution-policy.json"]["strong_evidence_types"] == [],
+                "generic materialization gained strong evidence authority")
 
 
 def validate_workflow_boundary():
@@ -250,13 +309,14 @@ def validate_script_boundary():
 
 def main():
     validate_policy_scope()
+    validate_scoped_capability_supply()
     validate_workflow_boundary()
     validate_script_boundary()
     print("trusted v0.3 Vertical policy materialization workflow validation passed")
     print("- workflow_dispatch only + explicit refs/heads/main gate")
     print("- admin protection proof separated from bounded App contents writer")
     print("- exact six-file same-repository policy bundle")
-    print("- empty evidence source + no pre-authorized Decision types")
+    print("- closed dogfood-only capability + generic evidence rejection + no Decision expansion")
     print("- bootstrap-only Store + trusted-main writer-surface proof bind QUIESCED receipt")
     print("- post-write #267 loader verification is mandatory")
 
