@@ -3728,8 +3728,17 @@ def build_v03_dogfood_full_composition(
     candidate_provider.bind_runtime(responses.runtime)
     candidate_provider.persist_gateway = bundle.executor.persist_gateway
     if structured:
+        from operator_v03_vertical_production_runtime import _DeferredExactVerticalPersistGateway
+        from operator_vertical_feature_persist_gateway import DurableVerticalFeaturePersistGateway
+        persist_bridge = bundle.executor.persist_gateway
+        if (bundle.executor.feature_gateway is not feature_truth
+                or feature_truth.delegate is not durable_truth
+                or not isinstance(persist_bridge, _DeferredExactVerticalPersistGateway)
+                or not isinstance(persist_bridge.delegate, DurableVerticalFeaturePersistGateway)
+                or persist_bridge.delegate.runtime is not responses.runtime):
+            raise V03DogfoodCompositionError("structured context production delegate binding differs")
         builder = DogfoodStructuredGateContextBuilder(runtime=responses.runtime,
-            feature_gateway=bundle.executor.feature_gateway, persist_gateway=bundle.executor.persist_gateway,
+            feature_gateway=durable_truth, persist_gateway=persist_bridge.delegate,
             content_loader=content_loader, candidate_provider=candidate_provider, policy_authority=policy_authority)
         dispatch_gateway.delegate = DogfoodCurrentStructuredDispatchGateway(
             transport=actions_transport, workflows=workflows, context_builder=builder)
