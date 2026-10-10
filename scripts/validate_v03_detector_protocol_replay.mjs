@@ -10,6 +10,7 @@ import {spawn} from "node:child_process";
 
 const [cli, root] = process.argv.slice(2);
 let stage = "ISOLATION";
+let nativeDiagnostics = null;
 const ensure = (ok, code) => { if (!ok) throw new Error(code); };
 const allowedErrors = new Set([
  "INPUT_PATH","NONROOT","NETWORK_INTERFACE","INHERITED_AUTHORITY","EGRESS_AVAILABLE","EGRESS_INCONCLUSIVE",
@@ -212,6 +213,34 @@ async function main(){
   ensure(requests===4&&feedbacks===3,"TOOL_FEEDBACK");
   stage="NATIVE_EVENTS";
   const base=path.join(home,".copilot","session-state");
+  nativeDiagnostics={copilot_directory_present:fs.existsSync(path.join(home,".copilot")),
+   session_base_present:fs.existsSync(base),session_base_directory:false,session_base_symlink:false,
+   entry_count:0,directory_count:0,regular_file_count:0,symlink_count:0,
+   uuid_directory_count:0,event_file_count:0,event_symlink_count:0};
+  if(fs.existsSync(base)){
+   const info=fs.lstatSync(base);
+   nativeDiagnostics.session_base_directory=info.isDirectory();
+   nativeDiagnostics.session_base_symlink=info.isSymbolicLink();
+   if(info.isDirectory()&&!info.isSymbolicLink()){
+    const listed=fs.readdirSync(base,{withFileTypes:true});
+    nativeDiagnostics.entry_count=listed.length;
+    ensure(listed.length<=16,"SESSION_DIRECTORY");
+    for(const entry of listed){
+     if(entry.isSymbolicLink()){nativeDiagnostics.symlink_count++;continue;}
+     if(entry.isFile())nativeDiagnostics.regular_file_count++;
+     if(entry.isDirectory()){
+      nativeDiagnostics.directory_count++;
+      if(/^[0-9a-f-]{36}$/.test(entry.name))nativeDiagnostics.uuid_directory_count++;
+      const candidate=path.join(base,entry.name,"events.jsonl");
+      if(fs.existsSync(candidate)){
+       const candidateInfo=fs.lstatSync(candidate);
+       if(candidateInfo.isSymbolicLink())nativeDiagnostics.event_symlink_count++;
+       else if(candidateInfo.isFile())nativeDiagnostics.event_file_count++;
+      }
+     }
+    }
+   }
+  }
   ensure(fs.existsSync(base)&&fs.lstatSync(base).isDirectory()&&!fs.lstatSync(base).isSymbolicLink(),"SESSION_DIRECTORY");
   const entries=fs.readdirSync(base,{withFileTypes:true});
   ensure(entries.length<=16&&!entries.some(x=>x.isSymbolicLink()),"SESSION_DIRECTORY");
@@ -239,4 +268,4 @@ async function main(){
 }
 try{const report=await main();console.log(JSON.stringify(report));}
 catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",
- stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",raw_exported:false}));process.exitCode=1;}
+ stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",native_diagnostics:nativeDiagnostics,raw_exported:false}));process.exitCode=1;}
