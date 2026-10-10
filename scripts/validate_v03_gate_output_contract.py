@@ -745,17 +745,16 @@ function badRefs(schema) {
 }
 
 function schemaDiff(expected, actual) {
- const rows=[];
+ const rows=[];let total=0;
  const allowed=new Set(["type","required","additionalProperties","enum","const","minimum","maximum",
-  "exclusiveMinimum","exclusiveMaximum","minLength","maxLength","minItems","maxItems","format","pattern","$ref"]);
+  "exclusiveMinimum","exclusiveMaximum","minLength","maxLength","minItems","maxItems","format","pattern","$ref","description"]);
  const kind=v=>v===undefined?"missing":v===null?"null":Array.isArray(v)?"array":typeof v;
  function walk(a,b,parts=[],keyword="") {
-  if(rows.length>=16 || canonical(a)===canonical(b))return;
+  if(canonical(a)===canonical(b))return;
   if(a && b && typeof a==="object" && typeof b==="object" && Array.isArray(a)===Array.isArray(b)) {
    for(const key of [...new Set([...Object.keys(a),...Object.keys(b)])].sort()) {
-    if(!/^[A-Za-z0-9_$-]{1,80}$/.test(key)){rows.push({path:"UNEXPECTED_SCHEMA_KEY",expected:kind(a),actual:kind(b)});return;}
+    if(!/^[A-Za-z0-9_$-]{1,80}$/.test(key)){total++;if(rows.length<128)rows.push({path:"UNEXPECTED_SCHEMA_KEY",expected:kind(a),actual:kind(b)});return;}
     walk(a[key],b[key],[...parts,key],Array.isArray(a)?keyword:key);
-    if(rows.length>=16)break;
    }
    return;
   }
@@ -763,11 +762,11 @@ function schemaDiff(expected, actual) {
    expected_type:kind(a),actual_type:kind(b)};
   if(allowed.has(keyword))for(const [name,value] of [["expected",a],["actual",b]]) {
    if(value===null || typeof value==="boolean" || typeof value==="number")row[name]=value;
-   else if(typeof value==="string" && /^[\x20-\x7e]{0,160}$/.test(value))row[name]=value;
+   else if(typeof value==="string" && /^[\x20-\x7e]{0,256}$/.test(value))row[name]=value;
   }
-  rows.push(row);
+  total++;if(rows.length<128)rows.push(row);
  }
- walk(expected,actual);return rows;
+ walk(expected,actual);return {total,truncated:total>rows.length,rows};
 }
 
 function stopGroup(child) {
@@ -929,7 +928,15 @@ async function main() {
  check(version.status===0&&/\b1\.0\.90\b/.test(version.stdout),"CLI_VERSION");
  const cases=JSON.parse(fs.readFileSync(casesFile));
  check(cases.length===3&&cases[0].legacy===true&&cases.slice(1).every(c=>c.legacy===false),"CASE_MATRIX");
- for(let i=0;i<cases.length;i++)console.log(JSON.stringify(await capture(cases[i],i)));
+ for(let i=0;i<cases.length;i++) {
+  schemaDifference=null;
+  try {console.log(JSON.stringify(await capture(cases[i],i)));}
+  catch(e) {
+   console.log(JSON.stringify({case:cases[i].label,status:"FAIL",
+    stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",schema_differences:schemaDifference}));
+   process.exitCode=1;
+  }
+ }
 }
 main().catch(e=>{console.log(JSON.stringify({status:"FAIL",stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",schema_differences:schemaDifference}));process.exitCode=1;});
 """
