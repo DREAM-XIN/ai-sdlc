@@ -7573,7 +7573,7 @@ def reviewer_structured_runtime_fixture(*, verdict='PASS'):
             self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
             return CommitResult(self.snapshot.ref_sha, self.read_snapshot(), result.result)
     runtime = OperatorStoreRuntime(backend=Backend(), protection_verifier=StaticProtectionVerifier(status=PROTECTED),
-        plan_guard=EffectLineageWriteFence(rollout), clock=lambda: "2026-10-09T09:10:00Z")
+        plan_guard=EffectLineageWriteFence(rollout), clock=lambda: "2026-10-10T06:00:00Z")
     from v03_dogfood_live_gate import resolve_current_dogfood_bindings
     from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
     gate = SimpleNamespace(scenario="happy_path", bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario="happy_path"))
@@ -7665,6 +7665,7 @@ def reviewer_structured_runtime_fixture(*, verdict='PASS'):
         actions_transport=gates.transport, dispatch_gateway=dispatch, bundle=responses.operator_bundle,
         responses=responses, graph_before=graph_before, predecessor_events=predecessor_events,
         callback_coordinator=coordinator)
+    attach_reviewer_retention_fixture(pf, provider)
     return pf, provider, feature, gates, coordinator
 
 
@@ -7715,7 +7716,7 @@ def reviewer_structured_admission_tests():
     runtime=pf.composition.runtime
     original=deepcopy(runtime.backend.read_snapshot())
     binding=c.recovery_execution_binding(pf.composition.policy_authority)
-    proof=d._observe_reviewer_structured_predecessor(pf)
+    proof=d.observe_reviewer_retention_predecessor(pf)
     auth=c.reviewer_structured_authorization(original,consumer_binding=binding,predecessor_proof=proof)
     gateway=pf.composition.dispatch_gateway.delegate
     context=gateway.context_builder.build_prospective_reviewer(auth)
@@ -8977,6 +8978,188 @@ def ordinary_remediation_artifact_reconstruction_negatives(events, observation):
     print("- canonical remediation artifact-record absence/duplication/substitution/URI tampering rejected")
 
 
+
+def attach_reviewer_retention_fixture(preflight, provider):
+    """Expose only fixed historical source bytes and selected official upload lines."""
+    import base64
+    import hashlib
+    import json
+    import subprocess
+    from pathlib import Path
+    from urllib.parse import parse_qs, unquote, urlparse
+    pins = json.loads("{\"37917962742\":{\"run_id\":37917962742,\"job_id\":113778697506,\"source\":\"bd9228219310a8202bf47311e6adb8ea36d598bf\",\"path\":\".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.lock.yml\",\"blob\":\"fe034e28b40c325dcca2e8ed639d3885e0910fb2\",\"lines\":[\"2026-10-09T10:30:12.5315992Z   name: activation\",\"2026-10-09T10:30:12.5321066Z   retention-days: 1\",\"2026-10-09T10:30:13.7364799Z SHA256 digest of uploaded artifact is 7c05d67c30fd7965159402a9765133adf7128a6bc4b18ec9d380d639597965e5\",\"2026-10-09T10:30:13.7372922Z Artifact activation successfully finalized. Artifact ID 11611241425\",\"2026-10-09T10:30:13.7375825Z Artifact activation has been successfully uploaded! Final size is 1025232 bytes. Artifact ID is 11611241425\"]},\"37927328438\":{\"run_id\":37927328438,\"job_id\":113809299117,\"source\":\"193d96474529556cc0d805bb9be2b0a96909777b\",\"path\":\".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml\",\"blob\":\"5687bd6377cf5f449b444328b659f23738ca1f3a\",\"lines\":[\"2026-10-09T12:01:41.0612848Z   name: activation\",\"2026-10-09T12:01:41.0622698Z   retention-days: 1\",\"2026-10-09T12:01:42.4720241Z SHA256 digest of uploaded artifact is 473677789b3d60cefe6f821ce470a81570d3d8d46dbd917b6d16f71beaf832e0\",\"2026-10-09T12:01:42.7481568Z Artifact activation successfully finalized. Artifact ID 11614602643\",\"2026-10-09T12:01:42.7485339Z Artifact activation has been successfully uploaded! Final size is 1083418 bytes. Artifact ID is 11614602643\"]},\"38018044654\":{\"run_id\":38018044654,\"job_id\":114112634510,\"source\":\"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b\",\"path\":\".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml\",\"blob\":\"ff68923c95dbbf7d4bc206f2d2bb03fa81fe5578\",\"lines\":[\"2026-10-10T02:44:24.6934599Z   name: activation\",\"2026-10-10T02:44:24.6939759Z   retention-days: 1\",\"2026-10-10T02:44:25.6809974Z SHA256 digest of uploaded artifact is a6cf914a0cdef5b009e71e2403a45202853af221905ebe7776a015d253732e4d\",\"2026-10-10T02:44:25.8965223Z Artifact activation successfully finalized. Artifact ID 11657560510\",\"2026-10-10T02:44:25.8969295Z Artifact activation has been successfully uploaded! Final size is 1147877 bytes. Artifact ID is 11657560510\"]}}")
+    cache = getattr(attach_reviewer_retention_fixture, "_source_cache", {})
+    state = {"sources": {}, "logs": {}}
+    for run, pin in pins.items():
+        if pin["blob"] not in cache:
+            raw = subprocess.run(["git", "show", pin["source"] + ":" + pin["path"]],
+                cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True).stdout
+            expect(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == pin["blob"],
+                   "retention fixture historical source bytes changed")
+            cache[pin["blob"]] = raw
+        raw = cache[pin["blob"]]
+        state["sources"][run] = {"type": "file", "path": pin["path"], "encoding": "base64",
+            "sha": pin["blob"], "content": base64.b64encode(raw).decode()}
+        state["logs"][run] = ("\n".join(pin["lines"]) + "\n").encode()
+    attach_reviewer_retention_fixture._source_cache = cache
+    prior_http = preflight.composition.actions_transport.http
+    def http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        prefix = "/repos/dream-xin/ai-sdlc"
+        if parsed.netloc == "api.github.com" and parsed.path.lower().startswith(prefix + "/"):
+            path = unquote(parsed.path[len(prefix):])
+            query = parse_qs(parsed.query)
+            for run, pin in pins.items():
+                if path == "/actions/jobs/" + str(pin["job_id"]) + "/logs":
+                    expect(method == "GET", "retention log fixture attempted a mutation")
+                    return 200, {}, state["logs"][run]
+                if path == "/contents/" + pin["path"] and query.get("ref") == [pin["source"]]:
+                    expect(method == "GET", "retention source fixture attempted a mutation")
+                    return 200, {}, json.dumps(state["sources"][run]).encode()
+        return prior_http(method=method, url=url, token=token, body=body)
+    preflight.composition.actions_transport.http = http
+    provider.retention_fixture = state
+
+
+def reviewer_fixed_activation_retention_tests():
+    """Real observers preserve history while fixed activation availability expires."""
+    from copy import deepcopy
+    from datetime import datetime, timedelta, timezone
+    from operator_store_model import canonical_json
+    from operator_store import StoreCommandError
+    from operator_vertical import VerticalInvariantError
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    pf, provider, feature, gates, _ = reviewer_structured_runtime_fixture()
+    runtime = pf.composition.runtime
+    states = ["reviewer_observed", "reviewer_post_model_observed", "reviewer_structured_observed"]
+    original = {name: deepcopy(provider.state[name]["artifacts"]) for name in states}
+    source_original = deepcopy(provider.retention_fixture)
+    store_before = canonical_json(runtime.backend.read_snapshot().files)
+    before_effects = (runtime.backend.commit_count, len(gates.state["posts"]),
+                     feature.state["puts"], provider.effect_counts())
+    def effects():
+        return (runtime.backend.commit_count, len(gates.state["posts"]),
+                feature.state["puts"], provider.effect_counts())
+    def reset():
+        for name in states:
+            provider.state[name]["artifacts"] = deepcopy(original[name])
+        provider.retention_fixture["sources"] = deepcopy(source_original["sources"])
+        provider.retention_fixture["logs"] = deepcopy(source_original["logs"])
+        runtime.clock = lambda: "2026-10-10T06:00:00Z"
+    def activation(name):
+        return next(row for row in provider.state[name]["artifacts"]["artifacts"]
+                    if row["name"] == "activation")
+    def remove(name, item):
+        listing = provider.state[name]["artifacts"]
+        listing["artifacts"].remove(item)
+        listing["total_count"] = len(listing["artifacts"])
+    def reject(call, label):
+        try:
+            call()
+        except (d.V03DogfoodRuntimeDriverError, VerticalInvariantError, StoreCommandError, ValueError):
+            pass
+        else:
+            raise AssertionError("retention accepted " + label)
+        expect(effects() == before_effects and canonical_json(runtime.backend.read_snapshot().files) == store_before,
+               "retention rejection changed Store or external effects")
+    reset()
+    strict = {
+        "pre_model": d._observe_reviewer_pre_model_failure(pf),
+        "post_model": d._observe_reviewer_post_model_failure(pf),
+        "structured": d._observe_reviewer_structured_predecessor(pf),
+    }
+    initial = d.observe_reviewer_retention_predecessor(pf)
+    expect(initial["historical_proofs"] == strict
+           and [row["activation_state"] for row in initial["retention_observations"]] == ["present"] * 3,
+           "retention changed original strict historical proofs")
+    for index, name in enumerate(states):
+        reset()
+        expiry = datetime.strptime(activation(name)["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        runtime.clock = lambda expiry=expiry: (expiry - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        remove(name, activation(name))
+        reject(lambda: d.observe_reviewer_retention_predecessor(pf), "pre-expiry activation absence")
+        reset()
+        runtime.clock = lambda expiry=expiry: expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+        activation(name)["expired"] = True
+        listed = d.observe_reviewer_retention_predecessor(pf)
+        expect(listed["retention_observations"][index]["activation_state"] == "expired_listed"
+               and listed["historical_proofs"] == strict, "expired listing rewrote historical proof")
+        c.validate_reviewer_retention_relation(initial, listed)
+        reverse_present = deepcopy(initial)
+        for row in reverse_present["retention_observations"]:
+            row["observed_at"] = expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+        reject(lambda: c.validate_reviewer_retention_relation(listed, reverse_present),
+               "expired activation restored to present")
+        remove(name, activation(name))
+        absent = d.observe_reviewer_retention_predecessor(pf)
+        expect(absent["retention_observations"][index]["activation_state"] == "absent"
+               and all(row["name"] != "activation" for row in absent["retention_observations"][index]["current_artifacts"])
+               and absent["historical_proofs"] == strict, "missing activation was fabricated as current")
+        c.validate_reviewer_retention_relation(listed, absent)
+        resurrected = deepcopy(listed)
+        reject(lambda: c.validate_reviewer_retention_relation(absent, resurrected), "activation resurrection")
+    rollback = deepcopy(initial)
+    for row in rollback["retention_observations"]:
+        row["observed_at"] = "2026-10-10T05:59:59Z"
+    reject(lambda: c.validate_reviewer_retention_relation(initial, rollback), "trusted clock rollback")
+    for field, replacement in (("id", 999), ("digest", "sha256:" + "9" * 64)):
+        reset()
+        activation(states[0])[field] = replacement
+        reject(lambda: d.observe_reviewer_retention_predecessor(pf), "activation " + field)
+    reset()
+    activation(states[0])["workflow_run"]["id"] = 999
+    reject(lambda: d.observe_reviewer_retention_predecessor(pf), "foreign activation run")
+    reset()
+    listing = provider.state[states[0]]["artifacts"]
+    unknown = deepcopy(listing["artifacts"][0])
+    unknown.update(id=999, name="unknown-extra")
+    listing["artifacts"].append(unknown)
+    listing["total_count"] += 1
+    reject(lambda: d.observe_reviewer_retention_predecessor(pf), "unknown added artifact")
+    for name, artifact in ((states[1], "detection"), (states[2], "safe-outputs-items")):
+        reset()
+        remove(name, next(row for row in provider.state[name]["artifacts"]["artifacts"] if row["name"] == artifact))
+        runtime.clock = lambda: "2026-10-12T00:00:00Z"
+        reject(lambda: d.observe_reviewer_retention_predecessor(pf), "missing required " + artifact)
+    reset()
+    provider.retention_fixture["sources"]["37917962742"]["sha"] = "9" * 40
+    reject(lambda: d.observe_reviewer_retention_predecessor(pf), "retention source substitution")
+    reset()
+    provider.retention_fixture["logs"]["37917962742"] = source_original["logs"]["37917962742"].replace(
+        b"retention-days: 1", b"retention-days: 2")
+    reject(lambda: d.observe_reviewer_retention_predecessor(pf), "official upload retention mismatch")
+    for section in ("pre_model", "post_model", "structured"):
+        reset()
+        forged = deepcopy(initial)
+        forged["historical_proofs"][section]["observation_digest"] = "sha256:" + "9" * 64
+        reject(lambda: c.validate_reviewer_retention_relation(initial, forged), "forged archived " + section)
+    reset()
+    forged = deepcopy(initial)
+    forged["retention_observations"][0]["archived_capture_digest"] = "9" * 64
+    reject(lambda: c.validate_reviewer_retention_proof(forged), "forged archived capture")
+    reset()
+    runtime.clock = lambda: "2026-10-10T14:00:00Z"
+    for name in states[:2]:
+        remove(name, activation(name))
+    current = d.observe_reviewer_retention_predecessor(pf)
+    expect([row["activation_state"] for row in current["retention_observations"]] == ["absent", "absent", "present"],
+           "current fixed availability differs from provider listing")
+    expect(effects() == before_effects, "read-only retention observation caused effects")
+    # Claim against authentic expired availability, then replay after the third fixed expiry.
+    result = d.recover_reviewer_structured(pf)
+    expect(result["sealed"]["recommendation"] == "PASS" and len(gates.state["posts"]) == 1,
+           "expired activation compatibility did not preserve the one-use real path")
+    sealed_snapshot = canonical_json(runtime.backend.read_snapshot().files)
+    sealed_effects = effects()
+    runtime.clock = lambda: "2026-10-11T03:00:00Z"
+    remove(states[2], activation(states[2]))
+    d.recover_reviewer_structured(pf)
+    expect(effects() == sealed_effects and canonical_json(runtime.backend.read_snapshot().files) == sealed_snapshot,
+           "retention replay renewed claim/POST or rewrote frozen proof")
+    print("- fixed activation expiry, immutable history, closed negatives and real one-use replay passed")
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -9013,6 +9196,8 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("fixed activation retention history", reviewer_fixed_activation_retention_tests),
+        ("fixed activation retention CAS loser", reviewer_retention_cas_loser_test),
         ("corrected Reviewer frozen CAS", reviewer_structured_admission_tests),
         ("corrected Reviewer terminal recommendations", reviewer_structured_terminal_tests),
         ("corrected Reviewer actual full pipeline", reviewer_structured_full_pipeline_tests),
@@ -9119,6 +9304,66 @@ def main():
     print("- PR validation cannot enter live preflight/run")
     print("- live preflight/run require workflow_dispatch on refs/heads/main")
     print("- only the three frozen dogfood scenarios are selectable")
+
+
+
+def reviewer_retention_cas_loser_test():
+    """A real competing claim freezes a later observation; loser cannot skip relation."""
+    import json
+    from copy import deepcopy
+    from operator_store_git import CasConflict
+    from operator_store_model import canonical_json
+    from operator_vertical import VerticalInvariantError
+    from operator_vertical_gh_aw import GhAwVerticalRoleDispatchGateway
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    pf, provider, feature, gates, _ = reviewer_structured_runtime_fixture()
+    runtime, backend = pf.composition.runtime, pf.composition.runtime.backend
+    runtime.clock = lambda: "2026-10-10T06:00:00Z"
+    binding = c.recovery_execution_binding(pf.composition.policy_authority)
+    gateway = pf.composition.dispatch_gateway.delegate
+    original_commit = backend.commit
+    captured = {}
+    before_effects = (len(gates.state["posts"]), feature.state["puts"], provider.effect_counts())
+    def competing_commit(plan, receipt):
+        if not captured and any(m.path == c.REVIEWER_STRUCTURED_CLAIM_PATH for m in plan.mutations):
+            snapshot = backend.read_snapshot()
+            runtime.clock = lambda: "2026-10-10T06:01:00Z"
+            proof = d.observe_reviewer_retention_predecessor(pf)
+            auth = c.reviewer_structured_authorization(snapshot,
+                consumer_binding=binding, predecessor_proof=proof)
+            context = gateway.context_builder.build_prospective_reviewer(auth)
+            inputs = GhAwVerticalRoleDispatchGateway._inputs(gateway, c.reviewer_dispatch(auth))
+            payload = json.loads(inputs["task_payload"])
+            payload["feature_context"]["gate_context"] = context
+            inputs["task_payload"] = canonical_json(payload)
+            winner = c.plan_reviewer_structured_replacement(snapshot,
+                consumer_binding=binding, predecessor_proof=proof, dispatch_inputs=inputs)
+            original_commit(winner, receipt)
+            captured.update(snapshot=deepcopy(backend.read_snapshot()), proof=deepcopy(proof))
+            runtime.clock = lambda: "2026-10-10T06:00:00Z"
+            raise CasConflict("synthetic competing retention claim won")
+        return original_commit(plan, receipt)
+    backend.commit = competing_commit
+    try:
+        try:
+            d.recover_reviewer_structured(pf)
+        except VerticalInvariantError as exc:
+            expect(exc.code == "POLICY_DENIED" and "regressed or resurrected" in str(exc),
+                   "CAS loser did not fail at the winner's fresh retention relation")
+        else:
+            raise AssertionError("CAS loser skipped retention relation against winner claim")
+    finally:
+        backend.commit = original_commit
+    expect(captured and canonical_json(backend.read_snapshot().files)
+           == canonical_json(captured["snapshot"].files)
+           and before_effects == (len(gates.state["posts"]), feature.state["puts"], provider.effect_counts()),
+           "retention CAS loser rewrote winner history or reached external effects")
+    auth, _ = c.validate_reviewer_structured_authorization(backend.read_snapshot(),
+        consumer_binding=binding)
+    expect(auth["predecessor_proof"] == captured["proof"],
+           "retention CAS loser replaced winner's immutable initial observation")
+    print("- real retention CAS loser validates winner observation before lookup/POST")
 
 
 if __name__ == "__main__":

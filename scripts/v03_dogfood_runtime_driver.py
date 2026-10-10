@@ -1876,7 +1876,7 @@ def _reviewer_worker_blobs():
             for name in (workflow, workflow.replace(".lock.yml", ".md"))}
 
 
-def _observe_reviewer_pre_model_failure(preflight):
+def _observe_reviewer_pre_model_failure(preflight, *, fixed_retention=False):
     from v03_dogfood_full_composition import (
         REVIEWER_FAILED_RUN, REVIEWER_PREDECESSOR_SOURCE, REVIEWER_OLD_WORKFLOW,
         REVIEWER_OLD_KEY, REVIEWER_FAILURE_JOBS, REVIEWER_FAILURE_WORKER_BLOBS)
@@ -1942,29 +1942,30 @@ def _observe_reviewer_pre_model_failure(preflight):
             or artifacts["total_count"] != len(artifact_rows) or len(artifact_rows) > 100
             or any(row.get("name") == "safe-outputs-items" for row in artifact_rows)):
         raise V03DogfoodRuntimeDriverError("Reviewer predecessor has unknown or contradictory output artifacts")
+    retention = _observe_fixed_activation_retention(preflight, run_id=REVIEWER_FAILED_RUN, artifacts=artifacts) if fixed_retention is True else None
     after = _github_json(preflight, f"/actions/runs/{REVIEWER_FAILED_RUN}")
     if (any(after.get(k) != before.get(k) for k in (*expected_run, "updated_at"))
             or _github_json(preflight, jobs_path) != jobs):
         raise V03DogfoodRuntimeDriverError("Reviewer predecessor changed during proof")
     material = {"run": expected_run, "updated_at": before.get("updated_at"), "jobs": normalized,
                 "source_blobs": REVIEWER_FAILURE_WORKER_BLOBS, "diagnostic_digest": hashlib.sha256(raw).hexdigest(),
-                "artifact_ids": sorted(row["id"] for row in artifact_rows)}
-    return {"schema_version": "ai-sdlc.v03-reviewer-pre-model-failure/v1",
+                "artifact_ids": sorted(row["id"] for row in (retention["archived_artifacts"] if retention is not None else artifact_rows))}
+    proof = {"schema_version": "ai-sdlc.v03-reviewer-pre-model-failure/v1",
             "run_id": REVIEWER_FAILED_RUN, "run_attempt": 1, "source_head_sha": REVIEWER_PREDECESSOR_SOURCE,
             "jobs": REVIEWER_FAILURE_JOBS, "model_executed": False, "safe_outputs_processed": False,
             "semantic_safety_pass": False, "observation_digest": "sha256:" + digest_json(material)}
+    return {"historical_proof": proof, "current_retention_observation": retention["current_retention_observation"]} if retention is not None else proof
 
 
-
-
-def _observe_reviewer_post_model_failure(preflight):
+def _observe_reviewer_post_model_failure(preflight, *, fixed_retention=False):
     from v03_dogfood_full_composition import (
         REVIEWER_POST_MODEL_FAILED_RUN,REVIEWER_POST_MODEL_SOURCE,REVIEWER_POST_MODEL_FAILED_KEY,
         REVIEWER_POST_MODEL_FAILURE_JOBS,REVIEWER_NEW_WORKFLOW)
     from v03_dogfood_live_gate import HISTORICAL_RELEASE_DOGFOOD_BLOBS
     from v03_dogfood_full_composition import REVIEWER_AUTH_PATH
     historical=preflight.composition.runtime.backend.read_snapshot().get(REVIEWER_AUTH_PATH)
-    original_failure=_observe_reviewer_pre_model_failure(preflight)
+    original_observation=_observe_reviewer_pre_model_failure(preflight, fixed_retention=fixed_retention)
+    original_failure=original_observation["historical_proof"] if fixed_retention is True else original_observation
     if (not isinstance(historical,dict)
             or canonical_json(original_failure)!=canonical_json(historical.get("pre_model_failure_proof"))):
         raise V03DogfoodRuntimeDriverError("original Reviewer failed attempt proof changed")
@@ -2024,11 +2025,13 @@ def _observe_reviewer_post_model_failure(preflight):
     artifacts=_github_json(preflight,f"/actions/runs/{run_id}/artifacts?per_page=100")
     artifact_rows=artifacts.get("artifacts")
     fixed_artifacts={"usage":[11615306199,"sha256:9ddbdb622f2081412ab40300632f6c3d17c2eb5a5975a73136124f18cc9f8159"],"detection":[11615291183,"sha256:ba7d688ef4a4e6a11953e05ba55b02ba3a7a3c5d7b4c3adeb3a7d2181172dbe8"],"agent-output-fallback":[11614806653,"sha256:8aaa58dd2068255f44ce825c677f31a4d9805dcddef34fc3d9c57bfeb9807641"],"activation":[11614602643,"sha256:473677789b3d60cefe6f821ce470a81570d3d8d46dbd917b6d16f71beaf832e0"],"info":[11614473040,"sha256:048ea882529c55e17d89f0e54e639889ab807ced5bb71262dd70b098887c412f"],"agent":[11614239306,"sha256:41906db5ed959e854f7466925c9e594f3519fd2e58f11985b0ddbbe98f8b42e5"]}
-    if (not isinstance(artifact_rows,list) or type(artifacts.get("total_count")) is not int
-            or artifacts["total_count"]!=6 or len(artifact_rows)!=6
-            or {r.get("name"):(r.get("id"),r.get("digest")) for r in artifact_rows}
+    retention = _observe_fixed_activation_retention(preflight, run_id=run_id, artifacts=artifacts) if fixed_retention is True else None
+    verified_artifacts = retention["archived_artifacts"] if retention is not None else artifact_rows
+    if (not isinstance(verified_artifacts,list) or type(artifacts.get("total_count")) is not int
+            or (retention is None and artifacts["total_count"]!=6) or len(verified_artifacts)!=6
+            or {r.get("name"):(r.get("id"),r.get("digest")) for r in verified_artifacts}
                !={name:tuple(value) for name,value in fixed_artifacts.items()}
-            or any(r.get("workflow_run",{}).get("id")!=run_id or r.get("expired") is not False for r in artifact_rows)):
+            or any(r.get("workflow_run",{}).get("id")!=run_id or r.get("expired") is not False for r in verified_artifacts)):
         raise V03DogfoodRuntimeDriverError("failed Reviewer output inventory differs")
     issue=_github_json(preflight,"/issues/580")
     if (type(issue.get("id")) is not int or issue["id"]!=5777870748 or issue.get("number")!=580
@@ -2046,11 +2049,13 @@ def _observe_reviewer_post_model_failure(preflight):
               "original_failure":original_failure,"source_blobs":source_blobs,"detector_log_sha256":hashlib.sha256(raw).hexdigest(),
               "artifacts":fixed_artifacts,"failure_issue":{k:issue.get(k) for k in
                   ("id","number","html_url","title","body","created_at","updated_at")}}
-    return {"schema_version":"ai-sdlc.v03-reviewer-post-model-failure/v1","run_id":run_id,"run_attempt":1,
+    proof = {"schema_version":"ai-sdlc.v03-reviewer-post-model-failure/v1","run_id":run_id,"run_attempt":1,
         "source_head_sha":REVIEWER_POST_MODEL_SOURCE,"jobs":REVIEWER_POST_MODEL_FAILURE_JOBS,
         "model_executed":True,"detector_timed_out":True,"semantic_safety_pass":False,
         "safe_outputs_processed":False,"failure_issue_number":580,
         "observation_digest":"sha256:"+digest_json(material)}
+    return {"historical_proof": proof, "original_historical_proof": original_failure,
+            "current_retention_observations": [original_observation["current_retention_observation"], retention["current_retention_observation"]]} if retention is not None else proof
 
 
 def _reviewer_existing_producer_check(preflight, snapshot):
@@ -2170,7 +2175,7 @@ def recover_reviewer_pre_model(preflight):
     return _commit_recovery_nonempty(runtime, seal)
 
 
-def _observe_reviewer_structured_predecessor(preflight):
+def _observe_reviewer_structured_predecessor(preflight, *, fixed_retention=False):
     """Authenticate the spent ordinal2 publication as history, never a Gate result."""
     import re
     from v03_dogfood_live_gate import CURRENT_DOGFOOD_BLOBS
@@ -2291,7 +2296,9 @@ def _observe_reviewer_structured_predecessor(preflight):
                 "head_branch": "main", "head_sha": source}, "artifact owner")
             result.append(value)
         return result
-    artifact_proof = artifact_identity(artifacts)
+    retention = _observe_fixed_activation_retention(preflight, run_id=run_id, artifacts=artifacts) if fixed_retention is True else None
+    historical_inventory = {"total_count": len(retention["archived_artifacts"]), "artifacts": retention["archived_artifacts"]} if retention is not None else artifacts
+    artifact_proof = artifact_identity(historical_inventory)
     expected_records = {"detection":["2026-10-10T02:48:53.5743242Z THREAT_DETECTION_STATUS: reason=result_recorded exit=0","2026-10-10T02:48:55.9040688Z THREAT_DETECTION_STATUS: reason=result_recorded exit=0"],"safe_outputs":["2026-10-10T02:49:10.4079918Z Created comment: https://github.com/DREAM-XIN/ai-sdlc/pull/552#issuecomment-6092979158","2026-10-10T02:49:10.4081765Z 📝 Manifest: logged add_comment → https://github.com/DREAM-XIN/ai-sdlc/pull/552#issuecomment-6092979158","2026-10-10T02:49:10.4166100Z Exported comment_id: 6092979158"],"controller":["2026-10-10T02:49:49.9516755Z operator_vertical.VerticalInvariantError: Gate Safe Output comment has invalid machine envelope"]}
     transport = preflight.composition.actions_transport
     def log_records(job_id, label):
@@ -2327,7 +2334,8 @@ def _observe_reviewer_structured_predecessor(preflight):
     if (normalized_jobs(_github_json(preflight, jobs_path), {name: (job, "success") for name, job in job_ids.items()}, run_id) != normalized
             or normalized_jobs(_github_json(preflight, controller_jobs_path),
                 {"dogfood": (114112184854, "failure"), "reject-non-main": (114112185859, "skipped")}, controller_id) != normalized_controller
-            or artifact_identity(_github_json(preflight, artifacts_path)) != artifact_proof):
+            or (_github_json(preflight, artifacts_path) != artifacts if retention is not None else
+                artifact_identity(_github_json(preflight, artifacts_path)) != artifact_proof)):
         raise V03DogfoodRuntimeDriverError("structured predecessor metadata changed while observing")
     after_comment = _github_json(preflight, comment_path)
     if (identity(after_comment, comment_expected, "comment") != {key: comment_identity[key] for key in comment_expected}
@@ -2339,12 +2347,12 @@ def _observe_reviewer_structured_predecessor(preflight):
             raise V03DogfoodRuntimeDriverError("structured predecessor log changed while observing")
     material = {"run": run, "controller": controller, "jobs": normalized, "controller_jobs": normalized_controller,
                 "source_blobs": source_blobs, "artifacts": artifact_proof, "comment": comment_identity, "selected_log_records": logs}
-    return {"schema_version": "ai-sdlc.v03-reviewer-structured-predecessor/v1",
+    proof = {"schema_version": "ai-sdlc.v03-reviewer-structured-predecessor/v1",
             "run_id": run_id, "run_attempt": 1, "source_head_sha": source,
             "controller_run_id": controller_id, "comment_id": comment_id, "body_sha256": body_digest,
             "verdict_inventory": "REWORK", "adopted": False,
             "observation_digest": "sha256:" + digest_json(material)}
-
+    return {"historical_proof": proof, "current_retention_observation": retention["current_retention_observation"]} if retention is not None else proof
 
 
 def recover_reviewer_structured(preflight):
@@ -2361,17 +2369,11 @@ def recover_reviewer_structured(preflight):
     builder=preflight.composition.dispatch_gateway.delegate.context_builder
     def fresh_predecessor():
         _reviewer_existing_producer_check(preflight,runtime.backend.read_snapshot())
-        historical = runtime.backend.read_snapshot().get(c.REVIEWER_POST_MODEL_AUTH_PATH)
-        observed = _observe_reviewer_post_model_failure(preflight)
-        if (not isinstance(historical, dict)
-                or canonical_json(observed) != canonical_json(historical.get("post_model_failure_proof"))):
-            raise V03DogfoodRuntimeDriverError("older Reviewer failure proof changed before corrected execution")
-        return _observe_reviewer_structured_predecessor(preflight)
+        return observe_reviewer_retention_predecessor(preflight)
     proof=fresh_predecessor()
     if c.reviewer_structured_present(snapshot):
         auth,claim=c.validate_reviewer_structured_authorization(snapshot,consumer_binding=binding)
-        if canonical_json(proof)!=canonical_json(auth["predecessor_proof"]):
-            raise V03DogfoodRuntimeDriverError("corrected Reviewer historical observation changed")
+        c.validate_reviewer_retention_relation(auth["predecessor_proof"], proof)
         result={"acquired":False,"authorization":auth,"claim":claim}
     else:
         def planner(current):
@@ -2380,8 +2382,7 @@ def recover_reviewer_structured(preflight):
                     predecessor_proof=proof,dispatch_inputs=None)
             c.validate_reviewer_structured_predecessor(current,fresh=True)
             _require_recovery_execution_source(preflight,binding["execution_source_head_sha"])
-            if fresh_predecessor()!=proof:
-                raise V03DogfoodRuntimeDriverError("corrected Reviewer predecessor changed before claim")
+            c.validate_reviewer_retention_relation(proof, fresh_predecessor())
             auth=c.reviewer_structured_authorization(current,consumer_binding=binding,predecessor_proof=proof)
             dispatch=c.reviewer_dispatch(auth)
             context=builder.build_prospective_reviewer(auth)
@@ -2400,12 +2401,12 @@ def recover_reviewer_structured(preflight):
                 predecessor_proof=proof,dispatch_inputs=inputs)
         result=_commit_recovery_nonempty(runtime,planner)
         auth,claim=result["authorization"],result["claim"]
+    c.validate_reviewer_retention_relation(auth["predecessor_proof"], fresh_predecessor())
     transport=c.DogfoodStructuredReviewerTransport(preflight.composition.actions_transport.config,
         snapshot=runtime.backend.read_snapshot(),consumer_binding=binding,allow_post=result["acquired"],
         http=preflight.composition.actions_transport.http,sleeper=time.sleep)
     def prepost():
-        if fresh_predecessor()!=auth["predecessor_proof"]:
-            raise V03DogfoodRuntimeDriverError("corrected Reviewer predecessor changed before POST")
+        c.validate_reviewer_retention_relation(auth["predecessor_proof"], fresh_predecessor())
         fresh=builder(c.reviewer_dispatch(auth))
         frozen=json.loads(claim["dispatch_inputs"]["task_payload"])["feature_context"]["gate_context"]
         from copy import deepcopy
@@ -2892,6 +2893,163 @@ def _execute_live(*, mode: str, scenario: str) -> int:
     output.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(doc, indent=2, sort_keys=True))
     return 0
+
+
+
+def _observe_fixed_activation_retention(preflight, *, run_id, artifacts):
+    """Verify fixed archived activation evidence; never fabricate a provider listing."""
+    import yaml
+    from v03_dogfood_full_composition import (
+        REVIEWER_ACTIVATION_RETENTION, REVIEWER_RETENTION_CAPTURE,
+        validate_reviewer_retention_observation)
+    fixed = REVIEWER_ACTIVATION_RETENTION.get(str(run_id))
+    if fixed is None:
+        raise V03DogfoodRuntimeDriverError("unknown fixed activation retention run")
+    rows = artifacts.get("artifacts")
+    if (not isinstance(rows, list) or type(artifacts.get("total_count")) is not int
+            or artifacts["total_count"] != len(rows) or len(rows) > 100):
+        raise V03DogfoodRuntimeDriverError("fixed activation current inventory is incomplete")
+    document = _github_json(preflight, "/contents/" + fixed["lock_path"] + "?ref=" + fixed["source_head_sha"])
+    if document.get("sha") != fixed["lock_blob"] or document.get("encoding") != "base64":
+        raise V03DogfoodRuntimeDriverError("activation retention source metadata differs")
+    try:
+        raw = base64.b64decode("".join(document["content"].split()), validate=True)
+        if len(raw) > 512 * 1024 or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != fixed["lock_blob"]:
+            raise ValueError("source bytes")
+        workflow = yaml.safe_load(raw)
+        steps = workflow["jobs"]["activation"]["steps"]
+        uploads = [step for step in steps if isinstance(step, dict)
+                   and isinstance(step.get("with"), dict) and step["with"].get("name") == "activation"]
+        if (len(uploads) != 1
+                or uploads[0].get("uses") != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+                or type(uploads[0]["with"].get("retention-days")) is not int
+                or uploads[0]["with"]["retention-days"] != 1):
+            raise ValueError("retention policy")
+    except Exception as exc:
+        raise V03DogfoodRuntimeDriverError("activation retention source contract differs") from exc
+    transport = preflight.composition.actions_transport
+    def upload_records():
+        status, _, raw_log = transport.http(method="GET", url=transport._api(
+            f"/actions/jobs/{fixed['activation_job_id']}/logs"), token=transport.config.token, body=None)
+        if status != 200 or type(raw_log) is not bytes or len(raw_log) > 2 * 1024 * 1024:
+            raise V03DogfoodRuntimeDriverError("activation upload proof unavailable")
+        lines = raw_log.decode("utf-8", errors="strict").splitlines()
+        wanted = fixed["upload_records"]
+        if any(lines.count(line) != 1 for line in wanted):
+            raise V03DogfoodRuntimeDriverError("activation upload record changed or duplicated")
+        positions = [lines.index(line) for line in wanted]
+        if positions != sorted(positions):
+            raise V03DogfoodRuntimeDriverError("activation upload records are out of order")
+        return wanted
+    selected = upload_records()
+    keys = ("id", "name", "digest", "size_in_bytes", "created_at", "updated_at", "expires_at", "workflow_run", "expired")
+    if any(not isinstance(row, dict) for row in rows):
+        raise V03DogfoodRuntimeDriverError("activation artifact metadata malformed")
+    current = [{key: row.get(key) for key in keys} for row in rows]
+    if any(type(row["id"]) is not int for row in current):
+        raise V03DogfoodRuntimeDriverError("activation artifact ID type differs")
+    current.sort(key=lambda row: row["id"])
+    activation = next(row for row in fixed["archived_artifacts"] if row["name"] == "activation")
+    listed = [row for row in current if row["id"] == activation["id"]]
+    state = "absent" if not listed else "expired_listed" if listed[0]["expired"] is True else "present"
+    observation = {"run_id": run_id,
+        "archived_capture_digest": digest_json({"capture": REVIEWER_RETENTION_CAPTURE, "artifacts": fixed["archived_artifacts"]}),
+        "source_upload_digest": digest_json({key: fixed[key] for key in
+            ("run_id", "activation_job_id", "source_head_sha", "lock_path", "lock_blob", "upload_records")}),
+        "observed_at": preflight.composition.runtime.clock(), "activation_state": state, "current_artifacts": current}
+    validate_reviewer_retention_observation(observation)
+    if (_github_json(preflight, f"/actions/runs/{run_id}/artifacts?per_page=100") != artifacts
+            or upload_records() != selected):
+        raise V03DogfoodRuntimeDriverError("activation retention evidence changed during observation")
+    return {"current_retention_observation": observation,
+            "archived_artifacts": [dict(row, expired=False) for row in fixed["archived_artifacts"]]}
+
+
+def observe_reviewer_retention_predecessor(preflight):
+    """Current ordinal3 only: immutable history and fresh availability stay separate."""
+    from v03_dogfood_full_composition import (
+        REVIEWER_RETENTION_ADMISSION, REVIEWER_AUTH_PATH, REVIEWER_POST_MODEL_AUTH_PATH,
+        validate_reviewer_retention_proof)
+    before = preflight.composition.runtime.backend.read_snapshot()
+    prior = before.get(REVIEWER_AUTH_PATH)
+    post = before.get(REVIEWER_POST_MODEL_AUTH_PATH)
+    observed = _observe_reviewer_post_model_failure(preflight, fixed_retention=True)
+    third = _observe_reviewer_structured_predecessor(preflight, fixed_retention=True)
+    historical = {"pre_model": observed["original_historical_proof"],
+                  "post_model": observed["historical_proof"], "structured": third["historical_proof"]}
+    if (not isinstance(prior, dict) or not isinstance(post, dict)
+            or historical["pre_model"] != prior.get("pre_model_failure_proof")
+            or historical["post_model"] != post.get("post_model_failure_proof")
+            or preflight.composition.runtime.backend.read_snapshot().ref_sha != before.ref_sha):
+        raise V03DogfoodRuntimeDriverError("fixed retention historical authority changed")
+    result = {"schema_version": "ai-sdlc.v03-fixed-activation-retention/v1",
+        "admission": dict(REVIEWER_RETENTION_ADMISSION), "historical_proofs": historical,
+        "retention_observations": observed["current_retention_observations"] + [third["current_retention_observation"]]}
+    validate_reviewer_retention_proof(result)
+    return result
+
+
+
+def observe_reviewer_retention_for_review(*, actions_read_token):
+    """Read-only fixed historical entry; no production runtime or creation API is built."""
+    import re
+    from operator_vertical_gh_aw_actions_transport import GitHubActionsWorkflowTransportConfig
+    from types import SimpleNamespace
+    from operator_store_model import StoreSnapshot
+    from operator_vertical_gh_aw_github_source import (
+        GitHubActionsGhAwResultSourceConfig, TargetScopedGitHubActionsGhAwResultSource)
+    from v03_dogfood_full_composition import (
+        REVIEWER_AUTH_PATH, REVIEWER_POST_MODEL_AUTH_PATH, DogfoodGitHubCandidateProvider,
+        DogfoodCandidateBoundActionsTransport, REVIEWER_RETENTION_ADMISSION)
+    from v03_dogfood_fixture_pool import require_slot
+    from v03_dogfood_gate_output import strict_json
+    if not isinstance(actions_read_token, str) or not actions_read_token:
+        raise V03DogfoodRuntimeDriverError("fixed retention review requires Actions read token")
+    repository = "dream-xin/ai-sdlc"
+    workflows = GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow="ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+        reviewer_workflow="ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
+        qa_workflow="ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml")
+    source = TargetScopedGitHubActionsGhAwResultSource(GitHubActionsGhAwResultSourceConfig(
+        control_repository=repository, control_token=actions_read_token, target_token=actions_read_token,
+        workflows=workflows, collector_identity="v03-fixed-retention-read-only"), target_repository=repository)
+    transport = DogfoodCandidateBoundActionsTransport(
+        GitHubActionsWorkflowTransportConfig(control_repository=repository, token=actions_read_token, workflows=workflows),
+        candidate_provider=DogfoodGitHubCandidateProvider(slot=require_slot("happy_path"),
+            repository=repository, token=actions_read_token))
+    actual_http = transport.http
+    def read_only_http(*, method, url, token, body=None):
+        if method != "GET" or body is not None:
+            raise V03DogfoodRuntimeDriverError("fixed retention reader attempted an effect")
+        return actual_http(method=method, url=url, token=token, body=None)
+    transport.http = read_only_http
+    def historical_authority_projection():
+        ref = source._json(repository, "/git/ref/heads/ai-sdlc-operator-state", actions_read_token)
+        sha = ref.get("object", {}).get("sha")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise V03DogfoodRuntimeDriverError("fixed retention reader lacks existing protected ref")
+        files = {}
+        for path, blob in ((REVIEWER_AUTH_PATH, "9887312d2053849c64986be4bb661938fa08a7e6"),
+                           (REVIEWER_POST_MODEL_AUTH_PATH, "789007f3e0fa8ae57538237db1cb0301a49b7e5b")):
+            document = source._json(repository, "/contents/" + path + "?ref=" + sha, actions_read_token)
+            if document.get("sha") != blob or document.get("encoding") != "base64":
+                raise V03DogfoodRuntimeDriverError("fixed retention immutable authorization changed")
+            raw = base64.b64decode("".join(document["content"].split()), validate=True)
+            if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != blob:
+                raise V03DogfoodRuntimeDriverError("fixed retention authorization bytes changed")
+            files[path] = strict_json(raw)
+        if source._json(repository, "/git/ref/heads/ai-sdlc-operator-state", actions_read_token) != ref:
+            raise V03DogfoodRuntimeDriverError("protected ref changed during fixed retention review")
+        return StoreSnapshot(sha, files)
+    runtime = SimpleNamespace(clock=_clock, backend=SimpleNamespace(read_snapshot=historical_authority_projection))
+    preflight = SimpleNamespace(composition=SimpleNamespace(runtime=runtime, actions_transport=transport))
+    observed = observe_reviewer_retention_predecessor(preflight)
+    return {"schema_version": "ai-sdlc.v03-fixed-retention-read-only-result/v1",
+        "admission": dict(REVIEWER_RETENTION_ADMISSION), "historical_proofs_verified": True,
+        "read_only": True, "model_invoked": False, "current_claim_created": False,
+        "observations": [{"run_id": row["run_id"], "activation_state": row["activation_state"],
+            "current_artifact_count": len(row["current_artifacts"]), "observed_at": row["observed_at"]}
+            for row in observed["retention_observations"]]}
 
 
 if __name__ == "__main__":
