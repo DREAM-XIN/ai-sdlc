@@ -162,6 +162,7 @@ safe-outputs:
     steps:
       - name: Verify Gate detector input bytes before scanning
         id: gate_scan_input
+        if: ${{ success() && steps.detection_guard.outputs.run_detection == 'true' }}
         env:
           GATE_DIGEST_MODE: before
         run: |
@@ -187,6 +188,7 @@ safe-outputs:
     post-steps:
       - name: Verify Gate detector input bytes after scanning
         id: gate_scanned_digest
+        if: ${{ success() && steps.detection_guard.outputs.run_detection == 'true' }}
         env:
           GATE_DIGEST_MODE: after
           EXPECTED_SCAN_INPUT_SHA256: ${{ steps.gate_scan_input.outputs.sha256 }}
@@ -477,7 +479,7 @@ The trusted controller has supplied the following typed context through its prot
 
 ${{ inputs.task_payload }}
 
-Use the provided approved task and actual authenticated evidence, then inspect the immutable candidate independently. This fixture uses the operator-vertical path: candidate identity is bound by protected receipts and canonical Persist, not the legacy standalone gh-aw candidate resolver. Collector-owned evidence URIs are evidence namespaces and need not be files committed in the candidate tree; evaluate their supplied authenticated content and provenance. If that content is missing or inconsistent, report the limitation rather than inventing it.
+Use the provided approved task and actual authenticated evidence, then inspect the immutable candidate independently. This fixture uses the operator-vertical path: candidate identity is bound by protected receipts and canonical Persist, not the legacy standalone gh-aw candidate resolver. The candidate_document entries are Git-backed files at the exact candidate SHA; implementation/review entries are collector-backed evidence authenticated by the protected loader. Collector-owned evidence URIs are evidence namespaces and need not be files committed in the candidate tree; evaluate their supplied authenticated content and provenance. If that content is missing or inconsistent, report the limitation rather than inventing it.
 
 Separate genuinely required candidate CI checks from merely observed check runs. Do not infer that controller CI tested the candidate, invent a required check, or treat this context as a waiver of an established requirement. Report absent or unavailable evidence accurately and choose your own supported verdict.
 

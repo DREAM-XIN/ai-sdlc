@@ -104,6 +104,8 @@ jobs:
           )
           PY
       - name: Validate trusted-main dogfood runtime driver
+        env:
+          GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
         if: ${{ !cancelled() }}
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
       - name: Observe immutable historical Worker through read-only GitHub API
@@ -626,6 +628,9 @@ jobs:
                   assert key not in result, "duplicate JSON key"
                   result[key] = value
               return result
+          Path("evidence").mkdir(exist_ok=True)
+          Path(f"evidence/structured-{role}.upstream.lock.yml").write_bytes(raw)
+          print("STRUCTURED_GATE_RAW_BASE64=" + base64.b64encode(raw).decode())
           workflow = yaml.safe_load(upstream)
           agent_steps = workflow["jobs"]["agent"]["steps"]
           def step_index(steps, *, id=None, name=None):
@@ -654,7 +659,7 @@ jobs:
           scan_before = step_index(steps, id="gate_scan_input")
           scan_after = step_index(steps, id="gate_scanned_digest")
           scan_engine = step_index(steps, id="detection_agentic_execution")
-          assert step_index(steps, name="Prepare threat detection files") < step_index(steps, name="Setup threat detection") < scan_before < scan_engine < scan_after
+          assert step_index(steps, name="Prepare threat detection files") < scan_before < step_index(steps, name="Setup threat detection") < scan_engine < scan_after
           scan_output = workflow["jobs"]["detection"]["outputs"]["gate_scanned_sha256"]
           assert scan_output == "$"+"{{ steps.gate_scanned_digest.outputs.sha256 }}"
           assert {"detection_success", "detection_conclusion", "detection_reason"} <= set(workflow["jobs"]["detection"]["outputs"])
@@ -663,7 +668,7 @@ jobs:
           for i in (scan_before, scan_after):
               assert "/tmp/gh-aw/threat-detection/agent_output.json" in steps[i]["run"]
               assert steps[i].get("continue-on-error", False) is False
-              assert steps[i].get("if") in (None, "success()", "$"+"{{ success() }}")
+              assert steps[i]["if"] == "$"+"{{ success() && steps.detection_guard.outputs.run_detection == 'true' }}"
           activation = workflow["jobs"]["activation"]["steps"]
           prompt_input = [step for step in activation if step.get("name") == "Interpolate variables and render templates"]
           assert len(prompt_input) == 1

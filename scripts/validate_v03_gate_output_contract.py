@@ -42,7 +42,7 @@ def reject(call, label):
         return
     raise AssertionError("accepted " + label)
 
-def selected_config(role):
+def selected_config(role, candidate=577):
     stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-structured-local"
     lock = yaml.safe_load((ROOT / ".github/workflows" / (stem + ".lock.yml")).read_text())
     steps = lock["jobs"]["agent"]["steps"]
@@ -51,7 +51,7 @@ def selected_config(role):
         check(len(values) == 1, "ambiguous compiled " + name)
         return values[0]
     config_text = unique_env("GH_AW_SAFE_OUTPUTS_CONFIG")
-    config_text = config_text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", "577")
+    config_text = config_text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", str(candidate))
     check("${" not in config_text, "unresolved Safe Outputs config")
     config = json.loads(config_text)
     validation = json.loads(unique_env("GH_AW_VALIDATION_JSON"))
@@ -141,7 +141,7 @@ def role_payload(role, verdict):
     return value
 
 def raw_item(payload):
-    return packed({"type": "add_comment", "body": SENTINEL, "item_number": 577, "data": payload}) + b"\n"
+    return packed({"type": "add_comment", "body": SENTINEL, "item_number": payload["candidate_pr_number"], "data": payload}) + b"\n"
 
 def fixture_context(payload):
     fields = ("feature_id", "task_id", "role", "stage", "expected_revision",
@@ -150,7 +150,7 @@ def fixture_context(payload):
     identity.update(operation_id="op-" + "1" * 40, operation_generation=1,
                     external_dispatch_key="dispatch-" + "b" * 40,
                     semantic_effect_key="2" * 64, dispatch_id="dispatch-fixture")
-    kinds = ["approved_task", "implementation"]
+    kinds = ["approved_task", "candidate_document", "implementation"]
     if payload["role"] == "qa":
         kinds.append("review")
     documents = []
@@ -160,8 +160,8 @@ def fixture_context(payload):
             "kind": kind, "uri": "https://github.com/dream-xin/ai-sdlc/pull/577#" + kind,
             "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest(),
             "source_head_sha": "a" * 40,
-            "run_id": None if kind == "approved_task" else 9000,
-            "receipt_sha256": None if kind == "approved_task" else "c" * 64,
+            "run_id": None if kind in ("approved_task", "candidate_document") else 9000,
+            "receipt_sha256": None if kind in ("approved_task", "candidate_document") else "c" * 64,
         })
     context = {
         "schema_version": "ai-sdlc.v03-gate-context/v1",
@@ -179,6 +179,8 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const actions = process.argv[1];
+const candidate = Number(request.config?.add_comment?.target || 577);
+assert.ok(Number.isSafeInteger(candidate) && candidate > 0);
 const outputs = {};
 const posts = [];
 global.core = {
@@ -200,12 +202,12 @@ global.context = {
 global.github = {
   rest: {
     issues: {
-      async get() { return {data:{number:577,user:{login:'fixture-user',type:'User'},labels:[]}}; },
+      async get() { return {data:{number:candidate,user:{login:'fixture-user',type:'User'},labels:[]}}; },
       async createComment(p) {
         assert.equal(p.owner,'dream-xin'); assert.equal(p.repo,'ai-sdlc');
-        assert.equal(p.issue_number,577);
+        assert.equal(p.issue_number,candidate);
         posts.push(p);
-        return {data:{id:9002,html_url:'https://github.com/dream-xin/ai-sdlc/pull/577#issuecomment-9002'}};
+        return {data:{id:9002,html_url:'https://github.com/dream-xin/ai-sdlc/pull/'+candidate+'#issuecomment-9002'}};
       }
     }
   }
@@ -301,7 +303,7 @@ def detector_digest_contract(lock, temporary):
     before_index, before = unique("id", "gate_scan_input")
     engine, _ = unique("id", "detection_agentic_execution")
     after_index, after = unique("id", "gate_scanned_digest")
-    check(prepare < setup < before_index < engine < after_index,
+    check(prepare < before_index < setup < engine < after_index,
           "detector does not hash prepared bytes around actual execution")
     check(before["env"]["GATE_DIGEST_MODE"] == "before" and
           after["env"]["GATE_DIGEST_MODE"] == "after", "digest mode source drift")
@@ -315,6 +317,9 @@ def detector_digest_contract(lock, temporary):
           "${{ needs.detection.outputs.gate_scanned_sha256 }}", "effect scan digest is not independent")
     for step in (before, after):
         check(step.get("continue-on-error", False) is False, "digest failure ignored")
+        condition = "success() && steps.detection_guard.outputs.run_detection == 'true'"
+        check(step.get("if") in (condition, "${{ " + condition + " }}"),
+              "digest step bypasses prior failure or detection guard")
     path = Path("/tmp/gh-aw/threat-detection/agent_output.json")
     check(not path.exists() and not path.is_symlink(), "unexpected preexisting detector input")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -379,6 +384,53 @@ def sanitizer_closure_tests(actions_root, temporary):
     core.write_bytes(core.read_bytes() + b"\n// synthetic transitive tamper\n")
     reject(lambda: subject._official_sanitizer(copied),
            "changed transitive sanitizer dependency")
+def _roundtrip(official, payload, context, role):
+    raw = raw_item(payload)
+    collected = official.ingest(raw)
+    ingested = json.loads(collected)
+    check(not ingested["errors"] and len(ingested["items"]) == 1, "official ingestion failed")
+    check(ingested["items"][0]["data"] == payload, "official data semantic drift")
+    output, proof = subject.render_gate_output(
+        raw, collected, context, role,
+        sanitize=lambda value: official.call({"mode": "sanitize", "body": value})["body"])
+    cli_validation(official, context, output, True)
+    cli_validation(official, context, collected, False)
+    check(subject.validate_scanned_output(output, proof, context, role,
+                                           scanned_sha256=hashlib.sha256(output).hexdigest()) == payload,
+          "scan-input payload drift")
+    publication = official.publish(output)
+    body = json.loads(output)["items"][0]["body"]
+    check(publication["sanitized"] == body, "official sanitizer changed rendered bytes")
+    check(publication["body"] == body + "\n\n" + publication["suffix"],
+          "official metadata assembly drift")
+    check(subject.parse_published_gate(publication["body"], context, role,
+                                       publication["suffix"]) == payload,
+          "published recommendation drift")
+    check("data" not in json.loads(output)["items"][0],
+          "renderer left a duplicate data carrier")
+
+    return raw, collected, output, proof, publication, body
+
+def verify_context_roundtrip(role, context, *, root, actions_root):
+    """Carry an actual producer-built context through the official output boundary."""
+    check(Path(root).resolve() == ROOT, "roundtrip repository root differs")
+    subject.validate_context(context)
+    check(context["identity"]["role"] == role, "context role differs")
+    original = canonical(context)
+    payload = role_payload(role, "PASS")
+    for key in subject.PAYLOAD_IDENTITY_KEYS:
+        payload[key] = context["identity"][key]
+    payload["evidence"][0]["uri"] = (
+        "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"]))
+    _, config, validation, metadata = selected_config(role, payload["candidate_pr_number"])
+    with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
+        official = Official(Path(actions_root), Path(directory), config, validation, metadata)
+        raw, collected, artifact, proof, publication, body = _roundtrip(
+            official, payload, context, role)
+    check(canonical(context) == original, "roundtrip mutated producer context")
+    return {"payload": payload, "raw_ndjson": raw, "collected": collected,
+            "artifact": artifact, "proof": proof, "published_body": publication["body"],
+            "metadata_suffix": publication["suffix"]}
 
 def exercise_role(role, actions_root, temporary):
     lock, config, validation, metadata = selected_config(role)
@@ -395,27 +447,7 @@ def exercise_role(role, actions_root, temporary):
     for verdict in verdicts:
         payload = role_payload(role, verdict)
         context = fixture_context(payload)
-        raw = raw_item(payload)
-        collected = official.ingest(raw)
-        ingested = json.loads(collected)
-        check(not ingested["errors"] and len(ingested["items"]) == 1, "official ingestion failed")
-        check(ingested["items"][0]["data"] == payload, "official data semantic drift")
-        output, proof = render(raw, collected, context)
-        cli_validation(official, context, output, True)
-        cli_validation(official, context, collected, False)
-        check(subject.validate_scanned_output(output, proof, context, role,
-                                               scanned_sha256=hashlib.sha256(output).hexdigest()) == payload,
-              "scan-input payload drift")
-        publication = official.publish(output)
-        body = json.loads(output)["items"][0]["body"]
-        check(publication["sanitized"] == body, "official sanitizer changed rendered bytes")
-        check(publication["body"] == body + "\n\n" + publication["suffix"],
-              "official metadata assembly drift")
-        check(subject.parse_published_gate(publication["body"], context, role,
-                                           publication["suffix"]) == payload,
-              "published recommendation drift")
-        check("data" not in json.loads(output)["items"][0],
-              "renderer left a duplicate data carrier")
+        raw, collected, output, proof, publication, body = _roundtrip(official, payload, context, role)
 
         # Exactly the final scanned bytes are accepted; serialization changes are drift.
         reject(lambda: subject.validate_scanned_output(output + b"\n", proof, context, role,
@@ -526,6 +558,13 @@ def exercise_role(role, actions_root, temporary):
     altered_context = copy.deepcopy(context)
     altered_context["documents"][0]["content"] += " changed"
     reject(lambda: render(raw, collected, altered_context), "context document digest drift")
+
+    missing_candidate = copy.deepcopy(context)
+    missing_candidate["documents"] = [
+        doc for doc in missing_candidate["documents"] if doc["kind"] != "candidate_document"]
+    missing_candidate["context_sha256"] = hashlib.sha256(canonical(
+        {key: value for key, value in missing_candidate.items() if key != "context_sha256"})).hexdigest()
+    reject(lambda: render(raw, collected, missing_candidate), "missing actual candidate document")
     print(role + ": official ingestion, sanitizer, publication and exact parser checks passed")
 
 def main():
