@@ -21,7 +21,7 @@ def main():
         args = dict(source_sha=SOURCE_MAIN, installation_sha="b"*40, ancestor=True)
         args.update(overrides)
         return validate_delta(candidate, **args)
-    assert len(ADDED_PATHS) == 48 and len(SOURCE_CONTROL_BLOBS) == 6
+    assert len(ADDED_PATHS) == 52 and len(SOURCE_CONTROL_BLOBS) == 6
     assert set(SOURCE_CONTROL_BLOBS) == set(DOGFOOD_CONTROL_BLOBS) == set(SOURCE_CONTROL_MODES)
     proof = check(rows)
     assert proof["source_main_sha"] == SOURCE_MAIN
