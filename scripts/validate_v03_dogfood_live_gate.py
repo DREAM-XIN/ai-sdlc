@@ -174,8 +174,8 @@ def main():
         bindings = {row.role: row for row in gate.bindings}
         expected_workflows = {
             "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
-            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
-            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml",
+            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml",
         }
         for role, workflow in expected_workflows.items():
             require(bindings[role].selected_profile == "deepseek", role + " current paid provider drifted")
