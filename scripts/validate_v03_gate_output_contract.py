@@ -289,6 +289,57 @@ def compiled_contract(lock):
         check((completed.returncode == 0) is expected,
               "actual generated effect guard accepted failed renderer/detector/attempt")
 
+def detector_digest_contract(lock, temporary):
+    job = lock["jobs"]["detection"]
+    steps = job["steps"]
+    def unique(key, value):
+        found = [(i, step) for i, step in enumerate(steps) if step.get(key) == value]
+        check(len(found) == 1, "missing or ambiguous detector step " + value)
+        return found[0]
+    prepare, _ = unique("name", "Prepare threat detection files")
+    setup, _ = unique("name", "Setup threat detection")
+    before_index, before = unique("id", "gate_scan_input")
+    engine, _ = unique("id", "detection_agentic_execution")
+    after_index, after = unique("id", "gate_scanned_digest")
+    check(prepare < setup < before_index < engine < after_index,
+          "detector does not hash prepared bytes around actual execution")
+    check(before["env"]["GATE_DIGEST_MODE"] == "before" and
+          after["env"]["GATE_DIGEST_MODE"] == "after", "digest mode source drift")
+    check(after["env"]["EXPECTED_SCAN_INPUT_SHA256"] ==
+          "${{ steps.gate_scan_input.outputs.sha256 }}", "post-scan digest self-binds")
+    check(job["outputs"]["gate_scanned_sha256"] ==
+          "${{ steps.gate_scanned_digest.outputs.sha256 }}", "detector output binding drift")
+    validates = [step for step in lock["jobs"]["safe_outputs"]["steps"]
+                 if step.get("id") == "gate_validate"]
+    check(len(validates) == 1 and validates[0]["env"]["SCANNED_OUTPUT_SHA256"] ==
+          "${{ needs.detection.outputs.gate_scanned_sha256 }}", "effect scan digest is not independent")
+    for step in (before, after):
+        check(step.get("continue-on-error", False) is False, "digest failure ignored")
+    path = Path("/tmp/gh-aw/threat-detection/agent_output.json")
+    check(not path.exists() and not path.is_symlink(), "unexpected preexisting detector input")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = canonical({"items": [{"type": "add_comment", "body": "synthetic scanned content"}]})
+    path.write_bytes(data)
+    expected = hashlib.sha256(data).hexdigest()
+    output = temporary / "digest-output"
+    def run(step, mode, expected_input=None):
+        output.write_text("")
+        env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), "GATE_DIGEST_MODE": mode}
+        if expected_input is not None:
+            env["EXPECTED_SCAN_INPUT_SHA256"] = expected_input
+        result = subprocess.run(["bash", "-c", step["run"]], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        return result.returncode, output.read_text()
+    try:
+        check(run(before, "before") == (0, "sha256=" + expected + "\n"), "actual pre-scan digest failed")
+        check(run(after, "after", expected) == (0, "sha256=" + expected + "\n"),
+              "actual post-scan equality failed")
+        path.write_bytes(data + b"\n")
+        code, emitted = run(after, "after", expected)
+        check(code != 0 and emitted == "", "actual post-scan step accepted changed bytes")
+    finally:
+        path.unlink()
+
 def cli_validation(official, context, output, should_pass):
     identity = context["identity"]
     task = {"contract": "ai-sdlc-task-v0.1",
@@ -334,6 +385,7 @@ def exercise_role(role, actions_root, temporary):
     compiled_contract(lock)
     fixture_dir = temporary / role
     fixture_dir.mkdir()
+    detector_digest_contract(lock, fixture_dir)
     official = Official(actions_root, fixture_dir, config, validation, metadata)
     def sanitize(body):
         return official.call({"mode": "sanitize", "body": body})["body"]

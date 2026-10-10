@@ -645,7 +645,7 @@ jobs:
           for steps_, index in ((agent_steps, context_index), (agent_steps, render_index), (effect_steps, validate_index)):
               step = steps_[index]
               assert step.get("continue-on-error", False) is False
-              assert step.get("if") in (None, "success()", "${{ success() }}")
+              assert step.get("if") in (None, "success()", "$"+"{{ success() }}")
               assert "github.workflow_sha" in step["env"]["WORKFLOW_SHA"]
               assert "GATE_HELPER_MODE" in step["env"]
           steps = workflow["jobs"]["detection"]["steps"]

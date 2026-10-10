@@ -325,7 +325,7 @@ def _official_sanitizer(actions_root):
         "const fs=require('fs');global.core={info(){},warning(){},debug(){},error(){}};"
         "const {sanitizeContent}=require(process.argv[1]);"
         "process.stdout.write(JSON.stringify(sanitizeContent(JSON.parse(fs.readFileSync(0,'utf8')))));")
-    allowed = ("PATH", "GH_AW_ALLOWED_DOMAINS", "GITHUB_SERVER_URL", "GITHUB_API_URL",
+    allowed = ("PATH", "GH_AW_ALLOWED_DOMAINS", "GH_AW_SAFE_OUTPUTS_URLS", "GITHUB_SERVER_URL", "GITHUB_API_URL",
                "GH_AW_COMMANDS", "GH_AW_ALLOWED_GITHUB_REFS", "GITHUB_REPOSITORY",
                "GH_AW_TARGET_REPO_SLUG", "GH_AW_FAILURE_ISSUE_REPO",
                "GH_AW_FAILURE_ISSUE_REPO_FROM_EXPRESSION")

@@ -143,7 +143,7 @@ safe-outputs:
         if not data or len(data) > 262144:
             fail()
         blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        if blob != "ec7f9142a664005fe52ea26a9107fc222d631b88":
+        if blob != "7ea3f498e163703a687ba39b86beb52de6edc18f":
             fail()
         directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
         path = directory / "helper.py"
@@ -300,7 +300,7 @@ post-steps:
       if not data or len(data) > 262144:
           fail()
       blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-      if blob != "ec7f9142a664005fe52ea26a9107fc222d631b88":
+      if blob != "7ea3f498e163703a687ba39b86beb52de6edc18f":
           fail()
       directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
       path = directory / "helper.py"
@@ -384,7 +384,7 @@ jobs:
           if not data or len(data) > 262144:
               fail()
           blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-          if blob != "ec7f9142a664005fe52ea26a9107fc222d631b88":
+          if blob != "7ea3f498e163703a687ba39b86beb52de6edc18f":
               fail()
           directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
           path = directory / "helper.py"
