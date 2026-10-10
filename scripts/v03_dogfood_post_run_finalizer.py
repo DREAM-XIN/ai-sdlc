@@ -1118,12 +1118,12 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         from v03_dogfood_runtime_driver import _observe_reviewer_pre_model_failure, _observe_reviewer_post_model_failure
         from v03_dogfood_full_composition import REVIEWER_AUTH_PATH, REVIEWER_POST_MODEL_FAILED_RUN
         if route["ordinal"] == 3:
-            from v03_dogfood_runtime_driver import _observe_reviewer_structured_predecessor
-            from v03_dogfood_full_composition import REVIEWER_POST_MODEL_AUTH_PATH, REVIEWER_STRUCTURED_PRIOR_RUN
-            historical = preflight.composition.runtime.backend.read_snapshot().get(REVIEWER_POST_MODEL_AUTH_PATH)
-            if (_observe_reviewer_structured_predecessor(preflight) != route["authorization"]["predecessor_proof"]
-                    or _observe_reviewer_post_model_failure(preflight) != historical["post_model_failure_proof"]):
-                raise V03DogfoodPostRunFinalizerError("corrected Reviewer historical observations changed")
+            from v03_dogfood_runtime_driver import observe_reviewer_retention_predecessor
+            from v03_dogfood_full_composition import (
+                REVIEWER_STRUCTURED_PRIOR_RUN, REVIEWER_RETENTION_ADMISSION, validate_reviewer_retention_relation)
+            validate_reviewer_retention_relation(route["authorization"]["predecessor_proof"],
+                observe_reviewer_retention_predecessor(preflight))
+            evidence_uris.append(REVIEWER_RETENTION_ADMISSION["uri"])
             evidence_uris.extend([route["authorization"]["admission"]["uri"],
                 _run_uri(repository, REVIEWER_STRUCTURED_PRIOR_RUN),
                 f"https://github.com/{repository}/pull/552#issuecomment-6092979158",

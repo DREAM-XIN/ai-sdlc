@@ -186,6 +186,15 @@ jobs:
               json.dumps(doc, indent=2, sort_keys=True) + chr(10),
           )
           print(json.dumps(doc, sort_keys=True))
+          from v03_dogfood_runtime_driver import observe_reviewer_retention_for_review
+          retention = observe_reviewer_retention_for_review(
+              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
+          )
+          assert retention["schema_version"] == "ai-sdlc.v03-fixed-retention-read-only-result/v1"
+          assert retention["historical_proofs_verified"] is True and retention["read_only"] is True
+          assert retention["model_invoked"] is False and retention["current_claim_created"] is False
+          assert len(retention["observations"]) == 3
+          print(json.dumps(retention, sort_keys=True))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: github.event.pull_request.head.repo.full_name == github.repository

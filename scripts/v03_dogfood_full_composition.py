@@ -4178,16 +4178,7 @@ def validate_reviewer_structured_authorization(snapshot, *, consumer_binding=Non
                 REVIEWER_POST_MODEL_SOURCE, REVIEWER_PREDECESSOR_SOURCE, POST_HANDOFF_SOURCE}
             or (consumer_binding is not None and canonical_json(binding) != canonical_json(consumer_binding))):
         raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer authority/source differs")
-    proof = auth["predecessor_proof"]
-    proof_fixed = {"schema_version": "ai-sdlc.v03-reviewer-structured-predecessor/v1",
-        "run_id": REVIEWER_STRUCTURED_PRIOR_RUN, "run_attempt": 1,
-        "source_head_sha": REVIEWER_STRUCTURED_PRIOR_SOURCE, "controller_run_id": 38017902256,
-        "comment_id": REVIEWER_STRUCTURED_PRIOR_COMMENT,
-        "body_sha256": REVIEWER_STRUCTURED_PRIOR_BODY_SHA256, "verdict_inventory": "REWORK", "adopted": False}
-    if (not isinstance(proof, dict) or set(proof) != set(proof_fixed) | {"observation_digest"}
-            or any(canonical_json(proof.get(k)) != canonical_json(v) for k,v in proof_fixed.items())
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(proof.get("observation_digest") or ""))):
-        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer historical proof differs")
+    validate_reviewer_retention_proof(auth["predecessor_proof"])
     if (set(claim) != {"schema_version", "ordinal", "authorization_digest", "physical_key",
                        "create_consumed", "preclaim_store_commit", "dispatch_inputs", "dispatch_inputs_digest",
                        "context_digest"}
@@ -5235,3 +5226,102 @@ class DogfoodRemediationRereviewAuthority:
             raise VerticalInvariantError("POLICY_DENIED", "completed remediation lacks consumed rereview authority")
         self._revalidate_producers(snapshot, binding)
         return binding
+
+
+REVIEWER_RETENTION_ADMISSION = {"uri":"https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6098288003","body_digest":"sha256:e1a482bb846978966427db9130d4cba8467098e5d44a7b7a95ac5725739fa08d"}
+REVIEWER_RETENTION_CAPTURE = {"source_sha":"53b8ad69527aece481fcf528d2456ead4142eb35","path":"scripts/validate_v03_dogfood_runtime_driver.py","blob_sha":"0c0ae421ce2eee8b3940f4bb01a95944a9fd308b"}
+REVIEWER_ACTIVATION_RETENTION = {"37917962742":{"run_id":37917962742,"activation_job_id":113778697506,"source_head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf","lock_path":".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek.lock.yml","lock_blob":"fe034e28b40c325dcca2e8ed639d3885e0910fb2","upload_records":["2026-10-09T10:30:12.5315992Z   name: activation","2026-10-09T10:30:12.5321066Z   retention-days: 1","2026-10-09T10:30:13.7364799Z SHA256 digest of uploaded artifact is 7c05d67c30fd7965159402a9765133adf7128a6bc4b18ec9d380d639597965e5","2026-10-09T10:30:13.7372922Z Artifact activation successfully finalized. Artifact ID 11611241425","2026-10-09T10:30:13.7375825Z Artifact activation has been successfully uploaded! Final size is 1025232 bytes. Artifact ID is 11611241425"],"archived_artifacts":[{"id":11610061858,"name":"agent","digest":"sha256:c96cfcde2ae9dc34583d2ce975ede2c19ebd20317db1d068f2ff9b13ca0bf1ee","size_in_bytes":1372,"created_at":"2026-10-09T10:30:29Z","updated_at":"2026-10-09T10:30:29Z","expires_at":"2027-01-07T10:30:00Z","workflow_run":{"id":37917962742,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}},{"id":11610087162,"name":"usage","digest":"sha256:a58fa2cc17fe2ceee180d9308afce2336891b2215413cd7826af4bfdcecfdd08","size_in_bytes":445,"created_at":"2026-10-09T10:32:00Z","updated_at":"2026-10-09T10:32:00Z","expires_at":"2027-01-07T10:30:00Z","workflow_run":{"id":37917962742,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}},{"id":11610121887,"name":"agent-output-fallback","digest":"sha256:35f7a8ac45d6504ac9c5304e712244c40c6546f644b1c6ee7a854ebc44bc7cac","size_in_bytes":170,"created_at":"2026-10-09T10:30:28Z","updated_at":"2026-10-09T10:30:28Z","expires_at":"2027-01-07T10:30:00Z","workflow_run":{"id":37917962742,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}},{"id":11610246782,"name":"info","digest":"sha256:4779b36bcc5bb37f9c02a0a4456bbd75f217f3e9af0ab4daee6b90af4da028f7","size_in_bytes":622,"created_at":"2026-10-09T10:30:12Z","updated_at":"2026-10-09T10:30:12Z","expires_at":"2027-01-07T10:30:00Z","workflow_run":{"id":37917962742,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}},{"id":11610406910,"name":"detection","digest":"sha256:ee87864d23b65c8d8e365bb40fa83862224bd7f8006e9a294b624c060aa433a5","size_in_bytes":570,"created_at":"2026-10-09T10:31:04Z","updated_at":"2026-10-09T10:31:04Z","expires_at":"2027-01-07T10:30:00Z","workflow_run":{"id":37917962742,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}},{"id":11611241425,"name":"activation","digest":"sha256:7c05d67c30fd7965159402a9765133adf7128a6bc4b18ec9d380d639597965e5","size_in_bytes":1025232,"created_at":"2026-10-09T10:30:13Z","updated_at":"2026-10-09T10:30:13Z","expires_at":"2026-10-10T10:30:12Z","workflow_run":{"id":37917962742,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}}]},"37927328438":{"run_id":37927328438,"activation_job_id":113809299117,"source_head_sha":"193d96474529556cc0d805bb9be2b0a96909777b","lock_path":".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml","lock_blob":"5687bd6377cf5f449b444328b659f23738ca1f3a","upload_records":["2026-10-09T12:01:41.0612848Z   name: activation","2026-10-09T12:01:41.0622698Z   retention-days: 1","2026-10-09T12:01:42.4720241Z SHA256 digest of uploaded artifact is 473677789b3d60cefe6f821ce470a81570d3d8d46dbd917b6d16f71beaf832e0","2026-10-09T12:01:42.7481568Z Artifact activation successfully finalized. Artifact ID 11614602643","2026-10-09T12:01:42.7485339Z Artifact activation has been successfully uploaded! Final size is 1083418 bytes. Artifact ID is 11614602643"],"archived_artifacts":[{"id":11614239306,"name":"agent","digest":"sha256:41906db5ed959e854f7466925c9e594f3519fd2e58f11985b0ddbbe98f8b42e5","size_in_bytes":1064768,"created_at":"2026-10-09T12:04:34Z","updated_at":"2026-10-09T12:04:34Z","expires_at":"2027-01-07T12:01:10Z","workflow_run":{"id":37927328438,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}},{"id":11614473040,"name":"info","digest":"sha256:048ea882529c55e17d89f0e54e639889ab807ced5bb71262dd70b098887c412f","size_in_bytes":636,"created_at":"2026-10-09T12:01:40Z","updated_at":"2026-10-09T12:01:40Z","expires_at":"2027-01-07T12:01:10Z","workflow_run":{"id":37927328438,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}},{"id":11614602643,"name":"activation","digest":"sha256:473677789b3d60cefe6f821ce470a81570d3d8d46dbd917b6d16f71beaf832e0","size_in_bytes":1083418,"created_at":"2026-10-09T12:01:42Z","updated_at":"2026-10-09T12:01:42Z","expires_at":"2026-10-10T12:01:41Z","workflow_run":{"id":37927328438,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}},{"id":11614806653,"name":"agent-output-fallback","digest":"sha256:8aaa58dd2068255f44ce825c677f31a4d9805dcddef34fc3d9c57bfeb9807641","size_in_bytes":7320,"created_at":"2026-10-09T12:04:33Z","updated_at":"2026-10-09T12:04:33Z","expires_at":"2027-01-07T12:01:10Z","workflow_run":{"id":37927328438,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}},{"id":11615291183,"name":"detection","digest":"sha256:ba7d688ef4a4e6a11953e05ba55b02ba3a7a3c5d7b4c3adeb3a7d2181172dbe8","size_in_bytes":47356,"created_at":"2026-10-09T12:10:48Z","updated_at":"2026-10-09T12:10:48Z","expires_at":"2027-01-07T12:01:10Z","workflow_run":{"id":37927328438,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}},{"id":11615306199,"name":"usage","digest":"sha256:9ddbdb622f2081412ab40300632f6c3d17c2eb5a5975a73136124f18cc9f8159","size_in_bytes":445,"created_at":"2026-10-09T12:11:06Z","updated_at":"2026-10-09T12:11:06Z","expires_at":"2027-01-07T12:01:10Z","workflow_run":{"id":37927328438,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}}]},"38018044654":{"run_id":38018044654,"activation_job_id":114112634510,"source_head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b","lock_path":".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml","lock_blob":"ff68923c95dbbf7d4bc206f2d2bb03fa81fe5578","upload_records":["2026-10-10T02:44:24.6934599Z   name: activation","2026-10-10T02:44:24.6939759Z   retention-days: 1","2026-10-10T02:44:25.6809974Z SHA256 digest of uploaded artifact is a6cf914a0cdef5b009e71e2403a45202853af221905ebe7776a015d253732e4d","2026-10-10T02:44:25.8965223Z Artifact activation successfully finalized. Artifact ID 11657560510","2026-10-10T02:44:25.8969295Z Artifact activation has been successfully uploaded! Final size is 1147877 bytes. Artifact ID is 11657560510"],"archived_artifacts":[{"id":11656628927,"name":"usage","digest":"sha256:15143685c0b1edfbd19531973ac307ee9b975eff1e08d5075fe1af34716cb60c","size_in_bytes":6128,"created_at":"2026-10-10T02:49:26Z","updated_at":"2026-10-10T02:49:26Z","expires_at":"2027-01-08T02:44:13Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}},{"id":11656898673,"name":"detection","digest":"sha256:a561a574ae8e37ae1929073845527efb2be6c45da1a4b0f1c408ba4eab4769fe","size_in_bytes":21998,"created_at":"2026-10-10T02:48:56Z","updated_at":"2026-10-10T02:48:56Z","expires_at":"2027-01-08T02:44:13Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}},{"id":11657156209,"name":"agent","digest":"sha256:3a8a0b6440bfe557588b30ad37b76dec1798531ad43cc8fe0c44e90f5ad5a2d4","size_in_bytes":2201123,"created_at":"2026-10-10T02:47:47Z","updated_at":"2026-10-10T02:47:47Z","expires_at":"2027-01-08T02:44:13Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}},{"id":11657410505,"name":"info","digest":"sha256:e7902061a46f7eb7d27d9dd38ccf9026ffa4a55f0c86e788d6d0374bd74f21f2","size_in_bytes":632,"created_at":"2026-10-10T02:44:24Z","updated_at":"2026-10-10T02:44:24Z","expires_at":"2027-01-08T02:44:13Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}},{"id":11657560510,"name":"activation","digest":"sha256:a6cf914a0cdef5b009e71e2403a45202853af221905ebe7776a015d253732e4d","size_in_bytes":1147877,"created_at":"2026-10-10T02:44:25Z","updated_at":"2026-10-10T02:44:25Z","expires_at":"2026-10-11T02:44:24Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}},{"id":11657685930,"name":"safe-outputs-items","digest":"sha256:46eac190846d28821169713bcfed4cb089dcd792003d07b108786142fbeda8c9","size_in_bytes":495,"created_at":"2026-10-10T02:49:11Z","updated_at":"2026-10-10T02:49:11Z","expires_at":"2027-01-08T02:44:13Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}},{"id":11657725741,"name":"agent-output-fallback","digest":"sha256:941127d655b47a3ca4614ea22f7467c012a0a0c7faa2e6e3521bf5bf8d2913c7","size_in_bytes":7958,"created_at":"2026-10-10T02:47:46Z","updated_at":"2026-10-10T02:47:46Z","expires_at":"2027-01-08T02:44:13Z","workflow_run":{"id":38018044654,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"}}]}}
+REVIEWER_RETENTION_HISTORICAL_PRE_MODEL = {"jobs":{"activation":113778697506,"agent":113778789435,"conclusion":113779278658,"detection":113778892780,"safe_outputs":113779083838},"model_executed":False,"observation_digest":"sha256:43d68a95239d4d28c896d44e9b2c7a5867b68f475784bf89ae2c2ab50f96941a","run_attempt":1,"run_id":37917962742,"safe_outputs_processed":False,"schema_version":"ai-sdlc.v03-reviewer-pre-model-failure/v1","semantic_safety_pass":False,"source_head_sha":"bd9228219310a8202bf47311e6adb8ea36d598bf"}
+REVIEWER_RETENTION_HISTORICAL_POST_MODEL = {"detector_timed_out":True,"failure_issue_number":580,"jobs":{"activation":113809299117,"agent":113809496837,"conclusion":113812648935,"detection":113810489745,"safe_outputs":113812650050},"model_executed":True,"observation_digest":"sha256:b359b25446ef5813fd6b3652d43bf66537c5ddaf65726805d31a07e262ce0acf","run_attempt":1,"run_id":37927328438,"safe_outputs_processed":False,"schema_version":"ai-sdlc.v03-reviewer-post-model-failure/v1","semantic_safety_pass":False,"source_head_sha":"193d96474529556cc0d805bb9be2b0a96909777b"}
+
+def _reviewer_retention_time(value):
+    from datetime import datetime, timezone
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        raise VerticalInvariantError("POLICY_DENIED", "retention observation time is not trusted UTC")
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def validate_reviewer_retention_observation(row):
+    fields = {"run_id", "archived_capture_digest", "source_upload_digest", "observed_at",
+              "activation_state", "current_artifacts"}
+    if not isinstance(row, dict) or set(row) != fields or type(row.get("run_id")) is not int:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed activation observation shape differs")
+    fixed = REVIEWER_ACTIVATION_RETENTION.get(str(row["run_id"]))
+    if fixed is None:
+        raise VerticalInvariantError("POLICY_DENIED", "unknown activation retention run")
+    archived = fixed["archived_artifacts"]
+    activation = next(item for item in archived if item["name"] == "activation")
+    if (row["archived_capture_digest"] != digest_json({"capture": REVIEWER_RETENTION_CAPTURE, "artifacts": archived})
+            or row["source_upload_digest"] != digest_json({key: fixed[key] for key in
+                ("run_id", "activation_job_id", "source_head_sha", "lock_path", "lock_blob", "upload_records")})):
+        raise VerticalInvariantError("POLICY_DENIED", "retention archived/source evidence differs")
+    now = _reviewer_retention_time(row["observed_at"])
+    expired_at = _reviewer_retention_time(activation["expires_at"])
+    current = row["current_artifacts"]
+    if (not isinstance(current, list) or len(current) not in {len(archived), len(archived)-1}
+            or any(not isinstance(item, dict) or type(item.get("id")) is not int for item in current)
+            or [item["id"] for item in current] != sorted({item["id"] for item in current})):
+        raise VerticalInvariantError("POLICY_DENIED", "current artifact inventory is not exact and unique")
+    indexed = {item["id"]: item for item in current}
+    for old in archived:
+        actual = indexed.pop(old["id"], None)
+        if old["id"] == activation["id"]:
+            if actual is None:
+                state = "absent"
+            else:
+                if type(actual.get("expired")) is not bool:
+                    raise VerticalInvariantError("POLICY_DENIED", "activation expiry flag is not genuine")
+                state = "expired_listed" if actual["expired"] else "present"
+                if canonical_json(actual) != canonical_json(dict(old, expired=actual["expired"])):
+                    raise VerticalInvariantError("POLICY_DENIED", "activation metadata changed")
+            if (state != row["activation_state"] or (state != "present" and now < expired_at)):
+                raise VerticalInvariantError("POLICY_DENIED", "activation disappeared before its fixed expiry")
+        elif canonical_json(actual) != canonical_json(dict(old, expired=False)):
+            raise VerticalInvariantError("POLICY_DENIED", "nonactivation artifact is missing, expired or changed")
+    if indexed:
+        raise VerticalInvariantError("POLICY_DENIED", "current artifact inventory has unknown additions")
+    return row
+
+
+def validate_reviewer_retention_proof(proof):
+    fields = {"schema_version", "admission", "historical_proofs", "retention_observations"}
+    if (not isinstance(proof, dict) or set(proof) != fields
+            or proof["schema_version"] != "ai-sdlc.v03-fixed-activation-retention/v1"
+            or proof["admission"] != REVIEWER_RETENTION_ADMISSION):
+        raise VerticalInvariantError("POLICY_DENIED", "retention predecessor proof shape differs")
+    historical = proof["historical_proofs"]
+    if (not isinstance(historical, dict) or set(historical) != {"pre_model", "post_model", "structured"}
+            or canonical_json(historical["pre_model"]) != canonical_json(REVIEWER_RETENTION_HISTORICAL_PRE_MODEL)
+            or canonical_json(historical["post_model"]) != canonical_json(REVIEWER_RETENTION_HISTORICAL_POST_MODEL)):
+        raise VerticalInvariantError("POLICY_DENIED", "immutable historical failure proof changed")
+    structured = historical["structured"]
+    fixed = {"schema_version": "ai-sdlc.v03-reviewer-structured-predecessor/v1",
+        "run_id": REVIEWER_STRUCTURED_PRIOR_RUN, "run_attempt": 1,
+        "source_head_sha": REVIEWER_STRUCTURED_PRIOR_SOURCE, "controller_run_id": 38017902256,
+        "comment_id": REVIEWER_STRUCTURED_PRIOR_COMMENT,
+        "body_sha256": REVIEWER_STRUCTURED_PRIOR_BODY_SHA256, "verdict_inventory": "REWORK", "adopted": False}
+    if (not isinstance(structured, dict) or set(structured) != set(fixed) | {"observation_digest"}
+            or any(canonical_json(structured.get(k)) != canonical_json(v) for k,v in fixed.items())
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(structured.get("observation_digest") or ""))):
+        raise VerticalInvariantError("POLICY_DENIED", "structured historical proof changed")
+    observations = proof["retention_observations"]
+    if (not isinstance(observations, list) or len(observations) != 3
+            or [row.get("run_id") for row in observations if isinstance(row, dict)]
+               != [37917962742, 37927328438, 38018044654]):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed activation observations are incomplete")
+    for row in observations:
+        validate_reviewer_retention_observation(row)
+    return proof
+
+
+def validate_reviewer_retention_relation(initial, current):
+    validate_reviewer_retention_proof(initial)
+    validate_reviewer_retention_proof(current)
+    if canonical_json(initial["historical_proofs"]) != canonical_json(current["historical_proofs"]):
+        raise VerticalInvariantError("POLICY_DENIED", "retention historical proof changed during replay")
+    rank = {"present": 0, "expired_listed": 1, "absent": 2}
+    for old, fresh in zip(initial["retention_observations"], current["retention_observations"]):
+        if (_reviewer_retention_time(fresh["observed_at"]) < _reviewer_retention_time(old["observed_at"])
+                or rank[fresh["activation_state"]] < rank[old["activation_state"]]):
+            raise VerticalInvariantError("POLICY_DENIED", "activation retention observation regressed or resurrected")
+    return current
