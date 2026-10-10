@@ -868,7 +868,7 @@ def _current_execution_fixture(scenario="happy_path"):
 def readiness_execution_binding_test() -> None:
     from dataclasses import replace
     from v03_dogfood_live_gate import (
-        ALLOWED_SCENARIOS, STRUCTURED_DOGFOOD_POLICY, STRUCTURED_DOGFOOD_WORKFLOWS,
+        ALLOWED_SCENARIOS, INLINE_DOGFOOD_POLICY, INLINE_DOGFOOD_WORKFLOWS,
         V03DogfoodLiveGateError, resolve_current_dogfood_bindings,
     )
     from v03_dogfood_runtime_preflight import V03DogfoodRuntimePreflightError
@@ -880,15 +880,15 @@ def readiness_execution_binding_test() -> None:
         for row in gate.bindings:
             role = row.role
             binding = bindings[role]
-            require(row.rule_id == STRUCTURED_DOGFOOD_POLICY
+            require(row.rule_id == INLINE_DOGFOOD_POLICY
                     and row.candidate_order == ("deepseek",)
                     and row.selected_profile == "deepseek" and row.fallback is False,
                     "current route was relabeled as a historical shared policy")
             require(binding == {
-                "worker_id": STRUCTURED_DOGFOOD_WORKFLOWS[role].removesuffix(".lock.yml"),
+                "worker_id": INLINE_DOGFOOD_WORKFLOWS[role].removesuffix(".lock.yml"),
                 "role": role, "profile": "deepseek",
-                "workflow_file": STRUCTURED_DOGFOOD_WORKFLOWS[role],
-                "selection_policy_id": STRUCTURED_DOGFOOD_POLICY, "default_branch": "main",
+                "workflow_file": INLINE_DOGFOOD_WORKFLOWS[role],
+                "selection_policy_id": INLINE_DOGFOOD_POLICY, "default_branch": "main",
                 "credential_name": "DEEPSEEK_API_KEY",
             }, "resolved current execution identity drifted for " + scenario + "/" + role)
             require(workflows.workflow_for(role) == row.worker_workflow,

@@ -532,7 +532,11 @@ def run_scenario(
 ) -> DogfoodScenarioObservation:
     scenario = preflight.slot.scenario
     from v03_dogfood_full_composition import REVIEWER_STRUCTURED_TERMINAL_PATH, reviewer_structured_terminal
+    from v03_dogfood_full_composition import REVIEWER_INLINE_TERMINAL_PATH, reviewer_inline_terminal
     current = preflight.composition.runtime.backend.read_snapshot()
+    if scenario == "happy_path" and REVIEWER_INLINE_TERMINAL_PATH in current.files:
+        reviewer_inline_terminal(current, consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        raise V03DogfoodScenarioRunnerError("inline Reviewer non-PASS is durably stopped")
     if scenario == "happy_path" and REVIEWER_STRUCTURED_TERMINAL_PATH in current.files:
         reviewer_structured_terminal(current, consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         raise V03DogfoodScenarioRunnerError("corrected Reviewer non-PASS is durably stopped")

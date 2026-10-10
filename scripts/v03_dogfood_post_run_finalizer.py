@@ -1117,7 +1117,22 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         route = _reviewer_route(preflight)
         from v03_dogfood_runtime_driver import _observe_reviewer_pre_model_failure, _observe_reviewer_post_model_failure
         from v03_dogfood_full_composition import REVIEWER_AUTH_PATH, REVIEWER_POST_MODEL_FAILED_RUN
-        if route["ordinal"] == 3:
+        if route["ordinal"] == 4:
+            from v03_dogfood_runtime_driver import observe_reviewer_inline_predecessor
+            from v03_dogfood_full_composition import (
+                REVIEWER_INLINE_PRIOR_RUN, REVIEWER_STRUCTURED_PRIOR_RUN,
+                REVIEWER_RETENTION_ADMISSION, validate_reviewer_inline_relation)
+            validate_reviewer_inline_relation(route["authorization"]["predecessor_proof"],
+                observe_reviewer_inline_predecessor(preflight))
+            evidence_uris.extend([route["authorization"]["admission"]["uri"],
+                REVIEWER_RETENTION_ADMISSION["uri"],
+                _run_uri(repository, REVIEWER_INLINE_PRIOR_RUN),
+                _run_uri(repository, REVIEWER_STRUCTURED_PRIOR_RUN),
+                f"https://github.com/{repository}/pull/552#issuecomment-6092979158",
+                _run_uri(repository, REVIEWER_POST_MODEL_FAILED_RUN),
+                f"https://github.com/{repository}/issues/580",
+                f"https://github.com/{repository}/issues/587"])
+        elif route["ordinal"] == 3:
             from v03_dogfood_runtime_driver import observe_reviewer_retention_predecessor
             from v03_dogfood_full_composition import (
                 REVIEWER_STRUCTURED_PRIOR_RUN, REVIEWER_RETENTION_ADMISSION, validate_reviewer_retention_relation)

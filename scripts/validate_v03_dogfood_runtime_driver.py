@@ -4008,10 +4008,10 @@ def assert_post_handoff_done_replay(preflight, *, adapter, feature_fixture, gate
     coordinator = preflight.composition.bundle.decision_notification_coordinator
     old_context = coordinator.trusted_context_digest
     coordinator.trusted_context_digest = "changed-current-context-on-replay"
-    before_notification = (runtime.backend.read_snapshot().ref_sha, runtime.backend.commit_count)
+    before_notification = (runtime.backend.read_snapshot().ref_sha, getattr(runtime.backend, "commit_count", None))
     try:
         runner._notify_completed(preflight, operation_id)
-        expect(before_notification == (runtime.backend.read_snapshot().ref_sha, runtime.backend.commit_count),
+        expect(before_notification == (runtime.backend.read_snapshot().ref_sha, getattr(runtime.backend, "commit_count", None)),
                "existing immutable Notification replay wrote Store under a changed context")
         replay = runner.run_scenario(preflight=preflight, host=host.host)
     finally:
@@ -4660,11 +4660,11 @@ def post_handoff_admission_tests():
            "reconciliation changed frozen events")
     expect(len(operation_events(current, composition.RECOVERY_OPERATION_ID)) == 16,
            "reconciliation did not append exactly one observation")
-    before = (current.ref_sha, canonical_json(current.files), runtime.backend.commit_count)
+    before = (current.ref_sha, canonical_json(current.files), getattr(runtime.backend, "commit_count", None))
     replay = reconcile_post_handoff(pf)
     expect(replay["acquired"] is False and before == (
         runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
-        runtime.backend.commit_count), "reconciliation replay mutated protected Store")
+        getattr(runtime.backend, "commit_count", None)), "reconciliation replay mutated protected Store")
     expect(not gates.state["inputs"] and provider.effect_counts() == {
         "developer_posts": 0, "created_prs": 0, "fixture_patches": 0},
         "reconciliation claim reached an external effect")
@@ -4813,7 +4813,7 @@ def post_handoff_read_only_discovery_tests():
     batches.append([status, dict(status, call_id="cancel-2", name="aisdlc_v1_operation_cancel")])
     for calls in batches:
         before = (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
-                  runtime.backend.commit_count)
+                  getattr(runtime.backend, "commit_count", None))
         def malicious_post(url, headers, body):
             expect([tool["name"] for tool in body["tools"]] == ["aisdlc_v1_operation_status"],
                    "reconciliation advertised writable discovery tools")
@@ -4827,7 +4827,7 @@ def post_handoff_read_only_discovery_tests():
         else:
             raise AssertionError("fixed discovery accepted unauthorized provider calls")
         expect(before == (runtime.backend.read_snapshot().ref_sha, canonical_json(runtime.backend.read_snapshot().files),
-                          runtime.backend.commit_count), "disallowed discovery reached adapter journal or Store")
+                          getattr(runtime.backend, "commit_count", None)), "disallowed discovery reached adapter journal or Store")
         expect(not gates.state["inputs"] and provider.effect_counts() ==
                {"developer_posts":0,"created_prs":0,"fixture_patches":0},
                "disallowed discovery reached downstream effects")
@@ -5055,8 +5055,19 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
             expected_guard_env.update({
                 "AGENT_RESULT": "${{ needs.agent.result }}",
                 "DETECTION_RESULT": "${{ needs.detection.result }}"})
-            expect(safe.get("data") is True,
-                   "selected structured Gate disabled native data ingestion")
+            native = safe.get("data")
+            expect(isinstance(native, dict) and native.get("type") == "object"
+                   and native.get("additionalProperties") is False
+                   and set(native.get("required", ())) == set(native.get("properties", {}))
+                   and native["properties"]["verdict"]["enum"] ==
+                       (["PASS", "REWORK", "BLOCKED"] if role == "reviewer" else ["PASS", "FAIL", "BLOCKED"])
+                   and '"$ref"' not in json.dumps(native),
+                   "selected inline Gate lacks closed complete native data schema")
+            tools_steps = [step for step in compiled["jobs"]["agent"]["steps"]
+                           if "GH_AW_TOOLS_META_JSON" in step.get("env", {})]
+            expect(len(tools_steps) == 1 and
+                   json.loads(tools_steps[0]["env"]["GH_AW_TOOLS_META_JSON"])["property_injections"]["add_comment"]["data"] == native,
+                   "selected inline compiler changed native producer schema")
             source_guards = [step for step in safe["steps"] if step.get("name") == guard["name"]]
             expect(len(source_guards) == 1 and guard["run"] == source_guards[0]["run"]
                    and source_guards[0]["env"] == expected_guard_env,
@@ -5085,8 +5096,8 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
     from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
     expected_files = {
         "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
-        "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
-        "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml",
+        "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml",
+        "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml",
     }
     presence = {name: False for name in credential_identities(load_registry())}
     presence["DEEPSEEK_API_KEY"] = True
@@ -5701,7 +5712,7 @@ def reviewer_runtime_fixture():
 
 
 def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, feature_fixture,
-                                       read_ref, effect_counts, adapter):
+                                       read_ref, effect_counts, adapter, memory_semantic_negatives=True):
     """Continue real scenario collection through Reviewer/QA and real finalizer.
 
     Call immediately after atomic reconciliation, before processing its new callback.
@@ -5730,7 +5741,7 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
     first_host = build_post_handoff_responses_host(
         preflight, adapter=adapter, expected_revision=feature_fixture.state["manifest"]["revision"],
         session_label="first-observation")
-    crash_expected = runtime.backend.fail_confirmation_once
+    crash_expected = getattr(runtime.backend, "fail_confirmation_once", False)
     try:
         first_trace, first_operation, first_status = runner._resume_post_handoff(preflight, first_host.host)
     except OSError as exc:
@@ -5777,17 +5788,18 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
     completed_notifications = [e for e in events if e["event_type"] == "notification.created"
                                and e["payload"].get("notification_type") == "operation.completed"]
     expect(len(completed_notifications) == 1, "completion replay duplicated standard Notification")
-    done_event = next(e for e in events if e["event_type"] == "operation.done")
-    original_done_id = done_event["event_id"]
-    done_event["event_id"] = "forged-done"
-    try:
-        runner._notify_completed(preflight, operation_id)
-    except (runner.V03DogfoodScenarioRunnerError, __import__("operator_store_model").StoreInvariantError):
-        pass
-    else:
-        raise AssertionError("completion Notification accepted a forged DONE identity")
-    finally:
-        done_event["event_id"] = original_done_id
+    if memory_semantic_negatives:
+        done_event = next(e for e in events if e["event_type"] == "operation.done")
+        original_done_id = done_event["event_id"]
+        done_event["event_id"] = "forged-done"
+        try:
+            runner._notify_completed(preflight, operation_id)
+        except (runner.V03DogfoodScenarioRunnerError, __import__("operator_store_model").StoreInvariantError):
+            pass
+        else:
+            raise AssertionError("completion Notification accepted a forged DONE identity")
+        finally:
+            done_event["event_id"] = original_done_id
 
     expect(events[:len(progressed_prefix)] == progressed_prefix,
            "fresh actual host rewrote or replayed the confirmed Developer prefix")
@@ -5863,33 +5875,34 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
         # Controller-generated stage-start Persist cycles are not arbitrary
         # extra Worker confirmations. Rehash a forged semantic change so the
         # finalizer must authenticate its exact trusted transition.
-        controller_rows = [row for row in events if row["event_type"] == "feature.event.translated"
-                           and not row["payload"].get("callback_id")]
-        expect(controller_rows, "full lifecycle omitted controller stage-start events")
-        changed = controller_rows[-1]
-        original_payload = deepcopy(changed["payload"])
-        for label in ("orphan-persist", "forged-stage-start"):
-            if label == "orphan-persist":
-                changed["payload"]["feature_event_id"] += "-UNBOUND"
-            else:
-                event_body = changed["payload"]["feature_event"]
-                stage_changes = [item for item in event_body["changes"] if item.get("kind") == "stage"]
-                expect(stage_changes, "controller event did not contain a stage transition")
-                stage_changes[0]["status"] = "DONE"
-                changed["payload"]["feature_event_digest"] = digest_json(event_body)
-            try:
-                finalize()
-            except (finalizer.V03DogfoodPostRunFinalizerError,
-                    provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
-                pass
-            except AssertionError as exc:
-                expect(str(exc).startswith("real dogfood happy_path: trusted provenance "),
-                       "controller-cycle negative failed outside finalizer: " + str(exc))
-            else:
-                raise AssertionError("finalizer accepted " + label)
-            finally:
-                changed["payload"] = deepcopy(original_payload)
-        expect(finalize()["verdict"] == "PASS", "restored controller lifecycle did not reverify")
+        if memory_semantic_negatives:
+            controller_rows = [row for row in events if row["event_type"] == "feature.event.translated"
+                               and not row["payload"].get("callback_id")]
+            expect(controller_rows, "full lifecycle omitted controller stage-start events")
+            changed = controller_rows[-1]
+            original_payload = deepcopy(changed["payload"])
+            for label in ("orphan-persist", "forged-stage-start"):
+                if label == "orphan-persist":
+                    changed["payload"]["feature_event_id"] += "-UNBOUND"
+                else:
+                    event_body = changed["payload"]["feature_event"]
+                    stage_changes = [item for item in event_body["changes"] if item.get("kind") == "stage"]
+                    expect(stage_changes, "controller event did not contain a stage transition")
+                    stage_changes[0]["status"] = "DONE"
+                    changed["payload"]["feature_event_digest"] = digest_json(event_body)
+                try:
+                    finalize()
+                except (finalizer.V03DogfoodPostRunFinalizerError,
+                        provenance.DogfoodProvenanceVerificationError, VerticalInvariantError, ValueError):
+                    pass
+                except AssertionError as exc:
+                    expect(str(exc).startswith("real dogfood happy_path: trusted provenance "),
+                           "controller-cycle negative failed outside finalizer: " + str(exc))
+                else:
+                    raise AssertionError("finalizer accepted " + label)
+                finally:
+                    changed["payload"] = deepcopy(original_payload)
+            expect(finalize()["verdict"] == "PASS", "restored controller lifecycle did not reverify")
         # Only the exact Developer may retain its archived execution source.
         for run in gate_fixture.state["runs"]:
             original = run["head_sha"]
@@ -5905,7 +5918,8 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
                        or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: VerticalInvariantError: " + (
                            "Reviewer replacement producer source differs" if run["path"].endswith(
                                ("ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml","ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml",
-                                "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml"))
+                                "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
+                                "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml"))
                            else "local Gate execution differs from current selected source"),
                        "source mutation failed outside trusted provenance: " + str(exc))
             else:
@@ -7288,7 +7302,7 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
     from operator_vertical_gh_aw_actions_transport import (
         GitHubActionsVerticalGhAwTransport, GitHubActionsWorkflowTransportConfig)
     import os
-    from validate_v03_gate_output_contract import verify_context_roundtrip
+    from validate_v03_gate_output_contract import verify_context_roundtrip, verify_joined_context_roundtrip
     from v03_dogfood_gate_output import validate_context
 
     repository = preflight.execution.repository
@@ -7349,11 +7363,33 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             task_payload = json.loads(inputs["task_payload"])
             context = task_payload["feature_context"]["gate_context"]
             validate_context(context)
-            publication = verify_context_roundtrip(
-                role, context, root=Path(__file__).resolve().parents[1],
+            from v03_dogfood_live_gate import INLINE_DOGFOOD_WORKFLOWS, INLINE_DOGFOOD_BLOBS, INLINE_GATE_HELPER_BLOB
+            inline = workflows.workflow_for(role) == INLINE_DOGFOOD_WORKFLOWS[role]
+            root = Path(__file__).resolve().parents[1]
+            if inline:
+                for file, expected_blob in (
+                    (root / ".github/workflows" / workflows.workflow_for(role), INLINE_DOGFOOD_BLOBS[workflows.workflow_for(role)]),
+                    (root / ".github/workflows" / workflows.workflow_for(role).replace(".lock.yml", ".md"),
+                     INLINE_DOGFOOD_BLOBS[workflows.workflow_for(role).replace(".lock.yml", ".md")]),
+                    (root / "scripts/v03_dogfood_gate_output.py", INLINE_GATE_HELPER_BLOB)):
+                    raw_source = file.read_bytes()
+                    expect(hashlib.sha1(b"blob " + str(len(raw_source)).encode() + b"\x00" + raw_source).hexdigest() == expected_blob,
+                           "joined Gate selected source/helper pin differs")
+                expect(source_sha == preflight.composition.policy_authority.installation_commit_sha,
+                       "joined Gate installation differs from selected source")
+            joined = bool(getattr(preflight, "joined_cli", False))
+            expect(not joined or inline, "joined CLI fixture selected a historical Worker")
+            roundtrip = verify_joined_context_roundtrip if joined else verify_context_roundtrip
+            extra = {} if joined else {"variant": "structured-inline-local" if inline else "structured-local"}
+            if joined:
+                preflight.joined_phase(role + "_cli_start")
+            publication = roundtrip(
+                role, context, root=root,
                 actions_root=Path(os.environ["GH_AW_ACTIONS_ROOT"]),
                 verdict=verdict, run_id=run_id, comment_id=comment_id,
-                workflow_sha=source_sha)
+                workflow_sha=source_sha, **extra)
+            if joined:
+                preflight.joined_phase(role + "_cli_ready")
             expect(publication["payload"]["task_id"] == task["id"]
                    and publication["payload"]["candidate_head_sha"] == read_ref(),
                    "actual structured publication escaped dispatched task/candidate")
@@ -7490,7 +7526,7 @@ def fixed_ordinal_two_detector_log_bytes():
                 raise AssertionError("fixed historical detector log cleanup failed") from None
 
 
-def reviewer_structured_runtime_fixture(*, verdict='PASS'):
+def _reviewer_structured_runtime_fixture(*, verdict='PASS'):
     import base64
     import json
     from copy import deepcopy
@@ -7666,6 +7702,234 @@ def reviewer_structured_runtime_fixture(*, verdict='PASS'):
         responses=responses, graph_before=graph_before, predecessor_events=predecessor_events,
         callback_coordinator=coordinator)
     attach_reviewer_retention_fixture(pf, provider)
+    return pf, provider, feature, gates, coordinator
+
+
+
+def reviewer_structured_runtime_fixture(*, verdict="PASS"):
+    """Replay historical ordinal3 selection; current inline selection is tested separately."""
+    from dataclasses import replace
+    from unittest.mock import patch
+    import v03_dogfood_live_gate as gate
+    import v03_dogfood_runtime_preflight as preflight
+    historical = tuple(replace(row, rule_id=gate.STRUCTURED_DOGFOOD_POLICY,
+                               worker_workflow=gate.STRUCTURED_DOGFOOD_WORKFLOWS[row.role])
+                       for row in gate.resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}))
+    with (patch.object(gate, "resolve_current_dogfood_bindings", return_value=historical),
+          patch.object(preflight, "dogfood_selection_for_scenario",
+                       return_value=(gate.STRUCTURED_DOGFOOD_POLICY, dict(gate.STRUCTURED_DOGFOOD_WORKFLOWS)))):
+        return _reviewer_structured_runtime_fixture(verdict=verdict)
+
+
+def reviewer_inline_runtime_fixture(*, verdict='PASS'):
+    import base64
+    import json
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from operator_store_model import StoreSnapshot, operation_events
+    from operator_store_git import MemoryStateRefBackend, CommitResult
+    from operator_store_backends import OperatorStoreRuntime
+    from operator_store_protection import PROTECTED, StaticProtectionVerifier
+    from operator_effect_rollout import ProtectedEffectLineageRolloutVerifier, EffectLineageWriteFence
+    from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_executor import TrustedVerticalExecutor, TrustedVerticalExecutorConfig
+    from operator_vertical_callback import TrustedVerticalCallbackCoordinator
+    from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig, ProductionGhAwVerticalResultCollector
+    from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
+    from operator_external_create_gateway import StoreBackedOneShotExternalCreateGateway
+    from v03_dogfood_fixture_pool import require_slot
+    import v03_dogfood_full_composition as composition
+    provider = reviewer_structured_frozen_provider_fixture(base64.b64decode(POST_HANDOFF_ARCHIVE_B64, validate=True))
+    import subprocess
+    import hashlib
+    from pathlib import Path
+    from urllib.parse import urlparse, parse_qs, unquote
+    attach_structured_predecessor_controller_fixture(provider, Path(__file__).resolve().parents[1])
+    old_provider_http = provider.http
+    original_detector_log = fixed_ordinal_two_detector_log_bytes()
+    def candidate_document_http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        if method == "GET" and parsed.path.endswith("/actions/jobs/113810489745/logs"):
+            return 200, {}, original_detector_log
+        prefix = "/repos/dream-xin/ai-sdlc/contents/"
+        if method == "GET" and parsed.path.lower().startswith(prefix) and parse_qs(parsed.query).get("ref") == [provider.read_ref()]:
+            path = unquote(parsed.path[len(prefix):])
+            documents = provider.immutable_candidate_documents
+            if path == "docs/features/" + "F-OPERATOR-V03-DOGFOOD-HAPPY-0001":
+                return 200, {}, json.dumps([{"type":"file","path":name,"sha":row["sha"],
+                    "size":len(row["text"].encode())} for name,row in documents.items()]).encode()
+            if path in documents:
+                row = documents[path]
+                raw = row["text"].encode()
+                return 200, {}, json.dumps({"type":"file","path":path,"sha":row["sha"],
+                    "encoding":"base64","content":base64.b64encode(raw).decode()}).encode()
+        return old_provider_http(method=method,url=url,token=token,body=body)
+    provider.http = candidate_document_http
+    root = Path(__file__).resolve().parents[1]
+    for path, blob in composition.REVIEWER_INLINE_PRIOR_BLOBS.items():
+        raw = subprocess.run(["git", "show", composition.REVIEWER_INLINE_STORE + ":" + path],
+            cwd=root, check=True, capture_output=True).stdout
+        expect(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() == blob,
+               "ordinal3 immutable fixture blob differs")
+        provider.snapshot.files[path] = json.loads(raw)
+    # Current provider availability starts at the genuine spent ordinal3 capture.
+    # Older immutable authorization bytes remain untouched; expired activation rows
+    # cannot reappear in a later ordinal4 observation.
+    prior_auth = provider.snapshot.files[composition.REVIEWER_STRUCTURED_AUTH_PATH]
+    captured = prior_auth["predecessor_proof"]["retention_observations"]
+    provider.inline_absent_activation_rows = {}
+    for name, run_id, missing_id in (
+        ("reviewer_observed", 37917962742, 11611241425),
+        ("reviewer_post_model_observed", 37927328438, 11614602643),
+    ):
+        observation = next(row for row in captured if row["run_id"] == run_id)
+        expect(observation["activation_state"] == "absent",
+               "spent ordinal3 capture no longer establishes activation absence")
+        listing = provider.state[name]["artifacts"]
+        removed = [row for row in listing["artifacts"] if row["id"] == missing_id]
+        expect(len(removed) == 1 and removed[0]["name"] == "activation",
+               "ordinal4 current inventory removal differs from fixed activation")
+        provider.inline_absent_activation_rows[name] = deepcopy(removed[0])
+        listing["artifacts"] = [row for row in listing["artifacts"] if row["id"] != missing_id]
+        listing["total_count"] = len(listing["artifacts"])
+        expect(sorted(row["id"] for row in listing["artifacts"]) ==
+               sorted(row["id"] for row in observation["current_artifacts"]),
+               "ordinal4 current inventory differs from genuine captured availability")
+    provider.snapshot = StoreSnapshot(composition.REVIEWER_INLINE_STORE, provider.snapshot.files)
+    files = provider.snapshot.files
+    for name in ("effect-lineage-rollout.json", "writer-fence-receipt.json", "effect-resolution-policy.json", "decision-policy.json"):
+        path = "config/operator/v03-vertical-policy/" + name
+        files[path] = json.loads(subprocess.run(["git", "show", composition.REVIEWER_STRUCTURED_STORE + ":" + path],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True).stdout)
+    policy_path = "config/operator/v03-vertical-policy/"
+    rollout_verifier = ProtectedEffectLineageRolloutVerifier(
+        policy_loader=lambda *_: deepcopy(files[policy_path + "effect-lineage-rollout.json"]),
+        writer_fence_receipt_loader=lambda *_: deepcopy(files[policy_path + "writer-fence-receipt.json"]))
+    rollout = rollout_verifier.verify(repository="dream-xin/ai-sdlc",
+        state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE)
+    resolution = ProtectedEffectResolutionPolicyVerifier(repository="dream-xin/ai-sdlc",
+        state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE,
+        policy_loader=lambda *_: deepcopy(files[policy_path + "effect-resolution-policy.json"]),
+        evidence_fact_loader=lambda *_: (_ for _ in ()).throw(AssertionError("unexpected resolution evidence")))
+    resolution.verify_current()
+    class Backend(MemoryStateRefBackend):
+        def __init__(self):
+            super().__init__(repository="dream-xin/ai-sdlc", state_ref="refs/heads/ai-sdlc-operator-state",
+                             snapshot=deepcopy(provider.snapshot))
+            self.commit_count = 0
+            self.fail_confirmation_once = False
+        def commit(self, plan, receipt):
+            if self.fail_confirmation_once and any(isinstance(m.value, dict)
+                    and m.value.get("event_type") == "persist.confirmed" for m in plan.mutations):
+                self.fail_confirmation_once = False
+                raise OSError("fixture crash before protected Persist confirmation")
+            try:
+                result = super().commit(plan, receipt)
+            except __import__("operator_store_git").CasConflict:
+                if self.snapshot.ref_sha.startswith("conflict-"):
+                    self.snapshot = StoreSnapshot(hashlib.sha1(self.snapshot.ref_sha.encode()).hexdigest(),
+                                                  self.snapshot.files)
+                raise
+            self.commit_count += 1
+            self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
+            return CommitResult(self.snapshot.ref_sha, self.read_snapshot(), result.result)
+    runtime = OperatorStoreRuntime(backend=Backend(), protection_verifier=StaticProtectionVerifier(status=PROTECTED),
+        plan_guard=EffectLineageWriteFence(rollout), clock=lambda: "2026-10-10T16:00:00Z")
+    from v03_dogfood_live_gate import resolve_current_dogfood_bindings
+    from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
+    gate = SimpleNamespace(scenario="happy_path", bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario="happy_path"))
+    workflows = _workflow_map(gate)
+    policy = recovery_policy_fixture()
+    provider.state["controller_source"] = policy.installation_commit_sha
+    source = composition.RecoverySafeOutputGhAwResultSource(
+        GitHubActionsGhAwResultSourceConfig(control_repository="dream-xin/ai-sdlc",
+            control_token="fixture", target_token="fixture", workflows=workflows,
+            collector_identity=composition.COLLECTOR_IDENTITY),
+        target_repository="dream-xin/ai-sdlc", http=provider.http)
+    pf = SimpleNamespace(slot=require_slot("happy_path"), workflows=workflows,
+        candidate_pr_number=552, candidate_head_sha=composition.REVIEWER_CANDIDATE,
+        execution=SimpleNamespace(repository="dream-xin/ai-sdlc", installation_commit_sha=policy.installation_commit_sha),
+        trusted_context_digest="6" * 64,
+        composition=SimpleNamespace(runtime=runtime, policy_authority=policy, recovery_result_source=source))
+    def get_json(url, headers):
+        status, _, raw = provider.http(method="GET", url=url, token="fixture")
+        return status, json.loads(raw)
+    candidate = composition.DogfoodGitHubCandidateProvider(slot=pf.slot, repository=pf.execution.repository,
+        token="fixture", http_get=get_json)
+    candidate.bind_runtime(runtime)
+    feature = build_reviewer_frozen_feature_fixture(pf, candidate, provider)
+    candidate.persist_gateway = feature.persist_gateway
+    pf.historical_gate_runs = [provider.state["reviewer_observed"]["run"], provider.state["observed"]["run"],
+        provider.state["reviewer_post_model_observed"]["run"], provider.original_structured_failure_run]
+    gates = build_structured_dogfood_gate_fixture(pf, read_ref=provider.read_ref, fallback_http=provider.http,
+        expected=(("reviewer", verdict), ("qa", "PASS")) if verdict == "PASS" else (("reviewer", verdict),))
+    bindings = _execution_bindings(gate, workflows)
+    dispatch = composition.DogfoodExecutionBoundDispatchGateway(
+        delegate=__import__("operator_vertical_gh_aw").GhAwVerticalRoleDispatchGateway(
+            transport=gates.transport, workflows=workflows), execution_bindings=bindings)
+    one_shot = StoreBackedOneShotExternalCreateGateway(runtime=runtime, delegate=dispatch,
+        trusted_context_digest=pf.trusted_context_digest, effect_lineage_required=True)
+    loader = composition.DogfoodRecoveryBoundContentLoader(
+        result_source=gates.result_source, recovery_result_source=source, policy_authority=policy)
+    loader.bind_runtime(runtime)
+    source.bind_post_handoff(runtime, policy)
+    builder = composition.DogfoodStructuredGateContextBuilder(runtime=runtime,
+        feature_gateway=feature.feature_gateway, persist_gateway=feature.persist_gateway,
+        content_loader=loader, candidate_provider=candidate, policy_authority=policy)
+    dispatch.delegate = composition.DogfoodCurrentStructuredDispatchGateway(
+        transport=gates.transport, workflows=workflows, context_builder=builder)
+    base = TrustedVerticalExecutor(runtime=runtime, feature_gateway=feature.feature_gateway,
+        persist_gateway=feature.persist_gateway, dispatch_gateway=one_shot,
+        config=TrustedVerticalExecutorConfig(target_ref=pf.slot.target_ref,
+            trusted_context_digest=pf.trusted_context_digest, effect_lineage_required=True,
+            old_writers_quiesced=True, rollout_policy_digest=rollout.policy_digest,
+            writer_fence_receipt_digest=rollout.writer_fence_receipt_digest, max_auto_steps=64),
+        resolution_policy_verifier=resolution)
+    from pathlib import Path
+    from operator_production_runtime import TrustedOperatorRuntimeConfig, TrustedFeatureBinding
+    from operator_decision_policy import ProtectedDecisionPolicyVerifier
+    from validate_v03_dogfood_runtime_composition import assemble_post_handoff_responses_graph, assert_post_handoff_authority_graph
+    config = TrustedOperatorRuntimeConfig(target_repository=pf.execution.repository,
+        store_repository=pf.execution.repository, installation_ref="main", store_checkout=Path("."),
+        principal="post-handoff-fixture",
+        feature_bindings=(TrustedFeatureBinding(pf.slot.feature_id, pf.slot.target_ref),))
+    decision = ProtectedDecisionPolicyVerifier(repository=config.store_repository, state_ref=config.state_ref,
+        operation_profile=VERTICAL_PROFILE,
+        policy_loader=lambda *_: deepcopy(files[policy_path + "decision-policy.json"]))
+    def reader_get(url, headers):
+        if "/contents/state/features/" in url:
+            return feature.http("GET", url.replace("https://api.github.com", "https://api.github.test"), headers, None)
+        return get_json(url, headers)
+    responses, graph_before = assemble_post_handoff_responses_graph(
+        runtime=runtime, base_executor=base, content_loader=loader, slot=pf.slot, config=config,
+        policy_authority=policy, decision_policy_verifier=decision,
+        trusted_role_policy="fixture-independent-role-policy", collector_namespace_policy="fixture-collector-namespace",
+        reader_http_get=reader_get)
+    executor = responses.operator_bundle.executor
+    delegate = responses.operator_bundle.callback_coordinator
+    predecessor_events = deepcopy(operation_events(runtime.backend.read_snapshot(), composition.RECOVERY_OPERATION_ID))
+    assert_post_handoff_authority_graph(graph_before, responses, policy, predecessor_events=predecessor_events[:15])
+    def forbidden_handoff_http(*args, **kwargs):
+        raise AssertionError("post-handoff reconciliation attempted another fixture PATCH")
+    handoff = composition.DogfoodCandidateHandoff(slot=pf.slot, repository=pf.execution.repository,
+        token="fixture", candidate_provider=candidate, http_request=forbidden_handoff_http)
+    handoff.content_loader = loader
+    coordinator = composition.DogfoodTrustedCallbackCoordinator(delegate=delegate, candidate_handoff=handoff)
+    collector = composition.DogfoodReviewerReplacementCollector(policy_authority=policy,callback_coordinator=coordinator,
+        result_source=gates.result_source, workflows=workflows, control_repository=pf.execution.repository,
+        clock=runtime.clock)
+    recovery_collector = composition.DogfoodRecoveryCollector(callback_coordinator=coordinator,
+        result_source=source, workflows=workflows, control_repository=pf.execution.repository,
+        clock=runtime.clock, policy_authority=policy)
+    pf.composition.__dict__.update(candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
+        result_source=gates.result_source, collector=collector, recovery_collector=recovery_collector,
+        actions_transport=gates.transport, dispatch_gateway=dispatch, bundle=responses.operator_bundle,
+        responses=responses, graph_before=graph_before, predecessor_events=predecessor_events,
+        callback_coordinator=coordinator)
+    attach_reviewer_retention_fixture(pf, provider)
+    attach_reviewer_inline_failure_fixture(pf, provider)
+    pf.historical_gate_runs.append(provider.inline_failure_observed["run"])
     return pf, provider, feature, gates, coordinator
 
 
@@ -8450,7 +8714,7 @@ def ordinary_structured_input_record_tests(template):
     dispatch, inputs = deepcopy(record["dispatch"]), deepcopy(record["dispatch_inputs"])
     def plan(snapshot):
         return composition.plan_structured_gate_inputs(snapshot, dispatch=deepcopy(dispatch),
-            inputs=deepcopy(inputs), consumer_binding=binding)
+            inputs=deepcopy(inputs), consumer_binding=binding, workflows=pf.workflows)
     first, second = plan(before), plan(before)
     expect(first == second and len(first.mutations) == 1 and first.mutations[0].path == path,
            "ordinary planner is not deterministic for one protected preclaim snapshot")
@@ -8465,7 +8729,7 @@ def ordinary_structured_input_record_tests(template):
         raise AssertionError("two ordinary input planners both won one CAS")
     committed = competing.read_snapshot()
     replay = composition.plan_structured_gate_inputs(committed, dispatch=deepcopy(dispatch),
-        inputs=None, consumer_binding=binding)
+        inputs=None, consumer_binding=binding, workflows=pf.workflows)
     expect(not replay.mutations and canonical_json(replay.result["record"]) == canonical_json(record),
            "existing ordinary record replay regenerated inputs")
     actual = backend.read_snapshot()
@@ -9160,7 +9424,198 @@ def reviewer_fixed_activation_retention_tests():
     print("- fixed activation expiry, immutable history, closed negatives and real one-use replay passed")
 
 
+def remote_snapshot_cache_tests():
+    """Real local Git reads retain fresh remote/CAS checks and isolate one SHA."""
+    import json
+    import os
+    import subprocess
+    import tempfile
+    import time
+    from collections import Counter
+    from copy import deepcopy
+    from pathlib import Path
+    from unittest.mock import patch
+    import validate_operator_store_runtime as legacy
+    from operator_store_git import CasConflict
+    from operator_store_runtime import TrustedOperatorStoreConfig, build_trusted_operator_store_runtime
+    from operator_store_remote_git import RemoteGitStateRefBackend
+
+    with tempfile.TemporaryDirectory(prefix="v03-snapshot-cache-") as directory:
+        root = Path(directory)
+        home = root / "home"
+        home.mkdir()
+        env = {"PATH": os.environ["PATH"], "HOME": str(home), "LANG": "C.UTF-8",
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+               "GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            remote, writer, reader = root / "remote.git", root / "writer", root / "reader"
+            legacy.git("init", "--bare", "-q", str(remote))
+            legacy.clone(remote, writer)
+            legacy.clone(remote, reader)
+            for checkout in (writer, reader):
+                legacy.git("config", "core.hooksPath", "/dev/null", cwd=checkout)
+            verifier = legacy.FixtureProductionVerifier()
+            runtime = build_trusted_operator_store_runtime(
+                TrustedOperatorStoreConfig(repository=legacy.REPO, trusted_checkout=writer),
+                protection_verifier=verifier)
+            receipt = verifier.verify(legacy.REPO, legacy.DEFAULT_OPERATOR_STATE_REF)
+            runtime.backend.commit(legacy.start_plan(
+                runtime.backend.read_snapshot(), "F-CACHE-LOCAL", "cache-start"), receipt)
+            ref = legacy.DEFAULT_OPERATOR_STATE_REF
+            prefix = "state/operator/v1/snapshot-cache-fixture/"
+            unicode_path, crlf_path = prefix + "unicode.json", prefix + "crlf.json"
+
+            def publish(changes):
+                """Fake external writer uses actual blobs/tree/commit and fast-forward push."""
+                head = legacy.git("rev-parse", ref, cwd=remote).stdout.strip()
+                legacy.git("fetch", "--no-tags", "origin", ref, cwd=writer)
+                legacy.git("read-tree", head, cwd=writer)
+                for path, raw in changes.items():
+                    expect(path.startswith(prefix) and isinstance(raw, bytes), "cache fixture path/data differs")
+                    result = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=writer,
+                        input=raw, capture_output=True, check=True, timeout=30)
+                    blob = result.stdout.decode("ascii").strip()
+                    legacy.git("update-index", "--add", "--cacheinfo", "100644," + blob + "," + path,
+                               cwd=writer)
+                tree = legacy.git("write-tree", cwd=writer).stdout.strip()
+                commit = subprocess.run(["git", "commit-tree", tree, "-p", head], cwd=writer,
+                    input=b"Offline immutable snapshot fixture\n", capture_output=True,
+                    check=True, timeout=30).stdout.decode("ascii").strip()
+                legacy.git("push", "origin", commit + ":" + ref, cwd=writer)
+                return commit
+
+            first_sha = publish({
+                unicode_path: json.dumps({"nested": {"values": ["测验", {"ok": True}]}},
+                                         ensure_ascii=False).encode("utf-8") + b"\n",
+                crlf_path: b'{\r\n  "nested": {"line": "one\\r\\ntwo", "number": 3}\r\n}\r\n',
+            })
+            backend = RemoteGitStateRefBackend(repo_path=reader, repository=legacy.REPO, state_ref=ref)
+            original_git = backend._git
+            counts = Counter()
+            fault = {"show": False, "race": False}
+            race_sha = []
+
+            def counted(*args, **kwargs):
+                command = str(args[0])
+                counts[command] += 1
+                if command == "fetch" and fault["race"]:
+                    fault["race"] = False
+                    race_sha.append(publish({prefix + "race.json": b'{"race":"new-head"}\n'}))
+                if command == "show" and fault["show"]:
+                    fault["show"] = False
+                    raise subprocess.CalledProcessError(1, ["git", "show"])
+                return original_git(*args, **kwargs)
+
+            def oracle(sha):
+                paths = legacy.git("ls-tree", "-r", "--name-only", sha, "--",
+                                   "state/operator/v1", cwd=reader).stdout.splitlines()
+                return {path: json.loads(legacy.git("show", sha + ":" + path, cwd=reader).stdout)
+                        for path in paths if path.endswith(".json")}
+
+            metrics = {}
+            def measured(label):
+                counts.clear()
+                started = time.monotonic()
+                value = backend.read_snapshot()
+                metrics[label] = {"seconds": round(time.monotonic() - started, 6),
+                                  "commands": dict(sorted(counts.items()))}
+                return value
+
+            with patch.object(backend, "_git", side_effect=counted):
+                first = measured("first")
+                expected = oracle(first_sha)
+                expect(first.ref_sha == first_sha and first.files == expected,
+                       "cached acquisition differs from original per-file oracle")
+                expect(counts["show"] == len(expected) and counts["ls-tree"] == 1,
+                       "first exact SHA did not fully parse actual Git contents")
+                first.files[unicode_path]["nested"]["values"][1]["ok"] = False
+                second = measured("same_sha")
+                expect(second.ref_sha == first_sha and second.files == expected,
+                       "first returned snapshot mutated cached bytes")
+                expect(counts["show"] == 0 and counts["ls-tree"] == 0
+                       and counts["ls-remote"] == counts["fetch"] == counts["rev-parse"] == 1,
+                       "same SHA cache bypassed freshness or repeated per-file reads")
+                second.files[unicode_path]["nested"]["values"].append("caller-only")
+                third = measured("same_sha_after_mutation")
+                expect(third.files == expected and counts["show"] == 0,
+                       "cache-hit return leaked a mutable nested alias")
+
+                new_sha = publish({prefix + "new.json": b'{"new":{"consumed":true}}\n'})
+                newer = measured("new_sha")
+                newer_expected = oracle(new_sha)
+                expect(newer.ref_sha == new_sha and newer.files == newer_expected
+                       and counts["show"] == len(newer_expected),
+                       "new remote SHA reused stale snapshot or skipped complete parsing")
+                counts.clear()
+                historical = backend._snapshot_for_sha(first_sha)
+                expect(historical.files == expected and counts["show"] == len(expected),
+                       "snapshot cache retained more than the single most recent SHA")
+                measured("new_sha_after_eviction")
+                expect(counts["show"] == len(newer_expected),
+                       "single-entry cache did not reload the current SHA after eviction")
+
+                # A failed acquisition cannot become a cache entry.
+                bad_sha = publish({prefix + "invalid.json": b'{"unfinished":'})
+                for _ in range(2):
+                    counts.clear()
+                    try:
+                        backend.read_snapshot()
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        raise AssertionError("malformed JSON became a successful snapshot")
+                    expect(counts["show"] > 0, "malformed snapshot was cached or stale cache returned")
+                repaired_sha = publish({prefix + "invalid.json": b'{"repaired":true}\n'})
+                fault["show"] = True
+                try:
+                    backend.read_snapshot()
+                except subprocess.CalledProcessError:
+                    pass
+                else:
+                    raise AssertionError("failed Git content acquisition was hidden")
+                repaired = measured("repaired_after_failure")
+                expect(repaired.ref_sha == repaired_sha and repaired.files == oracle(repaired_sha)
+                       and counts["show"] == len(repaired.files),
+                       "partial failed acquisition polluted the next complete snapshot")
+
+                # Existing cached SHA still cannot bypass fresh remote availability.
+                hidden = root / "unavailable.git"
+                remote.rename(hidden)
+                try:
+                    try:
+                        backend.read_snapshot()
+                    except CasConflict:
+                        pass
+                    else:
+                        raise AssertionError("cache bypassed unavailable remote authority")
+                finally:
+                    hidden.rename(remote)
+
+                # Advance the genuine remote between ls-remote and fetch.
+                fault["race"] = True
+                counts.clear()
+                try:
+                    backend.read_snapshot()
+                except CasConflict:
+                    pass
+                else:
+                    raise AssertionError("cache bypassed current remote/fetch SHA race")
+                expect(len(race_sha) == 1 and counts["show"] == 0,
+                       "race fixture did not reject before content/cache acquisition")
+                raced = measured("after_ref_race")
+                expect(raced.ref_sha == race_sha[0] and raced.files == oracle(race_sha[0])
+                       and counts["show"] == len(raced.files),
+                       "fresh read after ref race did not acquire the real new SHA")
+            print("remote_snapshot_cache_metrics=" + json.dumps(metrics, sort_keys=True), flush=True)
+    print("- exact-SHA snapshot equivalence, isolation, failure and fresh-ref checks passed", flush=True)
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--group", choices=("joined", "cache"))
+    selection.add_argument("--exclude-group", choices=("joined", "cache"), action="append", default=[])
+    args = parser.parse_args()
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
             require_mode(mode=VALIDATE_ONLY, scenario=scenario, event_name="pull_request", ref="refs/pull/348/merge")
@@ -9196,6 +9651,11 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("exact-SHA remote snapshot cache", remote_snapshot_cache_tests),
+        ("inline selected factory joined CLI lifecycle", reviewer_inline_joined_factory_tests),
+        ("inline Reviewer frozen CAS", reviewer_inline_admission_tests),
+        ("inline Reviewer non-PASS terminal", reviewer_inline_terminal_tests),
+        ("inline Reviewer full lifecycle", reviewer_inline_full_pipeline_tests),
         ("fixed activation retention history", reviewer_fixed_activation_retention_tests),
         ("fixed activation retention CAS loser", reviewer_retention_cas_loser_test),
         ("corrected Reviewer frozen CAS", reviewer_structured_admission_tests),
@@ -9235,6 +9695,16 @@ def main():
         ("post-handoff provider-applied confirmation crash", lambda: post_handoff_full_pipeline_tests(crash_before_confirmation=True)),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
+    named_groups = {
+        "joined": "inline selected factory joined CLI lifecycle",
+        "cache": "exact-SHA remote snapshot cache",
+    }
+    if args.group:
+        groups = tuple(row for row in groups if row[0] == named_groups[args.group])
+        expect(len(groups) == 1, "selected regression group must be exact")
+    elif args.exclude_group:
+        excluded = {named_groups[name] for name in args.exclude_group}
+        groups = tuple(row for row in groups if row[0] not in excluded)
     for name, execute in groups:
         try:
             execute()
@@ -9244,6 +9714,10 @@ def main():
             traceback.print_exc()
     if failures:
         raise AssertionError("v0.3 regression groups failed: " + ", ".join(failures))
+
+    if args.group:
+        print("- selected " + args.group + " regression group passed")
+        return
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
@@ -9365,6 +9839,551 @@ def reviewer_retention_cas_loser_test():
            "retention CAS loser replaced winner's immutable initial observation")
     print("- real retention CAS loser validates winner observation before lookup/POST")
 
+
+
+def attach_reviewer_inline_failure_fixture(preflight, provider):
+    """Fresh provider projections captured from the real spent ordinal3 run; no output is seeded."""
+    import base64
+    import hashlib
+    import json
+    import subprocess
+    from copy import deepcopy
+    from pathlib import Path
+    from urllib.parse import urlparse, parse_qs, unquote
+    import v03_dogfood_full_composition as c
+    observed = {
+        "run": deepcopy(c.INLINE_FAILURE_RUN),
+        "jobs": {"total_count": len(c.INLINE_FAILURE_JOBS), "jobs": deepcopy(c.INLINE_FAILURE_JOBS)},
+        "artifacts": {"total_count": len(c.INLINE_FAILURE_ARTIFACTS),
+                      "artifacts": [{**deepcopy(row), "expired": False} for row in c.INLINE_FAILURE_ARTIFACTS]},
+        "agent_log": "\n".join(c.INLINE_FAILURE_SCHEMA_LINES) + "\n",
+        "activation_log": "\n".join(c.INLINE_FAILURE_UPLOAD_LINES) + "\n",
+        "issue": {"id":5792293545,"number":587,"html_url":"https://github.com/DREAM-XIN/ai-sdlc/issues/587","user":{"login":"github-actions[bot]","type":"Bot","id":41898282},"body":"**Run:** https://github.com/DREAM-XIN/ai-sdlc/actions/runs/38060547019\n<!-- gh-aw-failure-issue: true, workflow_id: ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local, branch: main, failure_categories: agent_failure -->"},
+        "sources": {},
+    }
+    for path, expected_blob in c.INLINE_FAILURE_SOURCE_BLOBS.items():
+        raw = subprocess.run(["git", "show", c.REVIEWER_INLINE_PRIOR_SOURCE + ":" + path],
+            cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True).stdout
+        expect(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() == expected_blob,
+               "spent ordinal3 source fixture differs")
+        observed["sources"][path] = {"type": "file", "path": path, "sha": expected_blob,
+            "encoding": "base64", "content": base64.b64encode(raw).decode()}
+    previous = preflight.composition.actions_transport.http
+    def http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        path = parsed.path
+        if method == "GET":
+            if path.endswith("/issues/587"):
+                return 200, {}, json.dumps(observed["issue"]).encode()
+            run_base = "/actions/runs/" + str(c.REVIEWER_INLINE_PRIOR_RUN)
+            if path.endswith(run_base):
+                return 200, {}, json.dumps(observed["run"]).encode()
+            if path.endswith(run_base + "/jobs") or path.endswith(run_base + "/attempts/1/jobs"):
+                return 200, {}, json.dumps(observed["jobs"]).encode()
+            if path.endswith(run_base + "/artifacts"):
+                return 200, {}, json.dumps(observed["artifacts"]).encode()
+            if path.endswith("/actions/jobs/114237830276/logs"):
+                return 200, {}, observed["agent_log"].encode()
+            if path.endswith("/actions/jobs/114237755668/logs"):
+                return 200, {}, observed["activation_log"].encode()
+            prefix = "/repos/dream-xin/ai-sdlc/contents/"
+            if (path.lower().startswith(prefix) and
+                    parse_qs(parsed.query).get("ref") == [c.REVIEWER_INLINE_PRIOR_SOURCE]):
+                name = unquote(path[len(prefix):])
+                if name in observed["sources"]:
+                    return 200, {}, json.dumps(observed["sources"][name]).encode()
+        return previous(method=method, url=url, token=token, body=body)
+    preflight.composition.actions_transport.http = http
+    provider.inline_failure_observed = observed
+
+
+def reviewer_inline_admission_tests():
+    import json
+    from copy import deepcopy
+    from operator_store_git import CasConflict
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical import VerticalInvariantError
+    from operator_store import StoreCommandError
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    errors=(VerticalInvariantError,StoreCommandError,d.V03DogfoodRuntimeDriverError,
+            d.V03DogfoodScenarioRunnerError,c.V03DogfoodCompositionError,ValueError)
+    def reject(pf,provider,feature,gates,label):
+        runtime=pf.composition.runtime
+        before=(canonical_json(runtime.backend.snapshot.files),runtime.backend.commit_count,
+                len(gates.state["posts"]),feature.state["puts"],provider.effect_counts())
+        try: d.recover_reviewer_inline(pf)
+        except errors: pass
+        else: raise AssertionError("corrected Reviewer accepted "+label)
+        expect(before==(canonical_json(runtime.backend.snapshot.files),runtime.backend.commit_count,
+                len(gates.state["posts"]),feature.state["puts"],provider.effect_counts()),
+               "corrected Reviewer rejected after effects: "+label)
+    for name in ("reviewer_observed", "reviewer_post_model_observed"):
+        pf, p, feature, gates, _ = reviewer_inline_runtime_fixture()
+        listing = p.state[name]["artifacts"]
+        listing["artifacts"].append(deepcopy(p.inline_absent_activation_rows[name]))
+        listing["total_count"] = len(listing["artifacts"])
+        reject(pf, p, feature, gates, "spent ordinal3 absent activation resurrected")
+    for path in c.REVIEWER_INLINE_PATHS:
+        for value in (None,{},[]):
+            pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+            pf.composition.runtime.backend.snapshot.files[path]=value
+            reject(pf,p,feature,gates,"partial/null sidecar")
+    for mutate in (
+        lambda p:p.state["reviewer_structured_observed"]["run"].update(run_attempt=2),
+        lambda p:p.state["reviewer_structured_observed"]["comment"].update(body="changed"),
+        lambda p:p.state["reviewer_structured_observed"]["comment"].update(updated_at="2099-01-01T00:00:00Z"),
+        lambda p:p.state.update(head="9"*40),
+        lambda p:p.state.update(controller_source="9"*40)):
+        pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+        mutate(p);reject(pf,p,feature,gates,"historical identity/content/candidate/source drift")
+    for label, mutate in (
+        ("spent ordinal3 attempt", lambda p: p.inline_failure_observed["run"].update(run_attempt=2)),
+        ("spent ordinal3 active", lambda p: p.inline_failure_observed["run"].update(status="in_progress")),
+        ("spent ordinal3 source", lambda p: p.inline_failure_observed["run"].update(head_sha="9"*40)),
+        ("spent ordinal3 schema error", lambda p: p.inline_failure_observed.update(agent_log="missing")),
+        ("spent ordinal3 publication job", lambda p: next(j for j in p.inline_failure_observed["jobs"]["jobs"] if j["name"]=="safe_outputs").update(conclusion="success")),
+        ("spent ordinal3 missing diagnostic", lambda p: p.inline_failure_observed["artifacts"]["artifacts"].pop()),
+        ("spent ordinal3 issue author", lambda p: p.inline_failure_observed["issue"]["user"].update(id=1)),
+    ):
+        pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+        mutate(p)
+        reject(pf,p,feature,gates,label)
+    for path in c.REVIEWER_INLINE_PRIOR_BLOBS:
+        pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+        pf.composition.runtime.backend.snapshot.files[path]["ordinal"] = 99
+        reject(pf,p,feature,gates,"spent ordinal3 immutable document")
+    pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+    unchanged_http = pf.composition.actions_transport.http
+    def changed_older_log(*, method, url, token, body=None):
+        status, headers, raw = unchanged_http(method=method, url=url, token=token, body=body)
+        if method == "GET" and "/actions/jobs/113810489745/logs" in url:
+            return status, headers, raw + b"\n"
+        return status, headers, raw
+    pf.composition.actions_transport.http = changed_older_log
+    reject(pf,p,feature,gates,"older spent Reviewer proof digest drift")
+    pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+    runtime=pf.composition.runtime
+    original=deepcopy(runtime.backend.read_snapshot())
+    binding=c.recovery_execution_binding(pf.composition.policy_authority)
+    proof=d.observe_reviewer_inline_predecessor(pf)
+    auth=c.reviewer_inline_authorization(original,consumer_binding=binding,predecessor_proof=proof)
+    gateway=pf.composition.dispatch_gateway.delegate
+    context=gateway.context_builder.build_prospective_reviewer(auth)
+    inputs=__import__("operator_vertical_gh_aw").GhAwVerticalRoleDispatchGateway._inputs(gateway,c.reviewer_dispatch(auth))
+    payload=json.loads(inputs["task_payload"]);payload["feature_context"]["gate_context"]=context
+    inputs["task_payload"]=canonical_json(payload)
+    def plan(snapshot):
+        return c.plan_reviewer_inline_replacement(snapshot,consumer_binding=binding,
+            predecessor_proof=proof,dispatch_inputs=inputs)
+    first,second=plan(original),plan(original)
+    runtime.backend.commit(first,runtime.protected_receipt())
+    try: runtime.backend.commit(second,runtime.protected_receipt())
+    except CasConflict: pass
+    else: raise AssertionError("two corrected Reviewer claim winners")
+    expect(plan(runtime.backend.read_snapshot()).result["acquired"] is False,"CAS loser acquired another Reviewer")
+    reject(pf,p,feature,gates,"consumed claim without run")
+    expect(operation_events(runtime.backend.snapshot,c.RECOVERY_OPERATION_ID)==p.frozen_events,
+           "claim changed original journal")
+
+    pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+    pf.composition.runtime.backend.inject_conflict_once()
+    result=d.recover_reviewer_inline(pf)
+    snap=pf.composition.runtime.backend.read_snapshot()
+    auth,claim=c.validate_reviewer_inline_authorization(snap)
+    expect(len(gates.state["posts"])==1 and result["sealed"]["recommendation"]=="PASS"
+           and gates.state["inputs"][0]==claim["dispatch_inputs"]
+           and claim["preclaim_store_commit"]!=snap.ref_sha,
+           "corrected Reviewer did not POST exact frozen preclaim bytes once")
+    before=(pf.composition.runtime.backend.commit_count,len(gates.state["posts"]),feature.state["puts"])
+    d.recover_reviewer_inline(pf)
+    expect(before==(pf.composition.runtime.backend.commit_count,len(gates.state["posts"]),feature.state["puts"]),
+           "corrected Reviewer replay wrote or relaunched")
+    for bad in (True,"1",2):
+        snap.files[c.REVIEWER_INLINE_SEAL_PATH]["run_attempt"]=bad
+        try:c.reviewer_replacement_route(snap)
+        except VerticalInvariantError:pass
+        else:raise AssertionError("corrected seal accepted malformed attempt")
+        snap.files[c.REVIEWER_INLINE_SEAL_PATH]["run_attempt"]=1
+
+    for invalid in (True, "1", 2):
+        gates.state["runs"][0]["run_attempt"] = invalid
+        reject(pf,p,feature,gates,"new malformed/repeated attempt")
+    gates.state["runs"][0]["run_attempt"] = 1
+    gates.state["runs"][0]["conclusion"] = "failure"
+    reject(pf,p,feature,gates,"new run lost terminal success")
+    pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+    original_http=gates.transport.http
+    lost={"once":True}
+    def lost_ack(**kwargs):
+        reply=original_http(**kwargs)
+        if kwargs["method"]=="POST" and lost["once"]:
+            lost["once"]=False
+            raise OSError("fixture lost corrected Reviewer acknowledgement")
+        return reply
+    gates.transport.http=lost_ack
+    d.recover_reviewer_inline(pf)
+    expect(len(gates.state["posts"])==1,"corrected Reviewer lost acknowledgement retried POST")
+    print("- fixed corrected Reviewer CAS, frozen payload and lookup-only replay passed")
+
+
+def reviewer_inline_terminal_tests():
+    import json
+    from copy import deepcopy
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical import VerticalInvariantError
+    from operator_vertical_store import vertical_projection
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    import v03_dogfood_scenario_runner as runner
+    for verdict in ("REWORK","BLOCKED"):
+        pf,p,feature,gates,_=reviewer_inline_runtime_fixture(verdict=verdict)
+        runtime=pf.composition.runtime
+        historical=bytes(p.original_structured_failure_body_bytes)
+        effects=deepcopy(p.effect_counts())
+        result=d.recover_reviewer_inline(pf)
+        expect(result["terminal"]["outcome"]==verdict and len(gates.state["posts"])==1,
+               "non-PASS recommendation was changed or relaunched")
+        rows=operation_events(runtime.backend.snapshot,c.RECOVERY_OPERATION_ID)
+        expect(rows[:30]==p.frozen_events and len(rows)==31 and rows[-1]["event_type"]=="operation.needs-user"
+               and vertical_projection(runtime.backend.snapshot,c.RECOVERY_OPERATION_ID)["status"]=="NEEDS_USER"
+               and feature.state["puts"]==0 and p.effect_counts()==effects,
+               "non-PASS created callback/Persist/Developer/QA effects")
+        expect(p.state["reviewer_structured_observed"]["comment"]["body"].encode()==historical,
+               "original REWORK was rewritten")
+        before=(canonical_json(runtime.backend.snapshot.files),len(gates.state["posts"]))
+        d.recover_reviewer_inline(pf)
+        expect(before==(canonical_json(runtime.backend.snapshot.files),len(gates.state["posts"])),
+               "non-PASS replay changed terminal history")
+        try:pf.composition.collector.handle(operation_id=c.RECOVERY_OPERATION_ID,external_dispatch_key=c.REVIEWER_OLD_KEY)
+        except VerticalInvariantError:pass
+        else:raise AssertionError("non-PASS entered ordinary remediation callback")
+        for role in ("developer","qa"):
+            auth,_=c.validate_reviewer_inline_authorization(runtime.backend.snapshot)
+            dispatch=c.reviewer_dispatch(auth);dispatch["role"]=role
+            try:pf.composition.dispatch_gateway.launch(dispatch=dispatch)
+            except VerticalInvariantError:pass
+            else:raise AssertionError("terminal recommendation allowed "+role)
+        expect(feature.state["puts"]==0 and len(gates.state["posts"])==1 and p.effect_counts()==effects,
+               "terminal negative reached a follow-on effect")
+    print("- authentic corrected REWORK/BLOCKED stop atomically without lifecycle acceptance")
+
+
+def reviewer_inline_full_pipeline_tests():
+    from copy import deepcopy
+    from operator_store_model import operation_events, canonical_json
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
+    original=deepcopy(pf.composition.runtime.backend.snapshot.files)
+    old_body=bytes(p.original_structured_failure_body_bytes)
+    d.recover_reviewer_inline(pf)
+    record=finish_reviewer_replacement_pipeline_tests(pf,gate_fixture=gates,feature_fixture=feature,
+        read_ref=p.read_ref,effect_counts=p.effect_counts,adapter=pf.composition.responses.adapter)
+    expect(record["verdict"]=="PASS" and len(gates.state["roundtrips"])==2
+           and [r["role"] for r in gates.state["inputs"]]==["reviewer","qa"],
+           "actual structured PASS did not reach ordinary QA/finalizer")
+    expect("https://github.com/dream-xin/ai-sdlc/pull/552#issuecomment-6092979158"
+           in {uri.lower() for uri in record["evidence_uris"]},"finalizer omitted original REWORK")
+    snapshot=pf.composition.runtime.backend.read_snapshot()
+    qa_input = gates.state["inputs"][1]
+    input_path = c.structured_gate_input_path(c.RECOVERY_OPERATION_ID, qa_input["dispatch_key"])
+    document = snapshot.files[input_path]
+    saved_document = deepcopy(document)
+    document["source_blobs"] = c.structured_gate_source_blobs()
+    document["admission"] = c.STRUCTURED_INPUT_RECORD_ADMISSION
+    binding = c.recovery_execution_binding(pf.composition.policy_authority)
+    c.validate_structured_gate_input_record(snapshot, operation_id=c.RECOVERY_OPERATION_ID,
+        external_dispatch_key=qa_input["dispatch_key"], consumer_binding=binding)
+    from operator_vertical import VerticalInvariantError
+    uri = gates.result_source._reviewer_proofs[gates.state["runs"][1]["id"]]["trusted_uri"]
+    try:
+        for call in (
+            lambda: gates.result_source._structured_inputs(c.RECOVERY_OPERATION_ID,
+                qa_input["dispatch_key"], c.INLINE_GATE_WORKFLOWS["qa"]),
+            lambda: gates.result_source.load_content(uri)):
+            try:
+                call()
+            except VerticalInvariantError as exc:
+                expect("source family" in str(exc), "family mismatch rejected at an unrelated fence")
+            else:
+                raise AssertionError("inline collector accepted a valid historical-family context record")
+    finally:
+        document.clear()
+        document.update(saved_document)
+    expect(canonical_json(pf.composition.runtime.backend.read_snapshot().get(input_path)) == canonical_json(saved_document),
+           "source-family negative did not restore protected fixture bytes")
+    gates.result_source.load_content(uri)
+    for path,raw in p.historical_reviewer_sidecar_raw_files.items():
+        expect((canonical_json(snapshot.get(path))+"\n").encode()==raw,"corrected route rewrote old sidecar")
+    expect(operation_events(snapshot,c.RECOVERY_OPERATION_ID)[:30]==p.frozen_events
+           and p.state["reviewer_structured_observed"]["comment"]["body"].encode()==old_body,
+           "corrected route rewrote original history/REWORK")
+    print("- actual corrected structured Reviewer/Persist/QA/Notification/finalizer passed")
+
+
+
+
+
+def actual_factory_joined_fixture(seed):
+    """Context manager: real top-level factory and RemoteGit over local Git only.
+
+    The seed supplies historical data and existing fake external REST providers.
+    No executor, runtime, planner, bridge, collector, or backend method is replaced.
+    """
+    from contextlib import contextmanager
+    @contextmanager
+    def run():
+        import os
+        import socket
+        import subprocess
+        import tempfile
+        import json
+        from pathlib import Path
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from operator_store_model import canonical_json
+        from operator_store_remote_git import RemoteGitStateRefBackend
+        from operator_store_github_protection import GitHubBranchProtectionVerifier
+        from operator_production_runtime import TrustedOperatorRuntimeConfig, TrustedFeatureBinding
+        from operator_openai_responses import ADAPTER_ID
+        from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
+        from v03_dogfood_live_gate import resolve_current_dogfood_bindings
+        import v03_dogfood_full_composition as composition
+
+        pf, provider, feature, gates, _old_coordinator = seed
+        phase = getattr(pf, "joined_phase", lambda _: None)
+        old = pf.composition
+        snapshot = old.runtime.backend.read_snapshot()
+        expect(not gates.state["posts"] and feature.state["puts"] == 0,
+               "actual factory fixture must be installed before tested effects")
+        # Materialize the current synthetic installation through the real policy producer.
+        policy_files, _unused_memory_loader = ordinary_rereview_policy_fixture(pf)
+        seed_files = deepcopy(snapshot.files)
+        seed_files.update(deepcopy(policy_files))
+        clock = old.runtime.clock
+        api_http = old.actions_transport.http
+        gate = SimpleNamespace(scenario=pf.slot.scenario,
+            bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=pf.slot.scenario))
+        workflows = _workflow_map(gate)
+        expect(workflows == pf.workflows, "actual selector differs from joined seed")
+        bindings = _execution_bindings(gate, workflows)
+        with tempfile.TemporaryDirectory(prefix="v03-real-factory-") as directory:
+            root = Path(directory)
+            remote, checkout, home = root / "store.git", root / "checkout", root / "home"
+            home.mkdir()
+            env = {"PATH": os.environ["PATH"], "HOME": str(home), "LANG": "C.UTF-8",
+                   "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                   "GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0",
+                   "GIT_AUTHOR_NAME": "Offline Store fixture", "GIT_COMMITTER_NAME": "Offline Store fixture",
+                   "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+                   "GH_AW_ACTIONS_ROOT": os.environ["GH_AW_ACTIONS_ROOT"],
+                   "V03_SCHEMA_CLI_ROOT": os.environ["V03_SCHEMA_CLI_ROOT"]}
+            def git(*args, cwd=root):
+                result = subprocess.run(["git", *map(str, args)], cwd=cwd, env=env,
+                                        capture_output=True, text=True, timeout=30)
+                expect(result.returncode == 0, "isolated Store Git command failed: " + str(args[0]))
+                return result.stdout.strip()
+            phase("git_materialize_start")
+            git("init", "--bare", remote)
+            git("init", checkout)
+            git("config", "core.hooksPath", "/dev/null", cwd=checkout)
+            git("remote", "add", "origin", remote, cwd=checkout)
+            state_ref = "refs/heads/ai-sdlc-operator-state"
+            git("symbolic-ref", "HEAD", state_ref, cwd=checkout)
+            for name, value in seed_files.items():
+                path = Path(name)
+                expect(not path.is_absolute() and ".." not in path.parts and
+                       (name.startswith("state/operator/v1/") or name.startswith("config/operator/")),
+                       "historical fixture path escaped local checkout")
+                target = checkout / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(canonical_json(value) + "\n")
+            git("add", ".", cwd=checkout)
+            git("commit", "-m", "Seed immutable historical Store fixture", cwd=checkout)
+            git("push", "origin", "HEAD:" + state_ref, cwd=checkout)
+            expect(Path(git("remote", "get-url", "origin", cwd=checkout)).resolve() == remote.resolve(),
+                   "test Store remote is not the private local bare repository")
+            phase("git_materialize_ready")
+            # The policy receipt names no self-referential commit. Its exact commit
+            # anchor becomes known only after the real local Git materialization.
+            from operator_vertical import VERTICAL_PROFILE
+            from operator_vertical_policy_state import ProtectedVerticalPolicyBundleLoader
+            materialization_sha = git("rev-parse", "HEAD", cwd=checkout)
+            repository = pf.execution.repository.lower()
+            installation_sha = pf.execution.installation_commit_sha
+            def exact_policy(sha, path):
+                expect(sha == materialization_sha and path in policy_files,
+                       "joined exact policy read escaped materialization")
+                return json.loads(git("show", sha + ":" + path, cwd=remote))
+            def current_policy(repo, ref, path):
+                expect(repo == repository and ref == state_ref and path in policy_files,
+                       "joined current policy read escaped protected namespace")
+                current_sha = git("rev-parse", state_ref, cwd=remote)
+                return json.loads(git("show", current_sha + ":" + path, cwd=remote))
+            def materialization_authority(repo, ref, sha):
+                if (repo, ref, sha) != (repository, state_ref, materialization_sha):
+                    return False
+                current_sha = git("rev-parse", state_ref, cwd=remote)
+                git("merge-base", "--is-ancestor", sha, current_sha, cwd=remote)
+                return True
+            phase("policy_load_start")
+            policy = ProtectedVerticalPolicyBundleLoader(
+                repository=repository, installation_commit_sha=installation_sha,
+                materialization_commit_sha=materialization_sha, state_ref=state_ref,
+                operation_profile=VERTICAL_PROFILE,
+                receipt_path="config/operator/v03-vertical-policy/bundle-receipt.json",
+                document_loader=exact_policy, protected_document_loader=current_policy,
+                # Installation identity is the same explicit fake provider boundary
+                # as the authenticated source routes; Store materialization is real Git.
+                installation_commit_verifier=lambda repo, sha: (
+                    repo == repository and sha == installation_sha),
+                materialization_commit_verifier=materialization_authority,
+            ).load()
+            expect(policy.materialization_commit_sha == materialization_sha and all(
+                exact_policy(materialization_sha, path) == value
+                and current_policy(repository, state_ref, path) == value
+                for path, value in policy_files.items()),
+                "joined real policy materialization differs")
+            phase("policy_load_ready")
+            def protection_get(url, headers):
+                expect(url == "https://api.github.com/repos/dream-xin/ai-sdlc/branches/"
+                       "ai-sdlc-operator-state/protection", "protection read escaped fixture")
+                return 200, {"allow_force_pushes": {"enabled": False},
+                             "allow_deletions": {"enabled": False},
+                             "restrictions": {"apps": [{"slug": "offline-fixture-operator"}]}}
+            protection = GitHubBranchProtectionVerifier(token="synthetic-protection",
+                operator_app_slug="offline-fixture-operator", http_get=protection_get, clock=clock)
+            config = TrustedOperatorRuntimeConfig(
+                target_repository=pf.execution.repository, store_repository=pf.execution.repository,
+                installation_ref="main", store_checkout=checkout, principal="joined-factory-fixture",
+                feature_bindings=(TrustedFeatureBinding(pf.slot.feature_id, pf.slot.target_ref),))
+            def no_network(*args, **kwargs):
+                raise AssertionError("joined factory attempted external network I/O")
+            with patch.dict(os.environ, env, clear=True), patch.object(socket, "create_connection", no_network):
+                phase("factory_construct_start")
+                actual = composition.build_v03_dogfood_full_composition(
+                    slot=pf.slot, config=config, adapter_id=ADAPTER_ID,
+                    target_read_token="synthetic-read", actions_token="synthetic-actions",
+                    event_write_token="synthetic-event", control_repository=pf.execution.repository,
+                    workflows=workflows, execution_bindings=bindings, protection_verifier=protection,
+                    policy_authority=policy, trusted_context_digest=pf.trusted_context_digest,
+                    collector_namespace_policy="fixture-collector-namespace",
+                    trusted_role_policy="fixture-independent-role-policy", clock=clock,
+                    persist_poll_attempts=3, persist_poll_seconds=0)
+                phase("factory_construct_ready")
+                expect(type(actual.runtime.backend) is RemoteGitStateRefBackend,
+                       "joined fixture bypassed actual RemoteGit backend")
+                phase("factory_snapshot_start")
+                materialized = actual.runtime.backend.read_snapshot()
+                phase("factory_snapshot_ready")
+                expected_files = {name: value for name, value in snapshot.files.items()
+                                  if name.startswith("state/operator/v1/")}
+                expect(materialized.files == expected_files and len(materialized.ref_sha) == 40,
+                       "local materialization changed historical Store records")
+                def get_json(url, headers):
+                    if "/contents/state/features/" in url:
+                        return feature.http("GET", url.replace("https://api.github.com",
+                                                              "https://api.github.test"), headers, None)
+                    status, _, raw = api_http(method="GET", url=url, token="synthetic-read")
+                    return status, json.loads(raw)
+                def event_http(method, url, headers, body):
+                    return feature.http(method, url.replace("https://api.github.com",
+                                                          "https://api.github.test"), headers, body)
+                actual.feature_event_gateway.transport.http_request = event_http
+                actual.feature_event_gateway.transport.sleeper = lambda _: None
+                actual.candidate_provider.http_get = get_json
+                actual.actions_transport.http = api_http
+                actual.actions_transport.sleeper = lambda _: None
+                actual.result_source.http = api_http
+                actual.recovery_result_source.http = api_http
+                actual.recovery_dispatch_gateway.transport.http = api_http
+                actual.recovery_dispatch_gateway.transport.sleeper = lambda _: None
+                reader = actual.responses.backends["feature.status"].reader
+                reader.http_get = get_json
+                actual.collector.callback_coordinator.candidate_handoff.http_request = (
+                    lambda *args, **kwargs: (_ for _ in ()).throw(
+                        AssertionError("fixed Reviewer continuation attempted another candidate PATCH")))
+                builder = actual.dispatch_gateway.delegate.context_builder
+                executor = actual.bundle.executor
+                expect(builder.runtime is actual.runtime and
+                       builder.feature_gateway is executor.feature_gateway.delegate and
+                       builder.persist_gateway is executor.persist_gateway.delegate and
+                       builder.content_loader is actual.collector.callback_coordinator.content_loader and
+                       actual.result_source.reviewer_runtime is actual.runtime and
+                       actual.responses.runtime is actual.bundle.runtime is actual.runtime,
+                       "actual joined factory split its bridges/authority")
+                pf.composition = actual
+                actual_feature = SimpleNamespace(
+                    **{key: value for key, value in vars(feature).items()
+                       if key not in {"feature_gateway", "persist_gateway", "event_gateway"}},
+                    feature_gateway=executor.feature_gateway.delegate,
+                    persist_gateway=executor.persist_gateway.delegate,
+                    event_gateway=actual.feature_event_gateway)
+                gates.transport = actual.actions_transport
+                gates.result_source = actual.result_source
+                yield pf, provider, actual_feature, gates, actual.collector.callback_coordinator
+                expect(Path(git("remote", "get-url", "origin", cwd=checkout)).resolve() == remote.resolve(),
+                       "joined runtime changed its local Store remote")
+    return run()
+
+def reviewer_inline_joined_factory_tests():
+    """One connected production factory -> CLI ledger -> collector -> Persist/QA proof."""
+    from copy import deepcopy
+    from operator_store_model import canonical_json, operation_events
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    import faulthandler
+    import time
+    started = time.monotonic()
+    stages = {"seed_start", "seed_ready", "git_materialize_start", "git_materialize_ready",
+              "policy_load_start", "policy_load_ready", "factory_construct_start",
+              "factory_construct_ready", "factory_snapshot_start", "factory_snapshot_ready",
+              "factory_ready", "recover_start", "recover_ready", "lifecycle_start",
+              "lifecycle_ready", "reviewer_cli_start", "reviewer_cli_ready",
+              "qa_cli_start", "qa_cli_ready"}
+    def phase(stage):
+        expect(stage in stages, "joined diagnostic stage is not fixed")
+        print("joined_stage=" + stage + " elapsed_seconds=" +
+              str(round(time.monotonic() - started, 3)), flush=True)
+    # Bounded by the unchanged 15-minute hosted job; traceback contains no locals.
+    faulthandler.dump_traceback_later(120, repeat=True)
+    try:
+        phase("seed_start")
+        seed = reviewer_inline_runtime_fixture()
+        phase("seed_ready")
+        seed[0].joined_phase = phase
+        seed[0].joined_cli = True
+        with actual_factory_joined_fixture(seed) as (pf, provider, feature, gates, _):
+            phase("factory_ready")
+            before = deepcopy(pf.composition.runtime.backend.read_snapshot())
+            original_effects = deepcopy(provider.effect_counts())
+            phase("recover_start")
+            d.recover_reviewer_inline(pf)
+            phase("recover_ready")
+            phase("lifecycle_start")
+            record = finish_reviewer_replacement_pipeline_tests(
+                pf, gate_fixture=gates, feature_fixture=feature, read_ref=provider.read_ref,
+                effect_counts=provider.effect_counts, adapter=pf.composition.responses.adapter,
+                memory_semantic_negatives=False)
+            phase("lifecycle_ready")
+            current = pf.composition.runtime.backend.read_snapshot()
+            expect(record["verdict"] == "PASS" and len(gates.state["roundtrips"]) == 2
+                   and [row["role"] for row in gates.state["inputs"]] == ["reviewer", "qa"],
+                   "joined actual factory failed the Reviewer/Persist/QA path")
+            for row in gates.state["roundtrips"]:
+                expect(row.get("cli_evidence"), "joined publication lacks actual CLI evidence")
+            for path in (*c.REVIEWER_STRUCTURED_PATHS[:2],):
+                expect(canonical_json(current.get(path)) == canonical_json(before.get(path)),
+                       "joined inline route changed spent ordinal3 history")
+            expect(operation_events(current, c.RECOVERY_OPERATION_ID)[:30] ==
+                   operation_events(before, c.RECOVERY_OPERATION_ID)[:30]
+                   and provider.effect_counts() == original_effects,
+                   "joined inline route changed history or created Developer/candidate effects")
+        print("- actual selected production factory, isolated CLI ledger and collector full lifecycle passed")
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 if __name__ == "__main__":
     main()

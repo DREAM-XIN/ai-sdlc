@@ -504,8 +504,8 @@ def sanitizer_closure_tests(actions_root, temporary):
     core.write_bytes(core.read_bytes() + b"\n// synthetic transitive tamper\n")
     reject(lambda: subject._official_sanitizer(copied),
            "changed transitive sanitizer dependency")
-def _roundtrip(official, payload, context, role):
-    raw = raw_item(payload)
+def _roundtrip(official, payload, context, role, *, raw_ledger=None):
+    raw = raw_item(payload) if raw_ledger is None else raw_ledger
     collected = official.ingest(raw)
     ingested = json.loads(collected)
     check(not ingested["errors"] and len(ingested["items"]) == 1, "official ingestion failed")
@@ -533,18 +533,23 @@ def _roundtrip(official, payload, context, role):
 
 def verify_context_roundtrip(role, context, *, root, actions_root,
                              verdict="PASS", run_id=9001, comment_id=9002,
-                             workflow_sha="e" * 40):
+                             workflow_sha="e" * 40, variant="structured-local"):
     """Carry an actual producer-built context through the official output boundary."""
     check(Path(root).resolve() == ROOT, "roundtrip repository root differs")
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
-    payload = role_payload(role, verdict)
+    check(variant in {"structured-local", "structured-inline-local"}, "roundtrip variant differs")
+    payload = (inline_payload(role, verdict) if variant == "structured-inline-local"
+               else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
         payload[key] = context["identity"][key]
     payload["evidence"][0]["uri"] = (
         "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"]))
-    _, config, validation, metadata = selected_config(role, payload["candidate_pr_number"])
+    if role == "qa" and variant == "structured-inline-local":
+        payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
+    _, config, validation, metadata = selected_config(
+        role, payload["candidate_pr_number"], variant=variant)
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
@@ -554,6 +559,145 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
             "metadata_suffix": publication["suffix"]}
+
+def verify_joined_context_roundtrip(role, context, *, root, actions_root,
+                                    verdict="PASS", run_id=9001, comment_id=9002,
+                                    workflow_sha="e" * 40):
+    """Synthetic recommendation through actual CLI/MCP bytes and official publication.
+
+    The caller must supply the context frozen by its real production dispatch
+    planner. Detection success is synthetic here; scan-byte identity is real.
+    """
+    import base64
+    check(Path(root).resolve() == ROOT, "joined repository root differs")
+    subject.validate_context(context)
+    check(context["identity"]["role"] == role, "joined context role differs")
+    original = canonical(context)
+    payload = inline_payload(role, verdict)
+    for key in subject.PAYLOAD_IDENTITY_KEYS:
+        payload[key] = context["identity"][key]
+    uri = "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"])
+    payload["evidence"][0]["uri"] = uri
+    if role == "qa":
+        payload["coverage"][0]["evidence"] = uri
+    subject.validate_payload(payload, context, role)
+    lock, config, validation, metadata = selected_config(
+        role, payload["candidate_pr_number"], variant="structured-inline-local")
+    compiled_contract(lock)
+    actions = resolve_actions_root(actions_root).resolve(strict=True)
+    cli_root = Path(os.environ["V03_SCHEMA_CLI_ROOT"]).resolve(strict=True)
+    check((cli_root / "copilot").is_file(), "joined pinned CLI package absent")
+    image = ("ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:"
+             "2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2")
+    with tempfile.TemporaryDirectory(prefix="v03-joined-gate-") as name:
+        temporary = Path(name)
+        (temporary / "home").mkdir()
+        (temporary / "actions").mkdir()
+        (temporary / "copilot").mkdir()
+        (temporary / "capture.mjs").write_text(SCHEMA_CAPTURE_NODE)
+        row = {"label": role + "-joined", "legacy": False, "joined": True,
+               "config": config, "meta": compiled_tools_metadata(lock, payload["candidate_pr_number"]),
+               "observed_projection": OBSERVED_CLI_PROJECTION[role], "payload": payload}
+        (temporary / "cases.json").write_bytes(canonical([row]))
+        container = "v03-joined-" + temporary.name
+        env = {"PATH": os.environ["PATH"], "HOME": str(temporary / "home")}
+        command = ["docker", "run", "--rm", "--init", "--pull=never", "--name", container,
+                   "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                   "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--workdir", "/tmp",
+                   "--tmpfs", f"/tmp:rw,nosuid,nodev,exec,uid={os.getuid()},gid={os.getgid()},mode=700",
+                   "--mount", f"type=bind,src={temporary},dst=/inputs,readonly",
+                   "--mount", f"type=bind,src={actions},dst=/inputs/actions,readonly",
+                   "--mount", f"type=bind,src={cli_root},dst=/inputs/copilot,readonly",
+                   "--entrypoint", "node", image,
+                   "/inputs/capture.mjs", "/inputs/actions", "/inputs/copilot/copilot", "/inputs/cases.json"]
+        try:
+            completed = subprocess.run(command, env=env, cwd=temporary,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=110)
+        finally:
+            subprocess.run(["docker", "rm", "-f", container], env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        check(len(completed.stdout) <= 262144 and len(completed.stderr) <= 1048576,
+              "joined CLI diagnostics exceeded bound")
+        check(completed.returncode == 0, "joined actual CLI/MCP execution failed")
+        lines = completed.stdout.splitlines()
+        check(len(lines) == 1, "joined CLI result count differs")
+        result = json.loads(lines[0])
+        check(result["status"] == "PASS" and result["provider_requests"] == 2 and
+              result["tool_calls"] == 1 and result["linked_feedback"] is True and
+              result["cli_exit"] == 0, "joined CLI tool/completion contract failed")
+        raw = base64.b64decode(result["raw_ndjson_base64"], validate=True)
+        check(0 < len(raw) <= subject.MAX_OUTPUT_BYTES and
+              hashlib.sha256(raw).hexdigest() == result["raw_ndjson_sha256"],
+              "joined MCP ledger bytes changed")
+        rows = [line for line in raw.splitlines() if line.strip()]
+        check(len(rows) == 1 and subject.strict_json(rows[0])["data"] == payload,
+              "joined MCP result differs from dispatched identity/recommendation")
+        official_dir = temporary / "official"
+        official_dir.mkdir()
+        official = Official(actions, official_dir, config, validation, metadata,
+                            run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
+        returned_raw, collected, artifact, proof, publication, body = _roundtrip(
+            official, payload, context, role, raw_ledger=raw)
+        check(returned_raw == raw and proof["raw_ndjson_sha256"] == result["raw_ndjson_sha256"],
+              "official boundary substituted genuine MCP ledger")
+    check(canonical(context) == original, "joined test mutated authenticated context")
+    return {"payload": payload, "raw_ndjson": raw, "collected": collected,
+            "artifact": artifact, "proof": proof, "published_body": publication["body"],
+            "metadata_suffix": publication["suffix"],
+            "cli_evidence": {"provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
+                             "raw_ndjson_sha256": result["raw_ndjson_sha256"],
+                             "threat_verdict": "synthetic-offline-only"}}
+
+
+def temporary_id_contract_tests(role, actions_root, temporary):
+    _, config, validation, metadata = selected_config(role, variant="structured-inline-local")
+    directory = temporary / (role + "-temporary-id")
+    directory.mkdir()
+    official = Official(actions_root, directory, config, validation, metadata)
+    payload = inline_payload(role, "PASS")
+    context = fixture_context(payload)
+    item = json.loads(raw_item(payload))
+    item["temporary_id"] = "aw_gate_001"
+    raw = packed(item) + b"\n"
+    collected = official.ingest(raw)
+    raw_seen, _, artifact, proof, publication, body = _roundtrip(
+        official, payload, context, role, raw_ledger=raw)
+    check(raw_seen == raw and json.loads(artifact)["items"][0]["temporary_id"] == item["temporary_id"],
+          "official temporary_id lost before independent scan")
+    check(publication["body"] == body + "\n\n" + publication["suffix"],
+          "official temporary_id altered Gate body")
+    sanitize = lambda value: official.call({"mode": "sanitize", "body": value})["body"]
+    for value in (None, "", 123, True, "aw_ab", "aw_" + "a" * 13, "#aw_valid", "aw_bad-dash"):
+        changed = {**item, "temporary_id": value}
+        changed_raw = packed(changed) + b"\n"
+        reject(lambda changed_raw=changed_raw: subject.render_gate_output(
+            changed_raw, collected, context, role, sanitize=sanitize), "malformed raw temporary_id")
+        changed_artifact = json.loads(artifact)
+        changed_artifact["items"][0]["temporary_id"] = value
+        encoded = canonical(changed_artifact)
+        reject(lambda encoded=encoded: subject.validate_scanned_output(
+            encoded, proof, context, role, scanned_sha256=hashlib.sha256(encoded).hexdigest()),
+            "malformed scanned temporary_id")
+    for mode in ("changed", "removed"):
+        altered = json.loads(collected)
+        if mode == "changed":
+            altered["items"][0]["temporary_id"] = "aw_other001"
+        else:
+            altered["items"][0].pop("temporary_id")
+        reject(lambda altered=altered: subject.render_gate_output(
+            raw, packed(altered), context, role, sanitize=sanitize), "ingested temporary_id " + mode)
+    no_id_raw = raw_item(payload)
+    reject(lambda: subject.render_gate_output(no_id_raw, collected, context, role, sanitize=sanitize),
+           "ingestion injected temporary_id")
+    extra = {**item, "unexpected_metadata": "forbidden"}
+    reject(lambda: subject.render_gate_output(packed(extra), collected, context, role, sanitize=sanitize),
+           "temporary_id allowance widened raw keys")
+    drift = json.loads(artifact)
+    drift["items"][0]["temporary_id"] = "aw_other001"
+    reject(lambda: subject.validate_scanned_output(canonical(drift), proof, context, role,
+        scanned_sha256=hashlib.sha256(artifact).hexdigest()), "postscan temporary_id mutation")
+    print(role + ": official temporary_id retained with strict shape and scan identity")
+
 
 def exercise_role(role, actions_root, temporary, *, variant="structured-local"):
     lock, config, validation, metadata = selected_config(role, variant=variant)
@@ -845,6 +989,31 @@ function stopResponse(res,request) {
    content:"Schema capture complete."},finish_reason:"stop"}]}));
  }
 }
+
+function toolCallResponse(res,request,name,args) {
+ const tool={id:"offline-gate-call-1",type:"function",function:{name,arguments:JSON.stringify(args)}};
+ const base={id:"offline-gate-recommendation",object:"chat.completion",created:1,model:"deepseek-chat"};
+ if(request.stream) {
+  res.writeHead(200,{"Content-Type":"text/event-stream"});
+  res.write("data: "+JSON.stringify({...base,object:"chat.completion.chunk",
+   choices:[{index:0,delta:{role:"assistant",tool_calls:[{index:0,...tool}]},finish_reason:null}]})+"\n\n");
+  res.write("data: "+JSON.stringify({...base,object:"chat.completion.chunk",
+   choices:[{index:0,delta:{},finish_reason:"tool_calls"}]})+"\n\n");
+  res.end("data: [DONE]\n\n");
+ } else {
+  res.writeHead(200,{"Content-Type":"application/json"});
+  res.end(JSON.stringify({...base,choices:[{index:0,message:{role:"assistant",content:null,
+   tool_calls:[tool]},finish_reason:"tool_calls"}]}));
+ }
+}
+function successfulFeedback(value, temporaryId) {
+ if(typeof value==="string") {try{return successfulFeedback(JSON.parse(value),temporaryId);}catch{return false;}}
+ if(!value||typeof value!=="object")return false;
+ if(value.isError===true)return false;
+ if(value.result==="success"&&value.temporary_id===temporaryId)return true;
+ return Object.values(value).some(v=>successfulFeedback(v,temporaryId));
+}
+
 async function capture(row,index) {
  const root="/tmp/schema-capture/case-"+index;
  fs.mkdirSync(root,{recursive:true});
@@ -874,7 +1043,7 @@ async function capture(row,index) {
  const generatedTools=JSON.parse(fs.readFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_PATH));
  const generatedData=generatedTools.find(t=>t.name==="add_comment").inputSchema.properties.data;
  check(canonical(schema.properties.data)===canonical(generatedData),"MCP_DATA_DRIFT");
- let captured=null, fault=null, posts=0;
+ let captured=null, fault=null, posts=0, linkedFeedback=false;
  const server=http.createServer((req,res)=>{
   if(req.method==="GET" && /\/models$/.test(req.url)){
    res.writeHead(200,{"Content-Type":"application/json"});
@@ -886,7 +1055,7 @@ async function capture(row,index) {
    try {
     check(req.method==="POST" && /\/chat\/completions$/.test(req.url),"PROVIDER_ROUTE");
     const request=JSON.parse(raw); check(request.model==="deepseek-chat","MODEL_ROUTE");
-    check(++posts<=3,"REQUEST_COUNT");
+    check(++posts<=(row.joined?2:3),"REQUEST_COUNT");
     const requestTools=(request.tools||[]).map(t=>t.function||t);
     if(!row.legacy)check(requestTools.every(t=>t.parameters && badRefs(t.parameters).length===0),
       "CLI_ALL_REFERENCE_CLOSURE");
@@ -905,6 +1074,26 @@ async function capture(row,index) {
     const current={schema_sha256:digest(parameters),data_sha256:digest(parameters.properties.data)};
     if(captured)check(canonical(captured)===canonical(current),"CLI_SCHEMA_CHANGED");
     captured=current;
+    if(row.joined && posts===1) {
+     check(row.payload && row.payload.candidate_pr_number===Number(row.config.add_comment.target),
+       "JOINED_DISPATCH_TARGET");
+     toolCallResponse(res,request,matches[0].name,{body:"AI-SDLC structured Gate recommendation.",
+       item_number:row.payload.candidate_pr_number,data:row.payload});
+     return;
+    }
+    if(row.joined) {
+     check(fs.existsSync(output)&&fs.statSync(output).size<=131072,"JOINED_LEDGER_MISSING");
+     const lines=fs.readFileSync(output,"utf8").trim().split("\n");
+     check(lines.length===1,"JOINED_LEDGER_COUNT");
+     const entry=JSON.parse(lines[0]);
+     check(entry.type==="add_comment"&&entry.body==="AI-SDLC structured Gate recommendation."&&
+       entry.item_number===row.payload.candidate_pr_number&&canonical(entry.data)===canonical(row.payload),
+       "JOINED_LEDGER_DRIFT");
+     const feedback=(request.messages||[]).filter(m=>m.role==="tool"&&m.tool_call_id==="offline-gate-call-1");
+     check(feedback.length===1&&successfulFeedback(feedback[0].content,entry.temporary_id),
+       "JOINED_TOOL_FEEDBACK");
+     linkedFeedback=true;
+    }
     stopResponse(res,request);
    } catch(error) {
     fault=/^[A-Z_]+$/.test(error.message)?error.message:"PROVIDER_PARSE";
@@ -922,9 +1111,17 @@ async function capture(row,index) {
   COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:"+server.address().port};
  try {
   const code=await run(cli,["--model","deepseek-chat","--disable-builtin-mcps","--no-ask-user",
-   "--allow-tool","safeoutputs","--prompt","Return a short completion. Do not call any tools."],cliEnv,root);
+   "--allow-tool","safeoutputs","--prompt",row.joined ? "Record the supplied synthetic Gate recommendation once using add_comment, then finish." : "Return a short completion. Do not call any tools."],cliEnv,root);
   check(!fault,fault||"CAPTURE_FAILED");check(captured,"NO_PROVIDER_CAPTURE");
   check(code===0,"CLI_EXIT");
+  if(row.joined) {
+   check(posts===2&&linkedFeedback,"JOINED_COMPLETION");
+   const raw=fs.readFileSync(output);
+   return {case:row.label,status:"PASS",scope:"synthetic recommendation; genuine CLI/MCP ledger",
+    provider_requests:posts,tool_calls:1,linked_feedback:true,cli_exit:code,
+    raw_ndjson_base64:raw.toString("base64"),
+    raw_ndjson_sha256:crypto.createHash("sha256").update(raw).digest("hex"),...captured};
+  }
   check(!fs.existsSync(output)||fs.statSync(output).size===0,"UNEXPECTED_TOOL_EFFECT");
   return {case:row.label,status:"PASS",scope:"exact observed CLI data projection and all tool reference closure; trusted helper retains constraints",provider_requests:posts,local_reference_closure:!row.legacy,
           expected_legacy_rejection:row.legacy,...captured};
@@ -949,7 +1146,8 @@ async function main() {
   encoding:"utf8",timeout:15000});
  check(version.status===0&&/\b1\.0\.90\b/.test(version.stdout),"CLI_VERSION");
  const cases=JSON.parse(fs.readFileSync(casesFile));
- check(cases.length===3&&cases[0].legacy===true&&cases.slice(1).every(c=>c.legacy===false),"CASE_MATRIX");
+ check((cases.length===3&&cases[0].legacy===true&&cases.slice(1).every(c=>c.legacy===false&&!c.joined)) ||
+       (cases.length===1&&cases[0].legacy===false&&cases[0].joined===true),"CASE_MATRIX");
  for(let i=0;i<cases.length;i++) {
   schemaDifference=null;
   try {console.log(JSON.stringify(await capture(cases[i],i)));}
@@ -1112,6 +1310,7 @@ def main():
         for role in ("reviewer", "qa"):
             exercise_role(role, actions_root, Path(directory))
             inline_native_schema_tests(role, actions_root, Path(directory))
+            temporary_id_contract_tests(role, actions_root, Path(directory))
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
     print("Structured Gate output contract passed with fake provider boundaries only.")
 
