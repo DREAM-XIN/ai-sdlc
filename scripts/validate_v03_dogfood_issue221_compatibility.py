@@ -21,9 +21,13 @@ def main():
         args = dict(source_sha=SOURCE_MAIN, installation_sha="b"*40, ancestor=True)
         args.update(overrides)
         return validate_delta(candidate, **args)
+    assert len(ADDED_PATHS) == 48 and len(SOURCE_CONTROL_BLOBS) == 6
+    assert set(SOURCE_CONTROL_BLOBS) == set(DOGFOOD_CONTROL_BLOBS) == set(SOURCE_CONTROL_MODES)
     proof = check(rows)
     assert proof["source_main_sha"] == SOURCE_MAIN
-    assert proof["existing_runtime_tree_unchanged"] is True
+    assert proof["unlisted_existing_paths_unchanged"] is True
+    assert proof["reviewed_existing_path_exceptions"] == sorted(SOURCE_CONTROL_BLOBS)
+    assert "existing_runtime_tree_unchanged" not in proof
     assert proof["installation_commit_sha"] != SOURCE_MAIN
     assert check([], installation_sha=SOURCE_MAIN)["tree_delta"] == []
     count = 0
@@ -49,6 +53,18 @@ def main():
     changed = deepcopy(rows)
     changed[-1]["new_sha"] = "d"*40
     reject(changed)
+    for path in ("scripts/materialize_v03_vertical_policy_state.py",
+                 "scripts/validate_v03_vertical_policy_materialization_workflow.py"):
+        index = next(i for i, row in enumerate(rows) if row["path"] == path)
+        for key, value in (("old_sha", "e"*40), ("new_sha", "f"*40),
+                           ("old_mode", "100755"), ("new_mode", "100755"),
+                           ("status", "A")):
+            changed = deepcopy(rows)
+            changed[index][key] = value
+            reject(changed)
+        reject([row for row in rows if row["path"] != path])
+    reject(rows + [dict(path="scripts/materialize_other_policy.py", status="M",
+                       old_sha="a"*40, new_sha="b"*40, old_mode="100644", new_mode="100644")])
     reject(rows + [deepcopy(rows[0])])
     reject(rows[:-1])
     added_only = [row for row in rows if row["status"] == "A"]

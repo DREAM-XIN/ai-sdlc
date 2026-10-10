@@ -1049,12 +1049,9 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     events, projection = _durable_operation_facts(preflight, observation)
     receipt = _durable_receipt(preflight, events, observation)
     categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation)
-    generation = int(projection.get("generation") or 0)
-    if generation < 1:
-        generations = [int(row.get("operation_generation") or 0) for row in events]
-        generation = max(generations or [0])
-    if generation < 1:
-        raise V03DogfoodPostRunFinalizerError("protected Store lacks positive Operation generation")
+    generation = projection.get("generation")
+    if type(generation) is not int or generation < 0:
+        raise V03DogfoodPostRunFinalizerError("protected Store lacks a valid Operation generation")
 
     worker_run_ids = list(receipt["workflow_run_ids"])
     attestation_uri = _run_uri(repository, finalizer_run_id)

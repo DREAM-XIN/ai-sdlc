@@ -4622,7 +4622,7 @@ DOGFOOD_REREVIEW_CAPABILITY_ID = "ai-sdlc:v03:review-remediation:rereview:1"
 DOGFOOD_REREVIEW_SUFFIX = "/dogfood-remediation-rereview-1/"
 DOGFOOD_REREVIEW_ADMISSION = {
     "uri": "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6097262300",
-    "body_digest": "sha256:173be9c568398c7846c41d73ab4eb663eba682a35a8e64b1229be1cf53fc3bda",
+    "body_digest": "sha256:010998679c1c9a92941acd85da22a9365a3148e77699c21abdc3081719f016cf",
 }
 
 

@@ -8344,6 +8344,7 @@ def ordinary_structured_scenario_tests(template, *, scenarios=("review_remediati
                == len([row for row in rows if row["event_type"] == "persist.confirmed"])
                and projection["expected_feature_revision"] == feature.state["manifest"]["revision"],
                "ordinary lifecycle bypassed canonical REST/reducer/Persist")
+        finalize_ordinary_remediation_fixture(pf, observation, external, gates)
     print("- actual ordinary structured scenario passed: " + ", ".join(scenarios))
 
 
@@ -8841,6 +8842,88 @@ def ordinary_rereview_nonpass_tests(template):
                and len(external.state["inputs"]) == 2 and len(gates.state["inputs"]) == 2,
                "terminal rereview replay changed immutable history or launch budget")
     print("- actual REWORK/BLOCKED rereview publication stops atomically before callback/Persist/QA")
+
+
+
+def finalize_ordinary_remediation_fixture(preflight, observation, external, gates):
+    """Run actual release reconstruction/provenance over the completed real graph."""
+    import json
+    from copy import deepcopy
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from operator_store_model import canonical_json
+    from operator_vertical_store import vertical_projection
+    from operator_vertical import VerticalInvariantError
+    import v03_dogfood_full_composition as composition
+    import v03_dogfood_post_run_finalizer as finalizer
+    import v03_dogfood_production_provenance as provenance
+    runtime = preflight.composition.runtime
+    expect(observation.scenario == "review_remediation" and observation.final_status == "DONE",
+           "ordinary finalizer fixture requires the actual completed remediation observation")
+    raw = asdict(observation)
+    raw.update(repository=preflight.execution.repository, feature_id=preflight.slot.feature_id,
+        target_ref=preflight.slot.target_ref,
+        installation_commit_sha=preflight.execution.installation_commit_sha,
+        candidate_pr_number=preflight.candidate_pr_number, candidate_head_sha=external.read_ref(),
+        provenance_verified=False)
+    final_preflight = SimpleNamespace(**dict(vars(preflight), candidate_head_sha=external.read_ref()))
+    class Response:
+        status = 200
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self): return self.body
+    def provider_read(req, timeout):
+        expect(req.get_method() == "GET", "ordinary finalizer attempted provider mutation")
+        status, _, body = gates.http(method="GET", url=req.full_url, token="fixture")
+        expect(status == 200, "ordinary finalizer escaped provider fixture")
+        return Response(body)
+    def finalize():
+        return finalizer.finalize(observation=raw, preflight=final_preflight,
+            source_run_id=77905505045, finalizer_run_id=77905505046, github_token="fixture")
+    saved = deepcopy(runtime.backend.read_snapshot())
+    effects = (len(external.state["inputs"]), len(gates.state["inputs"]), external.state["patches"])
+    with patch.object(provenance, "urlopen", side_effect=provider_read):
+        record = finalize()
+        expect(record["verdict"] == "PASS" and record["release_eligible"] is True
+               and record["runtime"]["workflow_run_ids"] == list(observation.workflow_run_ids)
+               and composition.DOGFOOD_REREVIEW_ADMISSION["uri"] in record["evidence_uris"]
+               and record["operation"]["generation"] == vertical_projection(
+                   runtime.backend.read_snapshot(), observation.operation_id)["generation"] == 0,
+               "actual remediation finalizer lost its consumed rereview authority")
+        original_facts = finalizer._durable_operation_facts
+        for invalid_generation in (True, False, "0", -1):
+            def corrupt_generation(*args, **kwargs):
+                events, projection = original_facts(*args, **kwargs)
+                return events, dict(projection, generation=invalid_generation)
+            with patch.object(finalizer, "_durable_operation_facts", side_effect=corrupt_generation):
+                try:
+                    finalize()
+                except finalizer.V03DogfoodPostRunFinalizerError as exc:
+                    expect(str(exc) == "protected Store lacks a valid Operation generation",
+                           "malformed generation failed at a different boundary")
+                else:
+                    raise AssertionError("ordinary finalizer accepted malformed Operation generation")
+        binding_path = composition.dogfood_rereview_paths(observation.operation_id)[0]
+        expect(binding_path in saved.files, "completed remediation lacks actual consumed binding")
+        try:
+            broken = deepcopy(saved)
+            broken.files.pop(binding_path)
+            runtime.backend.snapshot = broken
+            try:
+                finalize()
+            except (finalizer.V03DogfoodPostRunFinalizerError, VerticalInvariantError):
+                pass
+            else:
+                raise AssertionError("ordinary finalizer accepted missing consumed rereview binding")
+        finally:
+            runtime.backend.snapshot = saved
+    expect(canonical_json(runtime.backend.read_snapshot().files) == canonical_json(saved.files)
+           and effects == (len(external.state["inputs"]), len(gates.state["inputs"]), external.state["patches"]),
+           "ordinary finalization changed durable history or provider effects")
+    print("- actual remediation DONE finalizer/provenance verifies the consumed rereview binding")
+    return record
 
 
 def main():
