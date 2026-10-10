@@ -1,5 +1,5 @@
 protocol_version: 0.1.0
-revision: 4
+revision: 5
 feature:
   id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
   title: 'v0.3 release dogfood: happy_path'
@@ -16,7 +16,7 @@ workflow:
     status: DONE
     gate: code-gate
   - id: verification
-    status: READY
+    status: WORKING
     gate: verification-gate
   - id: acceptance
     status: TODO
@@ -50,4 +50,5 @@ applied_events:
 - EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-IMPLEMENTATION-DONE-454A443721B6
 - EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD
 - EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-PASS-46BFD90425AF
-updated_at: '2026-10-10T18:05:24Z'
+- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-VERIFICATION-START-A31AD53CE3F2
+updated_at: '2026-10-10T18:06:41Z'
