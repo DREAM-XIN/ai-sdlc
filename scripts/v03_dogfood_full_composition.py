@@ -5405,7 +5405,7 @@ REVIEWER_INLINE_PRIOR_BLOBS = {
 }
 REVIEWER_INLINE_ADMISSION = {
     "uri": "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6099330442",
-    "body_digest": "sha256:78188b952db5dbc650f3f694b5c5b408918293788ca7ef84f7fef600692d5d3a",
+    "body_digest": "sha256:ee5810c8c4df1c9bc1b084c28d28e6d2e995c618d78928e9143f8351b1e90d77",
 }
 
 def reviewer_inline_present(snapshot):

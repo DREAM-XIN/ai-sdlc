@@ -21,7 +21,7 @@ def main():
         args = dict(source_sha=SOURCE_MAIN, installation_sha="b"*40, ancestor=True)
         args.update(overrides)
         return validate_delta(candidate, **args)
-    assert len(ADDED_PATHS) == 52 and len(SOURCE_CONTROL_BLOBS) == 6
+    assert len(ADDED_PATHS) == 52 and len(SOURCE_CONTROL_BLOBS) == 7
     assert set(SOURCE_CONTROL_BLOBS) == set(DOGFOOD_CONTROL_BLOBS) == set(SOURCE_CONTROL_MODES)
     proof = check(rows)
     assert proof["source_main_sha"] == SOURCE_MAIN
@@ -54,7 +54,8 @@ def main():
     changed[-1]["new_sha"] = "d"*40
     reject(changed)
     for path in ("scripts/materialize_v03_vertical_policy_state.py",
-                 "scripts/validate_v03_vertical_policy_materialization_workflow.py"):
+                 "scripts/validate_v03_vertical_policy_materialization_workflow.py",
+                 "scripts/operator_store_remote_git.py"):
         index = next(i for i, row in enumerate(rows) if row["path"] == path)
         for key, value in (("old_sha", "e"*40), ("new_sha", "f"*40),
                            ("old_mode", "100755"), ("new_mode", "100755"),

@@ -9424,12 +9424,197 @@ def reviewer_fixed_activation_retention_tests():
     print("- fixed activation expiry, immutable history, closed negatives and real one-use replay passed")
 
 
+def remote_snapshot_cache_tests():
+    """Real local Git reads retain fresh remote/CAS checks and isolate one SHA."""
+    import json
+    import os
+    import subprocess
+    import tempfile
+    import time
+    from collections import Counter
+    from copy import deepcopy
+    from pathlib import Path
+    from unittest.mock import patch
+    import validate_operator_store_runtime as legacy
+    from operator_store_git import CasConflict
+    from operator_store_runtime import TrustedOperatorStoreConfig, build_trusted_operator_store_runtime
+    from operator_store_remote_git import RemoteGitStateRefBackend
+
+    with tempfile.TemporaryDirectory(prefix="v03-snapshot-cache-") as directory:
+        root = Path(directory)
+        home = root / "home"
+        home.mkdir()
+        env = {"PATH": os.environ["PATH"], "HOME": str(home), "LANG": "C.UTF-8",
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+               "GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            remote, writer, reader = root / "remote.git", root / "writer", root / "reader"
+            legacy.git("init", "--bare", "-q", str(remote))
+            legacy.clone(remote, writer)
+            legacy.clone(remote, reader)
+            for checkout in (writer, reader):
+                legacy.git("config", "core.hooksPath", "/dev/null", cwd=checkout)
+            verifier = legacy.FixtureProductionVerifier()
+            runtime = build_trusted_operator_store_runtime(
+                TrustedOperatorStoreConfig(repository=legacy.REPO, trusted_checkout=writer),
+                protection_verifier=verifier)
+            receipt = verifier.verify(legacy.REPO, legacy.DEFAULT_OPERATOR_STATE_REF)
+            runtime.backend.commit(legacy.start_plan(
+                runtime.backend.read_snapshot(), "F-CACHE-LOCAL", "cache-start"), receipt)
+            ref = legacy.DEFAULT_OPERATOR_STATE_REF
+            prefix = "state/operator/v1/snapshot-cache-fixture/"
+            unicode_path, crlf_path = prefix + "unicode.json", prefix + "crlf.json"
+
+            def publish(changes):
+                """Fake external writer uses actual blobs/tree/commit and fast-forward push."""
+                head = legacy.git("rev-parse", ref, cwd=remote).stdout.strip()
+                legacy.git("fetch", "--no-tags", "origin", ref, cwd=writer)
+                legacy.git("read-tree", head, cwd=writer)
+                for path, raw in changes.items():
+                    expect(path.startswith(prefix) and isinstance(raw, bytes), "cache fixture path/data differs")
+                    result = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=writer,
+                        input=raw, capture_output=True, check=True, timeout=30)
+                    blob = result.stdout.decode("ascii").strip()
+                    legacy.git("update-index", "--add", "--cacheinfo", "100644," + blob + "," + path,
+                               cwd=writer)
+                tree = legacy.git("write-tree", cwd=writer).stdout.strip()
+                commit = subprocess.run(["git", "commit-tree", tree, "-p", head], cwd=writer,
+                    input=b"Offline immutable snapshot fixture\n", capture_output=True,
+                    check=True, timeout=30).stdout.decode("ascii").strip()
+                legacy.git("push", "origin", commit + ":" + ref, cwd=writer)
+                return commit
+
+            first_sha = publish({
+                unicode_path: json.dumps({"nested": {"values": ["测验", {"ok": True}]}},
+                                         ensure_ascii=False).encode("utf-8") + b"\n",
+                crlf_path: b'{\r\n  "nested": {"line": "one\\r\\ntwo", "number": 3}\r\n}\r\n',
+            })
+            backend = RemoteGitStateRefBackend(repo_path=reader, repository=legacy.REPO, state_ref=ref)
+            original_git = backend._git
+            counts = Counter()
+            fault = {"show": False, "race": False}
+            race_sha = []
+
+            def counted(*args, **kwargs):
+                command = str(args[0])
+                counts[command] += 1
+                if command == "fetch" and fault["race"]:
+                    fault["race"] = False
+                    race_sha.append(publish({prefix + "race.json": b'{"race":"new-head"}\n'}))
+                if command == "show" and fault["show"]:
+                    fault["show"] = False
+                    raise subprocess.CalledProcessError(1, ["git", "show"])
+                return original_git(*args, **kwargs)
+
+            def oracle(sha):
+                paths = legacy.git("ls-tree", "-r", "--name-only", sha, "--",
+                                   "state/operator/v1", cwd=reader).stdout.splitlines()
+                return {path: json.loads(legacy.git("show", sha + ":" + path, cwd=reader).stdout)
+                        for path in paths if path.endswith(".json")}
+
+            metrics = {}
+            def measured(label):
+                counts.clear()
+                started = time.monotonic()
+                value = backend.read_snapshot()
+                metrics[label] = {"seconds": round(time.monotonic() - started, 6),
+                                  "commands": dict(sorted(counts.items()))}
+                return value
+
+            with patch.object(backend, "_git", side_effect=counted):
+                first = measured("first")
+                expected = oracle(first_sha)
+                expect(first.ref_sha == first_sha and first.files == expected,
+                       "cached acquisition differs from original per-file oracle")
+                expect(counts["show"] == len(expected) and counts["ls-tree"] == 1,
+                       "first exact SHA did not fully parse actual Git contents")
+                first.files[unicode_path]["nested"]["values"][1]["ok"] = False
+                second = measured("same_sha")
+                expect(second.ref_sha == first_sha and second.files == expected,
+                       "first returned snapshot mutated cached bytes")
+                expect(counts["show"] == 0 and counts["ls-tree"] == 0
+                       and counts["ls-remote"] == counts["fetch"] == counts["rev-parse"] == 1,
+                       "same SHA cache bypassed freshness or repeated per-file reads")
+                second.files[unicode_path]["nested"]["values"].append("caller-only")
+                third = measured("same_sha_after_mutation")
+                expect(third.files == expected and counts["show"] == 0,
+                       "cache-hit return leaked a mutable nested alias")
+
+                new_sha = publish({prefix + "new.json": b'{"new":{"consumed":true}}\n'})
+                newer = measured("new_sha")
+                newer_expected = oracle(new_sha)
+                expect(newer.ref_sha == new_sha and newer.files == newer_expected
+                       and counts["show"] == len(newer_expected),
+                       "new remote SHA reused stale snapshot or skipped complete parsing")
+                counts.clear()
+                historical = backend._snapshot_for_sha(first_sha)
+                expect(historical.files == expected and counts["show"] == len(expected),
+                       "snapshot cache retained more than the single most recent SHA")
+                measured("new_sha_after_eviction")
+                expect(counts["show"] == len(newer_expected),
+                       "single-entry cache did not reload the current SHA after eviction")
+
+                # A failed acquisition cannot become a cache entry.
+                bad_sha = publish({prefix + "invalid.json": b'{"unfinished":'})
+                for _ in range(2):
+                    counts.clear()
+                    try:
+                        backend.read_snapshot()
+                    except json.JSONDecodeError:
+                        pass
+                    else:
+                        raise AssertionError("malformed JSON became a successful snapshot")
+                    expect(counts["show"] > 0, "malformed snapshot was cached or stale cache returned")
+                repaired_sha = publish({prefix + "invalid.json": b'{"repaired":true}\n'})
+                fault["show"] = True
+                try:
+                    backend.read_snapshot()
+                except subprocess.CalledProcessError:
+                    pass
+                else:
+                    raise AssertionError("failed Git content acquisition was hidden")
+                repaired = measured("repaired_after_failure")
+                expect(repaired.ref_sha == repaired_sha and repaired.files == oracle(repaired_sha)
+                       and counts["show"] == len(repaired.files),
+                       "partial failed acquisition polluted the next complete snapshot")
+
+                # Existing cached SHA still cannot bypass fresh remote availability.
+                hidden = root / "unavailable.git"
+                remote.rename(hidden)
+                try:
+                    try:
+                        backend.read_snapshot()
+                    except CasConflict:
+                        pass
+                    else:
+                        raise AssertionError("cache bypassed unavailable remote authority")
+                finally:
+                    hidden.rename(remote)
+
+                # Advance the genuine remote between ls-remote and fetch.
+                fault["race"] = True
+                counts.clear()
+                try:
+                    backend.read_snapshot()
+                except CasConflict:
+                    pass
+                else:
+                    raise AssertionError("cache bypassed current remote/fetch SHA race")
+                expect(len(race_sha) == 1 and counts["show"] == 0,
+                       "race fixture did not reject before content/cache acquisition")
+                raced = measured("after_ref_race")
+                expect(raced.ref_sha == race_sha[0] and raced.files == oracle(race_sha[0])
+                       and counts["show"] == len(raced.files),
+                       "fresh read after ref race did not acquire the real new SHA")
+            print("remote_snapshot_cache_metrics=" + json.dumps(metrics, sort_keys=True), flush=True)
+    print("- exact-SHA snapshot equivalence, isolation, failure and fresh-ref checks passed", flush=True)
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--group", choices=("joined",))
-    selection.add_argument("--exclude-group", choices=("joined",))
+    selection.add_argument("--group", choices=("joined", "cache"))
+    selection.add_argument("--exclude-group", choices=("joined", "cache"), action="append", default=[])
     args = parser.parse_args()
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -9466,6 +9651,7 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("exact-SHA remote snapshot cache", remote_snapshot_cache_tests),
         ("inline selected factory joined CLI lifecycle", reviewer_inline_joined_factory_tests),
         ("inline Reviewer frozen CAS", reviewer_inline_admission_tests),
         ("inline Reviewer non-PASS terminal", reviewer_inline_terminal_tests),
@@ -9509,12 +9695,16 @@ def main():
         ("post-handoff provider-applied confirmation crash", lambda: post_handoff_full_pipeline_tests(crash_before_confirmation=True)),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
-    joined_name = "inline selected factory joined CLI lifecycle"
-    if args.group == "joined":
-        groups = tuple(row for row in groups if row[0] == joined_name)
-        expect(len(groups) == 1, "joined group selection must be exact")
-    elif args.exclude_group == "joined":
-        groups = tuple(row for row in groups if row[0] != joined_name)
+    named_groups = {
+        "joined": "inline selected factory joined CLI lifecycle",
+        "cache": "exact-SHA remote snapshot cache",
+    }
+    if args.group:
+        groups = tuple(row for row in groups if row[0] == named_groups[args.group])
+        expect(len(groups) == 1, "selected regression group must be exact")
+    elif args.exclude_group:
+        excluded = {named_groups[name] for name in args.exclude_group}
+        groups = tuple(row for row in groups if row[0] not in excluded)
     for name, execute in groups:
         try:
             execute()
@@ -9525,8 +9715,8 @@ def main():
     if failures:
         raise AssertionError("v0.3 regression groups failed: " + ", ".join(failures))
 
-    if args.group == "joined":
-        print("- selected joined regression group passed")
+    if args.group:
+        print("- selected " + args.group + " regression group passed")
         return
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})

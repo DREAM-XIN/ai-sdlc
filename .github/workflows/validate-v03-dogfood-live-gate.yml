@@ -11,6 +11,8 @@ on:
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml'
       - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.md'
       - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml'
+      - 'scripts/operator_store_remote_git.py'
+      - 'scripts/validate_operator_store_runtime.py'
       - 'scripts/v03_dogfood_gate_output.py'
       - 'scripts/validate_v03_gate_output_contract.py'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md'
@@ -64,7 +66,25 @@ permissions:
   actions: read
 
 jobs:
+  validate-snapshot-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Validate exact-SHA snapshot cache and copy isolation
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --group cache
+      - name: Validate unchanged shared Store runtime
+        run: PYTHONPATH=scripts python scripts/validate_operator_store_runtime.py
+
   validate-joined-gate:
+    needs: validate-snapshot-cache
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -170,6 +190,7 @@ jobs:
         run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --group joined
 
   validate:
+    needs: validate-snapshot-cache
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -275,7 +296,7 @@ jobs:
           GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
           V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
         if: ${{ !cancelled() }}
-        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined --exclude-group cache
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:

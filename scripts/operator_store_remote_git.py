@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 from operator_store_git import CasConflict, CommitResult, GitStateRefBackend
@@ -24,6 +25,7 @@ class RemoteGitStateRefBackend(GitStateRefBackend):
         super().__init__(repo_path=repo_path, repository=repository, state_ref=state_ref)
         self.remote_name = remote_name
         self.tracking_ref = "refs/ai-sdlc/operator-store/remote"
+        self._snapshot_cache: StoreSnapshot | None = None
         if not remote_name or any(ch.isspace() for ch in remote_name):
             raise ValueError("trusted Operator Store remote name is invalid")
 
@@ -42,11 +44,15 @@ class RemoteGitStateRefBackend(GitStateRefBackend):
     def _snapshot_for_sha(self, sha: str | None) -> StoreSnapshot:
         if sha is None:
             return StoreSnapshot(ref_sha=None, files={})
+        if self._snapshot_cache is not None and self._snapshot_cache.ref_sha == sha:
+            return StoreSnapshot(ref_sha=sha, files=deepcopy(self._snapshot_cache.files))
         listed = self._git("ls-tree", "-r", "--name-only", sha, "--", "state/operator/v1").stdout.splitlines()
         files = {}
         for path in listed:
             if path.endswith(".json"):
                 files[path] = json.loads(self._git("show", f"{sha}:{path}").stdout)
+        # Cache only a completely parsed immutable commit, isolated from every caller.
+        self._snapshot_cache = StoreSnapshot(ref_sha=sha, files=deepcopy(files))
         return StoreSnapshot(ref_sha=sha, files=files)
 
     def read_snapshot(self) -> StoreSnapshot:
