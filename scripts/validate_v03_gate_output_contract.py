@@ -769,6 +769,26 @@ function schemaDiff(expected, actual) {
  walk(expected,actual);return {total,truncated:total>rows.length,rows};
 }
 
+
+function observedCLIProjection(schema, changes) {
+ const result=structuredClone(schema);
+ check(changes && typeof changes==="object" && !Array.isArray(changes),"PROJECTION_FIXTURE");
+ for(const [pointer,change] of Object.entries(changes)) {
+  check(/^\/(?:properties\/[A-Za-z0-9_]+\/|items\/)*properties\/[A-Za-z0-9_]+$/.test(pointer),
+        "PROJECTION_PATH");
+  let node=result;
+  for(const part of pointer.slice(1).split("/"))node=node?.[part];
+  check(node && typeof node==="object" && !("description" in node),"PROJECTION_SOURCE");
+  for(const [key,value] of Object.entries(change.removed)) {
+   check(["pattern","minimum","minLength","maxLength"].includes(key) &&
+         canonical(node[key])===canonical(value),"PROJECTION_SOURCE");
+   delete node[key];
+  }
+  node.description=change.description;
+ }
+ return result;
+}
+
 function stopGroup(child) {
  if (!child?.pid) return;
  try { process.kill(-child.pid,"SIGKILL"); } catch {}
@@ -873,8 +893,10 @@ async function capture(row,index) {
     const matches=requestTools.filter(t=>/^(?:safeoutputs[_-]+)?add_comment$/.test(t.name));
     check(matches.length===1,"CLI_ADD_COMMENT_MISSING");
     const parameters=matches[0].parameters;
-    if(canonical(parameters.properties.data)!==canonical(schema.properties.data)) {
-     schemaDifference=schemaDiff(schema.properties.data,parameters.properties.data);
+    const expectedData=row.legacy ? schema.properties.data :
+      observedCLIProjection(schema.properties.data,row.observed_projection);
+    if(canonical(parameters.properties.data)!==canonical(expectedData)) {
+     schemaDifference=schemaDiff(expectedData,parameters.properties.data);
      throw new Error("CLI_DATA_DRIFT");
     }
     const refs=badRefs(parameters);
@@ -904,7 +926,7 @@ async function capture(row,index) {
   check(!fault,fault||"CAPTURE_FAILED");check(captured,"NO_PROVIDER_CAPTURE");
   check(code===0,"CLI_EXIT");
   check(!fs.existsSync(output)||fs.statSync(output).size===0,"UNEXPECTED_TOOL_EFFECT");
-  return {case:row.label,status:"PASS",scope:"add_comment data equality and all tool parameter reference closure",provider_requests:posts,local_reference_closure:!row.legacy,
+  return {case:row.label,status:"PASS",scope:"exact observed CLI data projection and all tool reference closure; trusted helper retains constraints",provider_requests:posts,local_reference_closure:!row.legacy,
           expected_legacy_rejection:row.legacy,...captured};
  } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
@@ -941,6 +963,9 @@ async function main() {
 main().catch(e=>{console.log(JSON.stringify({status:"FAIL",stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",schema_differences:schemaDifference}));process.exitCode=1;});
 """
 
+# Exact schema-only observations from offline job 114244633858; not semantic equivalence.
+OBSERVED_CLI_PROJECTION = json.loads("{\"reviewer\":{\"/properties/candidate_head_sha\":{\"description\":\"{pattern: \\\"^[0-9a-f]{40}$\\\"}\",\"removed\":{\"pattern\":\"^[0-9a-f]{40}$\"}},\"/properties/candidate_pr_number\":{\"description\":\"{minimum: 1}\",\"removed\":{\"minimum\":1}},\"/properties/evidence/items/properties/id\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/evidence/items/properties/uri\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/expected_revision\":{\"description\":\"{minimum: 0}\",\"removed\":{\"minimum\":0}},\"/properties/feature_id\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/findings/items/properties/code\":{\"description\":\"{minLength: 1, maxLength: 80}\",\"removed\":{\"maxLength\":80,\"minLength\":1}},\"/properties/findings/items/properties/message\":{\"description\":\"{minLength: 1, maxLength: 4000}\",\"removed\":{\"maxLength\":4000,\"minLength\":1}},\"/properties/id\":{\"description\":\"{minLength: 1, pattern: \\\"^[A-Za-z0-9._:-]+$\\\"}\",\"removed\":{\"minLength\":1,\"pattern\":\"^[A-Za-z0-9._:-]+$\"}},\"/properties/reason\":{\"description\":\"{minLength: 1, maxLength: 4000}\",\"removed\":{\"maxLength\":4000,\"minLength\":1}},\"/properties/target_ref\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/target_repository\":{\"description\":\"{pattern: \\\"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$\\\"}\",\"removed\":{\"pattern\":\"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$\"}},\"/properties/task_id\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}}},\"qa\":{\"/properties/candidate_head_sha\":{\"description\":\"{pattern: \\\"^[0-9a-f]{40}$\\\"}\",\"removed\":{\"pattern\":\"^[0-9a-f]{40}$\"}},\"/properties/candidate_pr_number\":{\"description\":\"{minimum: 1}\",\"removed\":{\"minimum\":1}},\"/properties/checks/items/properties/detail\":{\"description\":\"{maxLength: 4000}\",\"removed\":{\"maxLength\":4000}},\"/properties/checks/items/properties/name\":{\"description\":\"{minLength: 1, maxLength: 200}\",\"removed\":{\"maxLength\":200,\"minLength\":1}},\"/properties/coverage/items/properties/criterion\":{\"description\":\"{minLength: 1, maxLength: 500}\",\"removed\":{\"maxLength\":500,\"minLength\":1}},\"/properties/coverage/items/properties/evidence\":{\"description\":\"{maxLength: 4000}\",\"removed\":{\"maxLength\":4000}},\"/properties/evidence/items/properties/id\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/evidence/items/properties/uri\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/expected_revision\":{\"description\":\"{minimum: 0}\",\"removed\":{\"minimum\":0}},\"/properties/feature_id\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/id\":{\"description\":\"{minLength: 1, pattern: \\\"^[A-Za-z0-9._:-]+$\\\"}\",\"removed\":{\"minLength\":1,\"pattern\":\"^[A-Za-z0-9._:-]+$\"}},\"/properties/reason\":{\"description\":\"{minLength: 1, maxLength: 4000}\",\"removed\":{\"maxLength\":4000,\"minLength\":1}},\"/properties/target_ref\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}},\"/properties/target_repository\":{\"description\":\"{pattern: \\\"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$\\\"}\",\"removed\":{\"pattern\":\"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$\"}},\"/properties/task_id\":{\"description\":\"{minLength: 1}\",\"removed\":{\"minLength\":1}}}}")
+
 def compiled_tools_metadata(lock, candidate=577):
     rows = [step["env"]["GH_AW_TOOLS_META_JSON"] for step in lock["jobs"]["agent"]["steps"]
             if "GH_AW_TOOLS_META_JSON" in step.get("env", {})]
@@ -958,6 +983,61 @@ def inline_payload(role, verdict):
         payload["checks"][0]["detail"] = "The assigned synthetic candidate check was evaluated."
         payload["coverage"][0]["evidence"] = "https://github.com/dream-xin/ai-sdlc/pull/577"
     return payload
+
+def dropped_constraint_rejections(role, schema, native, actions_root, temporary):
+    lock, config, validation, metadata = selected_config(role, variant="structured-inline-local")
+    directory = temporary / (role + "-cli-dropped-constraints")
+    directory.mkdir()
+    official = Official(actions_root, directory, config, validation, metadata)
+    base = inline_payload(role, "REWORK" if role == "reviewer" else "PASS")
+    context = fixture_context(base)
+    count = 0
+    for pointer, change in OBSERVED_CLI_PROJECTION[role].items():
+        tokens = pointer.lstrip("/").split("/")
+        location = []
+        schema_node = schema
+        for token in tokens:
+            schema_node = schema_node[token]
+        index = 0
+        while index < len(tokens):
+            if tokens[index] == "properties":
+                location.append(tokens[index + 1])
+                index += 2
+            else:
+                check(tokens[index] == "items", "unexpected fixed projection path")
+                location.append(0)
+                index += 1
+        for keyword, bound in change["removed"].items():
+            check(schema_node[keyword] == bound, "observed constraint source changed")
+            changed = copy.deepcopy(base)
+            target = changed
+            for part in location[:-1]:
+                target = target[part]
+            if keyword == "minLength":
+                value = ""
+            elif keyword == "maxLength":
+                value = "x" * (bound + 1)
+            elif keyword == "minimum":
+                value = bound - 1
+            else:
+                check(keyword == "pattern", "unexpected dropped keyword")
+                value = "g" * 40 if location == ["candidate_head_sha"] else "invalid value"
+            target[location[-1]] = value
+            check(any(error.validator == keyword and list(error.path) == location
+                      for error in native.iter_errors(changed)),
+                  "ineffective exact dropped-constraint mutation")
+            reject(lambda changed=changed: subject.validate_payload(changed, context, role),
+                   "strict acceptance lost CLI-dropped constraint " + pointer + "/" + keyword)
+            raw = raw_item(changed)
+            collected = official.ingest(raw)
+            reject(lambda raw=raw, collected=collected: subject.render_gate_output(
+                raw, collected, context, role,
+                sanitize=lambda body: official.call({"mode": "sanitize", "body": body})["body"]),
+                "renderer accepted CLI-dropped constraint " + pointer + "/" + keyword)
+            count += 1
+    check(count == (17 if role == "reviewer" else 19), "finite dropped-constraint matrix changed")
+    print(role + ": all " + str(count) + " CLI-dropped constraints rejected by trusted helper/render")
+
 
 def inline_native_schema_tests(role, actions_root, temporary):
     import jsonschema
@@ -997,6 +1077,7 @@ def inline_native_schema_tests(role, actions_root, temporary):
         mutate(missing)
         check(list(native.iter_errors(missing)), "native producer accepted omitted " + label)
         subject.validate_payload(missing, fixture_context(missing), role)
+    dropped_constraint_rejections(role, schema, native, actions_root, temporary)
     print(role + ": inline native schema and unchanged strict acceptance verified")
 
 def prepare_schema_capture(destination, actions_root):
@@ -1009,7 +1090,8 @@ def prepare_schema_capture(destination, actions_root):
     ):
         lock, config, _, _ = selected_config(role, variant=variant)
         cases.append({"label": role + "-" + variant, "legacy": legacy,
-                      "config": config, "meta": compiled_tools_metadata(lock)})
+                      "config": config, "meta": compiled_tools_metadata(lock),
+                      "observed_projection": None if legacy else OBSERVED_CLI_PROJECTION[role]})
     (destination / "cases.json").write_bytes(canonical(cases))
     (destination / "capture.mjs").write_text(SCHEMA_CAPTURE_NODE)
     print("Prepared three actual compiled schema cases; no model or provider invoked.")
