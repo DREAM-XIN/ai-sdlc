@@ -330,7 +330,7 @@ def verify_issue_221_closed(
 
 
 
-CURRENT_DOGFOOD_BLOBS = {
+HISTORICAL_RELEASE_DOGFOOD_BLOBS = {
     "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
     "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
     "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.md": "f0774cacba7b4e357317d5014149bccb4fb6edc7",
@@ -338,11 +338,19 @@ CURRENT_DOGFOOD_BLOBS = {
     "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.md": "e8727e4e063e91e68373951fb9aa7059ed5de2ba",
     "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml": "41f8d6dc29a76221ac86ccf5bc11e170bc24ddaa"
 }
-CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-local/v1"
+CURRENT_DOGFOOD_BLOBS = {
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md": "d4cedb1da8549861d86023348d306f8ab60bdef0",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml": "ff68923c95dbbf7d4bc206f2d2bb03fa81fe5578",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.md": "6f5d97d64ed791a185451bd6dc4f9dbdf422f70b",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml": "d44df9ab47dc45961865c4eabdd17783612e9063"
+}
+CURRENT_DOGFOOD_POLICY = "v03-current-paid-deepseek-bounded-local/v1"
 CURRENT_DOGFOOD_WORKFLOWS = {
     "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
-    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml",
-    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml",
 }
 
 
@@ -387,13 +395,18 @@ def resolve_current_dogfood_bindings(presence: Mapping[str, object]) -> tuple[Do
                 return json.loads(rows[0])
             metadata = header("# gh-aw-metadata: ")
             manifest = header("# gh-aw-manifest: ")
-            proof_kind = "recovery" if role == "developer" else "release-gate"
+            proof_kind = "recovery" if role == "developer" else "bounded-gate"
             proof = header(f"# ai-sdlc-{proof_kind}-lock-transform: ")
             if (proof.get("schema") != f"ai-sdlc.v03-{proof_kind}-lock-transform/v1"
                     or proof.get("compiler") != "gh-aw-v0.89.21-strict"
-                    or proof.get("body_hash_to") != metadata.get("body_hash")
+                    or proof.get("body_hash_to" if role == "developer" else "body_hash") != metadata.get("body_hash")
                     or not re.fullmatch(r"[0-9a-f]{40}", str(proof.get("upstream_blob_sha") or ""))):
                 raise ValueError("compiler transform proof differs")
+            if role != "developer" and (type(proof.get("detector_native_max_runs_from")) is not int
+                    or proof["detector_native_max_runs_from"] != 500
+                    or type(proof.get("detector_native_max_runs_to")) is not int or proof["detector_native_max_runs_to"] != 50
+                    or proof.get("detector_cli_version") != "1.0.90" or proof.get("inverse_raw_equal") is not True):
+                raise ValueError("bounded detector transform differs")
         except Exception as exc:
             raise V03DogfoodLiveGateError("selected dogfood compiler proof is malformed") from exc
         if (metadata.get("schema_version") != "v4" or metadata.get("strict") is not True
