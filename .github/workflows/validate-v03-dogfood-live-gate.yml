@@ -3,6 +3,12 @@ name: Validate v0.3 Dogfood Live Gate
 on:
   pull_request:
     paths:
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.md'
+      - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.md'
+      - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml'
+      - 'scripts/v03_dogfood_gate_output.py'
+      - 'scripts/validate_v03_gate_output_contract.py'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml'
       - '.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.md'
@@ -569,3 +575,215 @@ jobs:
           name: v03-bounded-${{ matrix.role }}-compiled
           path: evidence/bounded-${{ matrix.role }}*
           if-no-files-found: error
+
+  compile-structured-gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [reviewer, qa]
+    env:
+      GATE_ROLE: ${{ matrix.role }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Install pinned structured Gate compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v0.89.21 --force
+      - name: Strict compile fixed structured Gate source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GATE_ROLE" in reviewer|qa) ;; *) exit 1 ;; esac
+          gh aw compile "ai-sdlc-gh-aw-$GATE_ROLE-deepseek-v03-structured-local" --strict
+      - name: Derive and verify exact structured Gate lock
+        run: |
+          python3 - <<'PY'
+          import base64, copy, hashlib, json, os, shlex, subprocess
+          from pathlib import Path
+          import yaml, jsonschema, urllib.request
+          role = os.environ["GATE_ROLE"]
+          assert role in {"reviewer", "qa"}
+          path = Path(f".github/workflows/ai-sdlc-gh-aw-{role}-deepseek-v03-structured-local.lock.yml")
+          raw = path.read_bytes()
+          upstream = raw.decode()
+          metadata = json.loads(upstream.splitlines()[0].split(": ", 1)[1])
+          assert metadata["compiler_version"] == "v0.89.21" and metadata["strict"] is True
+          source = path.with_suffix("").with_suffix(".md").read_text()
+          body_hash = hashlib.sha256(source.split("\n---\n", 1)[1].rstrip("\n").encode()).hexdigest()
+          assert metadata["body_hash"] == body_hash
+          def unique(pairs):
+              result = {}
+              for key, value in pairs:
+                  assert key not in result, "duplicate JSON key"
+                  result[key] = value
+              return result
+          workflow = yaml.safe_load(upstream)
+          agent_steps = workflow["jobs"]["agent"]["steps"]
+          def step_index(steps, *, id=None, name=None):
+              indices = [i for i, step in enumerate(steps) if (id is not None and step.get("id") == id) or (name is not None and step.get("name") == name)]
+              assert len(indices) == 1
+              return indices[0]
+          context_index = step_index(agent_steps, id="gate_context")
+          model_index = step_index(agent_steps, id="agentic_execution")
+          collection_index = step_index(agent_steps, id="collect_output")
+          render_index = step_index(agent_steps, id="gate_render")
+          assert context_index < model_index < collection_index < render_index
+          for name in ("Upload agent output fallback artifact", "Upload agent artifacts"):
+              assert render_index < step_index(agent_steps, name=name)
+          effect_steps = workflow["jobs"]["safe_outputs"]["steps"]
+          validate_index = step_index(effect_steps, id="gate_validate")
+          assert validate_index + 1 == step_index(effect_steps, id="process_safe_outputs")
+          for steps_, index in ((agent_steps, context_index), (agent_steps, render_index), (effect_steps, validate_index)):
+              step = steps_[index]
+              assert step.get("continue-on-error", False) is False
+              assert step.get("if") in (None, "success()", "${{ success() }}")
+              assert "github.workflow_sha" in step["env"]["WORKFLOW_SHA"]
+              assert "GATE_HELPER_MODE" in step["env"]
+          steps = workflow["jobs"]["detection"]["steps"]
+          engines = [s for s in steps if s.get("id") == "detection_agentic_execution"]
+          assert len(engines) == 1
+          scan_before = step_index(steps, id="gate_scan_input")
+          scan_after = step_index(steps, id="gate_scanned_digest")
+          scan_engine = step_index(steps, id="detection_agentic_execution")
+          assert step_index(steps, name="Prepare threat detection files") < step_index(steps, name="Setup threat detection") < scan_before < scan_engine < scan_after
+          scan_output = workflow["jobs"]["detection"]["outputs"]["gate_scanned_sha256"]
+          assert scan_output == "$"+"{{ steps.gate_scanned_digest.outputs.sha256 }}"
+          assert {"detection_success", "detection_conclusion", "detection_reason"} <= set(workflow["jobs"]["detection"]["outputs"])
+          assert steps[scan_after]["env"]["EXPECTED_SCAN_INPUT_SHA256"] == "$"+"{{ steps.gate_scan_input.outputs.sha256 }}"
+          assert effect_steps[validate_index]["env"]["SCANNED_OUTPUT_SHA256"] == "$"+"{{ needs.detection.outputs.gate_scanned_sha256 }}"
+          for i in (scan_before, scan_after):
+              assert "/tmp/gh-aw/threat-detection/agent_output.json" in steps[i]["run"]
+              assert steps[i].get("continue-on-error", False) is False
+              assert steps[i].get("if") in (None, "success()", "$"+"{{ success() }}")
+          activation = workflow["jobs"]["activation"]["steps"]
+          prompt_input = [step for step in activation if step.get("name") == "Interpolate variables and render templates"]
+          assert len(prompt_input) == 1
+          assert prompt_input[0]["env"]["GH_AW_INPUTS_TASK_PAYLOAD"] == "$"+"{{ inputs.task_payload }}"
+          engine = engines[0]
+          env = engine["env"]
+          assert str(env["GH_AW_HARNESS_MAX_RETRIES"]) == "0"
+          assert env["COPILOT_MODEL"] == "deepseek-chat"
+          assert env["COPILOT_PROVIDER_BASE_URL"] == "https://api.deepseek.com"
+          assert env["COPILOT_PROVIDER_TYPE"] == "openai" and env["COPILOT_PROVIDER_WIRE_API"] == "completions"
+          assert "threat-detect --engine copilot --retries 0 --output " in engine["run"]
+          installs = [s for s in steps if "install_copilot_cli.sh" in s.get("run", "")]
+          assert len(installs) == 1
+          assert shlex.split(installs[0]["run"]) == ["bash", "$"+"{RUNNER_TEMP}/gh-aw/actions/install_copilot_cli.sh", "1.0.90"]
+          lines = engine["run"].splitlines()
+          assert sum(line.startswith("awf --config ") for line in lines) == 1
+          config_lines = []
+          for line in lines:
+              if not line.startswith("printf "):
+                  continue
+              words = shlex.split(line)
+              if len(words) >= 2 and words[-2:] == [">", "$"+"{RUNNER_TEMP}/gh-aw/awf-config.json"]:
+                  config_lines.append(line)
+          assert len(config_lines) == 1
+          old_line = config_lines[0]
+          def parse_config(line):
+              tokens = shlex.split(line)
+              assert len(tokens) == 5 and tokens[:2] == ["printf", r"%s\n"]
+              assert tokens[3:] == [">", "$"+"{RUNNER_TEMP}/gh-aw/awf-config.json"]
+              literal = tokens[2]
+              credit = "$"+"{GH_AW_MAX_AI_CREDITS}"
+              assert literal.count(credit) == 1
+              assert literal.count(r"\$schema") == 1
+              decoded = literal.replace(credit, "400").replace(r"\$schema", "$schema")
+              assert "$"+"{" not in decoded and "$(" not in decoded
+              return json.loads(decoded, object_pairs_hook=unique)
+          original_config = parse_config(old_line)
+          assert type(original_config["apiProxy"]["maxRuns"]) is int and original_config["apiProxy"]["maxRuns"] == 500
+          assert "maxTurns" not in original_config["apiProxy"]
+          # This byte delta is admitted only after strict structural decoding of this unique detector config.
+          old_token, new_token = r'\"maxRuns\":500,', r'\"maxRuns\":50,'
+          assert old_line.count(old_token) == 1
+          new_line = old_line.replace(old_token, new_token, 1)
+          derived_config = parse_config(new_line)
+          expected_config = copy.deepcopy(original_config)
+          expected_config["apiProxy"]["maxRuns"] = 50
+          assert derived_config == expected_config and type(derived_config["apiProxy"]["maxRuns"]) is int
+          assert type(derived_config["apiProxy"]["maxRuns"]) is not bool
+          url = "https://raw.githubusercontent.com/github/gh-aw-firewall/744bd7387c4ae8a6c2d38200f6f63a781804e892/src/awf-config-schema.json"
+          with urllib.request.urlopen(url, timeout=30) as response:
+              schema_bytes = response.read(1048577)
+          assert len(schema_bytes) <= 1048576
+          assert hashlib.sha1(b"blob " + str(len(schema_bytes)).encode() + b"\0" + schema_bytes).hexdigest() == "f2938160535d5611a44b45d8e0ff1bff69d60832"
+          schema = json.loads(schema_bytes, object_pairs_hook=unique)
+          jsonschema.validate(original_config, schema)
+          jsonschema.validate(derived_config, schema)
+          assert upstream.count(old_line) == 1
+          derived = upstream.replace(old_line, new_line, 1)
+          parsed_derived = yaml.safe_load(derived)
+          expected_workflow = copy.deepcopy(workflow)
+          expected_engine = next(s for s in expected_workflow["jobs"]["detection"]["steps"] if s.get("id") == "detection_agentic_execution")
+          assert expected_engine["run"].count(old_line) == 1
+          expected_engine["run"] = expected_engine["run"].replace(old_line, new_line, 1)
+          assert parsed_derived == expected_workflow
+          assert derived.count(new_line) == 1 and derived.replace(new_line, old_line, 1).encode() == raw
+          assert "GH_AW_CI_TRIGGER_TOKEN" not in derived
+          for job in parsed_derived["jobs"].values():
+              for step in job.get("steps", []):
+                  if str(step.get("uses", "")).startswith("actions/checkout@"):
+                      assert step["with"]["persist-credentials"] is False
+          upstream_blob = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+          proof = {
+              "schema": "ai-sdlc.v03-bounded-gate-lock-transform/v1",
+              "compiler": "gh-aw-v0.89.21-strict",
+              "upstream_blob_sha": upstream_blob,
+              "upstream_sha256": hashlib.sha256(raw).hexdigest(),
+              "body_hash": body_hash,
+              "detector_native_max_runs_from": 500,
+              "detector_native_max_runs_to": 50,
+              "detector_cli_version": "1.0.90",
+              "cli_version_origin": "compiler-derived",
+              "allowed_delta": "unique detection AWF apiProxy.maxRuns integer only",
+              "inverse_raw_equal": True,
+          }
+          out_lines = derived.splitlines(keepends=True)
+          out_lines.insert(1, "# ai-sdlc-bounded-gate-lock-transform: " + json.dumps(proof, separators=(",", ":")) + "\n")
+          hardened = "".join(out_lines).encode()
+          Path("evidence").mkdir(exist_ok=True)
+          Path(f"evidence/structured-{role}.upstream.lock.yml").write_bytes(raw)
+          Path(f"evidence/structured-{role}.derived.lock.yml").write_bytes(hardened)
+          Path(f"evidence/structured-{role}-transform.json").write_text(json.dumps(proof, indent=2) + "\n")
+          print("STRUCTURED_GATE_COMPILER_PROOF=" + json.dumps(proof, sort_keys=True))
+          print("STRUCTURED_GATE_LOCK_BASE64=" + base64.b64encode(hardened).decode())
+          checked_in = subprocess.check_output(["git", "show", "HEAD:" + str(path)])
+          assert checked_in == hardened, "checked-in structured Gate lock differs from exact compiler-derived transform"
+          PY
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v03-structured-${{ matrix.role }}-compiled
+          path: evidence/structured-${{ matrix.role }}*
+          if-no-files-found: error
+
+  validate-structured-output:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - run: pip install -r requirements-dev.txt
+      - uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-gate-test-actions
+      - name: Validate structured Gate output with actual official ingestion and handler
+        run: python scripts/validate_v03_gate_output_contract.py --actions-root "$RUNNER_TEMP/v03-gate-test-actions"
