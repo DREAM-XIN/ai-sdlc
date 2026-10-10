@@ -3727,3 +3727,253 @@ def build_v03_dogfood_full_composition(
         recovery_collector=recovery_collector,
         policy_authority=policy_authority,
     )
+
+# Preparation-only structured Gate handoff. No production composition selects this gateway.
+STRUCTURED_GATE_WORKFLOWS = {
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml",
+}
+
+
+class DogfoodStructuredGateContextBuilder:
+    """Package fresh authenticated evidence; never select a role or create an entitlement."""
+
+    def __init__(self, *, runtime, feature_gateway, persist_gateway, content_loader,
+                 candidate_provider, policy_authority):
+        self.runtime = runtime
+        self.feature_gateway = feature_gateway
+        self.persist_gateway = persist_gateway
+        self.content_loader = content_loader
+        self.candidate_provider = candidate_provider
+        self.policy_authority = policy_authority
+        if any(getattr(component, "runtime", None) is not runtime for component in
+               (feature_gateway, persist_gateway, content_loader, candidate_provider)):
+            raise V03DogfoodCompositionError("structured context must retain one protected runtime")
+
+    def __call__(self, dispatch):
+        from v03_dogfood_gate_output import validate_context, canonical, sha256, CONTEXT_SCHEMA
+        from v03_dogfood_fixture_pool import task_text
+        from operator_vertical_store import vertical_projection
+        import base64
+        runtime = self.runtime
+        runtime.protected_receipt()
+        snapshot = runtime.backend.read_snapshot()
+        operation_id = str(dispatch.get("operation_id") or "")
+        events = operation_events(snapshot, operation_id)
+        projection = vertical_projection(snapshot, operation_id)
+        role = dispatch.get("role")
+        stage = {"reviewer": "code-review", "qa": "verification"}.get(role)
+        if (stage is None or dispatch.get("operation_profile") != VERTICAL_PROFILE
+                or projection["generation"] != dispatch.get("operation_generation")
+                or projection["expected_feature_revision"] != dispatch.get("expected_revision")
+                or projection["status"] in {"DONE", "CANCELLED", "BLOCKED"}):
+            raise VerticalInvariantError("POLICY_DENIED", "structured context is outside its pending Gate")
+        logical_key = str(dispatch.get("external_dispatch_key") or "")
+        logical_dispatch_id = dispatch.get("dispatch_id")
+        # Only the already-existing fixed Reviewer mapping may resolve a physical key.
+        if (operation_id == RECOVERY_OPERATION_ID and role == "reviewer"
+                and logical_key != REVIEWER_OLD_KEY and reviewer_replacement_present(snapshot)):
+            route = reviewer_replacement_route(snapshot,
+                consumer_binding=recovery_execution_binding(self.policy_authority), require_seal=False)
+            auth = route["authorization"]
+            if logical_key != auth["physical_key"] or logical_dispatch_id != auth["physical_dispatch_id"]:
+                raise VerticalInvariantError("POLICY_DENIED", "unknown structured context physical mapping")
+            logical_key, logical_dispatch_id = auth["logical_key"], auth["logical_dispatch_id"]
+        claims = [row for row in events if row["event_type"] == "dispatch.launch.authorized"
+                  and row["operation_generation"] == dispatch["operation_generation"]
+                  and row["payload"].get("external_dispatch_key") == logical_key]
+        if len(claims) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "structured context lacks one protected launch binding")
+        launch = claims[0]["payload"]
+        expected = {"role": role, "stage": stage, "feature_id": dispatch["feature_id"],
+                    "expected_revision": dispatch["expected_revision"],
+                    "candidate_head_sha": dispatch["candidate_head_sha"],
+                    "semantic_effect_key": dispatch["semantic_effect_key"],
+                    "dispatch_id": logical_dispatch_id}
+        if any(launch.get(key) != value for key, value in expected.items()):
+            raise VerticalInvariantError("POLICY_DENIED", "structured context differs from protected launch")
+        reservation = snapshot.get(reservation_path(dispatch["semantic_effect_key"]))
+        if not isinstance(reservation, dict) or not _task_binding_matches(
+                str(reservation.get("task_identity") or ""), str(dispatch.get("task_id") or "")):
+            raise VerticalInvariantError("POLICY_DENIED", "structured context task differs from reservation")
+        feature, manifest = self.feature_gateway.read_feature(operation_id=operation_id)
+        candidate = self.candidate_provider.current_candidate(operation_id=operation_id,
+            repository=dispatch["target_repository"], feature_id=dispatch["feature_id"],
+            target_ref=dispatch["target_ref"])
+        if (feature.feature_id != dispatch["feature_id"]
+                or feature.repository != normalize_repository(dispatch["target_repository"])
+                or feature.target_ref != dispatch["target_ref"]
+                or feature.revision != dispatch["expected_revision"] or feature.current_stage != stage
+                or feature.candidate_head_sha != dispatch["candidate_head_sha"]
+                or candidate.candidate_head_sha != dispatch["candidate_head_sha"]
+                or candidate.candidate_pr_number != dispatch["candidate_pr_number"]):
+            raise VerticalInvariantError("STALE_REVISION", "structured context candidate/Feature drift")
+        task_uri = f"docs/features/{feature.feature_id}/dogfood-task.md"
+        tasks = [row for row in manifest.get("artifacts", [])
+                 if row.get("type") == "dogfood-task" and row.get("uri") == task_uri]
+        if len(tasks) != 1:
+            raise VerticalInvariantError("BLOCKED", "approved dogfood task reference missing")
+        provider = self.candidate_provider
+        url = (provider.api_base + "/repos/" + provider.repository + "/contents/"
+               + parse.quote(task_uri, safe="/") + "?ref=" + dispatch["candidate_head_sha"])
+        status, document = provider.http_get(url, provider._headers())
+        if status != 200 or not isinstance(document, dict) or document.get("encoding") != "base64":
+            raise VerticalInvariantError("BLOCKED", "approved task bytes unavailable")
+        raw = base64.b64decode(document.get("content", ""), validate=False)
+        git_blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
+        if (document.get("sha") != git_blob or raw != task_text(provider.slot).encode("utf-8")):
+            raise VerticalInvariantError("POLICY_DENIED", "candidate changed approved dogfood task")
+        documents = [{"kind": "approved_task", "uri": task_uri, "content": raw.decode("utf-8"),
+            "sha256": sha256(raw), "source_head_sha": dispatch["candidate_head_sha"],
+            "run_id": None, "receipt_sha256": None}]
+        directory = f"docs/features/{feature.feature_id}"
+        status, listing = provider.http_get(provider.api_base + "/repos/" + provider.repository
+            + "/contents/" + parse.quote(directory, safe="/") + "?ref=" + dispatch["candidate_head_sha"],
+            provider._headers())
+        if status != 200 or not isinstance(listing, list) or not 2 <= len(listing) <= 7:
+            raise VerticalInvariantError("BLOCKED", "candidate document listing unavailable or unbounded")
+        candidate_documents = []
+        for row in listing:
+            path = str(row.get("path") or "")
+            if path == task_uri:
+                continue
+            if (row.get("type") != "file" or not path.startswith(directory + "/")
+                    or "/" in path[len(directory) + 1:] or not path.endswith(".md")
+                    or not _SHA40.fullmatch(str(row.get("sha") or ""))):
+                raise VerticalInvariantError("BLOCKED", "candidate context has unsupported document shape")
+            status, item = provider.http_get(provider.api_base + "/repos/" + provider.repository
+                + "/contents/" + parse.quote(path, safe="/") + "?ref=" + dispatch["candidate_head_sha"],
+                provider._headers())
+            if status != 200 or not isinstance(item, dict) or item.get("encoding") != "base64":
+                raise VerticalInvariantError("BLOCKED", "candidate document unavailable")
+            content = base64.b64decode(item.get("content", ""), validate=False)
+            blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\x00" + content).hexdigest()
+            if item.get("sha") != blob or row["sha"] != blob:
+                raise VerticalInvariantError("BLOCKED", "candidate document Git blob changed")
+            candidate_documents.append({"kind": "candidate_document", "uri": path,
+                "content": content.decode("utf-8"), "sha256": sha256(content),
+                "source_head_sha": dispatch["candidate_head_sha"], "run_id": None, "receipt_sha256": None})
+        if not candidate_documents:
+            raise VerticalInvariantError("BLOCKED", "candidate implementation content is missing")
+        documents.extend(sorted(candidate_documents, key=lambda row: row["uri"]))
+        implementations = [row for row in manifest.get("artifacts", [])
+                           if row.get("type") == "implementation" and row.get("status") in {"draft", "approved"}]
+        if len(implementations) != 1:
+            raise VerticalInvariantError("BLOCKED", "structured context implementation is ambiguous")
+        selected = [("implementation", implementations[0], "developer")]
+        if role == "qa":
+            gate = [row for row in manifest.get("gates", []) if row.get("id") == "code-gate"
+                    and row.get("status") == "PASS"]
+            if len(gate) != 1:
+                raise VerticalInvariantError("BLOCKED", "QA context lacks protected passing code Gate")
+            review_ids = set(gate[0].get("evidence") or [])
+            reviews = [row for row in manifest.get("evidence", []) if row.get("id") in review_ids
+                       and row.get("type") == "review" and row.get("status") == "pass"]
+            if len(reviews) != 1:
+                raise VerticalInvariantError("BLOCKED", "QA context review evidence is ambiguous")
+            selected.append(("review", reviews[0], "reviewer"))
+        for kind, record, producer_role in selected:
+            matches = []
+            for callback in events:
+                if callback["event_type"] != "worker.callback.recorded":
+                    continue
+                payload = callback["payload"]
+                callback_id = payload["callback_id"]
+                envelope = payload.get("trusted_callback_envelope") or {}
+                context = envelope.get("trusted_context") or {}
+                if (context.get("role") != producer_role
+                        or context.get("operation_id") != operation_id
+                        or context.get("operation_generation") != dispatch["operation_generation"]
+                        or context.get("feature_id") != feature.feature_id):
+                    continue
+                receipts = [row for row in envelope.get("collected_outputs", [])
+                            if row.get("trusted_uri") == record.get("uri")]
+                accepted = [row for row in events if row["event_type"] == "worker.result.validated"
+                            and row["payload"].get("callback_id") == callback_id]
+                if len(receipts) != 1 or len(accepted) != 1:
+                    continue
+                if any(row["event_type"] == "worker.result.rejected"
+                       and row["payload"].get("callback_id") == callback_id for row in events):
+                    raise VerticalInvariantError("BLOCKED", "context callback has conflicting acceptance")
+                if digest_json(envelope) != payload.get("trusted_callback_envelope_digest"):
+                    raise VerticalInvariantError("BLOCKED", "context envelope digest differs")
+                translations = [row for row in events if row["event_type"] == "feature.event.translated"
+                    and row["payload"].get("callback_id") == callback_id
+                    and any(change.get("record", {}).get("uri") == record["uri"]
+                            for change in row["payload"].get("feature_event", {}).get("changes", []))]
+                if len(translations) != 1:
+                    raise VerticalInvariantError("BLOCKED", "context artifact lacks canonical translation")
+                translated = translations[0]
+                event_id = translated["payload"]["feature_event_id"]
+                confirmations = [row for row in events if row["event_type"] == "persist.confirmed"
+                                 and row["payload"].get("feature_event_id") == event_id]
+                if (len(confirmations) != 1 or not callback["sequence"] < accepted[0]["sequence"]
+                        < translated["sequence"] < confirmations[0]["sequence"] < claims[0]["sequence"]):
+                    raise VerticalInvariantError("BLOCKED", "context artifact Persist ordering differs")
+                receipt = self.persist_gateway.lookup_feature_event(event_id=event_id, target_ref=feature.target_ref)
+                if receipt != {"event_id": event_id, "result_revision": confirmations[0]["payload"]["result_revision"]}:
+                    raise VerticalInvariantError("BLOCKED", "context canonical Persist receipt unavailable")
+                output = receipts[0]
+                lease = _FIRST_ATTEMPT_URI_RE.fullmatch(str(output.get("trusted_uri") or ""))
+                if (lease is None or context.get("runtime_receipt_identity") != lease.group("run")
+                        or context.get("worker_identity", "").rsplit("@", 1)[-1] != lease.group("head")):
+                    raise VerticalInvariantError("BLOCKED", "context producer run/source lease differs")
+                content = self.content_loader(output["trusted_uri"])
+                if (not isinstance(content, bytes) or len(content) != output.get("size_bytes")
+                        or sha256(content) != output.get("sha256")):
+                    raise VerticalInvariantError("BLOCKED", "context authenticated content differs")
+                matches.append({"kind": kind, "uri": output["trusted_uri"], "content": content.decode("utf-8"),
+                    "sha256": sha256(content), "source_head_sha": lease.group("head"),
+                    "run_id": int(lease.group("run")), "receipt_sha256": digest_json(output)})
+            if len(matches) != 1:
+                raise VerticalInvariantError("BLOCKED", "context lacks one accepted authenticated producer")
+            documents.extend(matches)
+        identity = {key: dispatch[key] for key in (
+            "operation_id", "operation_generation", "external_dispatch_key", "semantic_effect_key",
+            "dispatch_id", "feature_id", "task_id", "role", "expected_revision", "target_repository",
+            "target_ref", "candidate_pr_number", "candidate_head_sha")}
+        identity["stage"] = stage
+        result = {"schema_version": CONTEXT_SCHEMA, "identity": identity,
+            "provenance": {"store_commit_sha": snapshot.ref_sha,
+                "producer_source_sha": self.policy_authority.installation_commit_sha,
+                "producer_policy_digest": self.policy_authority.bundle_digest.removeprefix("sha256:")},
+            "documents": documents}
+        result["context_sha256"] = sha256(canonical(result))
+        validate_context(result)
+        fresh = self.candidate_provider.current_candidate(operation_id=operation_id,
+            repository=dispatch["target_repository"], feature_id=dispatch["feature_id"],
+            target_ref=dispatch["target_ref"])
+        fresh_feature, _ = self.feature_gateway.read_feature(operation_id=operation_id)
+        if (fresh.candidate_head_sha != candidate.candidate_head_sha
+                or fresh.candidate_pr_number != candidate.candidate_pr_number
+                or fresh_feature.manifest_digest != feature.manifest_digest):
+            raise VerticalInvariantError("STALE_REVISION", "candidate changed while packaging Gate context")
+        if runtime.backend.read_snapshot().ref_sha != snapshot.ref_sha:
+            raise VerticalInvariantError("STALE_REVISION", "Store changed while packaging Gate context")
+        return result
+
+
+class DogfoodStructuredGateDispatchGateway(GhAwVerticalRoleDispatchGateway):
+    """Unselected preparation adapter; existing one-shot dispatch authority remains external."""
+
+    def __init__(self, *, transport, workflows, context_builder):
+        super().__init__(transport=transport, workflows=workflows)
+        if not isinstance(context_builder, DogfoodStructuredGateContextBuilder):
+            raise V03DogfoodCompositionError("structured Gate requires actual authenticated context builder")
+        self.context_builder = context_builder
+
+    def _inputs(self, dispatch):
+        from v03_dogfood_gate_output import canonical
+        role = dispatch.get("role")
+        if role not in STRUCTURED_GATE_WORKFLOWS or self.workflows.workflow_for(role) != STRUCTURED_GATE_WORKFLOWS[role]:
+            raise VerticalInvariantError("POLICY_DENIED", "structured context is restricted to unselected Gate workflows")
+        inputs = super()._inputs(dispatch)
+        payload = json.loads(inputs["task_payload"])
+        payload["feature_context"]["gate_context"] = self.context_builder(dispatch)
+        encoded = canonical(payload)
+        if len(encoded) > 32768:
+            raise VerticalInvariantError("BLOCKED", "structured task payload exceeds provider input limit")
+        inputs["task_payload"] = encoded.decode("utf-8")
+        if len(canonical(inputs)) > 32768:
+            raise VerticalInvariantError("BLOCKED", "complete structured dispatch inputs exceed bounded budget")
+        return inputs

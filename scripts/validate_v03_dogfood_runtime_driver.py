@@ -6849,6 +6849,165 @@ def reviewer_post_model_replacement_full_pipeline_tests():
     print("- actual selected Reviewer replacement/status/Persist/QA/Notification/finalizer pipeline passes")
 
 
+def structured_gate_authenticated_handoff_tests():
+    """Real existing loader/gateways, fake provider HTTP, and actual pinned handler."""
+    import base64
+    import hashlib
+    import json
+    import os
+    import subprocess
+    from copy import deepcopy
+    from dataclasses import replace
+    from pathlib import Path
+    from urllib.parse import parse_qs, unquote, urlparse
+    from operator_store_model import operation_events, canonical_json, StoreSnapshot, digest_json
+    from operator_vertical import VerticalInvariantError
+    from operator_vertical_gh_aw import GhAwVerticalWorkflowMap
+    from operator_vertical_gh_aw_actions_transport import GitHubActionsVerticalGhAwTransport
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    import v03_dogfood_gate_output as output
+    from validate_v03_gate_output_contract import verify_context_roundtrip
+    root = Path(__file__).resolve().parents[1]
+    actions_root = Path(os.environ["GH_AW_ACTIONS_ROOT"])
+    pf, provider, feature, gates, _ = reviewer_post_model_runtime_fixture()
+    d.recover_reviewer_post_model(pf)
+    runtime = pf.composition.runtime
+    loader = pf.composition.responses.operator_bundle.callback_coordinator.content_loader
+    # Composition's callback wrapper may expose the loader on its real delegate.
+    if loader is None:
+        raise AssertionError("actual context graph lost bound loader")
+    builder = c.DogfoodStructuredGateContextBuilder(runtime=runtime,
+        feature_gateway=feature.feature_gateway, persist_gateway=feature.persist_gateway,
+        content_loader=loader, candidate_provider=pf.composition.candidate_provider,
+        policy_authority=pf.composition.policy_authority)
+    directory = "docs/features/" + pf.slot.feature_id
+    texts = {}
+    for name in ("dogfood-task.md", "implementation.md"):
+        path = directory + "/" + name
+        texts[path] = subprocess.run(["git", "show", c.REVIEWER_CANDIDATE + ":" + path],
+            cwd=root, check=True, capture_output=True).stdout
+    state = {"missing": False, "tamper": False}
+    old_http = provider.http
+    def provider_http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        prefix = "/repos/dream-xin/ai-sdlc/contents/"
+        if method == "GET" and parsed.path.startswith(prefix):
+            path = unquote(parsed.path[len(prefix):])
+            ref = parse_qs(parsed.query).get("ref", [""])[0]
+            if (path == directory or path in texts) and ref == provider.read_ref():
+                if path == directory:
+                    rows = [{"path": name, "type": "file", "sha": hashlib.sha1(
+                        b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()}
+                        for name, raw in texts.items() if not state["missing"] or name.endswith("dogfood-task.md")]
+                    return 200, {}, json.dumps(rows).encode()
+                raw = texts[path]
+                sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
+                if state["tamper"] and path.endswith("implementation.md"):
+                    raw += b"changed"
+                return 200, {}, json.dumps({"type": "file", "path": path, "sha": sha,
+                    "encoding": "base64", "content": base64.b64encode(raw).decode()}).encode()
+        return old_http(method=method, url=url, token=token, body=body)
+    provider.http = provider_http
+    workflows = GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow=pf.workflows.developer_workflow,
+        reviewer_workflow=c.STRUCTURED_GATE_WORKFLOWS["reviewer"],
+        qa_workflow=c.STRUCTURED_GATE_WORKFLOWS["qa"])
+    captured, rows = [], []
+    def transport_http(*, method, url, token, body=None):
+        path = unquote(urlparse(url).path)
+        if method == "POST":
+            payload = json.loads(body)
+            inputs = payload["inputs"]
+            workflow = path.split("/")[-2]
+            expect(workflow in c.STRUCTURED_GATE_WORKFLOWS.values(), "context transport escaped new Gate pair")
+            captured.append(deepcopy(inputs))
+            rows.append({"id": 950000 + len(rows), "event": "workflow_dispatch", "head_branch": "main",
+                "path": ".github/workflows/" + workflow, "display_title": "AI-SDLC gh-aw " + inputs["dispatch_key"]})
+            return 204, {}, b""
+        if method == "GET" and "/actions/workflows/" in path and path.endswith("/runs"):
+            workflow = path.split("/")[-2]
+            found = [row for row in rows if row["path"] == ".github/workflows/" + workflow]
+            return 200, {}, json.dumps({"total_count": len(found), "workflow_runs": found}).encode()
+        raise AssertionError("unexpected structured transport boundary " + method + " " + path)
+    transport = GitHubActionsVerticalGhAwTransport(replace(gates.transport.config, workflows=workflows),
+        http=transport_http, sleeper=lambda _: None)
+    gateway = c.DogfoodStructuredGateDispatchGateway(transport=transport, workflows=workflows, context_builder=builder)
+    def from_inputs(inputs):
+        payload = json.loads(inputs["task_payload"])
+        vertical = payload["feature_context"]["vertical"]
+        return {"operation_id": vertical["operation_id"], "operation_generation": vertical["operation_generation"],
+            "operation_profile": vertical["profile"], "semantic_effect_key": vertical["semantic_effect_key"],
+            "external_dispatch_key": vertical["external_dispatch_key"], "dispatch_id": vertical["dispatch_id"],
+            "target_repository": inputs["target_repository"], "target_ref": inputs["target_ref"],
+            "feature_id": inputs["feature_id"], "expected_revision": int(inputs["expected_revision"]),
+            "feature_stage": inputs["stage"], "task_id": payload["task"]["id"], "role": inputs["role"],
+            "candidate_pr_number": int(inputs["candidate_pr_number"]), "candidate_head_sha": inputs["candidate_head_sha"]}
+    def env(inputs):
+        names = {"TASK_PAYLOAD": "task_payload", "FEATURE_ID": "feature_id", "EXPECTED_REVISION": "expected_revision",
+            "DISPATCH_KEY": "dispatch_key", "TARGET_REPOSITORY": "target_repository", "TARGET_REF": "target_ref",
+            "STAGE": "stage", "ROLE": "role", "CANDIDATE_PR_NUMBER": "candidate_pr_number",
+            "CANDIDATE_HEAD_SHA": "candidate_head_sha"}
+        return {**{key: inputs[value] for key, value in names.items()}, "RUN_ATTEMPT": "1"}
+    contexts = {}
+    for role in ("reviewer", "qa"):
+        actual = next(item for item in reversed(gates.state["inputs"]) if item["role"] == role)
+        dispatch = from_inputs(actual)
+        before = (canonical_json(runtime.backend.read_snapshot().files), runtime.backend.commit_count,
+                  feature.state["puts"], len(gates.state["posts"]))
+        result = gateway.launch(dispatch=dispatch)
+        expect(result["lookup_state"] == "LAUNCHED", "actual structured transport did not receive provider receipt")
+        inputs = captured[-1]
+        expected = c.GhAwVerticalRoleDispatchGateway(transport=transport, workflows=workflows)._inputs(dispatch)
+        original_payload = json.loads(expected["task_payload"])
+        enriched_payload = json.loads(inputs["task_payload"])
+        context = enriched_payload["feature_context"].pop("gate_context")
+        expect(enriched_payload == original_payload, "context handoff altered original task/vertical identity")
+        expect(output.context_from_environment(env(inputs)) == context,
+               "pre-model helper did not validate actual transported context")
+        expect(len(output.canonical(inputs)) <= 32768, "structured dispatch exceeded total input budget")
+        roundtrip = verify_context_roundtrip(role, context, root=root, actions_root=actions_root)
+        expect(roundtrip["payload"]["candidate_head_sha"] == dispatch["candidate_head_sha"],
+               "official published structured result lost actual candidate binding")
+        expect(before == (canonical_json(runtime.backend.read_snapshot().files), runtime.backend.commit_count,
+                          feature.state["puts"], len(gates.state["posts"])),
+               "read-only context handoff mutated protected lifecycle or existing dispatch")
+        contexts[role] = context
+        bad = env(inputs)
+        missing = json.loads(bad["TASK_PAYLOAD"])
+        del missing["feature_context"]["gate_context"]
+        bad["TASK_PAYLOAD"] = json.dumps(missing)
+        try: output.context_from_environment(bad)
+        except output.GateOutputContractError: pass
+        else: raise AssertionError("missing authenticated context reached model")
+        bad = env(inputs); bad["CANDIDATE_HEAD_SHA"] = "9" * 40
+        try: output.context_from_environment(bad)
+        except output.GateOutputContractError: pass
+        else: raise AssertionError("context candidate drift reached model")
+        for flag in ("missing", "tamper"):
+            state[flag] = True
+            try: builder(dispatch)
+            except (VerticalInvariantError, output.GateOutputContractError): pass
+            else: raise AssertionError("candidate context accepted " + flag)
+            finally: state[flag] = False
+        bad_dispatch = dict(dispatch, expected_revision=dispatch["expected_revision"] + 1)
+        try: builder(bad_dispatch)
+        except VerticalInvariantError: pass
+        else: raise AssertionError("context ignored protected revision")
+        if role == "reviewer":
+            # Real callback, translation, reducer and Persist advance to QA; no seeded facts.
+            pf.composition.collector.handle(operation_id=c.RECOVERY_OPERATION_ID,
+                external_dispatch_key=c.REVIEWER_OLD_KEY)
+            expect(any(item["role"] == "qa" for item in gates.state["inputs"]),
+                   "actual accepted Reviewer did not advance to QA")
+    expect(contexts["reviewer"]["identity"]["candidate_head_sha"] != contexts["qa"]["identity"]["candidate_head_sha"],
+           "canonical Persist candidate progression was frozen")
+    expect(any(row["kind"] == "review" for row in contexts["qa"]["documents"]),
+           "actual QA context omitted accepted review content")
+    expect(operation_events(runtime.backend.read_snapshot(), c.RECOVERY_OPERATION_ID)[:30] == provider.frozen_events,
+           "context preparation changed immutable historical prefix")
+    print("- actual loader/context/dispatch/pre-model validation/official Gate publication handoff passed")
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -6885,6 +7044,7 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("structured Gate authenticated handoff", structured_gate_authenticated_handoff_tests),
         ("selected paid DeepSeek source/lock contracts", lambda: selected_dogfood_worker_contract_tests(validation_root)),
         ("bounded Gate detector transform",lambda:bounded_gate_detector_contract_tests(validation_root,upstream_pins={
             "reviewer":{"blob_sha":"4e25281b296ab23d89047938fb0fffe9582add2e","sha256":"5bd1fc3ff3d577607b956006228a5e4c31f0c1da903cbf37e15ee48b694d7015"},

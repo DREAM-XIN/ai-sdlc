@@ -20,6 +20,12 @@ SOURCE_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"5e7
 DOGFOOD_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"498cf324a12b8257fa7dbb53003f4ff3fa240fc3",".github/workflows/validate-v03-trusted-control-command.yml":"f43fe229679c6fb463b3c3f051c638e4eaee9e31","scripts/v03_dogfood_trusted_provenance.py":"7c2ae9301c5a14324ca180f133246e5a4040832b","scripts/validate_v03_dogfood_evidence.py":"691441edef3d6fb18f4804413805c1d867b74500"}
 SOURCE_CONTROL_MODES = {path: ("100755" if path == "scripts/validate_v03_dogfood_evidence.py" else "100644") for path in SOURCE_CONTROL_BLOBS}
 ADDED_PATHS = frozenset({
+    ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.md",
+    ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.md",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml",
+    "scripts/v03_dogfood_gate_output.py",
+    "scripts/validate_v03_gate_output_contract.py",
     ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md",
     ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.md",
