@@ -7708,7 +7708,8 @@ def reviewer_structured_runtime_fixture(*, verdict="PASS"):
     from unittest.mock import patch
     import v03_dogfood_live_gate as gate
     import v03_dogfood_runtime_preflight as preflight
-    historical = tuple(replace(row, worker_workflow=gate.STRUCTURED_DOGFOOD_WORKFLOWS[row.role])
+    historical = tuple(replace(row, rule_id=gate.STRUCTURED_DOGFOOD_POLICY,
+                               worker_workflow=gate.STRUCTURED_DOGFOOD_WORKFLOWS[row.role])
                        for row in gate.resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}))
     with (patch.object(gate, "resolve_current_dogfood_bindings", return_value=historical),
           patch.object(preflight, "dogfood_selection_for_scenario",
@@ -7768,6 +7769,29 @@ def reviewer_inline_runtime_fixture(*, verdict='PASS'):
         expect(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() == blob,
                "ordinal3 immutable fixture blob differs")
         provider.snapshot.files[path] = json.loads(raw)
+    # Current provider availability starts at the genuine spent ordinal3 capture.
+    # Older immutable authorization bytes remain untouched; expired activation rows
+    # cannot reappear in a later ordinal4 observation.
+    prior_auth = provider.snapshot.files[composition.REVIEWER_STRUCTURED_AUTH_PATH]
+    captured = prior_auth["predecessor_proof"]["retention_observations"]
+    provider.inline_absent_activation_rows = {}
+    for name, run_id, missing_id in (
+        ("reviewer_observed", 37917962742, 11611241425),
+        ("reviewer_post_model_observed", 37927328438, 11614602643),
+    ):
+        observation = next(row for row in captured if row["run_id"] == run_id)
+        expect(observation["activation_state"] == "absent",
+               "spent ordinal3 capture no longer establishes activation absence")
+        listing = provider.state[name]["artifacts"]
+        removed = [row for row in listing["artifacts"] if row["id"] == missing_id]
+        expect(len(removed) == 1 and removed[0]["name"] == "activation",
+               "ordinal4 current inventory removal differs from fixed activation")
+        provider.inline_absent_activation_rows[name] = deepcopy(removed[0])
+        listing["artifacts"] = [row for row in listing["artifacts"] if row["id"] != missing_id]
+        listing["total_count"] = len(listing["artifacts"])
+        expect(sorted(row["id"] for row in listing["artifacts"]) ==
+               sorted(row["id"] for row in observation["current_artifacts"]),
+               "ordinal4 current inventory differs from genuine captured availability")
     provider.snapshot = StoreSnapshot(composition.REVIEWER_INLINE_STORE, provider.snapshot.files)
     files = provider.snapshot.files
     for name in ("effect-lineage-rollout.json", "writer-fence-receipt.json", "effect-resolution-policy.json", "decision-policy.json"):
@@ -9397,6 +9421,12 @@ def reviewer_fixed_activation_retention_tests():
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--group", choices=("joined",))
+    selection.add_argument("--exclude-group", choices=("joined",))
+    args = parser.parse_args()
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
             require_mode(mode=VALIDATE_ONLY, scenario=scenario, event_name="pull_request", ref="refs/pull/348/merge")
@@ -9475,6 +9505,12 @@ def main():
         ("post-handoff provider-applied confirmation crash", lambda: post_handoff_full_pipeline_tests(crash_before_confirmation=True)),
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
+    joined_name = "inline selected factory joined CLI lifecycle"
+    if args.group == "joined":
+        groups = tuple(row for row in groups if row[0] == joined_name)
+        expect(len(groups) == 1, "joined group selection must be exact")
+    elif args.exclude_group == "joined":
+        groups = tuple(row for row in groups if row[0] != joined_name)
     for name, execute in groups:
         try:
             execute()
@@ -9484,6 +9520,10 @@ def main():
             traceback.print_exc()
     if failures:
         raise AssertionError("v0.3 regression groups failed: " + ", ".join(failures))
+
+    if args.group == "joined":
+        print("- selected joined regression group passed")
+        return
 
     provider = dogfood_responses_host_config({"AI_SDLC_DEEPSEEK_API_KEY": "configured-test-key"})
     expect(provider.api_base == DOGFOOD_RESPONSES_API_BASE == "https://api.deepseek.com",
@@ -9684,6 +9724,12 @@ def reviewer_inline_admission_tests():
         expect(before==(canonical_json(runtime.backend.snapshot.files),runtime.backend.commit_count,
                 len(gates.state["posts"]),feature.state["puts"],provider.effect_counts()),
                "corrected Reviewer rejected after effects: "+label)
+    for name in ("reviewer_observed", "reviewer_post_model_observed"):
+        pf, p, feature, gates, _ = reviewer_inline_runtime_fixture()
+        listing = p.state[name]["artifacts"]
+        listing["artifacts"].append(deepcopy(p.inline_absent_activation_rows[name]))
+        listing["total_count"] = len(listing["artifacts"])
+        reject(pf, p, feature, gates, "spent ordinal3 absent activation resurrected")
     for path in c.REVIEWER_INLINE_PATHS:
         for value in (None,{},[]):
             pf,p,feature,gates,_=reviewer_inline_runtime_fixture()
@@ -9914,7 +9960,10 @@ def actual_factory_joined_fixture(seed):
         snapshot = old.runtime.backend.read_snapshot()
         expect(not gates.state["posts"] and feature.state["puts"] == 0,
                "actual factory fixture must be installed before tested effects")
-        policy = old.policy_authority
+        # Materialize the current synthetic installation through the real policy producer.
+        policy_files, _unused_memory_loader = ordinary_rereview_policy_fixture(pf)
+        seed_files = deepcopy(snapshot.files)
+        seed_files.update(deepcopy(policy_files))
         clock = old.runtime.clock
         api_http = old.actions_transport.http
         gate = SimpleNamespace(scenario=pf.slot.scenario,
@@ -9944,7 +9993,7 @@ def actual_factory_joined_fixture(seed):
             git("remote", "add", "origin", remote, cwd=checkout)
             state_ref = "refs/heads/ai-sdlc-operator-state"
             git("symbolic-ref", "HEAD", state_ref, cwd=checkout)
-            for name, value in snapshot.files.items():
+            for name, value in seed_files.items():
                 path = Path(name)
                 expect(not path.is_absolute() and ".." not in path.parts and
                        (name.startswith("state/operator/v1/") or name.startswith("config/operator/")),
@@ -9957,6 +10006,45 @@ def actual_factory_joined_fixture(seed):
             git("push", "origin", "HEAD:" + state_ref, cwd=checkout)
             expect(Path(git("remote", "get-url", "origin", cwd=checkout)).resolve() == remote.resolve(),
                    "test Store remote is not the private local bare repository")
+            # The policy receipt names no self-referential commit. Its exact commit
+            # anchor becomes known only after the real local Git materialization.
+            from operator_vertical import VERTICAL_PROFILE
+            from operator_vertical_policy_state import ProtectedVerticalPolicyBundleLoader
+            materialization_sha = git("rev-parse", "HEAD", cwd=checkout)
+            repository = pf.execution.repository.lower()
+            installation_sha = pf.execution.installation_commit_sha
+            def exact_policy(sha, path):
+                expect(sha == materialization_sha and path in policy_files,
+                       "joined exact policy read escaped materialization")
+                return json.loads(git("show", sha + ":" + path, cwd=remote))
+            def current_policy(repo, ref, path):
+                expect(repo == repository and ref == state_ref and path in policy_files,
+                       "joined current policy read escaped protected namespace")
+                current_sha = git("rev-parse", state_ref, cwd=remote)
+                return json.loads(git("show", current_sha + ":" + path, cwd=remote))
+            def materialization_authority(repo, ref, sha):
+                if (repo, ref, sha) != (repository, state_ref, materialization_sha):
+                    return False
+                current_sha = git("rev-parse", state_ref, cwd=remote)
+                git("merge-base", "--is-ancestor", sha, current_sha, cwd=remote)
+                return True
+            policy = ProtectedVerticalPolicyBundleLoader(
+                repository=repository, installation_commit_sha=installation_sha,
+                materialization_commit_sha=materialization_sha, state_ref=state_ref,
+                operation_profile=VERTICAL_PROFILE,
+                receipt_path="config/operator/v03-vertical-policy/bundle-receipt.json",
+                document_loader=exact_policy, protected_document_loader=current_policy,
+                # Installation identity is the same explicit fake provider boundary
+                # as the authenticated source routes; Store materialization is real Git.
+                installation_commit_verifier=lambda repo, sha: (
+                    repo == repository and sha == installation_sha),
+                materialization_commit_verifier=materialization_authority,
+            ).load()
+            expect(policy.materialization_commit_sha == materialization_sha and all(
+                exact_policy(materialization_sha, path) == value
+                and current_policy(repository, state_ref, path) == value
+                for path, value in policy_files.items()),
+                "joined real policy materialization differs")
             def protection_get(url, headers):
                 expect(url == "https://api.github.com/repos/dream-xin/ai-sdlc/branches/"
                        "ai-sdlc-operator-state/protection", "protection read escaped fixture")
@@ -10033,8 +10121,6 @@ def actual_factory_joined_fixture(seed):
                 expect(Path(git("remote", "get-url", "origin", cwd=checkout)).resolve() == remote.resolve(),
                        "joined runtime changed its local Store remote")
     return run()
-
-
 
 def reviewer_inline_joined_factory_tests():
     """One connected production factory -> CLI ledger -> collector -> Persist/QA proof."""
