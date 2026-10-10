@@ -85,18 +85,42 @@ safe-outputs:
       env:
         RUN_ATTEMPT: ${{ github.run_attempt }}
         AGENT_RESULT: ${{ needs.agent.result }}
+        DETECTION_RESULT: ${{ needs.detection.result }}
         DETECTION_SUCCESS: ${{ needs.detection.outputs.detection_success }}
         DETECTION_CONCLUSION: ${{ needs.detection.outputs.detection_conclusion }}
       run: |
         set -euo pipefail
         test "$RUN_ATTEMPT" = 1
         test "$AGENT_RESULT" = success
+        test "$DETECTION_RESULT" = success
         test "$DETECTION_SUCCESS" = true
         test "$DETECTION_CONCLUSION" = success
+    - name: Prepare exclusive Gate receipt download directory
+      id: gate_scan_receipt_directory
+      run: |
+        set -euo pipefail
+        python3 -I - <<'PY'
+        import os, pathlib
+        root = pathlib.Path(os.environ["RUNNER_TEMP"])
+        assert root.is_absolute() and root.is_dir() and not root.is_symlink()
+        assert not any(parent.is_symlink() for parent in root.parents)
+        target = root / "ai-sdlc-gate-scan-receipt"
+        target.mkdir(mode=0o700)
+        assert not list(target.iterdir())
+        PY
+    - name: Download exact current-run Gate scan byte receipt
+      id: gate_scan_receipt_download
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: ai-sdlc-gate-scanned-bytes-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/ai-sdlc-gate-scan-receipt
     - name: Verify scanned Gate bytes before publication
       id: gate_validate
       env:
-        SCANNED_OUTPUT_SHA256: ${{ needs.detection.outputs.gate_scanned_sha256 }}
+        SCANNED_RECEIPT_PATH: ${{ runner.temp }}/ai-sdlc-gate-scan-receipt/receipt.json
+        SOURCE_RUN_ID: ${{ github.run_id }}
+        SOURCE_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        DETECTION_RESULT: ${{ needs.detection.result }}
         WORKFLOW_SHA: ${{ github.workflow_sha }}
         GATE_HELPER_MODE: validate
         TASK_PAYLOAD: ${{ inputs.task_payload }}
@@ -143,7 +167,7 @@ safe-outputs:
         if not data or len(data) > 262144:
             fail()
         blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        if blob != "7ea3f498e163703a687ba39b86beb52de6edc18f":
+        if blob != "3a59d4c313f957e08a17638247ee74e452fbd829":
             fail()
         directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
         path = directory / "helper.py"
@@ -188,9 +212,12 @@ safe-outputs:
     post-steps:
       - name: Verify Gate detector input bytes after scanning
         id: gate_scanned_digest
-        if: ${{ success() && steps.detection_guard.outputs.run_detection == 'true' }}
+        if: ${{ success() && steps.detection_guard.outputs.run_detection == 'true' && steps.detection_agentic_execution.outcome == 'success' }}
         env:
           GATE_DIGEST_MODE: after
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_WORKFLOW_SHA: ${{ github.workflow_sha }}
           EXPECTED_SCAN_INPUT_SHA256: ${{ steps.gate_scan_input.outputs.sha256 }}
         run: |
           set -euo pipefail
@@ -210,8 +237,33 @@ safe-outputs:
               assert os.environ["GATE_DIGEST_MODE"] == "before" and not expected
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write("sha256=" + digest + "\n")
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          assert root.is_absolute() and not root.is_symlink()
+          assert not any(parent.is_symlink() for parent in root.parents)
+          target = root / "ai-sdlc-gate-scan-publication"
+          target.mkdir(mode=0o700)
+          assert re.fullmatch(r"[1-9][0-9]*", os.environ["SOURCE_RUN_ID"])
+          assert os.environ["RUN_ATTEMPT"] == "1"
+          assert re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_WORKFLOW_SHA"])
+          receipt = {"schema_version":"ai-sdlc.v03-gate-scanned-bytes/v1",
+                     "run_id":int(os.environ["SOURCE_RUN_ID"]), "run_attempt":1,
+                     "workflow_sha":os.environ["SOURCE_WORKFLOW_SHA"], "sha256":digest}
+          import json
+          fd = os.open(target / "receipt.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as receipt_file:
+              receipt_file.write(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
           print("Gate detector input byte identity verified.")
           PY
+      - name: Upload immutable Gate scan byte receipt
+        id: gate_scan_receipt_upload
+        if: ${{ success() && steps.gate_scanned_digest.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ai-sdlc-gate-scanned-bytes-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ai-sdlc-gate-scan-publication/receipt.json
+          overwrite: false
+          archive: true
+          if-no-files-found: error
     enabled: true
     continue-on-error: false
     retries: 0
@@ -261,6 +313,9 @@ post-steps:
     env:
       WORKFLOW_SHA: ${{ github.workflow_sha }}
       GATE_HELPER_MODE: render
+      GH_AW_ALLOWED_DOMAINS: "api.deepseek.com,api.snapcraft.io,archive.ubuntu.com,azure.archive.ubuntu.com,crl.geotrust.com,crl.globalsign.com,crl.identrust.com,crl.sectigo.com,crl.thawte.com,crl.usertrust.com,crl.verisign.com,crl3.digicert.com,crl4.digicert.com,crls.ssl.com,deepseek.com,json-schema.org,json.schemastore.org,keyserver.ubuntu.com,ocsp.digicert.com,ocsp.geotrust.com,ocsp.globalsign.com,ocsp.identrust.com,ocsp.sectigo.com,ocsp.ssl.com,ocsp.thawte.com,ocsp.usertrust.com,ocsp.verisign.com,packagecloud.io,packages.cloud.google.com,packages.microsoft.com,ppa.launchpad.net,s.symcb.com,s.symcd.com,security.ubuntu.com,ts-crl.ws.symantec.com,ts-ocsp.ws.symantec.com,www.googleapis.com"
+      GITHUB_SERVER_URL: ${{ github.server_url }}
+      GITHUB_API_URL: ${{ github.api_url }}
       TASK_PAYLOAD: ${{ inputs.task_payload }}
       RUN_ATTEMPT: ${{ github.run_attempt }}
       FEATURE_ID: ${{ inputs.feature_id }}
@@ -302,7 +357,7 @@ post-steps:
       if not data or len(data) > 262144:
           fail()
       blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-      if blob != "7ea3f498e163703a687ba39b86beb52de6edc18f":
+      if blob != "3a59d4c313f957e08a17638247ee74e452fbd829":
           fail()
       directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
       path = directory / "helper.py"
@@ -386,7 +441,7 @@ jobs:
           if not data or len(data) > 262144:
               fail()
           blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-          if blob != "7ea3f498e163703a687ba39b86beb52de6edc18f":
+          if blob != "3a59d4c313f957e08a17638247ee74e452fbd829":
               fail()
           directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
           path = directory / "helper.py"
@@ -401,9 +456,6 @@ jobs:
               args += ["--actions-root", str(root / "gh-aw" / "actions")]
           os.execv(sys.executable, args)
           PY
-  detection:
-    outputs:
-      gate_scanned_sha256: ${{ steps.gate_scanned_digest.outputs.sha256 }}
   conclusion:
     permissions:
       contents: read
@@ -463,7 +515,7 @@ You are the independent AI-SDLC Verification QA worker for stage `verification`.
 The trusted candidate checkout is nested at `$GITHUB_WORKSPACE/ai-sdlc`; the outer workflow checkout is the controller source, not candidate evidence. Bash and local shell are unavailable. Use the allowed read-only GitHub tools bound to `${{ inputs.candidate_head_sha }}` and candidate PR `${{ inputs.candidate_pr_number }}`; never infer candidate identity from the default working directory. If those tools cannot establish the required candidate evidence, emit BLOCKED.
 
 1. Decode the trusted task payload in the context section below and verify feature/stage/role/repository identity. Confirm the checked-out commit is exactly `${{ inputs.candidate_head_sha }}`. If any identity differs, stop without claiming PASS.
-2. Read the Feature Issue, approved Requirement/Design/Plan, relevant implementation/review evidence, candidate PR/diff and required CI using only read-only tools.
+2. Read the Feature Issue, the supplied approved task, and any Requirement/Design/Plan artifacts actually required by that task or Manifest, together with relevant implementation/review evidence, candidate PR/diff and genuinely required CI using only read-only tools. Report missing required evidence; never invent a requirement.
 3. Do not edit files, create branches, commit, push, create or update PRs, write Feature Manifest/Event state, pass or waive Gates, merge, release, or implement remediation.
 4. Evaluate only the assigned `verification` responsibility. The candidate PR number `${{ inputs.candidate_pr_number }}` and SHA `${{ inputs.candidate_head_sha }}` are immutable trusted inputs; never substitute a newer PR head.
 5. Call the `add_comment` Safe Output exactly once. Set its body to the exact transport-only text `AI-SDLC structured Gate recommendation.`. Put your complete result object in the `data` argument, satisfying the full role schema below. Do not put another JSON object, verdict or human narrative in the body. The trusted renderer will preserve your data and render the versioned visible machine envelope before security detection; no fallback or schema repair is performed.

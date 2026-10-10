@@ -109,7 +109,7 @@ def validate_context(context, expected_identity=None):
     for document in documents:
         exact_keys(document, {"kind", "uri", "content", "sha256", "source_head_sha",
                               "run_id", "receipt_sha256"}, "document")
-        if document["kind"] not in {"approved_task", "implementation", "review"}:
+        if document["kind"] not in {"approved_task", "candidate_document", "implementation", "review"}:
             fail("document kind differs")
         if (not isinstance(document["uri"], str) or not document["uri"]
                 or len(document["uri"]) > 2048 or document["uri"] in uris):
@@ -120,7 +120,9 @@ def validate_context(context, expected_identity=None):
         if not 0 < len(raw) <= MAX_DOCUMENT_BYTES or sha256(raw) != document["sha256"]:
             fail("document content/hash differs")
         hex_value(document["source_head_sha"], 40, "document source")
-        if document["kind"] == "approved_task":
+        if document["kind"] in {"approved_task", "candidate_document"}:
+            if document["source_head_sha"] != identity["candidate_head_sha"]:
+                fail("Git-backed evidence candidate source differs")
             if document["run_id"] is not None or document["receipt_sha256"] is not None:
                 fail("approved task must not invent a Worker receipt")
         else:
@@ -128,7 +130,7 @@ def validate_context(context, expected_identity=None):
             hex_value(document["receipt_sha256"], 64, "document receipt")
         kinds.add(document["kind"])
         uris.add(document["uri"])
-    required = {"approved_task", "implementation"} | ({"review"} if identity["role"] == "qa" else set())
+    required = {"approved_task", "candidate_document", "implementation"} | ({"review"} if identity["role"] == "qa" else set())
     if not required <= kinds:
         fail("required authenticated context is missing")
     body = {key: value for key, value in context.items() if key != "context_sha256"}
@@ -270,7 +272,8 @@ def parse_published_gate(body, context, role, metadata_suffix):
     ending = "\n" + FENCE + "\n" + END
     suffix = "\n\n" + metadata_suffix if metadata_suffix else ""
     if (not body.startswith(prefix) or not body.endswith(ending + suffix)
-            or body.splitlines().count(START) != 1 or body.splitlines().count(END) != 1 or body.count(FENCE) != 2):
+            or body.splitlines().count(START) != 1 or body.splitlines().count(END) != 1
+            or body.splitlines().count(FENCE + "json") != 1 or body.splitlines().count(FENCE) != 1):
         fail("published envelope/metadata differs")
     payload_text = body[len(prefix):len(body) - len(ending + suffix)]
     payload = validate_payload(strict_json(payload_text), context, role)
@@ -284,6 +287,9 @@ def context_from_environment(environ):
         feature, task = payload["feature_context"], payload["task"]
         vertical = feature["vertical"]
         role = environ["ROLE"]
+        if (not re.fullmatch(r"0|[1-9][0-9]*", environ["EXPECTED_REVISION"])
+                or not re.fullmatch(r"[1-9][0-9]*", environ["CANDIDATE_PR_NUMBER"])):
+            fail("dispatch number spelling differs")
         expected = {
             "operation_id": vertical["operation_id"], "operation_generation": vertical["operation_generation"],
             "external_dispatch_key": environ["DISPATCH_KEY"], "semantic_effect_key": vertical["semantic_effect_key"],
@@ -294,6 +300,7 @@ def context_from_environment(environ):
             "candidate_pr_number": int(environ["CANDIDATE_PR_NUMBER"]),
             "candidate_head_sha": environ["CANDIDATE_HEAD_SHA"]}
         if (payload["contract"] != "ai-sdlc-task-v0.1"
+                or vertical["profile"] != "vertical-implementation-review-qa/v1"
                 or task["feature_id"] != expected["feature_id"] or task["role"] != role
                 or feature["id"] != expected["feature_id"] or feature["repository"] != expected["target_repository"]
                 or vertical["external_dispatch_key"] != expected["external_dispatch_key"]
@@ -305,6 +312,22 @@ def context_from_environment(environ):
         if isinstance(exc, GateOutputContractError):
             raise
         raise GateOutputContractError("authenticated Gate context missing/invalid") from exc
+
+
+def scanned_receipt_digest(raw, *, run_id, run_attempt, workflow_sha):
+    receipt = strict_json(raw, limit=4096)
+    exact_keys(receipt, {"schema_version", "run_id", "run_attempt", "workflow_sha", "sha256"}, "scan byte receipt")
+    positive_int(run_id, "current run")
+    positive_int(run_attempt, "current attempt")
+    hex_value(workflow_sha, 40, "current workflow")
+    if (receipt["schema_version"] != "ai-sdlc.v03-gate-scanned-bytes/v1"
+            or type(receipt["run_id"]) is not int or receipt["run_id"] != run_id
+            or type(receipt["run_attempt"]) is not int or receipt["run_attempt"] != 1 or run_attempt != 1
+            or receipt["workflow_sha"] != workflow_sha):
+        fail("scan byte receipt run/source binding differs")
+    hex_value(receipt["sha256"], 64, "scan byte receipt")
+    return receipt["sha256"]
+
 
 def _read_regular(path, maximum):
     path = Path(path)
@@ -382,12 +405,25 @@ def main():
         os.replace(temporary, path)
         print("Canonical Gate output rendered before detection.")
         return
-    if (os.environ.get("AGENT_RESULT") != "success" or os.environ.get("DETECTION_SUCCESS") != "true"
+    if (os.environ.get("AGENT_RESULT") != "success" or os.environ.get("DETECTION_RESULT") != "success"
+            or os.environ.get("DETECTION_SUCCESS") != "true"
             or os.environ.get("DETECTION_CONCLUSION") != "success"):
         fail("agent success and affirmative detection required")
+    receipt_path = Path(os.environ.get("SCANNED_RECEIPT_PATH", ""))
+    expected_path = Path(os.environ.get("RUNNER_TEMP", "")) / "ai-sdlc-gate-scan-receipt" / "receipt.json"
+    if not expected_path.is_absolute() or receipt_path != expected_path:
+        fail("scan byte receipt path differs")
+    if (receipt_path.parent.is_symlink() or not receipt_path.parent.is_dir()
+            or set(receipt_path.parent.iterdir()) != {receipt_path}):
+        fail("scan byte receipt directory differs")
+    run_id = os.environ.get("SOURCE_RUN_ID", "")
+    if not re.fullmatch(r"[1-9][0-9]*", run_id):
+        fail("current run identity missing")
+    scanned_digest = scanned_receipt_digest(_read_regular(receipt_path, 4096),
+        run_id=int(run_id), run_attempt=1, workflow_sha=os.environ.get("SOURCE_WORKFLOW_SHA"))
     output = strict_json(collected)
     validate_scanned_output(collected, output.get("gate_render_proof"), context, role,
-                            scanned_sha256=os.environ.get("SCANNED_OUTPUT_SHA256"))
+                            scanned_sha256=scanned_digest)
     print("Scanned Gate output identity, schema and bytes validated.")
 
 if __name__ == "__main__":

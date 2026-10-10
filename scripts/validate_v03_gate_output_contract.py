@@ -77,6 +77,17 @@ def selected_config(role, candidate=577):
     check(len(ingest) == 1 and "collect_ndjson_output.cjs" in ingest[0]["with"]["script"],
           "actual official ingestion missing")
     metadata["GH_AW_ALLOWED_DOMAINS"] = ingest[0]["env"]["GH_AW_ALLOWED_DOMAINS"]
+    render_steps = [step for step in steps if step.get("id") == "gate_render"]
+    handlers = [step for step in safe["steps"] if step.get("id") == "process_safe_outputs"]
+    check(len(render_steps) == len(handlers) == 1, "missing render/handler policy")
+    for name in ("GH_AW_ALLOWED_DOMAINS", "GH_AW_SAFE_OUTPUTS_URLS"):
+        before = render_steps[0].get("env", {}).get(name)
+        after = handlers[0].get("env", {}).get(name)
+        check(before == after, "render and publication sanitizer policy differs: " + name)
+        if after is not None:
+            check("${" not in str(after), "unresolved sanitizer policy")
+            metadata[name] = str(after)
+
     return lock, config, validation, metadata
 
 class Official:
@@ -246,6 +257,17 @@ global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
 })().catch(() => { process.stderr.write('OFFICIAL_GATE_FIXTURE_FAILED\n'); process.exitCode=1; });
 '''
 
+def resolve_actions_root(value):
+    base = Path(value).resolve()
+    candidates = [base, base / "setup" / "js"]
+    found = [directory for directory in candidates if (directory / "sanitize_content.cjs").is_file()]
+    check(len(found) == 1, "ambiguous or missing official actions directory")
+    for name, expected in PINS.items():
+        data = (found[0] / name).read_bytes()
+        actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+        check(actual == expected, "official source pin mismatch: " + name)
+    return found[0]
+
 def compiled_contract(lock):
     agent = lock["jobs"]["agent"]["steps"]
     safe = lock["jobs"]["safe_outputs"]["steps"]
@@ -273,6 +295,8 @@ def compiled_contract(lock):
     guard = guards[0]
     check(safe.index(guard) < validate_index, "effect guard ordering")
     check(guard["env"]["AGENT_RESULT"] == "${{ needs.agent.result }}", "agent result source drift")
+    check(guard["env"]["DETECTION_RESULT"] == "${{ needs.detection.result }}",
+          "whole detector job result source drift")
     for step in (agent[context_index], agent[render_index], guard, safe[validate_index], safe[process_index]):
         check(step.get("continue-on-error", False) is False, "critical step ignores failures")
         check(step.get("if") in (None, "success()", "${{ success() }}"),
@@ -280,9 +304,10 @@ def compiled_contract(lock):
     # Execute the real generated shell guard; implicit GitHub success semantics
     # then gate the validation/handler steps, whose no-bypass conditions are above.
     base = {"PATH": os.environ["PATH"], "RUN_ATTEMPT": "1", "AGENT_RESULT": "success",
-            "DETECTION_SUCCESS": "true", "DETECTION_CONCLUSION": "success"}
+            "DETECTION_SUCCESS": "true", "DETECTION_CONCLUSION": "success", "DETECTION_RESULT": "success"}
     cases = [({}, True)]
     cases += [({"AGENT_RESULT": status}, False) for status in ("failure", "cancelled", "skipped", "")]
+    cases += [({"DETECTION_RESULT": status}, False) for status in ("failure", "cancelled", "skipped", "")]
     cases += [({"RUN_ATTEMPT": "2"}, False), ({"DETECTION_SUCCESS": "false"}, False),
               ({"DETECTION_CONCLUSION": "skipped"}, False)]
     for changes, expected in cases:
@@ -291,35 +316,88 @@ def compiled_contract(lock):
         check((completed.returncode == 0) is expected,
               "actual generated effect guard accepted failed renderer/detector/attempt")
 
+def scan_receipt(digest):
+    return {"schema_version": "ai-sdlc.v03-gate-scanned-bytes/v1", "run_id": 9001,
+            "run_attempt": 1, "workflow_sha": "e" * 40, "sha256": digest}
+
+def scanned_receipt_tests():
+    digest = hashlib.sha256(b"synthetic scanned bytes").hexdigest()
+    value = scan_receipt(digest)
+    def validate(raw):
+        return subject.scanned_receipt_digest(
+            raw, run_id=9001, run_attempt=1, workflow_sha="e" * 40)
+    check(validate(canonical(value)) == digest, "same-run receipt rejected")
+    for key, changed in (("run_id", 9002), ("run_id", True), ("run_attempt", 2),
+                         ("run_attempt", True), ("workflow_sha", "f" * 40),
+                         ("sha256", "bad"), ("schema_version", "foreign")):
+        altered = {**value, key: changed}
+        reject(lambda altered=altered: validate(canonical(altered)), "receipt " + key)
+    reject(lambda: validate(canonical({**value, "extra": 1})), "extra receipt field")
+    reject(lambda: validate(b""), "missing receipt")
+    reject(lambda: validate(b" " * 4097), "oversize receipt")
+    raw = canonical(value).replace(b'"run_id":9001', b'"run_id":9002,"run_id":9001')
+    reject(lambda: validate(raw), "duplicate receipt identity")
+
 def detector_digest_contract(lock, temporary):
-    job = lock["jobs"]["detection"]
-    steps = job["steps"]
-    def unique(key, value):
-        found = [(i, step) for i, step in enumerate(steps) if step.get(key) == value]
-        check(len(found) == 1, "missing or ambiguous detector step " + value)
+    steps = lock["jobs"]["detection"]["steps"]
+    def unique(rows, key, value):
+        found = [(i, step) for i, step in enumerate(rows) if step.get(key) == value]
+        check(len(found) == 1, "missing or ambiguous step " + value)
         return found[0]
-    prepare, _ = unique("name", "Prepare threat detection files")
-    setup, _ = unique("name", "Setup threat detection")
-    before_index, before = unique("id", "gate_scan_input")
-    engine, _ = unique("id", "detection_agentic_execution")
-    after_index, after = unique("id", "gate_scanned_digest")
-    check(prepare < before_index < setup < engine < after_index,
-          "detector does not hash prepared bytes around actual execution")
+    prepare, _ = unique(steps, "name", "Prepare threat detection files")
+    setup, _ = unique(steps, "name", "Setup threat detection")
+    before_index, before = unique(steps, "id", "gate_scan_input")
+    engine, _ = unique(steps, "id", "detection_agentic_execution")
+    after_index, after = unique(steps, "id", "gate_scanned_digest")
+    upload_index, upload = unique(steps, "id", "gate_scan_receipt_upload")
+    conclude, _ = unique(steps, "id", "detection_conclusion")
+    check(prepare < before_index < setup < engine < after_index < upload_index < conclude,
+          "actual detector and receipt ordering differs")
+    condition = "success() && steps.detection_guard.outputs.run_detection == 'true'"
+    for step, expected_condition in (
+        (before, condition),
+        (after, condition + " && steps.detection_agentic_execution.outcome == 'success'"),
+    ):
+        check(step.get("continue-on-error", False) is False, "digest failure ignored")
+        check(step.get("if") in (expected_condition, "${{ " + expected_condition + " }}"),
+              "digest step bypasses prior failure or detector outcome")
     check(before["env"]["GATE_DIGEST_MODE"] == "before" and
           after["env"]["GATE_DIGEST_MODE"] == "after", "digest mode source drift")
     check(after["env"]["EXPECTED_SCAN_INPUT_SHA256"] ==
           "${{ steps.gate_scan_input.outputs.sha256 }}", "post-scan digest self-binds")
-    check(job["outputs"]["gate_scanned_sha256"] ==
-          "${{ steps.gate_scanned_digest.outputs.sha256 }}", "detector output binding drift")
-    validates = [step for step in lock["jobs"]["safe_outputs"]["steps"]
-                 if step.get("id") == "gate_validate"]
-    check(len(validates) == 1 and validates[0]["env"]["SCANNED_OUTPUT_SHA256"] ==
-          "${{ needs.detection.outputs.gate_scanned_sha256 }}", "effect scan digest is not independent")
-    for step in (before, after):
-        check(step.get("continue-on-error", False) is False, "digest failure ignored")
-        condition = "success() && steps.detection_guard.outputs.run_detection == 'true'"
-        check(step.get("if") in (condition, "${{ " + condition + " }}"),
-              "digest step bypasses prior failure or detection guard")
+    check(after["env"]["SOURCE_RUN_ID"] == "${{ github.run_id }}" and
+          after["env"]["RUN_ATTEMPT"] == "${{ github.run_attempt }}" and
+          after["env"]["SOURCE_WORKFLOW_SHA"] == "${{ github.workflow_sha }}",
+          "receipt source identity is not bound to current execution")
+    name = "ai-sdlc-gate-scanned-bytes-${{ github.run_id }}-attempt-${{ github.run_attempt }}"
+    check(upload["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "receipt upload action pin differs")
+    check(upload["with"]["name"] == name and upload["with"]["overwrite"] is False and
+          upload["with"]["archive"] is True, "receipt upload is mutable or misnamed")
+    check(upload["with"]["path"] == "${{ runner.temp }}/ai-sdlc-gate-scan-publication/receipt.json",
+          "receipt upload path differs")
+    effect_steps = lock["jobs"]["safe_outputs"]["steps"]
+    directory_index, directory = unique(effect_steps, "id", "gate_scan_receipt_directory")
+    download_index, download = unique(effect_steps, "id", "gate_scan_receipt_download")
+    validate_index, validate = unique(effect_steps, "id", "gate_validate")
+    guard_index, _ = unique(effect_steps, "name",
+        "Require first attempt and affirmative detection before Safe Outputs effects")
+    check(guard_index < directory_index < download_index < validate_index,
+          "receipt effects bypass job/semantic guard")
+    check(download["uses"] == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "receipt download action pin differs")
+    check(download["with"]["name"] == name and
+          download["with"]["path"] == "${{ runner.temp }}/ai-sdlc-gate-scan-receipt",
+          "receipt is not exact same-run/attempt artifact")
+    check(not ({"run-id", "repository", "github-token", "pattern", "merge-multiple"} &
+               set(download["with"])), "receipt download permits alternate source")
+    check(validate["env"]["SCANNED_RECEIPT_PATH"] ==
+          "${{ runner.temp }}/ai-sdlc-gate-scan-receipt/receipt.json",
+          "helper receipt path differs")
+    for step in (directory, download):
+        check(step.get("continue-on-error", False) is False and
+              step.get("if") in (None, "success()", "${{ success() }}"),
+              "receipt step bypasses failure")
     path = Path("/tmp/gh-aw/threat-detection/agent_output.json")
     check(not path.exists() and not path.is_symlink(), "unexpected preexisting detector input")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,9 +405,12 @@ def detector_digest_contract(lock, temporary):
     path.write_bytes(data)
     expected = hashlib.sha256(data).hexdigest()
     output = temporary / "digest-output"
+    receipt_path = temporary / "ai-sdlc-gate-scan-publication/receipt.json"
     def run(step, mode, expected_input=None):
         output.write_text("")
-        env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), "GATE_DIGEST_MODE": mode}
+        env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), "GATE_DIGEST_MODE": mode,
+               "RUNNER_TEMP": str(temporary), "SOURCE_RUN_ID": "9001", "RUN_ATTEMPT": "1",
+               "SOURCE_WORKFLOW_SHA": "e" * 40}
         if expected_input is not None:
             env["EXPECTED_SCAN_INPUT_SHA256"] = expected_input
         result = subprocess.run(["bash", "-c", step["run"]], env=env,
@@ -337,11 +418,16 @@ def detector_digest_contract(lock, temporary):
         return result.returncode, output.read_text()
     try:
         check(run(before, "before") == (0, "sha256=" + expected + "\n"), "actual pre-scan digest failed")
-        check(run(after, "after", expected) == (0, "sha256=" + expected + "\n"),
-              "actual post-scan equality failed")
+        code, _ = run(after, "after", expected)
+        check(code == 0 and json.loads(receipt_path.read_bytes()) == scan_receipt(expected),
+              "actual post-scan receipt differs")
+        check(subject.scanned_receipt_digest(receipt_path.read_bytes(), run_id=9001,
+              run_attempt=1, workflow_sha="e" * 40) == expected, "actual receipt parser rejected")
+        receipt_path.unlink()
+        receipt_path.parent.rmdir()
         path.write_bytes(data + b"\n")
-        code, emitted = run(after, "after", expected)
-        check(code != 0 and emitted == "", "actual post-scan step accepted changed bytes")
+        code, _ = run(after, "after", expected)
+        check(code != 0 and not receipt_path.exists(), "changed scanned bytes produced receipt")
     finally:
         path.unlink()
 
@@ -352,17 +438,23 @@ def cli_validation(official, context, output, should_pass):
                      "role": identity["role"]},
             "feature_context": {"id": identity["feature_id"],
                                 "repository": identity["target_repository"],
-                                "vertical": identity, "gate_context": context}}
+                                "vertical": {**identity, "profile": "vertical-implementation-review-qa/v1"},
+                                "gate_context": context}}
     env = {**official.env, "TASK_PAYLOAD": packed(task).decode(),
            "RUN_ATTEMPT": "1", "AGENT_RESULT": "success",
            "DETECTION_SUCCESS": "true", "DETECTION_CONCLUSION": "success",
-           "SCANNED_OUTPUT_SHA256": hashlib.sha256(output).hexdigest()}
+           "DETECTION_RESULT": "success", "SOURCE_RUN_ID": "9001",
+           "SOURCE_WORKFLOW_SHA": "e" * 40}
     mapping = {"ROLE": "role", "DISPATCH_KEY": "external_dispatch_key",
                "FEATURE_ID": "feature_id", "STAGE": "stage",
                "EXPECTED_REVISION": "expected_revision", "TARGET_REPOSITORY": "target_repository",
                "TARGET_REF": "target_ref", "CANDIDATE_PR_NUMBER": "candidate_pr_number",
                "CANDIDATE_HEAD_SHA": "candidate_head_sha"}
     env.update({name: str(identity[key]) for name, key in mapping.items()})
+    receipt_path = Path(official.env["RUNNER_TEMP"]) / "ai-sdlc-gate-scan-receipt/receipt.json"
+    receipt_path.parent.mkdir(exist_ok=True)
+    receipt_path.write_bytes(canonical(scan_receipt(hashlib.sha256(output).hexdigest())))
+    env["SCANNED_RECEIPT_PATH"] = str(receipt_path)
     path = Path("/tmp/gh-aw/agent_output.json")
     path.write_bytes(output)
     result = subprocess.run([sys.executable, str(ROOT / "scripts/v03_dogfood_gate_output.py"),
@@ -371,6 +463,14 @@ def cli_validation(official, context, output, should_pass):
     check((result.returncode == 0) is should_pass,
           "actual pre-effect CLI accepted failed render or rejected canonical proof")
     check(path.read_bytes() == output, "validation mutated scanned artifact")
+
+    if should_pass:
+        for changes in ({"DETECTION_RESULT": "failure"}, {"DETECTION_RESULT": "skipped"},
+                        {"SCANNED_RECEIPT_PATH": str(receipt_path.parent / "missing.json")}):
+            failed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/v03_dogfood_gate_output.py"), "validate"],
+                env={**env, **changes}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            check(failed.returncode != 0, "CLI accepted failed detector or missing receipt")
 
 def sanitizer_closure_tests(actions_root, temporary):
     source = subject.envelope(role_payload("reviewer", "PASS"))
@@ -424,7 +524,7 @@ def verify_context_roundtrip(role, context, *, root, actions_root):
         "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"]))
     _, config, validation, metadata = selected_config(role, payload["candidate_pr_number"])
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
-        official = Official(Path(actions_root), Path(directory), config, validation, metadata)
+        official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata)
         raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role)
     check(canonical(context) == original, "roundtrip mutated producer context")
@@ -519,6 +619,9 @@ def exercise_role(role, actions_root, temporary):
         candidate_collected = official.ingest(candidate_raw)
         reject(lambda: render(candidate_raw, candidate_collected, context), label)
     changed = copy.deepcopy(payload)
+    changed["evidence"][0]["uri"] = "https://example.github.io/evidence"
+    reject_payload(changed, "official sanitizer changes disallowed evidence URL")
+    changed = copy.deepcopy(payload)
     del changed["candidate_head_sha"]
     reject_payload(changed, "missing required identity")
     changed = copy.deepcopy(payload)
@@ -565,17 +668,22 @@ def exercise_role(role, actions_root, temporary):
     missing_candidate["context_sha256"] = hashlib.sha256(canonical(
         {key: value for key, value in missing_candidate.items() if key != "context_sha256"})).hexdigest()
     reject(lambda: render(raw, collected, missing_candidate), "missing actual candidate document")
+
+    for kind in ("approved_task", "candidate_document"):
+        source_mismatch = copy.deepcopy(context)
+        next(doc for doc in source_mismatch["documents"] if doc["kind"] == kind)["source_head_sha"] = "b" * 40
+        source_mismatch["context_sha256"] = hashlib.sha256(canonical(
+            {key: value for key, value in source_mismatch.items() if key != "context_sha256"})).hexdigest()
+        reject(lambda source_mismatch=source_mismatch:
+               render(raw, collected, source_mismatch), "rehashed wrong source head: " + kind)
     print(role + ": official ingestion, sanitizer, publication and exact parser checks passed")
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--actions-root", type=Path, required=True)
     args = parser.parse_args()
-    actions_root = args.actions_root.resolve()
-    for name, expected in PINS.items():
-        data = (actions_root / name).read_bytes()
-        actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        check(actual == expected, "official source pin mismatch: " + name)
+    actions_root = resolve_actions_root(args.actions_root)
+    scanned_receipt_tests()
     with tempfile.TemporaryDirectory(prefix="v03-gate-output-") as directory:
         sanitizer_closure_tests(actions_root, Path(directory))
         for role in ("reviewer", "qa"):

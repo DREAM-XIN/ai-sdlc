@@ -653,6 +653,10 @@ jobs:
               assert step.get("if") in (None, "success()", "$"+"{{ success() }}")
               assert "github.workflow_sha" in step["env"]["WORKFLOW_SHA"]
               assert "GATE_HELPER_MODE" in step["env"]
+          renderer_policy = agent_steps[render_index]["env"]
+          handler_policy = effect_steps[step_index(effect_steps, id="process_safe_outputs")]["env"]
+          for key in ("GH_AW_ALLOWED_DOMAINS", "GH_AW_SAFE_OUTPUTS_URLS", "GITHUB_SERVER_URL", "GITHUB_API_URL"):
+              assert renderer_policy.get(key) == handler_policy.get(key), key
           steps = workflow["jobs"]["detection"]["steps"]
           engines = [s for s in steps if s.get("id") == "detection_agentic_execution"]
           assert len(engines) == 1
@@ -660,15 +664,25 @@ jobs:
           scan_after = step_index(steps, id="gate_scanned_digest")
           scan_engine = step_index(steps, id="detection_agentic_execution")
           assert step_index(steps, name="Prepare threat detection files") < scan_before < step_index(steps, name="Setup threat detection") < scan_engine < scan_after
-          scan_output = workflow["jobs"]["detection"]["outputs"]["gate_scanned_sha256"]
-          assert scan_output == "$"+"{{ steps.gate_scanned_digest.outputs.sha256 }}"
+          assert "gate_scanned_sha256" not in workflow["jobs"]["detection"]["outputs"]
+          upload = steps[step_index(steps, id="gate_scan_receipt_upload")]
+          download = effect_steps[step_index(effect_steps, id="gate_scan_receipt_download")]
+          assert upload["uses"].split()[0] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+          assert download["uses"].split()[0] == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+          artifact_name = "ai-sdlc-gate-scanned-bytes-"+"$"+"{{ github.run_id }}-attempt-"+"$"+"{{ github.run_attempt }}"
+          assert upload["with"] == {"name":artifact_name, "path":"$"+"{{ runner.temp }}/ai-sdlc-gate-scan-publication/receipt.json", "overwrite":False, "archive":True, "if-no-files-found":"error"}
+          assert download["with"] == {"name":artifact_name, "path":"$"+"{{ runner.temp }}/ai-sdlc-gate-scan-receipt"}
+          assert scan_after < step_index(steps, id="gate_scan_receipt_upload") < step_index(steps, id="detection_conclusion")
+          assert step_index(effect_steps, id="gate_scan_receipt_directory") < step_index(effect_steps, id="gate_scan_receipt_download") < validate_index
           assert {"detection_success", "detection_conclusion", "detection_reason"} <= set(workflow["jobs"]["detection"]["outputs"])
           assert steps[scan_after]["env"]["EXPECTED_SCAN_INPUT_SHA256"] == "$"+"{{ steps.gate_scan_input.outputs.sha256 }}"
-          assert effect_steps[validate_index]["env"]["SCANNED_OUTPUT_SHA256"] == "$"+"{{ needs.detection.outputs.gate_scanned_sha256 }}"
+          assert effect_steps[validate_index]["env"]["SCANNED_RECEIPT_PATH"] == "$"+"{{ runner.temp }}/ai-sdlc-gate-scan-receipt/receipt.json"
+          assert effect_steps[validate_index]["env"]["DETECTION_RESULT"] == "$"+"{{ needs.detection.result }}"
           for i in (scan_before, scan_after):
               assert "/tmp/gh-aw/threat-detection/agent_output.json" in steps[i]["run"]
               assert steps[i].get("continue-on-error", False) is False
-              assert steps[i]["if"] == "$"+"{{ success() && steps.detection_guard.outputs.run_detection == 'true' }}"
+              extra = " && steps.detection_agentic_execution.outcome == 'success'" if i == scan_after else ""
+              assert steps[i]["if"] == "$"+"{{ success() && steps.detection_guard.outputs.run_detection == 'true'" + extra + " }}"
           activation = workflow["jobs"]["activation"]["steps"]
           prompt_input = [step for step in activation if step.get("name") == "Interpolate variables and render templates"]
           assert len(prompt_input) == 1
