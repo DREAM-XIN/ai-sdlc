@@ -5047,16 +5047,35 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
             name="Require first attempt and affirmative detection before Safe Outputs effects")
         expect(safe_job["steps"].index(guard) < safe_job["steps"].index(effect) and not effect.get("if"),
                "selected effects can bypass semantic guard")
-        expect(guard["env"] == {
+        expected_guard_env = {
             "RUN_ATTEMPT": "${{ github.run_attempt }}",
             "DETECTION_SUCCESS": "${{ needs.detection.outputs.detection_success }}",
-            "DETECTION_CONCLUSION": "${{ needs.detection.outputs.detection_conclusion }}"},
-            "selected effect guard trusts literals/caller verdict")
+            "DETECTION_CONCLUSION": "${{ needs.detection.outputs.detection_conclusion }}"}
+        if role != "developer":
+            expected_guard_env.update({
+                "AGENT_RESULT": "${{ needs.agent.result }}",
+                "DETECTION_RESULT": "${{ needs.detection.result }}"})
+            expect(safe.get("data") is True,
+                   "selected structured Gate disabled native data ingestion")
+            source_guards = [step for step in safe["steps"] if step.get("name") == guard["name"]]
+            expect(len(source_guards) == 1 and guard["run"] == source_guards[0]["run"]
+                   and source_guards[0]["env"] == expected_guard_env,
+                   "compiled structured effect guard differs from frozen source")
+        expect(guard["env"] == expected_guard_env,
+               "selected effect guard trusts literals/caller verdict")
         cases = [({"RUN_ATTEMPT": a, "DETECTION_SUCCESS": s, "DETECTION_CONCLUSION": c},
                    a == "1" and s == "true" and c == "success")
                  for a,s,c in (("1","true","success"), ("2","true","success"),
                     ("1","false","success"), ("1","true","skipped"),
                     ("1","",""), ("1","unknown","success"), ("1","true","failure"))]
+        if role != "developer":
+            cases = [(dict(values, AGENT_RESULT="success", DETECTION_RESULT="success"), accepted)
+                     for values, accepted in cases]
+            valid = {"RUN_ATTEMPT": "1", "DETECTION_SUCCESS": "true", "DETECTION_CONCLUSION": "success",
+                     "AGENT_RESULT": "success", "DETECTION_RESULT": "success"}
+            for name in ("AGENT_RESULT", "DETECTION_RESULT"):
+                for value in ("failure", "skipped", "cancelled", ""):
+                    cases.append((dict(valid, **{name: value}), False))
         shell_truth_table(guard, cases)
 
     from types import SimpleNamespace
@@ -5885,7 +5904,8 @@ def finish_reviewer_replacement_pipeline_tests(preflight, *, gate_fixture, featu
                        or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: V03DogfoodPostRunFinalizerError: original callback differs from historical launch/fresh run"
                        or str(exc) == "real dogfood happy_path: trusted provenance verifier errored: VerticalInvariantError: " + (
                            "Reviewer replacement producer source differs" if run["path"].endswith(
-                               ("ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml","ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml"))
+                               ("ai-sdlc-gh-aw-reviewer-deepseek-v03-release-local.lock.yml","ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml",
+                                "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml"))
                            else "local Gate execution differs from current selected source"),
                        "source mutation failed outside trusted provenance: " + str(exc))
             else:
@@ -8187,14 +8207,16 @@ def build_ordinary_dogfood_host(preflight, *, discovery=False):
 
 
 
-def ordinary_structured_scenario_tests(template):
+def ordinary_structured_scenario_tests(template, *, scenarios=("review_remediation", "session_recovery")):
     """Exercise the existing remediation and session scenarios with actual classes."""
     import json
     from operator_store_model import operation_events
     from operator_vertical_store import vertical_projection
     from operator_vertical import VerticalInvariantError
     from v03_dogfood_scenario_runner import run_scenario, SCENARIO_ROLE_SEQUENCES
-    for scenario in ("review_remediation", "session_recovery"):
+    expect(scenarios and all(value in {"review_remediation", "session_recovery"} for value in scenarios),
+           "ordinary scenario test selection differs")
+    for scenario in scenarios:
         pf, external, feature, gates = ordinary_structured_runtime_fixture(template, scenario)
         host = build_ordinary_dogfood_host(pf)
         recovery = build_ordinary_dogfood_host(pf, discovery=True) if scenario == "session_recovery" else None
@@ -8299,7 +8321,7 @@ def ordinary_structured_scenario_tests(template):
                == len([row for row in rows if row["event_type"] == "persist.confirmed"])
                and projection["expected_feature_revision"] == feature.state["manifest"]["revision"],
                "ordinary lifecycle bypassed canonical REST/reducer/Persist")
-    print("- actual remediation structured collector/Persist and fresh session discovery passed")
+    print("- actual ordinary structured scenario passed: " + ", ".join(scenarios))
 
 
 
@@ -8516,7 +8538,8 @@ def main():
         ("corrected Reviewer frozen CAS", reviewer_structured_admission_tests),
         ("corrected Reviewer terminal recommendations", reviewer_structured_terminal_tests),
         ("corrected Reviewer actual full pipeline", reviewer_structured_full_pipeline_tests),
-        ("ordinary structured scenarios", lambda: ordinary_structured_scenario_tests(reviewer_structured_runtime_fixture()[0])),
+        ("ordinary structured remediation", lambda: ordinary_structured_scenario_tests(reviewer_structured_runtime_fixture()[0], scenarios=("review_remediation",))),
+        ("ordinary structured session recovery", lambda: ordinary_structured_scenario_tests(reviewer_structured_runtime_fixture()[0], scenarios=("session_recovery",))),
         ("ordinary immutable Gate input planner", lambda: ordinary_structured_input_record_tests(reviewer_structured_runtime_fixture()[0])),
         ("archival structured Gate preparation handoff", lambda: run_archival_bounded_test(structured_gate_authenticated_handoff_tests)),
         ("selected paid DeepSeek source/lock contracts", lambda: selected_dogfood_worker_contract_tests(validation_root)),
