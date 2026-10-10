@@ -8892,6 +8892,8 @@ def finalize_ordinary_remediation_fixture(preflight, observation, external, gate
                and record["operation"]["generation"] == vertical_projection(
                    runtime.backend.read_snapshot(), observation.operation_id)["generation"] == 0,
                "actual remediation finalizer lost its consumed rereview authority")
+        ordinary_remediation_artifact_reconstruction_negatives(
+            __import__("operator_store_model").operation_events(saved, observation.operation_id), raw)
         original_facts = finalizer._durable_operation_facts
         for invalid_generation in (True, False, "0", -1):
             def corrupt_generation(*args, **kwargs):
@@ -8924,6 +8926,55 @@ def finalize_ordinary_remediation_fixture(preflight, observation, external, gate
            "ordinary finalization changed durable history or provider effects")
     print("- actual remediation DONE finalizer/provenance verifies the consumed rereview binding")
     return record
+
+
+
+def ordinary_remediation_artifact_reconstruction_negatives(events, observation):
+    """Exercise semantic reconstruction after rehashing genuine translated Events."""
+    from copy import deepcopy
+    from operator_store_model import canonical_json, digest_json
+    import v03_dogfood_post_run_finalizer as finalizer
+    original = canonical_json(events)
+    supersessions = [row for row in events
+        if row["event_type"] == "feature.event.translated"
+        and row["payload"].get("purpose") == "remediation_artifact_supersession"]
+    expect(len(supersessions) == 1, "real remediation fixture lacks unique supersession")
+    old_id = supersessions[0]["payload"]["superseded_artifact_id"]
+    new_id = supersessions[0]["payload"]["replacement_artifact_id"]
+    def creation(rows, identity):
+        matches = [(row, change) for row in rows
+            if row["event_type"] == "feature.event.translated"
+            for change in row["payload"].get("feature_event", {}).get("changes", [])
+            if change.get("kind") == "artifact-record"
+            and change.get("record", {}).get("id") == identity]
+        expect(len(matches) == 1, "fixture lacks genuine unique artifact-record creation")
+        return matches[0]
+    creation(events, old_id)
+    creation(events, new_id)
+    for label in ("missing predecessor", "duplicate replacement", "substituted replacement", "replacement URI"):
+        changed = deepcopy(events)
+        row, item = creation(changed, old_id if label == "missing predecessor" else new_id)
+        changes = row["payload"]["feature_event"]["changes"]
+        if label == "missing predecessor":
+            changes.remove(item)
+        elif label == "duplicate replacement":
+            changes.append(deepcopy(item))
+        elif label == "substituted replacement":
+            item["record"]["id"] = "synthetic-unrelated-artifact"
+        else:
+            item["record"]["uri"] = "docs/features/unrelated/implementation.md"
+        row["payload"]["feature_event_digest"] = digest_json(row["payload"]["feature_event"])
+        try:
+            finalizer._canonical_persist_roles(changed,
+                finalizer._persist_cycles(changed),
+                finalizer._accepted_callback_facts(changed), observation)
+        except finalizer.V03DogfoodPostRunFinalizerError:
+            pass
+        else:
+            raise AssertionError("canonical remediation reconstruction accepted " + label)
+    expect(canonical_json(events) == original,
+           "artifact reconstruction negative changed real positive history")
+    print("- canonical remediation artifact-record absence/duplication/substitution/URI tampering rejected")
 
 
 def main():

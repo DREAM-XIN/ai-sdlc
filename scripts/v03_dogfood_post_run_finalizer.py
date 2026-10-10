@@ -751,9 +751,27 @@ def _canonical_persist_roles(events, cycles, accepted_callbacks, observation):
                     or (step == "CODE_REMEDIATION" and consumers[0].get("task_id") != expected_changes[0]["id"])):
                 raise V03DogfoodPostRunFinalizerError("controller start lacks exact dependent dispatch/task")
         for change in changes:
-            if change.get("kind") == "artifact":
+            if change.get("kind") == "artifact-record":
+                from operator_vertical import _receipt_changes
+                envelope = callback_events.get(callback_id)
+                if (callback_id not in primary or not isinstance(envelope, dict)
+                        or envelope["trusted_context"].get("role") != "developer"
+                        or payload.get("purpose") is not None):
+                    raise V03DogfoodPostRunFinalizerError("artifact creation lacks accepted Developer primary Persist")
+                expected, _, _ = _receipt_changes(
+                    context=TrustedDispatchContext(**envelope["trusted_context"]),
+                    receipts=tuple(envelope["collected_outputs"]), pass_status=True)
+                record = change.get("record")
+                if (not isinstance(record, dict) or change not in expected
+                        or not isinstance(record.get("id"), str) or not record["id"]
+                        or record["id"] in artifacts):
+                    raise V03DogfoodPostRunFinalizerError("artifact creation differs from exact accepted receipt")
+                artifacts[record["id"]] = dict(record)
+            elif change.get("kind") == "artifact":
                 identity = change.get("id")
-                artifacts[identity] = dict(artifacts.get(identity, {}), **change)
+                if identity not in artifacts:
+                    raise V03DogfoodPostRunFinalizerError("artifact update lacks exact accepted creation")
+                artifacts[identity] = dict(artifacts[identity], **change)
     if set(primary) != set(accepted):
         raise V03DogfoodPostRunFinalizerError("accepted callback lacks exactly one primary Persist")
     return [primary[row["callback_id"]] for row in accepted_callbacks]
