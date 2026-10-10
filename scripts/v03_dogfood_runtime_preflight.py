@@ -122,6 +122,10 @@ def build_v03_dogfood_runtime_preflight(
     if not all((adapter_id, target_read_token, actions_token, event_write_token)) or not callable(clock):
         raise V03DogfoodRuntimePreflightError("dogfood runtime credentials/adapter/clock are incomplete")
 
+    if slot.scenario == "review_remediation":
+        from v03_dogfood_full_composition import verify_dogfood_rereview_capability
+        verify_dogfood_rereview_capability(policy_authority=live_authority.policy)
+
     repository = normalize_repository(execution.repository)
     workflows = _workflow_map(live_gate)
     execution_bindings = _execution_bindings(live_gate, workflows)

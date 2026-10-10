@@ -1124,6 +1124,18 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         elif _observe_reviewer_pre_model_failure(preflight) != route["authorization"]["pre_model_failure_proof"]:
             raise V03DogfoodPostRunFinalizerError("Reviewer failed predecessor observation changed")
         evidence_uris.extend([REVIEWER_REPLACEMENT_ADMISSION["uri"], _run_uri(repository, REVIEWER_FAILED_RUN)])
+    if scenario == "review_remediation":
+        authority = getattr(preflight.composition.bundle.executor, "remediation_rereview_authority", None)
+        if authority is None:
+            raise V03DogfoodPostRunFinalizerError("remediation lacks its scoped rereview authority")
+        binding = authority.validate_historical(operation_id=observation["operation_id"])
+        from v03_dogfood_full_composition import dogfood_rereview_paths
+        paths = dogfood_rereview_paths(observation["operation_id"])
+        current_snapshot = preflight.composition.runtime.backend.read_snapshot()
+        if paths[1] in current_snapshot.files:
+            raise V03DogfoodPostRunFinalizerError("nonpassing rereview cannot finalize")
+        evidence_uris.extend([binding["admission"]["uri"],
+            f"https://github.com/{repository}/blob/{current_snapshot.ref_sha}/{paths[0]}"])
     trusted_facts = {
         "release_run_id": str(finalizer_run_id),
         "operation_generation": generation,

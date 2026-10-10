@@ -7886,6 +7886,19 @@ def build_ordinary_dogfood_provider(preflight):
         prefix = "/repos/" + repository
         expect(parsed.path.startswith(prefix), "ordinary provider escaped repository")
         path = unquote(parsed.path[len(prefix):])
+        if path.startswith("/contents/config/operator/v03-vertical-policy/"):
+            snapshot = preflight.composition.runtime.backend.read_snapshot()
+            wanted = path[len("/contents/"):]
+            expect(method == "GET"
+                   and parse_qs(parsed.query).get("ref") == [snapshot.ref_sha]
+                   and wanted in {
+                       "config/operator/v03-vertical-policy/effect-resolution-policy.json",
+                       "config/operator/v03-vertical-policy/effect-resolution-evidence.json"},
+                   "ordinary rereview policy read escaped current protected snapshot")
+            raw = json.dumps(snapshot.files[wanted], sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False).encode()
+            return response(document(wanted, raw))
+
         workflow = preflight.workflows.developer_workflow
         if method == "GET" and path == "/actions/workflows/" + workflow + "/runs":
             return response({"total_count": len(state["runs"]), "workflow_runs": deepcopy(state["runs"])})
@@ -8017,7 +8030,7 @@ def build_ordinary_dogfood_provider(preflight):
 
 
 
-def ordinary_structured_runtime_fixture(template, scenario):
+def ordinary_structured_runtime_fixture(template, scenario, *, rereview_verdict="PASS"):
     """Assemble canonical classes over fresh Store and fake provider state."""
     import json
     from copy import deepcopy
@@ -8044,23 +8057,10 @@ def ordinary_structured_runtime_fixture(template, scenario):
     expect(scenario in {"review_remediation", "session_recovery"}, "ordinary fixture escaped frozen scenarios")
     slot = require_slot(scenario)
     repository = template.execution.repository
-    prefix = "config/operator/v03-vertical-policy/"
-    files = {path: deepcopy(value) for path, value in
-             template.composition.runtime.backend.read_snapshot().files.items() if path.startswith(prefix)}
-    expect(set(files) >= {prefix + name for name in (
-        "effect-lineage-rollout.json", "writer-fence-receipt.json",
-        "effect-resolution-policy.json", "decision-policy.json")},
-        "ordinary fixture lacks original protected policies")
-    rollout_verifier = ProtectedEffectLineageRolloutVerifier(
-        policy_loader=lambda *_: deepcopy(files[prefix + "effect-lineage-rollout.json"]),
-        writer_fence_receipt_loader=lambda *_: deepcopy(files[prefix + "writer-fence-receipt.json"]))
-    rollout = rollout_verifier.verify(repository=repository,
+    files, load_policy_authority = ordinary_rereview_policy_fixture(template)
+    initial_policy = load_policy_authority(lambda: StoreSnapshot("1" * 40, files))
+    rollout = initial_policy.rollout_verifier.verify(repository=repository,
         state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE)
-    resolution = ProtectedEffectResolutionPolicyVerifier(repository=repository,
-        state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE,
-        policy_loader=lambda *_: deepcopy(files[prefix + "effect-resolution-policy.json"]),
-        evidence_fact_loader=lambda *_: (_ for _ in ()).throw(AssertionError("unexpected resolution evidence")))
-    resolution.verify_current()
     class Backend(MemoryStateRefBackend):
         def __init__(self):
             super().__init__(repository=repository, state_ref="refs/heads/ai-sdlc-operator-state",
@@ -8077,7 +8077,8 @@ def ordinary_structured_runtime_fixture(template, scenario):
         bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=scenario))
     workflows = _workflow_map(gate)
     bindings = _execution_bindings(gate, workflows)
-    policy = template.composition.policy_authority
+    policy = load_policy_authority(runtime.backend.read_snapshot)
+    resolution = policy.resolution_policy_verifier
     pf = SimpleNamespace(slot=slot, workflows=workflows,
         candidate_pr_number=1950 if scenario == "review_remediation" else 1951,
         candidate_head_sha="c" * 40,
@@ -8091,7 +8092,10 @@ def ordinary_structured_runtime_fixture(template, scenario):
             collector_identity=composition.COLLECTOR_IDENTITY),
         target_repository=repository, http=external.http)
     pf.composition.recovery_result_source = recovery_source
-    expected = (("reviewer", "REWORK"), ("reviewer", "PASS"), ("qa", "PASS")) if (
+    expect(rereview_verdict in {"PASS", "REWORK", "BLOCKED"},
+           "ordinary rereview fixture has an unknown verdict")
+    expected = (("reviewer", "REWORK"), ("reviewer", rereview_verdict)) + (
+        (("qa", "PASS"),) if rereview_verdict == "PASS" else ()) if (
         scenario == "review_remediation") else ()
     gates = build_structured_dogfood_gate_fixture(pf, read_ref=external.read_ref,
         fallback_http=external.http, expected=expected)
@@ -8136,9 +8140,22 @@ def ordinary_structured_runtime_fixture(template, scenario):
         store_repository=repository, installation_ref="main", store_checkout=Path("."),
         principal="ordinary-structured-fixture",
         feature_bindings=(TrustedFeatureBinding(slot.feature_id, slot.target_ref),))
-    decision = ProtectedDecisionPolicyVerifier(repository=repository, state_ref=config.state_ref,
-        operation_profile=VERTICAL_PROFILE,
-        policy_loader=lambda *_: deepcopy(files[prefix + "decision-policy.json"]))
+    decision = policy.decision_policy_verifier
+    if scenario == "session_recovery":
+        import base64
+        from v03_dogfood_session_policy import POLICY_PATH
+        policy_bytes = (Path(__file__).resolve().parents[1] / POLICY_PATH).read_bytes()
+        installation_sha = policy.installation_commit_sha
+        def session_policy_read(path):
+            if path == "/git/ref/heads/main":
+                return {"object": {"sha": installation_sha}}
+            expect(path == "/contents/" + POLICY_PATH + "?ref=" + installation_sha,
+                   "session policy fixture requested an unexpected source")
+            return {"type": "file", "path": POLICY_PATH, "encoding": "base64",
+                    "content": base64.b64encode(policy_bytes).decode("ascii")}
+        decision = composition.DogfoodSessionDecisionPolicyVerifier(
+            repository=repository, installation_sha=installation_sha,
+            token="fixture", read_json=session_policy_read)
     def reader_get(url, headers):
         if "/contents/state/features/" in url:
             return feature.http("GET", url.replace("https://api.github.com", "https://api.github.test"), headers, None)
@@ -8153,16 +8170,22 @@ def ordinary_structured_runtime_fixture(template, scenario):
     handoff.content_loader = loader
     coordinator = composition.DogfoodTrustedCallbackCoordinator(
         delegate=responses.operator_bundle.callback_coordinator, candidate_handoff=handoff)
+    if scenario == "review_remediation":
+        authority = composition.DogfoodRemediationRereviewAuthority(
+            executor=responses.operator_bundle.executor, candidate_provider=candidate,
+            content_loader=loader, policy_authority=policy)
+        responses.operator_bundle.executor.remediation_rereview_authority = authority
+        gateway.remediation_rereview_authority = authority
+        coordinator.remediation_rereview_authority = authority
+        pf.composition.remediation_rereview_authority = authority
     collector = ProductionGhAwVerticalResultCollector(callback_coordinator=coordinator,
         result_source=gates.result_source, workflows=workflows, control_repository=repository, clock=runtime.clock)
-    pf.composition.__dict__.update(current_structured_gateway=gateway, external_create_gateway=one_shot,
-        candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
+    pf.composition.__dict__.update(candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
         result_source=gates.result_source, collector=collector, actions_transport=transport,
         bundle=responses.operator_bundle, responses=responses, graph_before=graph_before,
-        callback_coordinator=coordinator)
+        callback_coordinator=coordinator, current_structured_gateway=gateway,
+        external_create_gateway=one_shot, reload_policy_authority=load_policy_authority)
     return pf, external, feature, gates
-
-
 
 def build_ordinary_dogfood_host(preflight, *, discovery=False):
     """Real Responses host/adapter; only the two provider replies are synthetic."""
@@ -8499,6 +8522,327 @@ def ordinary_structured_input_record_tests(template):
 
 
 
+
+def ordinary_rereview_policy_fixture(template, *, installation_commit_sha=None, materialization_commit_sha="1" * 40):
+    """Materialize real policy documents over a fake protected Git boundary."""
+    from copy import deepcopy
+    from materialize_v03_vertical_policy_state import _policy_documents
+    from operator_store_model import normalize_repository
+    from operator_vertical import VERTICAL_PROFILE
+    from operator_vertical_policy_state import (
+        ProtectedVerticalPolicyBundleLoader, protected_ref, seal_receipt,
+    )
+    repository = normalize_repository(template.execution.repository)
+    installation = installation_commit_sha or template.composition.policy_authority.installation_commit_sha
+    state_ref = "refs/heads/ai-sdlc-operator-state"
+    prefix = "config/operator/v03-vertical-policy/"
+    original = template.composition.runtime.backend.read_snapshot().files
+    fence = original[prefix + "writer-fence-receipt.json"]
+    proof = deepcopy(fence["quiescence_proof"])
+    # This fresh fake Git installation reuses the verified bootstrap shape.
+    # It does not assert the historical Store bundle was materialized at this SHA.
+    proof["installation_commit_sha"] = installation
+    documents = _policy_documents(
+        repository=repository, installation_commit_sha=installation,
+        state_ref=state_ref, issued_at="2026-10-10T06:00:00Z",
+        writer_fence_proof=proof, protected_ref_fn=protected_ref,
+        seal_receipt_fn=seal_receipt)
+    files = {row.path: deepcopy(row.value) for row in documents}
+    materialization = materialization_commit_sha
+    def load_authority(read_snapshot):
+        def exact(sha, path):
+            expect(sha == materialization and path in files,
+                   "ordinary policy loader escaped materialization")
+            return deepcopy(files[path])
+        def current(repo, ref, path):
+            expect(repo == repository and ref == state_ref and path in files,
+                   "ordinary policy loader escaped protected namespace")
+            return deepcopy(read_snapshot().files.get(path))
+        return ProtectedVerticalPolicyBundleLoader(
+            repository=repository, installation_commit_sha=installation,
+            materialization_commit_sha=materialization, state_ref=state_ref,
+            operation_profile=VERTICAL_PROFILE,
+            receipt_path=prefix + "bundle-receipt.json",
+            document_loader=exact, protected_document_loader=current,
+            installation_commit_verifier=lambda repo, sha: (
+                repo == repository and sha == installation),
+            materialization_commit_verifier=lambda repo, ref, sha: (
+                repo == repository and ref == state_ref and sha == materialization
+                and all(path in read_snapshot().files for path in files)),
+        ).load()
+    return files, load_authority
+
+
+def ordinary_rereview_authority_tests(template):
+    """Actual three-result prefix, atomic activation, race and crash replay."""
+    from copy import deepcopy
+    from operator_store import StoreCommandError, plan_cancel, plan_operation_start
+    from operator_store_git import MemoryStateRefBackend, CasConflict
+    from operator_store_model import StoreSnapshot, canonical_json, digest_json, operation_events
+    from operator_vertical import VerticalInvariantError, VERTICAL_PROFILE
+    from operator_vertical_store import vertical_projection
+    import v03_dogfood_full_composition as composition
+    import v03_dogfood_scenario_runner as runner
+    pf, external, feature, gates = ordinary_structured_runtime_fixture(template, "review_remediation")
+    runtime = pf.composition.runtime
+    authority = pf.composition.remediation_rereview_authority
+    backend = runtime.backend
+    commit = backend.commit
+    captured = {}
+    def crash_after_activation(plan, receipt):
+        matches = [m for m in plan.mutations
+                   if m.path.endswith(composition.DOGFOOD_REREVIEW_SUFFIX + "binding.json")]
+        if matches and not captured:
+            expect(len(matches) == 1 and matches[0].kind == "create_immutable",
+                   "rereview activation lacks one immutable binding")
+            captured.update(before=deepcopy(backend.read_snapshot()),
+                            path=matches[0].path, row=deepcopy(matches[0].value),
+                            plan=deepcopy(plan))
+            result = commit(plan, receipt)
+            captured["after"] = deepcopy(backend.read_snapshot())
+            raise OSError("synthetic crash after rereview activation CAS")
+        return commit(plan, receipt)
+    backend.commit = crash_after_activation
+    try:
+        host = build_ordinary_dogfood_host(pf)
+        trace = host.host.run(scenario_instruction=runner.scenario_instruction(pf.slot, expected_revision=1))
+        operation_id, status = runner._operation_start(trace)
+        expect(status == "WAITING_EXTERNAL", "rereview fixture did not start real Developer")
+        for consumed in range(3):
+            try:
+                runner._collect_next(pf, operation_id, consumed)
+            except OSError:
+                if not captured or consumed != 2:
+                    raise
+    finally:
+        backend.commit = commit
+    expect(captured and len(external.state["inputs"]) == 2
+           and len(gates.state["inputs"]) == 1 and external.state["patches"] == 2,
+           "rereview crash crossed its pre-POST boundary")
+    before, activated = captured["before"], captured["after"]
+    row, path = captured["row"], captured["path"]
+    expect(vertical_projection(before, operation_id)["status"] == "BLOCKED"
+           and operation_events(before, operation_id)[-1]["event_type"] == "effect.lineage.blocked",
+           "rereview fixture skipped the genuine shared lineage block")
+    binding = composition.recovery_execution_binding(pf.composition.policy_authority)
+    def restore(snapshot):
+        backend.snapshot = deepcopy(snapshot)
+    def rejected(call, label):
+        try:
+            call()
+        except (StoreCommandError, VerticalInvariantError, ValueError):
+            return
+        raise AssertionError("rereview accepted " + label)
+    saved = deepcopy(backend.read_snapshot())
+    try:
+        restore(before)
+        first = authority.plan(backend.read_snapshot(), operation_id=operation_id)
+        second = authority.plan(backend.read_snapshot(), operation_id=operation_id)
+        expect(first == second and canonical_json(first.result["binding"]) == canonical_json(row)
+               and any(m.value.get("event_type") == "effect.lineage.resolved"
+                       for m in first.mutations if isinstance(m.value, dict)),
+               "rereview CAS did not bind the exact shared resolution")
+        competing = MemoryStateRefBackend(repository=backend.repository,
+            state_ref=backend.state_ref, snapshot=deepcopy(before))
+        competing.commit(first, runtime.protected_receipt())
+        try:
+            competing.commit(second, runtime.protected_receipt())
+        except CasConflict:
+            pass
+        else:
+            raise AssertionError("two rereview activations won one protected CAS")
+        generic = pf.composition.policy_authority.resolution_policy_verifier.verify_current()
+        rejected(lambda: generic.evidence_verifier.verify(
+            [composition.DOGFOOD_REREVIEW_EVIDENCE_REF],
+            predecessor_external_dispatch_key=row["proof"]["review"]["context"]["external_dispatch_key"]),
+            "generic capability evidence")
+        from operator_effect_resolution import plan_effect_resolution
+        trusted_feature, _ = authority.executor.feature_gateway.read_feature(operation_id=operation_id)
+        rejected(lambda: plan_effect_resolution(before,
+            policy_verifier=pf.composition.policy_authority.resolution_policy_verifier,
+            trusted_feature=trusted_feature, resolution_id=row["resolution_id"],
+            effect_lineage_id=row["proof"]["lineage_id"],
+            predecessor_semantic_effect_key=row["proof"]["review"]["context"]["semantic_effect_key"],
+            predecessor_external_dispatch_key=row["proof"]["review"]["context"]["external_dispatch_key"],
+            current_operation_id=operation_id, current_operation_generation=row["operation_generation"],
+            successor_proposal_id=row["proof"]["proposal"]["proposal_id"],
+            successor_proposed_semantic_effect_key=row["successor_semantic_effect_key"],
+            choice="RETIRE_OBSOLETE_NO_DUPLICATE_PROVEN",
+            resolver_identity=next(iter(generic.authority.allowed_resolvers)),
+            evidence_refs=[composition.DOGFOOD_REREVIEW_EVIDENCE_REF],
+            occurred_at=runtime.clock(), trusted_context_digest=pf.trusted_context_digest),
+            "generic resolver capability activation")
+        from copy import copy
+        from v03_dogfood_fixture_pool import require_slot
+        foreign_candidate = copy(authority.candidate_provider)
+        foreign_candidate.slot = require_slot("session_recovery")
+        rejected(lambda: composition.DogfoodRemediationRereviewAuthority(
+            executor=authority.executor, candidate_provider=foreign_candidate,
+            content_loader=authority.content_loader, policy_authority=authority.policy_authority),
+            "foreign scenario authority")
+        restore(activated)
+        replay = authority.plan(backend.read_snapshot(), operation_id=operation_id)
+        expect(not replay.mutations and replay.result["status"] == "ALREADY_CONSUMED",
+               "rereview crash replay renewed activation")
+        cases = []
+        def changed(label, mutate, rehash=False):
+            snapshot = deepcopy(activated)
+            mutate(snapshot.files[path])
+            if rehash:
+                snapshot.files[path]["proof_digest"] = digest_json(snapshot.files[path]["proof"])
+            cases.append((label, snapshot))
+        changed("foreign execution source",
+            lambda value: value["consumer_execution_binding"].update(execution_source_head_sha="9" * 40))
+        changed("different proposal",
+            lambda value: value["proof"]["proposal"].update(proposal_id="proposal-unrelated"), True)
+        changed("rehashed candidate",
+            lambda value: value["proof"]["feature"].update(candidate_head_sha="9" * 40), True)
+        changed("rehashed revision",
+            lambda value: value["proof"]["feature"].update(revision=999), True)
+        changed("rehashed predecessor receipt",
+            lambda value: value["proof"]["review"].update(content_sha256="9" * 64), True)
+        changed("rehashed remediation run",
+            lambda value: value["proof"]["remediation"].update(run_id=999), True)
+        changed("extra binding field", lambda value: value.update(unexpected=True))
+        from operator_external_create_attempt import external_create_attempt_path
+        for producer in ("review", "remediation"):
+            attempt_path = external_create_attempt_path(row["proof"][producer]["context"]["semantic_effect_key"])
+            expect(attempt_path in activated.files, "real producer lacks consumed create authority")
+            missing_attempt = deepcopy(activated)
+            missing_attempt.files.pop(attempt_path)
+            cases.append((producer + " missing create attempt", missing_attempt))
+            malformed_attempt = deepcopy(activated)
+            malformed_attempt.files[attempt_path]["authorization_event_id"] = "foreign-authorization"
+            cases.append((producer + " malformed create attempt", malformed_attempt))
+        for label, snapshot in cases:
+            restore(snapshot)
+            rejected(lambda: authority.plan(backend.read_snapshot(), operation_id=operation_id), label)
+        for label, value, suffix in (
+            ("null global consumption", None, "binding.json"),
+            ("malformed global consumption", {}, "binding.json"),
+            ("terminal-only consumption", {
+                "capability_id": composition.DOGFOOD_REREVIEW_CAPABILITY_ID,
+                "operation_id": operation_id}, "terminal-observation.json"),
+        ):
+            snapshot = deepcopy(before)
+            snapshot.files[composition.dogfood_rereview_paths(operation_id)[0].rsplit("/", 1)[0] + "/" + suffix] = value
+            restore(snapshot)
+            rejected(lambda: authority.plan(backend.read_snapshot(), operation_id=operation_id), label)
+        # Canonical cancellation and a genuine later Operation do not clear consumption.
+        restore(activated)
+        runtime.commit_replanned(lambda snapshot: plan_cancel(snapshot, operation_id=operation_id,
+            reason="synthetic cancellation coverage", occurred_at=runtime.clock(),
+            trusted_context_digest=pf.trusted_context_digest))
+        cancelled = backend.read_snapshot()
+        expect(canonical_json(cancelled.get(path)) == canonical_json(row),
+               "cancellation erased rereview consumption")
+        started = runtime.commit_replanned(lambda snapshot: plan_operation_start(
+            snapshot, target_repository=pf.execution.repository, feature_id=pf.slot.feature_id,
+            expected_revision=row["proof"]["feature"]["revision"],
+            idempotency_key="synthetic-later-operation", occurred_at=runtime.clock(),
+            trusted_context_digest=pf.trusted_context_digest, operation_profile=VERTICAL_PROFILE))
+        later_id = started.result["operation_id"]
+        expect(later_id != operation_id, "cancellation fixture did not create a later Operation")
+        rejected(lambda: authority.plan(backend.read_snapshot(), operation_id=later_id),
+                 "cross-operation capability renewal")
+        # Re-materialize actual new policy documents while preserving all operation records.
+        fresh_files, load_fresh = ordinary_rereview_policy_fixture(
+            template, installation_commit_sha="6" * 40, materialization_commit_sha="2" * 40)
+        refreshed = deepcopy(cancelled)
+        refreshed = StoreSnapshot("2" * 40, {**refreshed.files, **fresh_files})
+        restore(refreshed)
+        fresh_policy = load_fresh(backend.read_snapshot)
+        expect(composition.verify_dogfood_rereview_capability(policy_authority=fresh_policy)[
+                   "capability_id"] == composition.DOGFOOD_REREVIEW_CAPABILITY_ID
+               and canonical_json(refreshed.get(path)) == canonical_json(row),
+               "policy refresh changed capability identity or lost consumption")
+        refreshed_authority = composition.DogfoodRemediationRereviewAuthority(
+            executor=pf.composition.bundle.executor,
+            candidate_provider=pf.composition.candidate_provider,
+            content_loader=authority.content_loader, policy_authority=fresh_policy)
+        rejected(lambda: refreshed_authority.plan(backend.read_snapshot(), operation_id=operation_id),
+                 "installation refresh budget renewal")
+    finally:
+        restore(saved)
+    effects = (len(external.state["inputs"]), len(gates.state["inputs"]), external.state["patches"])
+    expect(effects == (2, 1, 2), "rereview negative tests caused an external effect")
+    # Resume the actual committed activation and finish the existing five-role chain.
+    status = pf.composition.bundle.executor.advance_until_stop(operation_id=operation_id)
+    expect(status["status"] == "WAITING_EXTERNAL" and len(gates.state["inputs"]) == 2,
+           "activation crash replay did not launch the sole rereview")
+    pf.composition.bundle.executor.advance_until_stop(operation_id=operation_id)
+    expect(len(gates.state["inputs"]) == 2, "rereview replay repeated the POST")
+    runner._collect_next(pf, operation_id, 3)
+    runner._collect_next(pf, operation_id, 4)
+    projection = vertical_projection(backend.read_snapshot(), operation_id)
+    expect(projection["status"] == "DONE"
+           and [value["role"] for value in gates.state["inputs"]] == ["reviewer", "reviewer", "qa"]
+           and len(external.state["inputs"]) == 2 and external.state["patches"] == 2,
+           "rereview crash recovery did not preserve the real five-role lifecycle")
+    authority.validate_historical(operation_id=operation_id)
+    records = [value for key, value in backend.read_snapshot().files.items()
+               if "/dogfood-structured-gate-inputs/" in key
+               and isinstance(value, dict)
+               and value.get("dispatch", {}).get("external_dispatch_key") == row["successor_external_dispatch_key"]]
+    expect(len(records) == 1, "rereview lacks exact durable dispatch inputs")
+    third = deepcopy(records[0]["dispatch"])
+    third["external_dispatch_key"] = "dispatch-" + "9" * 40
+    third["semantic_effect_key"] = "9" * 64
+    rejected(lambda: authority.validate_dispatch(third), "third review dispatch")
+    expect(len(gates.state["inputs"]) == 3 and len(external.state["inputs"]) == 2,
+           "third review negative changed external counts")
+    print("- bounded rereview: real blocked proposal, generic denial, CAS, tuple rejection, cancellation and crash replay passed")
+
+
+def ordinary_rereview_nonpass_tests(template):
+    """Authenticate real rereview comments, stopping before callback/Persist."""
+    from copy import deepcopy
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical_store import vertical_projection
+    import v03_dogfood_full_composition as composition
+    import v03_dogfood_scenario_runner as runner
+    for verdict in ("REWORK", "BLOCKED"):
+        pf, external, feature, gates = ordinary_structured_runtime_fixture(
+            template, "review_remediation", rereview_verdict=verdict)
+        host = build_ordinary_dogfood_host(pf)
+        trace = host.host.run(scenario_instruction=runner.scenario_instruction(pf.slot, expected_revision=1))
+        operation_id, _ = runner._operation_start(trace)
+        for consumed in range(3):
+            runner._collect_next(pf, operation_id, consumed)
+        runtime = pf.composition.runtime
+        before = deepcopy(runtime.backend.read_snapshot())
+        persist_count = len([r for r in operation_events(before, operation_id)
+                             if r["event_type"] == "persist.confirmed"])
+        coordinator = pf.composition.callback_coordinator
+        original = coordinator.handle
+        captured = {}
+        def observe(**kwargs):
+            captured.update(kwargs)
+            return original(**kwargs)
+        coordinator.handle = observe
+        try:
+            runner._collect_next(pf, operation_id, 3)
+        finally:
+            coordinator.handle = original
+        after = runtime.backend.read_snapshot()
+        rows = operation_events(after, operation_id)
+        terminal_path = composition.dogfood_rereview_paths(operation_id)[1]
+        expect(vertical_projection(after, operation_id)["status"] == "NEEDS_USER"
+               and after.get(terminal_path)["verdict"] == verdict
+               and len([r for r in rows if r["event_type"] == "worker.callback.recorded"]) == 3
+               and len([r for r in rows if r["event_type"] == "persist.confirmed"]) == persist_count
+               and len(external.state["inputs"]) == 2 and external.state["patches"] == 2
+               and len(gates.state["inputs"]) == 2,
+               "nonpassing rereview created another callback, Persist or Worker")
+        expect(captured and captured["worker_payload"]["verdict"] == verdict,
+               "nonpassing fixture bypassed the actual collector/coordinator")
+        original(**captured)
+        expect(canonical_json(runtime.backend.read_snapshot().files) == canonical_json(after.files)
+               and len(external.state["inputs"]) == 2 and len(gates.state["inputs"]) == 2,
+               "terminal rereview replay changed immutable history or launch budget")
+    print("- actual REWORK/BLOCKED rereview publication stops atomically before callback/Persist/QA")
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -8540,6 +8884,8 @@ def main():
         ("corrected Reviewer actual full pipeline", reviewer_structured_full_pipeline_tests),
         ("ordinary structured remediation", lambda: ordinary_structured_scenario_tests(reviewer_structured_runtime_fixture()[0], scenarios=("review_remediation",))),
         ("ordinary structured session recovery", lambda: ordinary_structured_scenario_tests(reviewer_structured_runtime_fixture()[0], scenarios=("session_recovery",))),
+        ("ordinary bounded rereview authority", lambda: ordinary_rereview_authority_tests(reviewer_structured_runtime_fixture()[0])),
+        ("ordinary bounded rereview non-PASS", lambda: ordinary_rereview_nonpass_tests(reviewer_structured_runtime_fixture()[0])),
         ("ordinary immutable Gate input planner", lambda: ordinary_structured_input_record_tests(reviewer_structured_runtime_fixture()[0])),
         ("archival structured Gate preparation handoff", lambda: run_archival_bounded_test(structured_gate_authenticated_handoff_tests)),
         ("selected paid DeepSeek source/lock contracts", lambda: selected_dogfood_worker_contract_tests(validation_root)),
