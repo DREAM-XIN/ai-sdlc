@@ -711,6 +711,7 @@ import crypto from "node:crypto";
 import readline from "node:readline";
 import {spawn, spawnSync} from "node:child_process";
 const [actions, cli, casesFile] = process.argv.slice(2);
+let schemaDifference = null;
 const check = (value, code) => { if (!value) throw new Error(code); };
 const canonical = value => JSON.stringify(value && typeof value === "object"
   ? Array.isArray(value) ? value.map(v => JSON.parse(canonical(v)))
@@ -742,6 +743,33 @@ function badRefs(schema) {
  }
  walk(schema); return bad;
 }
+
+function schemaDiff(expected, actual) {
+ const rows=[];
+ const allowed=new Set(["type","required","additionalProperties","enum","const","minimum","maximum",
+  "exclusiveMinimum","exclusiveMaximum","minLength","maxLength","minItems","maxItems","format","pattern","$ref"]);
+ const kind=v=>v===undefined?"missing":v===null?"null":Array.isArray(v)?"array":typeof v;
+ function walk(a,b,parts=[],keyword="") {
+  if(rows.length>=16 || canonical(a)===canonical(b))return;
+  if(a && b && typeof a==="object" && typeof b==="object" && Array.isArray(a)===Array.isArray(b)) {
+   for(const key of [...new Set([...Object.keys(a),...Object.keys(b)])].sort()) {
+    if(!/^[A-Za-z0-9_$-]{1,80}$/.test(key)){rows.push({path:"UNEXPECTED_SCHEMA_KEY",expected:kind(a),actual:kind(b)});return;}
+    walk(a[key],b[key],[...parts,key],Array.isArray(a)?keyword:key);
+    if(rows.length>=16)break;
+   }
+   return;
+  }
+  const row={path:"/"+parts.map(p=>p.replace(/~/g,"~0").replace(/\//g,"~1")).join("/"),
+   expected_type:kind(a),actual_type:kind(b)};
+  if(allowed.has(keyword))for(const [name,value] of [["expected",a],["actual",b]]) {
+   if(value===null || typeof value==="boolean" || typeof value==="number")row[name]=value;
+   else if(typeof value==="string" && /^[\x20-\x7e]{0,160}$/.test(value))row[name]=value;
+  }
+  rows.push(row);
+ }
+ walk(expected,actual);return rows;
+}
+
 function stopGroup(child) {
  if (!child?.pid) return;
  try { process.kill(-child.pid,"SIGKILL"); } catch {}
@@ -846,7 +874,10 @@ async function capture(row,index) {
     const matches=requestTools.filter(t=>/^(?:safeoutputs[_-]+)?add_comment$/.test(t.name));
     check(matches.length===1,"CLI_ADD_COMMENT_MISSING");
     const parameters=matches[0].parameters;
-    check(canonical(parameters.properties.data)===canonical(schema.properties.data),"CLI_DATA_DRIFT");
+    if(canonical(parameters.properties.data)!==canonical(schema.properties.data)) {
+     schemaDifference=schemaDiff(schema.properties.data,parameters.properties.data);
+     throw new Error("CLI_DATA_DRIFT");
+    }
     const refs=badRefs(parameters);
     check(row.legacy ? refs.length===1 && refs[0]==="#/0/inputSchema/$defs/structured_data"
                      : refs.length===0,"CLI_REFERENCE_EXPECTATION");
@@ -900,7 +931,7 @@ async function main() {
  check(cases.length===3&&cases[0].legacy===true&&cases.slice(1).every(c=>c.legacy===false),"CASE_MATRIX");
  for(let i=0;i<cases.length;i++)console.log(JSON.stringify(await capture(cases[i],i)));
 }
-main().catch(e=>{console.log(JSON.stringify({status:"FAIL",stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE"}));process.exitCode=1;});
+main().catch(e=>{console.log(JSON.stringify({status:"FAIL",stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",schema_differences:schemaDifference}));process.exitCode=1;});
 """
 
 def compiled_tools_metadata(lock, candidate=577):
