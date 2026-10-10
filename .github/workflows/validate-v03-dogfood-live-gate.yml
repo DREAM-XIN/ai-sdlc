@@ -165,10 +165,34 @@ jobs:
               print("Historical detector byte acquisition failed.", file=sys.stderr)
               sys.exit(1)
           PY
+      - name: Install pinned CLI for joined offline Gate regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 120 https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz -o "$RUNNER_TEMP/v03-joined-copilot.tar.gz"
+          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $RUNNER_TEMP/v03-joined-copilot.tar.gz" | sha256sum --check --status
+          python3 - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          dest = Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot"
+          dest.mkdir(mode=0o700)
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot.tar.gz", "r:gz") as archive:
+              entries = archive.getmembers()
+              assert 0 < len(entries) <= 64 and sum(e.size for e in entries) <= 524288000
+              for entry in entries:
+                  path = PurePosixPath(entry.name)
+                  assert not path.is_absolute() and ".." not in path.parts and "\\" not in entry.name
+                  assert entry.isdir() or entry.isfile()
+                  assert 0 <= entry.size <= 314572800
+              archive.extractall(dest, filter="data")
+          assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
+          PY
+          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
       - name: Validate trusted-main dogfood runtime driver
         env:
           GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
           V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
+          V03_SCHEMA_CLI_ROOT: ${{ runner.temp }}/v03-joined-copilot
         if: ${{ !cancelled() }}
         run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py
       - name: Observe immutable historical Worker through read-only GitHub API
@@ -199,6 +223,15 @@ jobs:
           assert retention["model_invoked"] is False and retention["current_claim_created"] is False
           assert len(retention["observations"]) == 3
           print(json.dumps(retention, sort_keys=True))
+          from v03_dogfood_runtime_driver import observe_reviewer_inline_failure_for_review
+          failed = observe_reviewer_inline_failure_for_review(
+              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
+          )
+          assert failed["schema_version"] == "ai-sdlc.v03-inline-failure-read-only-result/v1"
+          assert failed["historical_proof_verified"] is True and failed["read_only"] is True
+          assert failed["model_invoked"] is False and failed["current_claim_created"] is False
+          assert failed["run_id"] == 38060547019
+          print(json.dumps(failed, sort_keys=True))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: github.event.pull_request.head.repo.full_name == github.repository

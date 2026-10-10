@@ -12,8 +12,8 @@ from v03_dogfood_execution_bindings import credential_identities
 from v03_dogfood_live_gate import (
     CURRENT_DOGFOOD_POLICY,
     CURRENT_DOGFOOD_WORKFLOWS,
-    STRUCTURED_DOGFOOD_POLICY,
-    STRUCTURED_DOGFOOD_WORKFLOWS,
+    INLINE_DOGFOOD_POLICY,
+    INLINE_DOGFOOD_WORKFLOWS,
     dogfood_selection_for_scenario,
     resolve_current_dogfood_bindings,
     ISSUE221_FINAL_LEDGER_ARTIFACT_DIGEST,
@@ -180,11 +180,11 @@ def main():
         bindings = {row.role: row for row in gate.bindings}
         expected_workflows = {
             "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
-            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.lock.yml",
-            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-local.lock.yml",
+            "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml",
+            "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml",
         }
         for role, workflow in expected_workflows.items():
-            require(bindings[role].rule_id == STRUCTURED_DOGFOOD_POLICY, role + " structured policy drifted")
+            require(bindings[role].rule_id == INLINE_DOGFOOD_POLICY, role + " structured policy drifted")
             require(bindings[role].selected_profile == "deepseek", role + " current paid provider drifted")
             require(bindings[role].candidate_order == ("deepseek",), role + " current route is not explicit")
             require(bindings[role].worker_workflow == workflow, role + " actual selected workflow drifted")
@@ -219,10 +219,10 @@ def main():
         actual = resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=scenario)
         require(gate.bindings == actual, "active gate omitted scenario selection")
         policy, mapping = dogfood_selection_for_scenario(scenario)
-        require(policy == STRUCTURED_DOGFOOD_POLICY and mapping == STRUCTURED_DOGFOOD_WORKFLOWS,
+        require(policy == INLINE_DOGFOOD_POLICY and mapping == INLINE_DOGFOOD_WORKFLOWS,
                 "explicit structured selection differs")
         projected = _execution_bindings(gate, _workflow_map(gate))
-        require(all(row["selection_policy_id"] == STRUCTURED_DOGFOOD_POLICY for row in projected.values()),
+        require(all(row["selection_policy_id"] == INLINE_DOGFOOD_POLICY for row in projected.values()),
                 "active preflight dropped structured identity")
         old_gate = replace(gate, bindings=historical)
         try:
@@ -244,17 +244,17 @@ def main():
             pass
         else:
             raise AssertionError("active projection accepted missing/unknown scenario")
-    with patch.object(selection_module, "STRUCTURED_GATE_HELPER_BLOB", "0" * 40):
+    with patch.object(selection_module, "INLINE_GATE_HELPER_BLOB", "0" * 40):
         try:
             resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario="happy_path")
         except V03DogfoodLiveGateError:
             pass
         else:
             raise AssertionError("structured helper pin drift admitted")
-    for filename in STRUCTURED_DOGFOOD_WORKFLOWS.values():
-        pins = dict(selection_module.STRUCTURED_DOGFOOD_BLOBS)
+    for filename in INLINE_DOGFOOD_WORKFLOWS.values():
+        pins = dict(selection_module.INLINE_DOGFOOD_BLOBS)
         pins[filename] = "0" * 40
-        with patch.object(selection_module, "STRUCTURED_DOGFOOD_BLOBS", pins):
+        with patch.object(selection_module, "INLINE_DOGFOOD_BLOBS", pins):
             try:
                 resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario="happy_path")
             except V03DogfoodLiveGateError:

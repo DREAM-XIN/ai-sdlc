@@ -373,11 +373,29 @@ STRUCTURED_DOGFOOD_BLOBS = {
 STRUCTURED_GATE_HELPER_BLOB = "3a59d4c313f957e08a17638247ee74e452fbd829"
 
 
+# Inline producers are a new active map; consumed structured producers remain immutable.
+INLINE_DOGFOOD_POLICY = "v03-current-paid-deepseek-structured-inline-local/v1"
+INLINE_DOGFOOD_WORKFLOWS = {
+    "developer": "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+    "reviewer": "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml",
+    "qa": "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml",
+}
+INLINE_DOGFOOD_BLOBS = {
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.md": "cc538249d0230dd328bd61ca704263c248ce1910",
+    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml": "6d94f02c8a462c76627919dcc412c57cf92caba7",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.md": "a67fc4fd82c4ac492e96f7d156ecb34e64316d3b",
+    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml": "3e3c54a66f47e38a83da5e15c2579ff6d4b722a8",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.md": "d71f61be9ac2225f967557901c5c0c4a0c9ff403",
+    "ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml": "f704a543e11e2f768888e49a84447d666f659537",
+}
+INLINE_GATE_HELPER_BLOB = "ca1eb32a23f4e3d4874b52df92867b315fadd019"
+
+
 def dogfood_selection_for_scenario(scenario: str) -> tuple[str, dict[str, str]]:
     """Select installed producers, never grant dispatch or recovery authority."""
     if not isinstance(scenario, str) or scenario not in ALLOWED_SCENARIOS:
         raise V03DogfoodLiveGateError("active dogfood selection requires an exact frozen scenario")
-    return STRUCTURED_DOGFOOD_POLICY, dict(STRUCTURED_DOGFOOD_WORKFLOWS)
+    return INLINE_DOGFOOD_POLICY, dict(INLINE_DOGFOOD_WORKFLOWS)
 
 
 def resolve_current_dogfood_bindings(
@@ -394,12 +412,12 @@ def resolve_current_dogfood_bindings(
         policy, workflows, blobs = CURRENT_DOGFOOD_POLICY, CURRENT_DOGFOOD_WORKFLOWS, CURRENT_DOGFOOD_BLOBS
     else:
         policy, workflows = dogfood_selection_for_scenario(scenario)
-        blobs = STRUCTURED_DOGFOOD_BLOBS
+        blobs = INLINE_DOGFOOD_BLOBS
         helper = Path(__file__).resolve().parent / "v03_dogfood_gate_output.py"
         if not helper.is_file() or helper.is_symlink():
             raise V03DogfoodLiveGateError("selected structured Gate helper is missing or nonregular")
         raw = helper.read_bytes()
-        if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != STRUCTURED_GATE_HELPER_BLOB:
+        if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != INLINE_GATE_HELPER_BLOB:
             raise V03DogfoodLiveGateError("selected reviewed structured Gate helper changed")
     result = []
     for role, stage in (("developer", "implementation"), ("reviewer", "code-review"), ("qa", "verification")):
