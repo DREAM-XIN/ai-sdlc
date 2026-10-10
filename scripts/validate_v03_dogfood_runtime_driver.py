@@ -4970,9 +4970,16 @@ def selected_dogfood_worker_contract_tests(root, *, developer_inputs=None):
                    "selected Gate Safe Output escaped exact candidate comment")
             expect(source["tools"]["bash"] is False and source["tools"].get("cli-proxy") is False,
                    "selected Gate has implementation command authority")
-            expect("AI-SDLC-GATE-RESULT" in body and "non-authoritative" in body
+            expect("AI-SDLC structured Gate recommendation." in body
+                   and "data" in body and "trusted renderer" in body.lower()
+                   and "non-authoritative" in body
                    and ("ai-sdlc-gh-aw-" + role + "-result-v0.1") in body,
-                   "selected Gate lost trusted collector envelope boundary")
+                   "selected Gate lost structured transport/collector authority boundary")
+            render = unique_step(compiled, "agent", step_id="gate_render")
+            validate = unique_step(compiled, "safe_outputs", step_id="gate_validate")
+            expect(render.get("env", {}).get("GATE_HELPER_MODE") == "render"
+                   and validate.get("env", {}).get("GATE_HELPER_MODE") == "validate",
+                   "selected Gate omitted trusted envelope rendering or final validation")
         detector = safe["threat-detection"]
         expect(detector["enabled"] is True and detector["continue-on-error"] is False,
                "selected Safe Outputs detector fails open")
@@ -7408,6 +7415,61 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
     source.bind_reviewer(preflight.composition.runtime, preflight.composition.policy_authority)
     return SimpleNamespace(transport=transport, result_source=source, state=state, http=http)
 
+
+def fixed_ordinal_two_detector_log_bytes():
+    """Consume the private CI file once; retain only immutable verified bytes in memory."""
+    import os
+    import stat
+    import hashlib
+    from pathlib import Path
+    path = None
+    owned = None
+    try:
+        root = Path(os.environ["RUNNER_TEMP"])
+        path = Path(os.environ["V03_ORDINAL2_DETECTOR_LOG_PATH"])
+        if not root.is_absolute() or path != root / "v03-ordinal2-detector.log":
+            raise ValueError("path")
+        cache = globals().setdefault("_FIXED_ORDINAL_TWO_LOG_BYTES", {})
+        key = str(path)
+        if key not in cache:
+            if any(parent.is_symlink() for parent in (path, *path.parents)):
+                raise ValueError("symlink")
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+                raise ValueError("mode")
+            owned = (metadata.st_dev, metadata.st_ino)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(fd)
+                if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != owned:
+                    raise ValueError("file")
+                with os.fdopen(fd, "rb", closefd=False) as stream:
+                    raw = stream.read(315717)
+            finally:
+                os.close(fd)
+            if (len(raw) != 315716 or hashlib.sha256(raw).hexdigest()
+                    != "b6f950ae1f0536946475e4a05d9bf7948c5963d3ddde9099dc24248188add374"):
+                raise ValueError("digest")
+            cache[key] = raw
+        raw = cache[key]
+        if (type(raw) is not bytes or len(raw) != 315716 or hashlib.sha256(raw).hexdigest()
+                != "b6f950ae1f0536946475e4a05d9bf7948c5963d3ddde9099dc24248188add374"):
+            raise ValueError("cache")
+        return raw
+    except Exception:
+        raise AssertionError("fixed historical detector log unavailable or changed") from None
+    finally:
+        if path is not None and owned is not None:
+            try:
+                current = path.lstat()
+                if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == owned:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise AssertionError("fixed historical detector log cleanup failed") from None
+
+
 def reviewer_structured_runtime_fixture(*, verdict='PASS'):
     import base64
     import json
@@ -7434,8 +7496,11 @@ def reviewer_structured_runtime_fixture(*, verdict='PASS'):
     from urllib.parse import urlparse, parse_qs, unquote
     attach_structured_predecessor_controller_fixture(provider, Path(__file__).resolve().parents[1])
     old_provider_http = provider.http
+    original_detector_log = fixed_ordinal_two_detector_log_bytes()
     def candidate_document_http(*, method, url, token, body=None):
         parsed = urlparse(url)
+        if method == "GET" and parsed.path.endswith("/actions/jobs/113810489745/logs"):
+            return 200, {}, original_detector_log
         prefix = "/repos/dream-xin/ai-sdlc/contents/"
         if method == "GET" and parsed.path.lower().startswith(prefix) and parse_qs(parsed.query).get("ref") == [provider.read_ref()]:
             path = unquote(parsed.path[len(prefix):])
@@ -7477,7 +7542,13 @@ def reviewer_structured_runtime_fixture(*, verdict='PASS'):
                     and m.value.get("event_type") == "persist.confirmed" for m in plan.mutations):
                 self.fail_confirmation_once = False
                 raise OSError("fixture crash before protected Persist confirmation")
-            result = super().commit(plan, receipt)
+            try:
+                result = super().commit(plan, receipt)
+            except __import__("operator_store_git").CasConflict:
+                if self.snapshot.ref_sha.startswith("conflict-"):
+                    self.snapshot = StoreSnapshot(hashlib.sha1(self.snapshot.ref_sha.encode()).hexdigest(),
+                                                  self.snapshot.files)
+                raise
             self.commit_count += 1
             self.snapshot = StoreSnapshot(f"{self.commit_count:040x}", result.snapshot.files)
             return CommitResult(self.snapshot.ref_sha, self.read_snapshot(), result.result)
@@ -7611,6 +7682,15 @@ def reviewer_structured_admission_tests():
         lambda p:p.state.update(controller_source="9"*40)):
         pf,p,feature,gates,_=reviewer_structured_runtime_fixture()
         mutate(p);reject(pf,p,feature,gates,"historical identity/content/candidate/source drift")
+    pf,p,feature,gates,_=reviewer_structured_runtime_fixture()
+    unchanged_http = pf.composition.actions_transport.http
+    def changed_older_log(*, method, url, token, body=None):
+        status, headers, raw = unchanged_http(method=method, url=url, token=token, body=body)
+        if method == "GET" and "/actions/jobs/113810489745/logs" in url:
+            return status, headers, raw + b"\n"
+        return status, headers, raw
+    pf.composition.actions_transport.http = changed_older_log
+    reject(pf,p,feature,gates,"older spent Reviewer proof digest drift")
     pf,p,feature,gates,_=reviewer_structured_runtime_fixture()
     runtime=pf.composition.runtime
     original=deepcopy(runtime.backend.read_snapshot())
@@ -8055,7 +8135,8 @@ def ordinary_structured_runtime_fixture(template, scenario):
         delegate=responses.operator_bundle.callback_coordinator, candidate_handoff=handoff)
     collector = ProductionGhAwVerticalResultCollector(callback_coordinator=coordinator,
         result_source=gates.result_source, workflows=workflows, control_repository=repository, clock=runtime.clock)
-    pf.composition.__dict__.update(candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
+    pf.composition.__dict__.update(current_structured_gateway=gateway, external_create_gateway=one_shot,
+        candidate_provider=candidate, feature_event_gateway=feature.event_gateway,
         result_source=gates.result_source, collector=collector, actions_transport=transport,
         bundle=responses.operator_bundle, responses=responses, graph_before=graph_before,
         callback_coordinator=coordinator)
@@ -8117,8 +8198,7 @@ def ordinary_structured_scenario_tests(template):
         pf, external, feature, gates = ordinary_structured_runtime_fixture(template, scenario)
         host = build_ordinary_dogfood_host(pf)
         recovery = build_ordinary_dogfood_host(pf, discovery=True) if scenario == "session_recovery" else None
-        observation = run_scenario(preflight=pf, host=host.host,
-                                   recovery_host=recovery.host if recovery else None)
+        observation = run_ordinary_scenario_with_diagnostics(pf, external, feature, gates, host, recovery)
         runtime = pf.composition.runtime
         rows = operation_events(runtime.backend.read_snapshot(), observation.operation_id)
         projection = vertical_projection(runtime.backend.read_snapshot(), observation.operation_id)
@@ -8223,6 +8303,180 @@ def ordinary_structured_scenario_tests(template):
 
 
 
+def run_ordinary_scenario_with_diagnostics(pf, external, feature, gates, host, recovery):
+    """Keep the real failure, adding only bounded synthetic fixture diagnostics."""
+    import json
+    import re
+    from operator_store_model import operation_events
+    from operator_vertical_store import vertical_projection
+    from v03_dogfood_scenario_runner import run_scenario
+    gateway = pf.composition.current_structured_gateway
+    original_launch = gateway.launch
+    errors = []
+    def bounded(value):
+        text = str(value or "")
+        if any(word in text.lower() for word in ("token", "secret", "password", "bearer")):
+            return "REDACTED"
+        text = re.sub(r"https?://\S+", "[url]", text)
+        text = re.sub(r"(['\"]).*?\1", "[value]", text)
+        if any(character in text for character in "{}\n\r"):
+            return "STRUCTURED_DETAIL_REDACTED"
+        return "".join(c for c in text if 32 <= ord(c) < 127)[:180]
+    def watched_launch(*, dispatch):
+        try:
+            return original_launch(dispatch=dispatch)
+        except Exception as exc:
+            errors.append({"role": dispatch.get("role"), "exception": type(exc).__name__,
+                           "code": bounded(getattr(exc, "code", "")), "reason": bounded(exc)})
+            raise
+    gateway.launch = watched_launch
+    try:
+        return run_scenario(preflight=pf, host=host.host,
+                            recovery_host=recovery.host if recovery else None)
+    except Exception:
+        snapshot = pf.composition.runtime.backend.read_snapshot()
+        starts = [value for value in snapshot.files.values()
+                  if isinstance(value, dict) and value.get("event_type") == "operation.started"]
+        operations = sorted({row["operation_id"] for row in starts})
+        reports = []
+        for operation_id in operations:
+            rows = operation_events(snapshot, operation_id)
+            projection = vertical_projection(snapshot, operation_id)
+            reports.append({"status": projection["status"], "generation": projection["generation"],
+                "revision": projection["expected_feature_revision"],
+                "events": [{"type": row["event_type"], "sequence": row["sequence"],
+                    **{key: bounded(row.get("payload", {}).get(key)) for key in
+                       ("status", "reason", "reason_code", "summary", "step", "lookup_state", "error_code")
+                       if key in row.get("payload", {})}}
+                    for row in rows[-16:]]})
+        print("ordinary synthetic diagnostic: " + json.dumps({
+            "scenario": pf.slot.scenario, "operations": reports, "launch_errors": errors[-4:],
+            "developer_posts": len(external.state["inputs"]),
+            "gate_roles": [row["role"] for row in gates.state["inputs"]],
+            "patches": external.state["patches"], "persist_puts": feature.state["puts"],
+            "persist_applied": feature.state["applied"]}, sort_keys=True))
+        raise
+    finally:
+        gateway.launch = original_launch
+
+
+def ordinary_structured_input_record_tests(template):
+    """Real record commit/crash and one-shot replay; direct production planner CAS."""
+    import json
+    from copy import deepcopy
+    from operator_store_git import MemoryStateRefBackend, CasConflict
+    from operator_store_model import StoreSnapshot, canonical_json, digest_json
+    from operator_vertical import VerticalInvariantError
+    from v03_dogfood_gate_output import GateOutputContractError
+    import v03_dogfood_full_composition as composition
+    import v03_dogfood_scenario_runner as runner
+    pf, external, feature, gates = ordinary_structured_runtime_fixture(template, "review_remediation")
+    runtime = pf.composition.runtime
+    backend = runtime.backend
+    original_commit = backend.commit
+    captured = {}
+    def crash_after_input_commit(plan, receipt):
+        matches = [m for m in plan.mutations
+                   if "/dogfood-structured-gate-inputs/" in m.path]
+        if matches and not captured:
+            expect(len(matches) == 1 and matches[0].kind == "create_immutable",
+                   "ordinary input freeze is not one immutable record")
+            captured.update(before=deepcopy(backend.read_snapshot()),
+                            path=matches[0].path, record=deepcopy(matches[0].value))
+            original_commit(plan, receipt)
+            raise OSError("fixture crash after ordinary input CAS")
+        return original_commit(plan, receipt)
+    backend.commit = crash_after_input_commit
+    try:
+        host = build_ordinary_dogfood_host(pf)
+        trace = host.host.run(scenario_instruction=runner.scenario_instruction(pf.slot, expected_revision=1))
+        operation_id, status = runner._operation_start(trace)
+        expect(status == "WAITING_EXTERNAL", "ordinary record fixture did not launch initial Developer")
+        runner._collect_next(pf, operation_id, 0)
+    finally:
+        backend.commit = original_commit
+    expect(captured and not gates.state["inputs"] and len(external.state["inputs"]) == 1
+           and external.state["patches"] == 1,
+           "record crash did not occur after real Developer Persist and before Gate POST")
+    path, record, before = captured["path"], captured["record"], captured["before"]
+    binding = composition.recovery_execution_binding(pf.composition.policy_authority)
+    dispatch, inputs = deepcopy(record["dispatch"]), deepcopy(record["dispatch_inputs"])
+    def plan(snapshot):
+        return composition.plan_structured_gate_inputs(snapshot, dispatch=deepcopy(dispatch),
+            inputs=deepcopy(inputs), consumer_binding=binding)
+    first, second = plan(before), plan(before)
+    expect(first == second and len(first.mutations) == 1 and first.mutations[0].path == path,
+           "ordinary planner is not deterministic for one protected preclaim snapshot")
+    competing = MemoryStateRefBackend(repository=backend.repository,
+        state_ref=backend.state_ref, snapshot=deepcopy(before))
+    competing.commit(first, runtime.protected_receipt())
+    try:
+        competing.commit(second, runtime.protected_receipt())
+    except CasConflict:
+        pass
+    else:
+        raise AssertionError("two ordinary input planners both won one CAS")
+    committed = competing.read_snapshot()
+    replay = composition.plan_structured_gate_inputs(committed, dispatch=deepcopy(dispatch),
+        inputs=None, consumer_binding=binding)
+    expect(not replay.mutations and canonical_json(replay.result["record"]) == canonical_json(record),
+           "existing ordinary record replay regenerated inputs")
+    actual = backend.read_snapshot()
+    expect(actual.ref_sha != before.ref_sha
+           and canonical_json(actual.get(path)) == canonical_json(record),
+           "crash lost the committed ordinary bytes or lacked subsequent Store transition")
+    gateway = pf.composition.current_structured_gateway
+    expect(canonical_json(gateway._inputs(deepcopy(dispatch))) == canonical_json(inputs),
+           "Store advancement changed the frozen outgoing payload")
+    post_counts = (len(external.state["inputs"]), len(gates.state["inputs"]), external.state["patches"])
+    for _ in range(2):
+        result = pf.composition.external_create_gateway.launch(dispatch=deepcopy(dispatch))
+        expect(result["lookup_state"] == "UNKNOWN", "consumed crashed launch unexpectedly renewed authority")
+    expect(post_counts == (len(external.state["inputs"]), len(gates.state["inputs"]), external.state["patches"]),
+           "consumed ordinary attempt replay repeated a POST or PATCH")
+    def validate(snapshot):
+        return composition.validate_structured_gate_input_record(snapshot,
+            operation_id=dispatch["operation_id"], external_dispatch_key=dispatch["external_dispatch_key"],
+            consumer_binding=binding)
+    validate(actual)
+    cases = []
+    def changed(label, mutate):
+        snapshot = deepcopy(actual)
+        mutate(snapshot.files[path])
+        cases.append((label, snapshot))
+    changed("extra shape", lambda row: row.update(unexpected=True))
+    changed("missing inputs", lambda row: row.pop("dispatch_inputs"))
+    changed("source", lambda row: row["consumer_execution_binding"].update(execution_source_head_sha="9" * 40))
+    changed("source blobs", lambda row: row.update(source_blobs={}))
+    changed("launch digest", lambda row: row.update(launch_event_digest="sha256:" + "0" * 64))
+    changed("base commit", lambda row: row.update(preclaim_store_commit="9" * 40))
+    changed("dispatch task", lambda row: row["dispatch"].update(task_id="unrelated-task"))
+    def rehash_context(row):
+        payload = json.loads(row["dispatch_inputs"]["task_payload"])
+        context = payload["feature_context"]["gate_context"]
+        context["provenance"]["store_commit_sha"] = "9" * 40
+        context["context_sha256"] = digest_json({k: v for k, v in context.items() if k != "context_sha256"})
+        row["dispatch_inputs"]["task_payload"] = canonical_json(payload)
+        row["dispatch_inputs_digest"] = "sha256:" + digest_json(row["dispatch_inputs"])
+        row["context_digest"] = context["context_sha256"]
+    changed("rehased foreign base context", rehash_context)
+    missing = deepcopy(actual)
+    missing.files.pop(path)
+    cases.append(("missing record", missing))
+    for label, snapshot in cases:
+        try:
+            validate(snapshot)
+        except (VerticalInvariantError, GateOutputContractError, ValueError):
+            pass
+        else:
+            raise AssertionError("ordinary immutable inputs accepted " + label)
+    expect(canonical_json(backend.read_snapshot().files) == canonical_json(actual.files)
+           and post_counts == (len(external.state["inputs"]), len(gates.state["inputs"]), external.state["patches"]),
+           "ordinary malformed-record validation changed Store or external effects")
+    print("- ordinary immutable input CAS, crash reuse, malformed records and no-second-POST passed")
+
+
+
 def main():
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -8263,6 +8517,7 @@ def main():
         ("corrected Reviewer terminal recommendations", reviewer_structured_terminal_tests),
         ("corrected Reviewer actual full pipeline", reviewer_structured_full_pipeline_tests),
         ("ordinary structured scenarios", lambda: ordinary_structured_scenario_tests(reviewer_structured_runtime_fixture()[0])),
+        ("ordinary immutable Gate input planner", lambda: ordinary_structured_input_record_tests(reviewer_structured_runtime_fixture()[0])),
         ("archival structured Gate preparation handoff", lambda: run_archival_bounded_test(structured_gate_authenticated_handoff_tests)),
         ("selected paid DeepSeek source/lock contracts", lambda: selected_dogfood_worker_contract_tests(validation_root)),
         ("bounded Gate detector transform",lambda:bounded_gate_detector_contract_tests(validation_root,upstream_pins={

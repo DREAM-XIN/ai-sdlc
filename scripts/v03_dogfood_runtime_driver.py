@@ -2361,7 +2361,11 @@ def recover_reviewer_structured(preflight):
     builder=preflight.composition.dispatch_gateway.delegate.context_builder
     def fresh_predecessor():
         _reviewer_existing_producer_check(preflight,runtime.backend.read_snapshot())
-        _observe_reviewer_post_model_failure(preflight)
+        historical = runtime.backend.read_snapshot().get(c.REVIEWER_POST_MODEL_AUTH_PATH)
+        observed = _observe_reviewer_post_model_failure(preflight)
+        if (not isinstance(historical, dict)
+                or canonical_json(observed) != canonical_json(historical.get("post_model_failure_proof"))):
+            raise V03DogfoodRuntimeDriverError("older Reviewer failure proof changed before corrected execution")
         return _observe_reviewer_structured_predecessor(preflight)
     proof=fresh_predecessor()
     if c.reviewer_structured_present(snapshot):
