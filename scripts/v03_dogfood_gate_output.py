@@ -198,6 +198,16 @@ def envelope(payload):
     return START + "\n" + FENCE + "json\n" + json.dumps(
         payload, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n" + FENCE + "\n" + END
 
+def _temporary_id_fields(item):
+    if not isinstance(item, dict):
+        fail("Gate item type differs")
+    if "temporary_id" not in item:
+        return {}
+    value = item["temporary_id"]
+    if not isinstance(value, str) or not re.fullmatch(r"aw_[A-Za-z0-9_]{3,12}", value):
+        fail("Gate temporary_id differs")
+    return {"temporary_id": value}
+
 def render_gate_output(raw_ndjson, collected_json, context, role, *, sanitize):
     validate_context(context)
     if not isinstance(raw_ndjson, bytes) or len(raw_ndjson) > MAX_OUTPUT_BYTES:
@@ -206,7 +216,8 @@ def render_gate_output(raw_ndjson, collected_json, context, role, *, sanitize):
     if len(rows) != 1:
         fail("exactly one raw Gate item required")
     raw = strict_json(rows[0])
-    exact_keys(raw, {"type", "body", "item_number", "data"}, "raw item")
+    raw_metadata = _temporary_id_fields(raw)
+    exact_keys(raw, {"type", "body", "item_number", "data"} | set(raw_metadata), "raw item")
     if raw["type"] != "add_comment" or raw["body"] != SENTINEL:
         fail("raw Gate body/type differs")
     if type(raw["item_number"]) is not int or raw["item_number"] != context["identity"]["candidate_pr_number"]:
@@ -217,7 +228,10 @@ def render_gate_output(raw_ndjson, collected_json, context, role, *, sanitize):
     if collected["errors"] != [] or not isinstance(collected["items"], list) or len(collected["items"]) != 1:
         fail("ingestion errors or item count differs")
     item = collected["items"][0]
-    exact_keys(item, {"type", "body", "item_number", "data"}, "ingested item")
+    item_metadata = _temporary_id_fields(item)
+    exact_keys(item, {"type", "body", "item_number", "data"} | set(item_metadata), "ingested item")
+    if item_metadata != raw_metadata:
+        fail("ingestion altered temporary_id")
     if (canonical(item["data"]) != canonical(payload) or item["type"] != raw["type"]
             or canonical(item["item_number"]) != canonical(raw["item_number"])):
         fail("ingestion altered structured fields")
@@ -231,7 +245,8 @@ def render_gate_output(raw_ndjson, collected_json, context, role, *, sanitize):
     proof = {"schema_version": PROOF_SCHEMA, "context_sha256": context["context_sha256"],
              "payload_sha256": sha256(canonical(payload)), "body_sha256": sha256(body.encode("utf-8")),
              "raw_ndjson_sha256": sha256(raw_ndjson), "role": role}
-    output = {"items": [{"type": "add_comment", "body": body, "item_number": raw["item_number"]}],
+    output = {"items": [{"type": "add_comment", "body": body, "item_number": raw["item_number"],
+                          **raw_metadata}],
               "errors": [], "gate_render_proof": proof}
     encoded = canonical(output)
     if len(encoded) > MAX_OUTPUT_BYTES:
@@ -255,7 +270,8 @@ def validate_scanned_output(collected_json, proof, context, role, *, scanned_sha
         fail("scanned canonical artifact/proof differs")
     hex_value(proof["raw_ndjson_sha256"], 64, "raw output")
     item = output["items"][0]
-    exact_keys(item, {"type", "body", "item_number"}, "scanned item")
+    item_metadata = _temporary_id_fields(item)
+    exact_keys(item, {"type", "body", "item_number"} | set(item_metadata), "scanned item")
     if (item["type"] != "add_comment" or type(item["item_number"]) is not int
             or item["item_number"] != context["identity"]["candidate_pr_number"]):
         fail("scanned target differs")
