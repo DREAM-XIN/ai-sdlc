@@ -1086,3 +1086,46 @@ jobs:
           destination: ${{ runner.temp }}/v03-gate-test-actions
       - name: Validate structured Gate output with actual official ingestion and handler
         run: python scripts/validate_v03_gate_output_contract.py --actions-root "$RUNNER_TEMP/v03-gate-test-actions"
+
+      - name: Prepare pinned offline Copilot schema capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/v03-schema-inputs"
+          python scripts/validate_v03_gate_output_contract.py --prepare-schema-capture "$root" --actions-root "$RUNNER_TEMP/v03-gate-test-actions"
+          curl --fail --location --silent --show-error --max-time 120 https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz -o "$RUNNER_TEMP/v03-schema-copilot.tar.gz"
+          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $RUNNER_TEMP/v03-schema-copilot.tar.gz" | sha256sum --check --status
+          python3 - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          root = Path(os.environ["RUNNER_TEMP"]) / "v03-schema-inputs"
+          (root / "actions").mkdir(mode=0o700)
+          dest = root / "copilot"
+          dest.mkdir(mode=0o700)
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "v03-schema-copilot.tar.gz", "r:gz") as archive:
+              entries = archive.getmembers()
+              assert 0 < len(entries) <= 64 and sum(e.size for e in entries) <= 524288000
+              for entry in entries:
+                  path = PurePosixPath(entry.name)
+                  assert not path.is_absolute() and ".." not in path.parts and "\\" not in entry.name
+                  assert entry.isdir() or entry.isfile()
+                  assert 0 <= entry.size <= 314572800
+              archive.extractall(dest, filter="data")
+          assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
+          PY
+          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
+      - name: Capture actual MCP tool schemas through isolated Copilot CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="v03-schema-capture-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          timeout --signal=TERM --kill-after=10s 330s docker run --rm --init --name "$name" \
+            --network none --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" --read-only --workdir /tmp \
+            --tmpfs "/tmp:rw,nosuid,nodev,exec,uid=$(id -u),gid=$(id -g),mode=700" \
+            --mount "type=bind,src=$RUNNER_TEMP/v03-schema-inputs,dst=/inputs,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/v03-gate-test-actions,dst=/inputs/actions,readonly" \
+            --entrypoint node \
+            ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 \
+            /inputs/capture.mjs /inputs/actions /inputs/copilot/copilot /inputs/cases.json

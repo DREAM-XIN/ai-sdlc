@@ -42,8 +42,9 @@ def reject(call, label):
         return
     raise AssertionError("accepted " + label)
 
-def selected_config(role, candidate=577):
-    stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-structured-local"
+def selected_config(role, candidate=577, *, variant="structured-local"):
+    check(variant in ("structured-local", "structured-inline-local"), "unsupported test workflow variant")
+    stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
     lock = yaml.safe_load((ROOT / ".github/workflows" / (stem + ".lock.yml")).read_text())
     steps = lock["jobs"]["agent"]["steps"]
     def unique_env(name):
@@ -554,10 +555,11 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
             "metadata_suffix": publication["suffix"]}
 
-def exercise_role(role, actions_root, temporary):
-    lock, config, validation, metadata = selected_config(role)
+def exercise_role(role, actions_root, temporary, *, variant="structured-local"):
+    lock, config, validation, metadata = selected_config(role, variant=variant)
+    make_payload = inline_payload if variant == "structured-inline-local" else role_payload
     compiled_contract(lock)
-    fixture_dir = temporary / role
+    fixture_dir = temporary / (role + "-" + variant)
     fixture_dir.mkdir()
     detector_digest_contract(lock, fixture_dir)
     official = Official(actions_root, fixture_dir, config, validation, metadata)
@@ -567,7 +569,7 @@ def exercise_role(role, actions_root, temporary):
         return subject.render_gate_output(raw, collected, context, role, sanitize=sanitize)
     verdicts = ("PASS", "REWORK", "BLOCKED") if role == "reviewer" else ("PASS", "FAIL", "BLOCKED")
     for verdict in verdicts:
-        payload = role_payload(role, verdict)
+        payload = make_payload(role, verdict)
         context = fixture_context(payload)
         raw, collected, output, proof, publication, body = _roundtrip(official, payload, context, role)
 
@@ -613,7 +615,7 @@ def exercise_role(role, actions_root, temporary):
             reject(lambda changed=changed: subject.parse_published_gate(
                 changed, context, role, publication["suffix"]), suffix_name)
 
-    payload = role_payload(role, "PASS")
+    payload = make_payload(role, "PASS")
     context = fixture_context(payload)
     raw = raw_item(payload)
     collected = official.ingest(raw)
@@ -700,16 +702,297 @@ def exercise_role(role, actions_root, temporary):
                render(raw, collected, source_mismatch), "rehashed wrong source head: " + kind)
     print(role + ": official ingestion, sanitizer, publication and exact parser checks passed")
 
+SCHEMA_CAPTURE_NODE = r"""import fs from "node:fs";
+import path from "node:path";
+import http from "node:http";
+import net from "node:net";
+import os from "node:os";
+import crypto from "node:crypto";
+import readline from "node:readline";
+import {spawn, spawnSync} from "node:child_process";
+const [actions, cli, casesFile] = process.argv.slice(2);
+const check = (value, code) => { if (!value) throw new Error(code); };
+const canonical = value => JSON.stringify(value && typeof value === "object"
+  ? Array.isArray(value) ? value.map(v => JSON.parse(canonical(v)))
+    : Object.fromEntries(Object.keys(value).sort().map(k => [k, JSON.parse(canonical(value[k]))])) : value);
+const digest = value => crypto.createHash("sha256").update(canonical(value)).digest("hex");
+const blob = file => { const b=fs.readFileSync(file); return crypto.createHash("sha1")
+  .update(Buffer.from("blob "+b.length+"\0")).update(b).digest("hex"); };
+const pins = {
+ "safe_outputs_tools.json":"11b7ee6b95b13f4f5eaa38999f0d66f762cd6baf",
+ "generate_safe_outputs_tools.cjs":"ae09ab0a9d637035d4442f72475abcafe5e50ea4",
+ "safe_outputs_mcp_server.cjs":"efb24c34fec875ffcd9d997d93f043c78fe16f8b",
+ "mcp_server_core.cjs":"21dda2c06354d7c100350fca89f6143d6bf4e0d6",
+ "copilot_harness.cjs":"7132b67bbef15083cf11d183a987eab668eec62c"
+};
+function badRefs(schema) {
+ const bad=[];
+ function walk(value) {
+  if (!value || typeof value!=="object") return;
+  if (typeof value.$ref==="string") {
+   let target=schema;
+   if (!value.$ref.startsWith("#/")) bad.push(value.$ref);
+   else {
+    for (const part of value.$ref.slice(2).split("/").map(p=>p.replace(/~1/g,"/").replace(/~0/g,"~")))
+     target=target && Object.prototype.hasOwnProperty.call(target,part) ? target[part] : undefined;
+    if (target===undefined) bad.push(value.$ref);
+   }
+  }
+  Object.values(value).forEach(walk);
+ }
+ walk(schema); return bad;
+}
+function stopGroup(child) {
+ if (!child?.pid) return;
+ try { process.kill(-child.pid,"SIGKILL"); } catch {}
+}
+function run(command,args,env,cwd,timeout=90000) {
+ return new Promise((resolve,reject)=>{
+  const child=spawn(command,args,{env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
+  let size=0;
+  for (const stream of [child.stdout,child.stderr]) stream.on("data",b=>{
+   size+=b.length; if(size>4*1024*1024) {stopGroup(child);reject(new Error("CHILD_OUTPUT_BOUND"));}
+  });
+  const timer=setTimeout(()=>{stopGroup(child);reject(new Error("CLI_WATCHDOG"));},timeout);
+  child.once("error",()=>{clearTimeout(timer);stopGroup(child);reject(new Error("CHILD_START"));});
+  child.once("close",code=>{clearTimeout(timer);stopGroup(child);resolve(code);});
+ });
+}
+async function listTools(env,cwd) {
+ const child=spawn(process.execPath,[path.join(actions,"safe_outputs_mcp_server.cjs")],
+  {env,cwd,detached:true,stdio:["pipe","pipe","pipe"]});
+ let count=0;
+ child.stderr.on("data",b=>{count+=b.length;if(count>2*1024*1024)stopGroup(child);});
+ const lines=readline.createInterface({input:child.stdout});
+ const pending=new Map();
+ lines.on("line",line=>{
+  try {const m=JSON.parse(line);const done=pending.get(m.id);if(done){pending.delete(m.id);done(m);}}
+  catch {stopGroup(child);}
+ });
+ function rpc(id,method,params) {
+  return new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>{pending.delete(id);reject(new Error("MCP_TIMEOUT"));},15000);
+   pending.set(id,m=>{clearTimeout(timer);m.error?reject(new Error("MCP_ERROR")):resolve(m.result);});
+   child.stdin.write(JSON.stringify({jsonrpc:"2.0",id,method,params})+"\n");
+  });
+ }
+ try {
+  await rpc(1,"initialize",{protocolVersion:"2024-11-05",capabilities:{},
+                          clientInfo:{name:"schema-regression",version:"1"}});
+  child.stdin.write(JSON.stringify({jsonrpc:"2.0",method:"notifications/initialized"})+"\n");
+  return (await rpc(2,"tools/list",{})).tools;
+ } finally {lines.close();stopGroup(child);}
+}
+function stopResponse(res,request) {
+ const base={id:"offline-schema-stop",object:"chat.completion",created:1,model:"deepseek-chat"};
+ if(request.stream) {
+  res.writeHead(200,{"Content-Type":"text/event-stream"});
+  res.write("data: "+JSON.stringify({...base,object:"chat.completion.chunk",
+   choices:[{index:0,delta:{role:"assistant",content:"Schema capture complete."},finish_reason:null}]})+"\n\n");
+  res.write("data: "+JSON.stringify({...base,object:"chat.completion.chunk",
+   choices:[{index:0,delta:{},finish_reason:"stop"}]})+"\n\n");
+  res.end("data: [DONE]\n\n");
+ } else {
+  res.writeHead(200,{"Content-Type":"application/json"});
+  res.end(JSON.stringify({...base,choices:[{index:0,message:{role:"assistant",
+   content:"Schema capture complete."},finish_reason:"stop"}]}));
+ }
+}
+async function capture(row,index) {
+ const root="/tmp/schema-capture/case-"+index;
+ fs.mkdirSync(root,{recursive:true});
+ const home=path.join(root,"home"); fs.mkdirSync(path.join(home,".copilot"),{recursive:true});
+ const output=path.join(root,"outputs.jsonl");
+ const env={PATH:path.dirname(cli)+":/usr/local/bin:/usr/bin:/bin",HOME:home,LANG:"C.UTF-8",
+  RUNNER_TEMP:root,GITHUB_WORKSPACE:root,GH_AW_SAFE_OUTPUTS:output,
+  GH_AW_SAFE_OUTPUTS_CONFIG_PATH:path.join(root,"config.json"),
+  GH_AW_SAFE_OUTPUTS_TOOLS_PATH:path.join(root,"tools.json"),
+  GH_AW_SAFE_OUTPUTS_TOOLS_SOURCE_PATH:path.join(actions,"safe_outputs_tools.json"),
+  GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:path.join(root,"tools_meta.json"),
+  GITHUB_REPOSITORY:"dream-xin/ai-sdlc",GITHUB_SERVER_URL:"https://github.com",
+  GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST:"false"};
+ fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(row.config));
+ fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH,JSON.stringify(row.meta));
+ const generated=spawnSync(process.execPath,[path.join(actions,"generate_safe_outputs_tools.cjs")],
+   {env,cwd:root,timeout:15000,maxBuffer:2*1024*1024});
+ check(generated.status===0,"GENERATOR_FAILED");
+ const tools=await listTools(env,root);
+ const advertised=tools.filter(t=>t.name==="add_comment");
+ check(advertised.length===1,"MCP_ADD_COMMENT_MISSING");
+ const schema=advertised[0].inputSchema;
+ if(!row.legacy)check(tools.every(t=>badRefs(t.inputSchema).length===0),"MCP_ALL_REFERENCE_CLOSURE");
+ const broken=badRefs(schema);
+ check(row.legacy ? broken.length===1 && broken[0]==="#/0/inputSchema/$defs/structured_data"
+                  : broken.length===0,"MCP_REFERENCE_EXPECTATION");
+ const generatedTools=JSON.parse(fs.readFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_PATH));
+ const generatedData=generatedTools.find(t=>t.name==="add_comment").inputSchema.properties.data;
+ check(canonical(schema.properties.data)===canonical(generatedData),"MCP_DATA_DRIFT");
+ let captured=null, fault=null, posts=0;
+ const server=http.createServer((req,res)=>{
+  if(req.method==="GET" && /\/models$/.test(req.url)){
+   res.writeHead(200,{"Content-Type":"application/json"});
+   res.end(JSON.stringify({object:"list",data:[{id:"deepseek-chat",object:"model",owned_by:"offline"}]}));return;
+  }
+  let bytes=0,raw="";
+  req.on("data",b=>{bytes+=b.length;if(bytes>4*1024*1024){fault="REQUEST_BOUND";req.destroy();}else raw+=b;});
+  req.on("end",()=>{
+   try {
+    check(req.method==="POST" && /\/chat\/completions$/.test(req.url),"PROVIDER_ROUTE");
+    const request=JSON.parse(raw); check(request.model==="deepseek-chat","MODEL_ROUTE");
+    check(++posts<=3,"REQUEST_COUNT");
+    const requestTools=(request.tools||[]).map(t=>t.function||t);
+    if(!row.legacy)check(requestTools.every(t=>t.parameters && badRefs(t.parameters).length===0),
+      "CLI_ALL_REFERENCE_CLOSURE");
+    const matches=requestTools.filter(t=>/^(?:safeoutputs[_-]+)?add_comment$/.test(t.name));
+    check(matches.length===1,"CLI_ADD_COMMENT_MISSING");
+    const parameters=matches[0].parameters;
+    check(canonical(parameters.properties.data)===canonical(schema.properties.data),"CLI_DATA_DRIFT");
+    const refs=badRefs(parameters);
+    check(row.legacy ? refs.length===1 && refs[0]==="#/0/inputSchema/$defs/structured_data"
+                     : refs.length===0,"CLI_REFERENCE_EXPECTATION");
+    const current={schema_sha256:digest(parameters),data_sha256:digest(parameters.properties.data)};
+    if(captured)check(canonical(captured)===canonical(current),"CLI_SCHEMA_CHANGED");
+    captured=current;
+    stopResponse(res,request);
+   } catch(error) {
+    fault=/^[A-Z_]+$/.test(error.message)?error.message:"PROVIDER_PARSE";
+    res.writeHead(400,{"Content-Type":"application/json"});
+    res.end(JSON.stringify({error:{type:"offline_schema_capture_failure"}}));
+   }
+  });
+ });
+ await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+ const config={mcpServers:{safeoutputs:{type:"local",command:process.execPath,
+  args:[path.join(actions,"safe_outputs_mcp_server.cjs")],tools:["*"],env}}};
+ fs.writeFileSync(path.join(home,".copilot","mcp-config.json"),JSON.stringify(config));
+ const cliEnv={...env,COPILOT_MODEL:"deepseek-chat",COPILOT_PROVIDER_TYPE:"openai",
+  COPILOT_PROVIDER_WIRE_API:"completions",COPILOT_PROVIDER_API_KEY:"offline-dummy",
+  COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:"+server.address().port};
+ try {
+  const code=await run(cli,["--model","deepseek-chat","--disable-builtin-mcps","--no-ask-user",
+   "--allow-tool","safeoutputs","--prompt","Return a short completion. Do not call any tools."],cliEnv,root);
+  check(!fault,fault||"CAPTURE_FAILED");check(captured,"NO_PROVIDER_CAPTURE");
+  check(code===0,"CLI_EXIT");
+  check(!fs.existsSync(output)||fs.statSync(output).size===0,"UNEXPECTED_TOOL_EFFECT");
+  return {case:row.label,status:"PASS",scope:"add_comment data equality and all tool parameter reference closure",provider_requests:posts,local_reference_closure:!row.legacy,
+          expected_legacy_rejection:row.legacy,...captured};
+ } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+}
+async function main() {
+ check(actions==="/inputs/actions"&&cli==="/inputs/copilot/copilot"&&casesFile==="/inputs/cases.json","INPUT_PATH");
+ check(process.getuid()!==0,"NONROOT_REQUIRED");
+ check(Object.values(os.networkInterfaces()).flat().every(n=>n.internal),"NO_EGRESS");
+ check(!Object.keys(process.env).some(k=>/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL/i.test(k)),"INHERITED_AUTHORITY");
+ await new Promise((resolve,reject)=>{
+  const socket=net.connect({host:"192.0.2.1",port:9});
+  const timer=setTimeout(()=>{socket.destroy();reject(new Error("EGRESS_INCONCLUSIVE"));},1000);
+  socket.once("connect",()=>{clearTimeout(timer);socket.destroy();reject(new Error("EGRESS_AVAILABLE"));});
+  socket.once("error",e=>{clearTimeout(timer);socket.destroy();
+   ["ENETUNREACH","EHOSTUNREACH","EACCES","EPERM"].includes(e.code)?resolve():reject(new Error("EGRESS_INCONCLUSIVE"));});
+ });
+ for(const [file,sha] of Object.entries(pins))check(blob(path.join(actions,file))===sha,"OFFICIAL_PIN");
+ check(!fs.existsSync("/tmp/schema-capture"),"STALE_WORKSPACE");
+ fs.mkdirSync("/tmp/schema-capture");
+ const version=spawnSync(cli,["--version"],{env:{PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/tmp/schema-capture"},
+  encoding:"utf8",timeout:15000});
+ check(version.status===0&&/\b1\.0\.90\b/.test(version.stdout),"CLI_VERSION");
+ const cases=JSON.parse(fs.readFileSync(casesFile));
+ check(cases.length===3&&cases[0].legacy===true&&cases.slice(1).every(c=>c.legacy===false),"CASE_MATRIX");
+ for(let i=0;i<cases.length;i++)console.log(JSON.stringify(await capture(cases[i],i)));
+}
+main().catch(e=>{console.log(JSON.stringify({status:"FAIL",stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE"}));process.exitCode=1;});
+"""
+
+def compiled_tools_metadata(lock, candidate=577):
+    rows = [step["env"]["GH_AW_TOOLS_META_JSON"] for step in lock["jobs"]["agent"]["steps"]
+            if "GH_AW_TOOLS_META_JSON" in step.get("env", {})]
+    check(len(rows) == 1, "missing or ambiguous actual compiler tools metadata")
+    text = rows[0].replace("${GH_AW_INPUTS_CANDIDATE_PR_NUMBER}", str(candidate))
+    text = text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", str(candidate))
+    check("${" not in text, "unresolved native tool metadata")
+    return json.loads(text)
+
+def inline_payload(role, verdict):
+    payload = role_payload(role, verdict)
+    if verdict == "PASS":
+        payload["reason"] = "The synthetic candidate satisfies the assigned checks."
+    if role == "qa":
+        payload["checks"][0]["detail"] = "The assigned synthetic candidate check was evaluated."
+        payload["coverage"][0]["evidence"] = "https://github.com/dream-xin/ai-sdlc/pull/577"
+    return payload
+
+def inline_native_schema_tests(role, actions_root, temporary):
+    import jsonschema
+    lock, config, _, _ = selected_config(role, variant="structured-inline-local")
+    meta = compiled_tools_metadata(lock)
+    schema = meta["property_injections"]["add_comment"]["data"]
+    source = (ROOT / ".github/workflows" /
+              f"ai-sdlc-gh-aw-{role}-deepseek-v03-structured-inline-local.md").read_text()
+    front = yaml.safe_load(source.split("---", 2)[1])
+    check(schema == front["safe-outputs"]["data"], "compiler changed complete inline data contract")
+    def closed(value):
+        if isinstance(value, dict):
+            check("$ref" not in value and "$defs" not in value, "inline schema contains reference indirection")
+            if value.get("type") == "object":
+                check(value.get("additionalProperties") is False and
+                      set(value.get("required", [])) == set(value.get("properties", {})),
+                      "native producer object is not closed/all-required")
+            for child in value.values():
+                closed(child)
+        elif isinstance(value, list):
+            for child in value:
+                closed(child)
+    closed(schema)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    native = jsonschema.Draft202012Validator(schema)
+    for verdict in (("PASS", "REWORK", "BLOCKED") if role == "reviewer" else ("PASS", "FAIL", "BLOCKED")):
+        payload = inline_payload(role, verdict)
+        native.validate(payload)
+        subject.validate_payload(payload, fixture_context(payload), role)
+    payload = inline_payload(role, "PASS")
+    omissions = [("reason", lambda p: p.pop("reason"))]
+    if role == "qa":
+        omissions += [("checks.detail", lambda p: p["checks"][0].pop("detail")),
+                      ("coverage.evidence", lambda p: p["coverage"][0].pop("evidence"))]
+    for label, mutate in omissions:
+        missing = copy.deepcopy(payload)
+        mutate(missing)
+        check(list(native.iter_errors(missing)), "native producer accepted omitted " + label)
+        subject.validate_payload(missing, fixture_context(missing), role)
+    print(role + ": inline native schema and unchanged strict acceptance verified")
+
+def prepare_schema_capture(destination, actions_root):
+    destination.mkdir(mode=0o700)
+    cases = []
+    for role, variant, legacy in (
+        ("reviewer", "structured-local", True),
+        ("reviewer", "structured-inline-local", False),
+        ("qa", "structured-inline-local", False),
+    ):
+        lock, config, _, _ = selected_config(role, variant=variant)
+        cases.append({"label": role + "-" + variant, "legacy": legacy,
+                      "config": config, "meta": compiled_tools_metadata(lock)})
+    (destination / "cases.json").write_bytes(canonical(cases))
+    (destination / "capture.mjs").write_text(SCHEMA_CAPTURE_NODE)
+    print("Prepared three actual compiled schema cases; no model or provider invoked.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--actions-root", type=Path, required=True)
+    parser.add_argument("--prepare-schema-capture", type=Path)
     args = parser.parse_args()
     actions_root = resolve_actions_root(args.actions_root)
+    if args.prepare_schema_capture is not None:
+        prepare_schema_capture(args.prepare_schema_capture, actions_root)
+        return
     scanned_receipt_tests()
     with tempfile.TemporaryDirectory(prefix="v03-gate-output-") as directory:
         sanitizer_closure_tests(actions_root, Path(directory))
         for role in ("reviewer", "qa"):
             exercise_role(role, actions_root, Path(directory))
+            inline_native_schema_tests(role, actions_root, Path(directory))
+            exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
     print("Structured Gate output contract passed with fake provider boundaries only.")
 
 if __name__ == "__main__":
