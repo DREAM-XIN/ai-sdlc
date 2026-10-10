@@ -11,6 +11,7 @@ import {spawn} from "node:child_process";
 const [cli, root] = process.argv.slice(2);
 let stage = "ISOLATION";
 let nativeDiagnostics = null;
+let nativeFieldDiagnostics = null;
 const ensure = (ok, code) => { if (!ok) throw new Error(code); };
 const allowedErrors = new Set([
  "INPUT_PATH","NONROOT","NETWORK_INTERFACE","INHERITED_AUTHORITY","EGRESS_AVAILABLE","EGRESS_INCONCLUSIVE",
@@ -251,6 +252,40 @@ async function main(){
   const info=fs.lstatSync(file);
   ensure(info.isFile()&&!info.isSymbolicLink()&&info.size<=8*1024*1024,"EVENT_FILE");
   const raw=fs.readFileSync(file),events=parseEvents(raw);
+  nativeFieldDiagnostics={start_count:0,complete_count:0,start_fields:{},complete_fields:{},
+   tool_categories:{bash:0,shell:0,other:0},provider_id_matches:0,
+   unique_start_ids:0,unique_complete_ids:0,paired_ids:0,duplicate_start_ids:0,duplicate_complete_ids:0,
+   explicit_status:{success:0,failure:0,unknown:0}};
+  const startIds=new Set(),completeIds=new Set();
+  const shape=value=>value===undefined?"absent":value===null?"null":Array.isArray(value)?"array":typeof value;
+  const fields=["toolCallId","toolName","command","input","parameters","arguments","success","output","result"];
+  const nested=[["input","command"],["parameters","command"],["arguments","command"],
+                ["result","content"],["result","resultType"],["result","success"],["result","error"]];
+  for(const event of events){
+   if(!["tool.execution_start","tool.execution_complete"].includes(event.type))continue;
+   const isStart=event.type==="tool.execution_start",data=event.data;
+   nativeFieldDiagnostics[isStart?"start_count":"complete_count"]++;
+   const output=nativeFieldDiagnostics[isStart?"start_fields":"complete_fields"];
+   for(const field of fields){
+    const key=field+":"+shape(data[field]);output[key]=(output[key]||0)+1;
+   }
+   for(const [parent,child] of nested){
+    const value=data[parent]&&typeof data[parent]==="object"?data[parent][child]:undefined;
+    const key=parent+"."+child+":"+shape(value);output[key]=(output[key]||0)+1;
+   }
+   nativeFieldDiagnostics.tool_categories[["bash","shell"].includes(data.toolName)?data.toolName:"other"]++;
+   if(ids.includes(data.toolCallId))nativeFieldDiagnostics.provider_id_matches++;
+   const idSet=isStart?startIds:completeIds;
+   if(typeof data.toolCallId==="string"){
+    if(idSet.has(data.toolCallId))nativeFieldDiagnostics[isStart?"duplicate_start_ids":"duplicate_complete_ids"]++;
+    idSet.add(data.toolCallId);
+   }
+   if(!isStart)nativeFieldDiagnostics.explicit_status[
+    data.success===true?"success":data.success===false?"failure":"unknown"]++;
+  }
+  nativeFieldDiagnostics.unique_start_ids=startIds.size;
+  nativeFieldDiagnostics.unique_complete_ids=completeIds.size;
+  nativeFieldDiagnostics.paired_ids=[...startIds].filter(id=>completeIds.has(id)).length;
   const report=analyze(events);
   stage="INCOMPLETE_NEGATIVES";
   let truncated=false,incomplete=false;
@@ -269,4 +304,4 @@ async function main(){
 }
 try{const report=await main();console.log(JSON.stringify(report));}
 catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",
- stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",native_diagnostics:nativeDiagnostics,raw_exported:false}));process.exitCode=1;}
+ stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",native_diagnostics:nativeDiagnostics,native_field_diagnostics:nativeFieldDiagnostics,raw_exported:false}));process.exitCode=1;}
