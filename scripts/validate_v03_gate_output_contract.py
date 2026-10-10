@@ -91,7 +91,16 @@ def selected_config(role, candidate=577):
     return lock, config, validation, metadata
 
 class Official:
-    def __init__(self, actions_root, fixture_root, config, validation, metadata):
+    def __init__(self, actions_root, fixture_root, config, validation, metadata, *,
+                 run_id=9001, comment_id=9002, workflow_sha="e" * 40):
+        check(type(run_id) is int and run_id > 0, "invalid fixture run identity")
+        check(type(comment_id) is int and comment_id > 0, "invalid fixture comment identity")
+        check(isinstance(workflow_sha, str) and len(workflow_sha) == 40
+              and all(c in "0123456789abcdef" for c in workflow_sha),
+              "invalid fixture workflow source")
+        self.run_id = run_id
+        self.comment_id = comment_id
+        self.workflow_sha = workflow_sha
         self.actions = actions_root
         self.config = config
         self.validation = validation
@@ -102,7 +111,8 @@ class Official:
             "GITHUB_REPOSITORY": "dream-xin/ai-sdlc",
             "GITHUB_SERVER_URL": "https://github.com",
             "GITHUB_API_URL": "https://api.github.com",
-            "GITHUB_RUN_ID": "9001", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": str(run_id), "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_WORKFLOW_SHA": workflow_sha,
             "GH_AW_SAFE_OUTPUTS": str(fixture_root / "safeoutputs.jsonl"),
             "GH_AW_SAFE_OUTPUTS_CONFIG_PATH": str(fixture_root / "config.json"),
             "GH_AW_VALIDATION_CONFIG_PATH": str(fixture_root / "validation.json"),
@@ -112,7 +122,9 @@ class Official:
     def call(self, request):
         completed = subprocess.run(
             ["node", "-e", NODE_HARNESS, str(self.actions)],
-            input=packed(request), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            input=packed({**request, "fixture_run_id": self.run_id,
+                          "fixture_comment_id": self.comment_id}),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=self.env, timeout=30, check=False,
         )
         check(completed.returncode == 0, "pinned official module execution failed")
@@ -192,6 +204,11 @@ const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const actions = process.argv[1];
 const candidate = Number(request.config?.add_comment?.target || 577);
 assert.ok(Number.isSafeInteger(candidate) && candidate > 0);
+const runId = request.fixture_run_id;
+const commentId = request.fixture_comment_id;
+assert.ok(Number.isSafeInteger(runId) && runId > 0);
+assert.ok(Number.isSafeInteger(commentId) && commentId > 0);
+assert.equal(String(runId),process.env.GITHUB_RUN_ID);
 const outputs = {};
 const posts = [];
 global.core = {
@@ -207,7 +224,7 @@ global.context = {
   repo: {owner:'dream-xin',repo:'ai-sdlc'},
   payload: {inputs:{}}, eventName:'workflow_dispatch',
   serverUrl:'https://github.com', apiUrl:'https://api.github.com',
-  runId:9001, runNumber:1, actor:'fixture-user',
+  runId, runNumber:1, actor:'fixture-user',
   workflow:process.env.GH_AW_WORKFLOW_NAME,
 };
 global.github = {
@@ -218,7 +235,7 @@ global.github = {
         assert.equal(p.owner,'dream-xin'); assert.equal(p.repo,'ai-sdlc');
         assert.equal(p.issue_number,candidate);
         posts.push(p);
-        return {data:{id:9002,html_url:'https://github.com/dream-xin/ai-sdlc/pull/'+candidate+'#issuecomment-9002'}};
+        return {data:{id:commentId,html_url:'https://github.com/dream-xin/ai-sdlc/pull/'+candidate+'#issuecomment-'+commentId}};
       }
     }
   }
@@ -242,7 +259,7 @@ global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
     const handler = await require(path.join(actions,'add_comment.cjs')).main(request.config.add_comment);
     const result = await handler(request.item);
     assert.equal(result.success,true); assert.equal(posts.length,1);
-    const runUrl = 'https://github.com/dream-xin/ai-sdlc/actions/runs/9001';
+    const runUrl = 'https://github.com/dream-xin/ai-sdlc/actions/runs/'+runId;
     const marker = require(path.join(actions,'messages_footer.cjs')).generateXMLMarker(
       process.env.GH_AW_WORKFLOW_NAME,runUrl);
     const caller = require(path.join(actions,'generate_footer.cjs')).generateWorkflowCallIdMarker(
@@ -316,9 +333,9 @@ def compiled_contract(lock):
         check((completed.returncode == 0) is expected,
               "actual generated effect guard accepted failed renderer/detector/attempt")
 
-def scan_receipt(digest):
-    return {"schema_version": "ai-sdlc.v03-gate-scanned-bytes/v1", "run_id": 9001,
-            "run_attempt": 1, "workflow_sha": "e" * 40, "sha256": digest}
+def scan_receipt(digest, *, run_id=9001, workflow_sha="e" * 40):
+    return {"schema_version": "ai-sdlc.v03-gate-scanned-bytes/v1", "run_id": run_id,
+            "run_attempt": 1, "workflow_sha": workflow_sha, "sha256": digest}
 
 def scanned_receipt_tests():
     digest = hashlib.sha256(b"synthetic scanned bytes").hexdigest()
@@ -443,8 +460,8 @@ def cli_validation(official, context, output, should_pass):
     env = {**official.env, "TASK_PAYLOAD": packed(task).decode(),
            "RUN_ATTEMPT": "1", "AGENT_RESULT": "success",
            "DETECTION_SUCCESS": "true", "DETECTION_CONCLUSION": "success",
-           "DETECTION_RESULT": "success", "SOURCE_RUN_ID": "9001",
-           "SOURCE_WORKFLOW_SHA": "e" * 40}
+           "DETECTION_RESULT": "success", "SOURCE_RUN_ID": str(official.run_id),
+           "SOURCE_WORKFLOW_SHA": official.workflow_sha}
     mapping = {"ROLE": "role", "DISPATCH_KEY": "external_dispatch_key",
                "FEATURE_ID": "feature_id", "STAGE": "stage",
                "EXPECTED_REVISION": "expected_revision", "TARGET_REPOSITORY": "target_repository",
@@ -453,7 +470,9 @@ def cli_validation(official, context, output, should_pass):
     env.update({name: str(identity[key]) for name, key in mapping.items()})
     receipt_path = Path(official.env["RUNNER_TEMP"]) / "ai-sdlc-gate-scan-receipt/receipt.json"
     receipt_path.parent.mkdir(exist_ok=True)
-    receipt_path.write_bytes(canonical(scan_receipt(hashlib.sha256(output).hexdigest())))
+    receipt_path.write_bytes(canonical(scan_receipt(
+        hashlib.sha256(output).hexdigest(), run_id=official.run_id,
+        workflow_sha=official.workflow_sha)))
     env["SCANNED_RECEIPT_PATH"] = str(receipt_path)
     path = Path("/tmp/gh-aw/agent_output.json")
     path.write_bytes(output)
@@ -511,20 +530,23 @@ def _roundtrip(official, payload, context, role):
 
     return raw, collected, output, proof, publication, body
 
-def verify_context_roundtrip(role, context, *, root, actions_root):
+def verify_context_roundtrip(role, context, *, root, actions_root,
+                             verdict="PASS", run_id=9001, comment_id=9002,
+                             workflow_sha="e" * 40):
     """Carry an actual producer-built context through the official output boundary."""
     check(Path(root).resolve() == ROOT, "roundtrip repository root differs")
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
-    payload = role_payload(role, "PASS")
+    payload = role_payload(role, verdict)
     for key in subject.PAYLOAD_IDENTITY_KEYS:
         payload[key] = context["identity"][key]
     payload["evidence"][0]["uri"] = (
         "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"]))
     _, config, validation, metadata = selected_config(role, payload["candidate_pr_number"])
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
-        official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata)
+        official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
+                            run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
         raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role)
     check(canonical(context) == original, "roundtrip mutated producer context")

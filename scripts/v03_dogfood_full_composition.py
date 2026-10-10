@@ -807,6 +807,9 @@ def reviewer_post_model_present(snapshot):
     return any(path in snapshot.files for path in REVIEWER_POST_MODEL_PATHS)
 
 def reviewer_route_paths(snapshot):
+    if reviewer_structured_present(snapshot):
+        return {"authorization_path": REVIEWER_STRUCTURED_AUTH_PATH, "claim_path": REVIEWER_STRUCTURED_CLAIM_PATH,
+                "seal_path": REVIEWER_STRUCTURED_SEAL_PATH, "workflow": STRUCTURED_GATE_WORKFLOWS["reviewer"], "ordinal": 3}
     if reviewer_post_model_present(snapshot):
         return {"authorization_path":REVIEWER_POST_MODEL_AUTH_PATH,"claim_path":REVIEWER_POST_MODEL_CLAIM_PATH,
                 "seal_path":REVIEWER_POST_MODEL_SEAL_PATH,"workflow":REVIEWER_BOUNDED_WORKFLOW,"ordinal":2}
@@ -884,13 +887,15 @@ def validate_reviewer_post_model_authorization(snapshot, *, consumer_binding=Non
     return auth,claim
 
 def validate_reviewer_authorization(snapshot, *, consumer_binding=None):
+    if reviewer_structured_present(snapshot):
+        return validate_reviewer_structured_authorization(snapshot, consumer_binding=consumer_binding)
     if reviewer_post_model_present(snapshot):
         return validate_reviewer_post_model_authorization(snapshot,consumer_binding=consumer_binding)
     return _validate_pre_model_reviewer_authorization(snapshot,consumer_binding=consumer_binding)
 
 
 def reviewer_replacement_present(snapshot):
-    return any(path in snapshot.files for path in (*REVIEWER_PATHS,*REVIEWER_POST_MODEL_PATHS))
+    return any(path in snapshot.files for path in (*REVIEWER_PATHS,*REVIEWER_POST_MODEL_PATHS,*REVIEWER_STRUCTURED_PATHS))
 
 
 def validate_reviewer_predecessor(snapshot, *, fresh=False):
@@ -1038,6 +1043,9 @@ def _validate_reviewer_callback_relation(snapshot, auth, events, seal_path):
 def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=True):
     descriptor = reviewer_route_paths(snapshot)
     auth, claim = validate_reviewer_authorization(snapshot, consumer_binding=consumer_binding)
+    if descriptor["ordinal"] == 3 and REVIEWER_STRUCTURED_TERMINAL_PATH in snapshot.files:
+        reviewer_structured_terminal(snapshot, consumer_binding=consumer_binding)
+        raise VerticalInvariantError("NEEDS_USER", "corrected Reviewer recommendation requires owner action")
     sealed = snapshot.get(descriptor["seal_path"])
     if require_seal or descriptor["seal_path"] in snapshot.files:
         if (not isinstance(sealed, dict) or sealed.get("authorization_digest") != "sha256:" + digest_json(auth)
@@ -1045,7 +1053,7 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
                 or sealed.get("physical_key") != auth["physical_key"]
                 or sealed.get("logical_key") != REVIEWER_OLD_KEY
                 or type(sealed.get("run_id")) is not int or sealed["run_id"] <= 0
-                or sealed["run_id"] in {REVIEWER_FAILED_RUN, REVIEWER_POST_MODEL_FAILED_RUN, POST_HANDOFF_RUN}
+                or sealed["run_id"] in {REVIEWER_FAILED_RUN, REVIEWER_POST_MODEL_FAILED_RUN, REVIEWER_STRUCTURED_PRIOR_RUN, POST_HANDOFF_RUN}
                 or type(sealed.get("run_attempt")) is not int or sealed.get("run_attempt") != 1 or sealed.get("conclusion") != "success"
                 or sealed.get("execution_binding") != auth["consumer_execution_binding"]
                 or sealed.get("workflow_file") != auth["workflow_file"]):
@@ -1053,6 +1061,10 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
         expected_fields = {"schema_version", "ordinal", "authorization_digest", "claim_digest",
             "logical_key", "physical_key", "run_id", "run_attempt", "conclusion", "workflow_file",
             "execution_binding", "resolved_digest", "role_payload_digest", "safe_output_proof", "trusted_uri", "content_sha256", "content_size"}
+        if auth["ordinal"] == 3:
+            expected_fields.add("recommendation")
+            if sealed.get("recommendation") != "PASS":
+                raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer seal is PASS-only")
         match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(sealed.get("trusted_uri") or ""))
         if (set(sealed) != expected_fields or type(sealed.get("ordinal")) is not int or sealed.get("ordinal") != auth["ordinal"]
                 or sealed.get("schema_version") != auth["schema_version"]
@@ -1073,7 +1085,16 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
 
 def validate_reviewer_controller_bridge(snapshot, consumer_binding, *, inspection_only=False):
     old, _ = validate_reviewer_predecessor(snapshot, fresh=not reviewer_replacement_present(snapshot))
-    if reviewer_post_model_present(snapshot):
+    if reviewer_structured_present(snapshot):
+        validate_reviewer_structured_authorization(snapshot, consumer_binding=consumer_binding)
+    elif (reviewer_post_model_present(snapshot) and isinstance(snapshot.get(REVIEWER_POST_MODEL_AUTH_PATH), dict)
+            and snapshot.get(REVIEWER_POST_MODEL_AUTH_PATH).get("consumer_execution_binding") != consumer_binding):
+        validate_reviewer_structured_predecessor(snapshot, fresh=True)
+        if (not inspection_only or set(consumer_binding) != set(recovery_execution_binding_fields())
+                or consumer_binding["execution_source_head_sha"] in {REVIEWER_STRUCTURED_PRIOR_SOURCE,
+                    REVIEWER_POST_MODEL_SOURCE, REVIEWER_PREDECESSOR_SOURCE, POST_HANDOFF_SOURCE}):
+            raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer bridge is not armed")
+    elif reviewer_post_model_present(snapshot):
         validate_reviewer_post_model_authorization(snapshot,consumer_binding=consumer_binding)
     elif (isinstance(snapshot.get(REVIEWER_AUTH_PATH),dict)
             and snapshot.get(REVIEWER_AUTH_PATH)["consumer_execution_binding"] != consumer_binding):
@@ -1304,6 +1325,11 @@ from operator_vertical_reconcile_classified import FailureClassifyingTrustedReco
 
 class DogfoodPostHandoffRecoveringExecutor(FailureClassifyingTrustedRecoveringVerticalExecutor):
     """Same protected executor base, with one explicit observation supersession."""
+    def advance_until_stop(self, *, operation_id):
+        current = super().advance_until_stop(operation_id=operation_id)
+        authority = getattr(self, "remediation_rereview_authority", None)
+        return authority.after_stop(operation_id=operation_id, current=current) if authority is not None else current
+
     def _reconcile_callback(self, operation_id: str) -> bool | None:
         snapshot = self.runtime.backend.read_snapshot()
         if operation_id != RECOVERY_OPERATION_ID or not post_handoff_present(snapshot):
@@ -1846,6 +1872,12 @@ class DogfoodTrustedCallbackCoordinator:
             raise VerticalInvariantError("SUPERSEDED_GENERATION", "callback belongs to a superseded generation")
         if context.target_ref != self.executor.config.target_ref:
             raise VerticalInvariantError("STALE_REVISION", "callback target ref is outside trusted dogfood runtime")
+        authority = getattr(self, "remediation_rereview_authority", None)
+        if authority is not None:
+            terminal = authority.stop_nonpassing(context=context, callback_id=callback_id,
+                worker_payload=worker_payload, receipts=receipts)
+            if terminal is not None:
+                return terminal
         self.executor._commit(
             lambda snapshot: plan_vertical_callback_record(
                 snapshot,
@@ -3008,7 +3040,7 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
 
     def _gate_observation(self, *, values, run_id, workflow, trusted):
         observed = super()._gate_observation(values=values, run_id=run_id, workflow=workflow, trusted=trusted)
-        if workflow not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml"}:
+        if workflow not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values()}:
             return observed
         snapshot = self.reviewer_runtime.backend.read_snapshot()
         reservation = snapshot.get(reservation_path(trusted["semantic_effect_key"]))
@@ -3039,7 +3071,7 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
             return super().resolve(external_dispatch_key=external_dispatch_key,
                 expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
         selected = self.config.workflows.workflow_for(trusted_context["role"])
-        if selected not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml"}:
+        if selected not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values()}:
             return super().resolve(external_dispatch_key=external_dispatch_key,
                 expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
         before = self._first_attempt_run_snapshot(run_id=int(expected_receipt_identity), external_dispatch_key=external_dispatch_key)
@@ -3075,7 +3107,7 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
         if not match or not comment_match:
             return super().load_content(uri)
         before = self._first_attempt_run_snapshot(run_id=int(match.group("run")), external_dispatch_key=match.group("key"))
-        if before["workflow_file"] not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml"}:
+        if before["workflow_file"] not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values()}:
             return super().load_content(uri)
         if before["head_sha"] != recovery_execution_binding(self.reviewer_policy_authority)["execution_source_head_sha"]:
             raise VerticalInvariantError("POLICY_DENIED", "local Gate content belongs to another source")
@@ -3095,7 +3127,7 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
             return self._resolve_local_gate(external_dispatch_key=external_dispatch_key,
                 expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
         auth, _ = validate_reviewer_authorization(snapshot, consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
-        if external_dispatch_key in {REVIEWER_OLD_KEY, REVIEWER_POST_MODEL_FAILED_KEY}:
+        if external_dispatch_key in {REVIEWER_OLD_KEY, REVIEWER_POST_MODEL_FAILED_KEY, REVIEWER_STRUCTURED_PRIOR_KEY}:
             raise VerticalInvariantError("POLICY_DENIED", "failed Reviewer is not an adoptable result")
         if external_dispatch_key != auth["physical_key"]:
             return self._resolve_local_gate(external_dispatch_key=external_dispatch_key,
@@ -3196,6 +3228,8 @@ class DogfoodReviewerReplacementCollector(ProductionGhAwVerticalResultCollector)
             candidate_pr_number=552, candidate_head_sha=REVIEWER_CANDIDATE,
             worker_identity=resolved.run.worker_identity, collector_identity=resolved.run.collector_identity)
         payload = validate_worker_result("reviewer", resolved.role_payload)
+        if route["ordinal"] == 3 and payload["verdict"] != "PASS":
+            raise VerticalInvariantError("NEEDS_USER", "corrected Reviewer non-PASS cannot enter lifecycle translation")
         declared = {row["label"]: row["kind"] for row in payload["outputs"]}
         receipts = _build_receipts(coordinator=self.callback_coordinator, context=context,
             outputs=resolved.outputs, declared_outputs=declared, collected_at=str(self.clock()))
@@ -3219,6 +3253,30 @@ class DogfoodRecoveryBoundContentLoader:
         if self.runtime is not None and self.runtime is not runtime:
             raise V03DogfoodCompositionError("recovery content loader runtime changed")
         self.runtime = runtime
+
+    def inspect_historical(self, uri):
+        """Read only the already-accepted Developer evidence for the exact preclaim context."""
+        if self.runtime is None:
+            raise VerticalInvariantError("POLICY_DENIED", "historical inspection lacks protected runtime")
+        self.runtime.protected_receipt()
+        snapshot = self.runtime.backend.read_snapshot()
+        validate_reviewer_structured_predecessor(snapshot, fresh=True)
+        validate_reviewer_controller_bridge(snapshot, recovery_execution_binding(self.policy_authority), inspection_only=True)
+        sealed, _ = validate_post_handoff_predecessor(snapshot)
+        if uri != sealed["safe_output_uri"]:
+            raise VerticalInvariantError("POLICY_DENIED", "historical inspection is restricted to the original Developer lease")
+        source = self.recovery_result_source
+        before = source._first_attempt_run_snapshot(run_id=POST_HANDOFF_RUN,
+            external_dispatch_key=sealed["recovery_dispatch_key"])
+        match = _FIRST_ATTEMPT_URI_RE.fullmatch(uri)
+        if before["head_sha"] != POST_HANDOFF_SOURCE or digest_json(before) != match.group("lease"):
+            raise VerticalInvariantError("POLICY_DENIED", "historical inspection producer lease differs")
+        _, content, _, _ = observe_post_handoff_pr(source, snapshot)
+        after = source._first_attempt_run_snapshot(run_id=POST_HANDOFF_RUN,
+            external_dispatch_key=sealed["recovery_dispatch_key"])
+        if not source._same_run_snapshot(before, after) or self.runtime.backend.read_snapshot().ref_sha != snapshot.ref_sha:
+            raise VerticalInvariantError("BLOCKED", "historical inspection changed during read")
+        return content
 
     def __call__(self, uri):
         match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
@@ -3571,7 +3629,9 @@ def build_v03_dogfood_full_composition(
         collector_identity=COLLECTOR_IDENTITY,
         api_url=github_api_base,
     )
-    result_source = DogfoodReviewerReplacementSource(
+    structured = (workflows.reviewer_workflow == STRUCTURED_GATE_WORKFLOWS["reviewer"]
+                  and workflows.qa_workflow == STRUCTURED_GATE_WORKFLOWS["qa"])
+    result_source = (DogfoodStructuredGateResultSource if structured else DogfoodReviewerReplacementSource)(
         source_config,
         target_repository=config.target_repository,
     )
@@ -3667,6 +3727,12 @@ def build_v03_dogfood_full_composition(
     feature_truth.bind(durable_truth)
     candidate_provider.bind_runtime(responses.runtime)
     candidate_provider.persist_gateway = bundle.executor.persist_gateway
+    if structured:
+        builder = DogfoodStructuredGateContextBuilder(runtime=responses.runtime,
+            feature_gateway=bundle.executor.feature_gateway, persist_gateway=bundle.executor.persist_gateway,
+            content_loader=content_loader, candidate_provider=candidate_provider, policy_authority=policy_authority)
+        dispatch_gateway.delegate = DogfoodCurrentStructuredDispatchGateway(
+            transport=actions_transport, workflows=workflows, context_builder=builder)
     candidate_handoff = DogfoodCandidateHandoff(
         slot=slot,
         repository=config.target_repository,
@@ -3679,6 +3745,12 @@ def build_v03_dogfood_full_composition(
         delegate=bundle.callback_coordinator,
         candidate_handoff=candidate_handoff,
     )
+    if structured and slot.scenario == "review_remediation":
+        authority = DogfoodRemediationRereviewAuthority(executor=bundle.executor,
+            candidate_provider=candidate_provider, content_loader=content_loader, policy_authority=policy_authority)
+        bundle.executor.remediation_rereview_authority = authority
+        callback_coordinator.remediation_rereview_authority = authority
+        dispatch_gateway.delegate.remediation_rereview_authority = authority
     collector = DogfoodReviewerReplacementCollector(
         policy_authority=policy_authority,
         callback_coordinator=callback_coordinator,
@@ -3750,7 +3822,10 @@ class DogfoodStructuredGateContextBuilder:
                (feature_gateway, persist_gateway, content_loader, candidate_provider)):
             raise V03DogfoodCompositionError("structured context must retain one protected runtime")
 
-    def __call__(self, dispatch):
+    def build_prospective_reviewer(self, authorization):
+        return self(reviewer_dispatch(authorization), prospective_authorization=authorization)
+
+    def __call__(self, dispatch, *, prospective_authorization=None):
         from v03_dogfood_gate_output import validate_context, canonical, sha256, CONTEXT_SCHEMA
         from v03_dogfood_fixture_pool import task_text
         from operator_vertical_store import vertical_projection
@@ -3773,9 +3848,18 @@ class DogfoodStructuredGateContextBuilder:
         # Only the already-existing fixed Reviewer mapping may resolve a physical key.
         if (operation_id == RECOVERY_OPERATION_ID and role == "reviewer"
                 and logical_key != REVIEWER_OLD_KEY and reviewer_replacement_present(snapshot)):
-            route = reviewer_replacement_route(snapshot,
-                consumer_binding=recovery_execution_binding(self.policy_authority), require_seal=False)
-            auth = route["authorization"]
+            if prospective_authorization is not None:
+                validate_reviewer_structured_predecessor(snapshot, fresh=True)
+                expected = reviewer_structured_authorization(snapshot,
+                    consumer_binding=recovery_execution_binding(self.policy_authority),
+                    predecessor_proof=prospective_authorization.get("predecessor_proof"))
+                if canonical_json(expected) != canonical_json(prospective_authorization):
+                    raise VerticalInvariantError("POLICY_DENIED", "prospective Reviewer authority differs")
+                auth = expected
+            else:
+                route = reviewer_replacement_route(snapshot,
+                    consumer_binding=recovery_execution_binding(self.policy_authority), require_seal=False)
+                auth = route["authorization"]
             if logical_key != auth["physical_key"] or logical_dispatch_id != auth["physical_dispatch_id"]:
                 raise VerticalInvariantError("POLICY_DENIED", "unknown structured context physical mapping")
             logical_key, logical_dispatch_id = auth["logical_key"], auth["logical_dispatch_id"]
@@ -3918,7 +4002,8 @@ class DogfoodStructuredGateContextBuilder:
                 if (lease is None or context.get("runtime_receipt_identity") != lease.group("run")
                         or context.get("worker_identity", "").rsplit("@", 1)[-1] != lease.group("head")):
                     raise VerticalInvariantError("BLOCKED", "context producer run/source lease differs")
-                content = self.content_loader(output["trusted_uri"])
+                content = (self.content_loader.inspect_historical(output["trusted_uri"])
+                           if prospective_authorization is not None else self.content_loader(output["trusted_uri"]))
                 if (not isinstance(content, bytes) or len(content) != output.get("size_bytes")
                         or sha256(content) != output.get("sha256")):
                     raise VerticalInvariantError("BLOCKED", "context authenticated content differs")
@@ -3977,3 +4062,1167 @@ class DogfoodStructuredGateDispatchGateway(GhAwVerticalRoleDispatchGateway):
         if len(canonical(inputs)) > 32768:
             raise VerticalInvariantError("BLOCKED", "complete structured dispatch inputs exceed bounded budget")
         return inputs
+
+# Fixed, separately admitted corrected Reviewer. Historical producers remain immutable.
+REVIEWER_STRUCTURED_STORE = "2fd1aec70ccd4ae53ec606146d477a17d4a3967b"
+REVIEWER_STRUCTURED_PRIOR_SOURCE = "ff2fcfebfceaef2baf4edc2a6de2ab820760d48b"
+REVIEWER_STRUCTURED_PRIOR_RUN = 38018044654
+REVIEWER_STRUCTURED_PRIOR_KEY = "dispatch-72f9f220eff8e8a1ab1577c22d3d680bb778abf9"
+REVIEWER_STRUCTURED_PRIOR_COMMENT = 6092979158
+REVIEWER_STRUCTURED_PRIOR_BODY_SHA256 = "6053f28b1c0eab9d4e587b2754366b7a5ac66408b460a3247a6786223bb88fc2"
+REVIEWER_STRUCTURED_BASE = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-reviewer-structured-replacement-3"
+REVIEWER_STRUCTURED_AUTH_PATH = REVIEWER_STRUCTURED_BASE + "/authorization.json"
+REVIEWER_STRUCTURED_CLAIM_PATH = REVIEWER_STRUCTURED_BASE + "/create-claim.json"
+REVIEWER_STRUCTURED_SEAL_PATH = REVIEWER_STRUCTURED_BASE + "/sealed-result.json"
+REVIEWER_STRUCTURED_TERMINAL_PATH = REVIEWER_STRUCTURED_BASE + "/terminal-observation.json"
+REVIEWER_STRUCTURED_PATHS = (REVIEWER_STRUCTURED_AUTH_PATH, REVIEWER_STRUCTURED_CLAIM_PATH,
+    REVIEWER_STRUCTURED_SEAL_PATH, REVIEWER_STRUCTURED_TERMINAL_PATH)
+REVIEWER_STRUCTURED_PRIOR_BLOBS = {
+    REVIEWER_POST_MODEL_AUTH_PATH: "789007f3e0fa8ae57538237db1cb0301a49b7e5b",
+    REVIEWER_POST_MODEL_CLAIM_PATH: "72a617a115d349f9a9b9c18565621917d112d52e",
+}
+REVIEWER_STRUCTURED_ADMISSION = {
+    "uri": "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6094596591",
+    "body_digest": "sha256:feae949216f15a3397cdd1e5d9927a76ffe796613a1304cec0a84c0e69046c64",
+}
+
+def reviewer_structured_present(snapshot):
+    return any(path in snapshot.files for path in REVIEWER_STRUCTURED_PATHS)
+
+def validate_reviewer_structured_predecessor(snapshot, *, fresh=False):
+    _, events = validate_reviewer_post_model_predecessor(snapshot, fresh=fresh)
+    if (any(_recovery_document_blob(snapshot.get(path)) != blob
+            for path, blob in REVIEWER_STRUCTURED_PRIOR_BLOBS.items())
+            or REVIEWER_POST_MODEL_SEAL_PATH in snapshot.files):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer predecessor bytes differ")
+    prior = snapshot.get(REVIEWER_POST_MODEL_AUTH_PATH)
+    if (prior["physical_key"] != REVIEWER_STRUCTURED_PRIOR_KEY
+            or prior["consumer_execution_binding"]["execution_source_head_sha"] != REVIEWER_STRUCTURED_PRIOR_SOURCE):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer predecessor producer differs")
+    return prior, events
+
+def structured_gate_source_blobs():
+    from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_BLOBS, STRUCTURED_GATE_HELPER_BLOB
+    return {**{".github/workflows/" + name: blob for name, blob in STRUCTURED_DOGFOOD_BLOBS.items()},
+            "scripts/v03_dogfood_gate_output.py": STRUCTURED_GATE_HELPER_BLOB}
+
+def reviewer_structured_authorization(snapshot, *, consumer_binding, predecessor_proof):
+    prior, _ = validate_reviewer_structured_predecessor(snapshot)
+    identity = {
+        "schema_version": "ai-sdlc.v03-reviewer-structured-replacement/v1", "ordinal": 3,
+        "admission": REVIEWER_STRUCTURED_ADMISSION, "operation_id": RECOVERY_OPERATION_ID,
+        "operation_generation": 1, "predecessor_store_commit": REVIEWER_STRUCTURED_STORE,
+        "predecessor_event_blobs": REVIEWER_HISTORY_BLOBS,
+        "predecessor_document_blobs": {**REVIEWER_DOCUMENT_BLOBS, **REVIEWER_POST_MODEL_DOCUMENT_BLOBS,
+                                     **REVIEWER_STRUCTURED_PRIOR_BLOBS},
+        "logical_key": REVIEWER_OLD_KEY, "logical_dispatch_id": REVIEWER_LOGICAL_DISPATCH,
+        "semantic_effect_key": REVIEWER_SEMANTIC_KEY, "task_id": REVIEWER_TASK,
+        "candidate_head_sha": REVIEWER_CANDIDATE, "candidate_pr_number": 552,
+        "expected_revision": 3, "role": "reviewer", "stage": "code-review",
+        "workflow_file": STRUCTURED_GATE_WORKFLOWS["reviewer"],
+        "failed_run_id": REVIEWER_STRUCTURED_PRIOR_RUN, "failed_physical_key": REVIEWER_STRUCTURED_PRIOR_KEY,
+        "prior_consumer_execution_binding": prior["consumer_execution_binding"],
+        "consumer_execution_binding": consumer_binding, "worker_blobs": structured_gate_source_blobs(),
+        "predecessor_proof": predecessor_proof,
+    }
+    return _reviewer_complete_authorization(identity)
+
+def _validate_structured_inputs(inputs, dispatch, workflows):
+    from v03_dogfood_gate_output import validate_context, strict_json
+    if not isinstance(inputs, dict) or any(type(k) is not str or type(v) is not str for k,v in inputs.items()):
+        raise VerticalInvariantError("POLICY_DENIED", "frozen Gate inputs must be exact strings")
+    # Reuse the shared gateway's complete task/vertical wire grammar.
+    class NoTransport: pass
+    base = GhAwVerticalRoleDispatchGateway(transport=NoTransport(), workflows=workflows)._inputs(dispatch)
+    from copy import deepcopy
+    payload = strict_json(inputs["task_payload"].encode("utf-8"), limit=32768)
+    stripped = deepcopy(payload)
+    context = stripped["feature_context"].pop("gate_context", None)
+    if (canonical_json(stripped) != canonical_json(json.loads(base["task_payload"]))
+            or {k:v for k,v in inputs.items() if k != "task_payload"}
+                != {k:v for k,v in base.items() if k != "task_payload"}
+            or len(canonical_json(inputs).encode()) > 32768):
+        raise VerticalInvariantError("POLICY_DENIED", "frozen structured task payload differs")
+    expected = {key: dispatch[key] for key in (
+        "operation_id", "operation_generation", "external_dispatch_key", "semantic_effect_key",
+        "dispatch_id", "feature_id", "task_id", "role", "expected_revision",
+        "target_repository", "target_ref", "candidate_pr_number", "candidate_head_sha")}
+    expected["stage"] = dispatch["feature_stage"]
+    validate_context(context, expected)
+    return context
+
+def validate_reviewer_structured_authorization(snapshot, *, consumer_binding=None):
+    _, events = validate_reviewer_structured_predecessor(snapshot)
+    auth, claim = snapshot.get(REVIEWER_STRUCTURED_AUTH_PATH), snapshot.get(REVIEWER_STRUCTURED_CLAIM_PATH)
+    if not isinstance(auth, dict) or not isinstance(claim, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer authorization/claim incomplete")
+    binding = auth.get("consumer_execution_binding")
+    expected = reviewer_structured_authorization(snapshot, consumer_binding=binding,
+                                                  predecessor_proof=auth.get("predecessor_proof"))
+    if (canonical_json(auth) != canonical_json(expected) or not isinstance(binding, dict)
+            or set(binding) != set(recovery_execution_binding_fields())
+            or any(not _SHA40.fullmatch(str(binding.get(k) or "")) for k in
+                   ("execution_source_head_sha", "execution_materialization_commit_sha"))
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(binding.get(k) or "")) for k in
+                   ("execution_policy_bundle_digest", "execution_policy_receipt_digest"))
+            or binding["execution_source_head_sha"] in {REVIEWER_STRUCTURED_PRIOR_SOURCE,
+                REVIEWER_POST_MODEL_SOURCE, REVIEWER_PREDECESSOR_SOURCE, POST_HANDOFF_SOURCE}
+            or (consumer_binding is not None and canonical_json(binding) != canonical_json(consumer_binding))):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer authority/source differs")
+    proof = auth["predecessor_proof"]
+    proof_fixed = {"schema_version": "ai-sdlc.v03-reviewer-structured-predecessor/v1",
+        "run_id": REVIEWER_STRUCTURED_PRIOR_RUN, "run_attempt": 1,
+        "source_head_sha": REVIEWER_STRUCTURED_PRIOR_SOURCE, "controller_run_id": 38017902256,
+        "comment_id": REVIEWER_STRUCTURED_PRIOR_COMMENT,
+        "body_sha256": REVIEWER_STRUCTURED_PRIOR_BODY_SHA256, "verdict_inventory": "REWORK", "adopted": False}
+    if (not isinstance(proof, dict) or set(proof) != set(proof_fixed) | {"observation_digest"}
+            or any(canonical_json(proof.get(k)) != canonical_json(v) for k,v in proof_fixed.items())
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(proof.get("observation_digest") or ""))):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer historical proof differs")
+    if (set(claim) != {"schema_version", "ordinal", "authorization_digest", "physical_key",
+                       "create_consumed", "preclaim_store_commit", "dispatch_inputs", "dispatch_inputs_digest",
+                       "context_digest"}
+            or claim["schema_version"] != auth["schema_version"] or type(claim["ordinal"]) is not int
+            or claim["ordinal"] != 3 or claim["create_consumed"] is not True
+            or claim["physical_key"] != auth["physical_key"]
+            or claim["authorization_digest"] != "sha256:" + digest_json(auth)
+            or not _SHA40.fullmatch(str(claim["preclaim_store_commit"]))
+            or claim["dispatch_inputs_digest"] != "sha256:" + digest_json(claim["dispatch_inputs"])):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer frozen claim differs")
+    from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_WORKFLOWS
+    workflows = GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow=STRUCTURED_DOGFOOD_WORKFLOWS["developer"],
+        reviewer_workflow=STRUCTURED_DOGFOOD_WORKFLOWS["reviewer"], qa_workflow=STRUCTURED_DOGFOOD_WORKFLOWS["qa"])
+    context = _validate_structured_inputs(claim["dispatch_inputs"], reviewer_dispatch(auth), workflows)
+    if (context["context_sha256"] != claim["context_digest"]
+            or context["provenance"]["store_commit_sha"] != claim["preclaim_store_commit"]
+            or context["provenance"]["producer_source_sha"] != binding["execution_source_head_sha"]
+            or context["provenance"]["producer_policy_digest"] != binding["execution_policy_bundle_digest"]):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer context provenance differs")
+    if any(e["event_type"] == "worker.callback.recorded" and e["payload"].get("external_dispatch_key")
+           in {REVIEWER_POST_MODEL_FAILED_KEY, REVIEWER_STRUCTURED_PRIOR_KEY, auth["physical_key"]}
+           for e in events[30:]):
+        raise VerticalInvariantError("POLICY_DENIED", "corrected Reviewer physical-key callback conflicts")
+    if REVIEWER_STRUCTURED_TERMINAL_PATH in snapshot.files:
+        if (REVIEWER_STRUCTURED_SEAL_PATH in snapshot.files
+                or any(e["event_type"] in {"worker.callback.recorded", "feature.event.translated",
+                                         "persist.requested", "dispatch.claimed"} for e in events[30:])):
+            raise VerticalInvariantError("POLICY_DENIED", "terminal Reviewer has forbidden follow-on facts")
+    else:
+        _validate_reviewer_callback_relation(snapshot, auth, events, REVIEWER_STRUCTURED_SEAL_PATH)
+    return auth, claim
+
+def plan_reviewer_structured_replacement(snapshot, *, consumer_binding, predecessor_proof, dispatch_inputs):
+    if reviewer_structured_present(snapshot):
+        auth, claim = validate_reviewer_structured_authorization(snapshot, consumer_binding=consumer_binding)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"acquired": False, "authorization": auth, "claim": claim})
+    validate_reviewer_structured_predecessor(snapshot, fresh=True)
+    auth = reviewer_structured_authorization(snapshot, consumer_binding=consumer_binding,
+                                              predecessor_proof=predecessor_proof)
+    context = json.loads(dispatch_inputs["task_payload"])["feature_context"]["gate_context"]
+    claim = {"schema_version": auth["schema_version"], "ordinal": 3,
+        "authorization_digest": "sha256:" + digest_json(auth), "physical_key": auth["physical_key"],
+        "create_consumed": True, "preclaim_store_commit": snapshot.ref_sha,
+        "dispatch_inputs": dispatch_inputs, "dispatch_inputs_digest": "sha256:" + digest_json(dispatch_inputs),
+        "context_digest": context["context_sha256"]}
+    from operator_store_model import apply_plan_to_snapshot
+    plan = StoreMutationPlan(snapshot.ref_sha, (
+        StoreMutation("create_immutable", REVIEWER_STRUCTURED_AUTH_PATH, auth),
+        StoreMutation("create_immutable", REVIEWER_STRUCTURED_CLAIM_PATH, claim)),
+        {"acquired": True, "authorization": auth, "claim": claim})
+    validate_reviewer_structured_authorization(apply_plan_to_snapshot(snapshot, plan), consumer_binding=consumer_binding)
+    return plan
+
+def reviewer_structured_terminal(snapshot, *, consumer_binding=None):
+    auth, claim = validate_reviewer_structured_authorization(snapshot, consumer_binding=consumer_binding)
+    row = snapshot.get(REVIEWER_STRUCTURED_TERMINAL_PATH)
+    fields = {"schema_version","ordinal","authorization_digest","claim_digest","run_id","physical_key",
+              "outcome","role_payload","proof","execution_binding"}
+    if (not isinstance(row,dict) or set(row)!=fields
+            or row["schema_version"]!=auth["schema_version"] or type(row["ordinal"]) is not int or row["ordinal"]!=3
+            or row["authorization_digest"]!="sha256:"+digest_json(auth)
+            or row["claim_digest"]!="sha256:"+digest_json(claim)
+            or row["physical_key"]!=auth["physical_key"] or row["execution_binding"]!=auth["consumer_execution_binding"]
+            or type(row["run_id"]) is not int or row["run_id"]<=0
+            or row["run_id"] in {REVIEWER_FAILED_RUN,REVIEWER_POST_MODEL_FAILED_RUN,REVIEWER_STRUCTURED_PRIOR_RUN}
+            or row["outcome"] not in {"REWORK","BLOCKED"}
+            or not isinstance(row["role_payload"],dict) or not isinstance(row["proof"],dict)
+            or row["role_payload"].get("verdict")!=row["outcome"]
+            or row["proof"].get("role_payload_digest")!="sha256:"+digest_json(row["role_payload"])):
+        raise VerticalInvariantError("POLICY_DENIED","corrected Reviewer terminal observation differs")
+    tail=operation_events(snapshot,RECOVERY_OPERATION_ID)[30:]
+    reason="Corrected Reviewer "+row["outcome"]+"; observation sha256:"+digest_json(row)
+    if (len(tail)!=1 or tail[0]["event_type"]!="operation.needs-user"
+            or tail[0]["operation_generation"]!=1
+            or tail[0]["payload"]!={"reason_code":"VERTICAL_NEEDS_USER","summary":reason[:512]}):
+        raise VerticalInvariantError("POLICY_DENIED","corrected Reviewer terminal stop differs")
+    return row
+
+def plan_reviewer_structured_terminal(snapshot, *, run_id, role_payload, proof, consumer_binding,
+                                      occurred_at, trusted_context_digest):
+    auth,claim=validate_reviewer_structured_authorization(snapshot,consumer_binding=consumer_binding)
+    outcome=role_payload.get("verdict")
+    if outcome not in {"REWORK","BLOCKED"}:
+        raise VerticalInvariantError("POLICY_DENIED","only authenticated non-PASS may form this terminal observation")
+    row={"schema_version":auth["schema_version"],"ordinal":3,
+        "authorization_digest":"sha256:"+digest_json(auth),"claim_digest":"sha256:"+digest_json(claim),
+        "run_id":run_id,"physical_key":auth["physical_key"],"outcome":outcome,
+        "role_payload":role_payload,"proof":proof,"execution_binding":consumer_binding}
+    if REVIEWER_STRUCTURED_TERMINAL_PATH in snapshot.files:
+        existing=reviewer_structured_terminal(snapshot,consumer_binding=consumer_binding)
+        if canonical_json(existing)!=canonical_json(row):
+            raise VerticalInvariantError("POLICY_DENIED","corrected Reviewer terminal replay changed")
+        return StoreMutationPlan(snapshot.ref_sha,(),{"terminal":existing})
+    if REVIEWER_STRUCTURED_SEAL_PATH in snapshot.files or len(operation_events(snapshot,RECOVERY_OPERATION_ID))!=30:
+        raise VerticalInvariantError("POLICY_DENIED","non-PASS terminal boundary already progressed")
+    from operator_store import plan_needs_user
+    from operator_store_model import apply_plan_to_snapshot
+    mutation=StoreMutation("create_immutable",REVIEWER_STRUCTURED_TERMINAL_PATH,row)
+    provisional=apply_plan_to_snapshot(snapshot,StoreMutationPlan(snapshot.ref_sha,(mutation,),{}))
+    stop=plan_needs_user(provisional,operation_id=RECOVERY_OPERATION_ID,generation=1,
+        reason_code="VERTICAL_NEEDS_USER",
+        summary="Corrected Reviewer "+outcome+"; observation sha256:"+digest_json(row),
+        occurred_at=occurred_at,trusted_context_digest=trusted_context_digest)
+    plan=StoreMutationPlan(snapshot.ref_sha,(mutation,*stop.mutations),{"terminal":row})
+    reviewer_structured_terminal(apply_plan_to_snapshot(snapshot,plan),consumer_binding=consumer_binding)
+    return plan
+
+def reviewer_structured_scan(transport, *, physical_key):
+    from dataclasses import replace
+    workflows=tuple(dict.fromkeys((transport.config.workflows.developer_workflow,
+        *STRUCTURED_GATE_WORKFLOWS.values(),REVIEWER_OLD_WORKFLOW,REVIEWER_NEW_WORKFLOW,
+        REVIEWER_BOUNDED_WORKFLOW,"ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+        "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml")))
+    expected={REVIEWER_OLD_KEY:(REVIEWER_OLD_WORKFLOW,str(REVIEWER_FAILED_RUN)),
+        REVIEWER_POST_MODEL_FAILED_KEY:(REVIEWER_NEW_WORKFLOW,str(REVIEWER_POST_MODEL_FAILED_RUN)),
+        REVIEWER_STRUCTURED_PRIOR_KEY:(REVIEWER_BOUNDED_WORKFLOW,str(REVIEWER_STRUCTURED_PRIOR_RUN))}
+    results={}
+    for key in (*expected,physical_key):
+        found=[]
+        for workflow in workflows:
+            reader=transport if workflow in (transport.config.workflows.developer_workflow,
+                transport.config.workflows.reviewer_workflow,transport.config.workflows.qa_workflow) else (
+                GitHubActionsVerticalGhAwTransport(replace(transport.config,
+                    workflows=replace(transport.config.workflows,reviewer_workflow=workflow)),
+                    http=transport.http,sleeper=lambda _:None))
+            receipt=reader.lookup(workflow=workflow,ref="main",dispatch_key=key)
+            if receipt.get("lookup_state")=="LAUNCHED":
+                found.append((workflow,str(receipt.get("receipt_id"))))
+            elif receipt.get("lookup_state")!="NOT_LAUNCHED":
+                raise VerticalInvariantError("BLOCKED","corrected Reviewer inventory is incomplete")
+        results[key]=found
+    if any(results[key]!=[pair] for key,pair in expected.items()):
+        raise VerticalInvariantError("BLOCKED","corrected Reviewer predecessor inventory differs")
+    found=results[physical_key]
+    if len(found)>1 or (found and found[0][0]!=STRUCTURED_GATE_WORKFLOWS["reviewer"]):
+        raise VerticalInvariantError("BLOCKED","corrected Reviewer execution collides")
+    return {"lookup_state":"LAUNCHED" if found else "NOT_LAUNCHED","receipt_id":found[0][1] if found else None}
+
+class DogfoodStructuredReviewerTransport(DogfoodReviewerReplacementTransport):
+    def __init__(self,config,*,snapshot,consumer_binding,allow_post,http=None,sleeper=None):
+        super().__init__(config,snapshot=snapshot,consumer_binding=consumer_binding,
+                         allow_post=allow_post,http=http,sleeper=sleeper)
+        self.scan=reviewer_structured_scan
+        _,self.claim=validate_reviewer_structured_authorization(snapshot,consumer_binding=consumer_binding)
+
+    def _validate_dispatch_inputs(self,*,workflow,ref,inputs):
+        if (workflow!=STRUCTURED_GATE_WORKFLOWS["reviewer"] or ref!="main"
+                or canonical_json(inputs)!=canonical_json(self.claim["dispatch_inputs"])):
+            raise VerticalInvariantError("POLICY_DENIED","corrected Reviewer POST differs from frozen bytes")
+        return GitHubActionsVerticalGhAwTransport._validate_dispatch_inputs(self,workflow=workflow,ref=ref,inputs=inputs)
+
+STRUCTURED_INPUT_RECORD_ADMISSION = {"uri":"https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6094596591","body_digest":"sha256:feae949216f15a3397cdd1e5d9927a76ffe796613a1304cec0a84c0e69046c64"}
+
+def structured_gate_input_path(operation_id, external_dispatch_key):
+    if not re.fullmatch(r"op-[0-9a-f]{40}", operation_id) or not re.fullmatch(r"dispatch-[0-9a-f]{40}", external_dispatch_key):
+        raise VerticalInvariantError("POLICY_DENIED", "structured input record identity is invalid")
+    return f"state/operator/v1/operations/{operation_id}/dogfood-structured-gate-inputs/{external_dispatch_key}.json"
+
+def _structured_dispatch_binding(snapshot, dispatch):
+    from v03_dogfood_fixture_pool import SLOTS
+    # Closed fixture inventory is checked through its actual slot objects below.
+    slots = tuple(SLOTS.values()) if isinstance(SLOTS, dict) else tuple(SLOTS)
+    if not any(slot.feature_id == dispatch.get("feature_id") and slot.target_ref == dispatch.get("target_ref")
+               for slot in slots):
+        raise VerticalInvariantError("POLICY_DENIED", "structured inputs escaped fixed fixture inventory")
+    if dispatch.get("role") not in {"reviewer", "qa"}:
+        raise VerticalInvariantError("POLICY_DENIED", "structured input record is Gate-only")
+    events = operation_events(snapshot, dispatch["operation_id"])
+    matches = [e for e in events if e["event_type"] == "dispatch.launch.authorized"
+        and e["operation_generation"] == dispatch["operation_generation"]
+        and e["payload"].get("external_dispatch_key") == dispatch["external_dispatch_key"]]
+    if len(matches) != 1:
+        raise VerticalInvariantError("POLICY_DENIED", "structured inputs require existing unique launch authority")
+    launch = matches[0]
+    for key, field in (("semantic_effect_key","semantic_effect_key"),("dispatch_id","dispatch_id"),
+        ("feature_id","feature_id"),("expected_revision","expected_revision"),("role","role"),
+        ("stage","feature_stage"),("candidate_head_sha","candidate_head_sha")):
+        if canonical_json(launch["payload"].get(key)) != canonical_json(dispatch.get(field)):
+            raise VerticalInvariantError("POLICY_DENIED", "structured inputs differ from existing launch")
+    reservation = snapshot.get(reservation_path(dispatch["semantic_effect_key"]))
+    if (not isinstance(reservation,dict)
+            or reservation.get("external_dispatch_key") != dispatch["external_dispatch_key"]
+            or not _task_binding_matches(reservation.get("task_identity",""),dispatch.get("task_id",""))):
+        raise VerticalInvariantError("POLICY_DENIED", "structured inputs differ from existing task reservation")
+    if dispatch["operation_id"] == RECOVERY_OPERATION_ID:
+        route = reviewer_replacement_route(snapshot, require_seal=True)
+        if route["ordinal"] != 3 or dispatch["role"] != "qa":
+            raise VerticalInvariantError("POLICY_DENIED", "happy follow-on dispatch requires corrected Reviewer PASS")
+    return launch
+
+def validate_structured_gate_input_record(snapshot, *, operation_id, external_dispatch_key, consumer_binding):
+    document = snapshot.get(structured_gate_input_path(operation_id,external_dispatch_key))
+    fields = {"admission","schema_version","operation_id","operation_generation","external_dispatch_key","dispatch",
+        "launch_event_id","launch_event_digest","preclaim_store_commit","consumer_execution_binding",
+        "source_blobs","dispatch_inputs","dispatch_inputs_digest","context_digest"}
+    if not isinstance(document,dict) or set(document)!=fields:
+        raise VerticalInvariantError("POLICY_DENIED","structured input record missing/malformed")
+    dispatch=document["dispatch"]
+    launch=_structured_dispatch_binding(snapshot,dispatch)
+    if (document["admission"] != STRUCTURED_INPUT_RECORD_ADMISSION or "PENDING" in STRUCTURED_INPUT_RECORD_ADMISSION["uri"]
+            or document["schema_version"]!="ai-sdlc.v03-structured-gate-inputs/v1"
+            or document["operation_id"]!=operation_id or document["external_dispatch_key"]!=external_dispatch_key
+            or dispatch["operation_id"]!=operation_id or dispatch["external_dispatch_key"]!=external_dispatch_key
+            or type(document["operation_generation"]) is not int or document["operation_generation"]!=dispatch["operation_generation"]
+            or document["launch_event_id"]!=launch["event_id"]
+            or document["launch_event_digest"]!="sha256:"+digest_json(launch)
+            or document["consumer_execution_binding"]!=consumer_binding
+            or document["source_blobs"]!=structured_gate_source_blobs()
+            or not _SHA40.fullmatch(str(document["preclaim_store_commit"]))
+            or document["dispatch_inputs_digest"]!="sha256:"+digest_json(document["dispatch_inputs"])):
+        raise VerticalInvariantError("POLICY_DENIED","structured input record protected binding differs")
+    from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_WORKFLOWS
+    workflows=GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow=STRUCTURED_DOGFOOD_WORKFLOWS["developer"],
+        reviewer_workflow=STRUCTURED_DOGFOOD_WORKFLOWS["reviewer"],
+        qa_workflow=STRUCTURED_DOGFOOD_WORKFLOWS["qa"])
+    context=_validate_structured_inputs(document["dispatch_inputs"],dispatch,workflows)
+    if (context["context_sha256"]!=document["context_digest"]
+            or context["provenance"]["store_commit_sha"]!=document["preclaim_store_commit"]
+            or context["provenance"]["producer_source_sha"]!=consumer_binding["execution_source_head_sha"]
+            or context["provenance"]["producer_policy_digest"]!=consumer_binding["execution_policy_bundle_digest"]):
+        raise VerticalInvariantError("POLICY_DENIED","structured input context provenance differs")
+    return document
+
+def plan_structured_gate_inputs(snapshot, *, dispatch, inputs, consumer_binding):
+    path=structured_gate_input_path(dispatch["operation_id"],dispatch["external_dispatch_key"])
+    if path in snapshot.files:
+        row=validate_structured_gate_input_record(snapshot,operation_id=dispatch["operation_id"],
+            external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=consumer_binding)
+        if canonical_json(row["dispatch"])!=canonical_json(dispatch):
+            raise VerticalInvariantError("POLICY_DENIED","structured input replay dispatch differs")
+        return StoreMutationPlan(snapshot.ref_sha,(),{"record":row})
+    launch=_structured_dispatch_binding(snapshot,dispatch)
+    context=json.loads(inputs["task_payload"])["feature_context"]["gate_context"]
+    row={"admission":STRUCTURED_INPUT_RECORD_ADMISSION,"schema_version":"ai-sdlc.v03-structured-gate-inputs/v1","operation_id":dispatch["operation_id"],
+        "operation_generation":dispatch["operation_generation"],"external_dispatch_key":dispatch["external_dispatch_key"],
+        "dispatch":dispatch,"launch_event_id":launch["event_id"],"launch_event_digest":"sha256:"+digest_json(launch),
+        "preclaim_store_commit":snapshot.ref_sha,"consumer_execution_binding":consumer_binding,
+        "source_blobs":structured_gate_source_blobs(),"dispatch_inputs":inputs,
+        "dispatch_inputs_digest":"sha256:"+digest_json(inputs),"context_digest":context["context_sha256"]}
+    from operator_store_model import apply_plan_to_snapshot
+    plan=StoreMutationPlan(snapshot.ref_sha,(StoreMutation("create_immutable",path,row),),{"record":row})
+    validate_structured_gate_input_record(apply_plan_to_snapshot(snapshot,plan),operation_id=dispatch["operation_id"],
+        external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=consumer_binding)
+    return plan
+
+class DogfoodCurrentStructuredDispatchGateway(DogfoodStructuredGateDispatchGateway):
+    """Existing protected claims remain the only ordinary dispatch authority."""
+    def _inputs(self,dispatch):
+        if dispatch["role"]=="developer":
+            if dispatch["operation_id"]==RECOVERY_OPERATION_ID:
+                raise VerticalInvariantError("POLICY_DENIED","corrected happy route authorizes no Developer")
+            return GhAwVerticalRoleDispatchGateway._inputs(self,dispatch)
+        runtime=self.context_builder.runtime
+        binding=recovery_execution_binding(self.context_builder.policy_authority)
+        snapshot=runtime.backend.read_snapshot()
+        if dispatch["operation_id"]==RECOVERY_OPERATION_ID and dispatch["role"]=="reviewer":
+            auth,claim=validate_reviewer_structured_authorization(snapshot,consumer_binding=binding)
+            if canonical_json(dispatch)!=canonical_json(reviewer_dispatch(auth)):
+                raise VerticalInvariantError("POLICY_DENIED","happy Reviewer differs from fixed corrected claim")
+            return dict(claim["dispatch_inputs"])
+        path=structured_gate_input_path(dispatch["operation_id"],dispatch["external_dispatch_key"])
+        if path not in snapshot.files:
+            raise VerticalInvariantError("POLICY_DENIED","structured dispatch inputs were not frozen")
+        row=validate_structured_gate_input_record(snapshot,operation_id=dispatch["operation_id"],
+            external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=binding)
+        if canonical_json(row["dispatch"])!=canonical_json(dispatch):
+            raise VerticalInvariantError("POLICY_DENIED","structured dispatch replay identity differs")
+        return dict(row["dispatch_inputs"])
+
+    def launch(self,*,dispatch):
+        authority = getattr(self, "remediation_rereview_authority", None)
+        if authority is not None:
+            authority.validate_dispatch(dispatch)
+        if dispatch["role"]!="developer" and not (dispatch["operation_id"]==RECOVERY_OPERATION_ID
+                                                 and dispatch["role"]=="reviewer"):
+            runtime=self.context_builder.runtime
+            binding=recovery_execution_binding(self.context_builder.policy_authority)
+            from v03_dogfood_runtime_driver import _commit_recovery_nonempty
+            def freeze(snapshot):
+                path=structured_gate_input_path(dispatch["operation_id"],dispatch["external_dispatch_key"])
+                if path in snapshot.files:
+                    return plan_structured_gate_inputs(snapshot,dispatch=dispatch,inputs=None,consumer_binding=binding)
+                inputs=DogfoodStructuredGateDispatchGateway._inputs(self,dispatch)
+                if runtime.backend.read_snapshot().ref_sha!=snapshot.ref_sha:
+                    raise VerticalInvariantError("BLOCKED","Store changed during structured input preparation")
+                return plan_structured_gate_inputs(snapshot,dispatch=dispatch,inputs=inputs,consumer_binding=binding)
+            _commit_recovery_nonempty(runtime,freeze)
+        return super().launch(dispatch=dispatch)
+
+def _structured_metadata_suffix(workflow, run):
+    """Exact pinned official metadata, derived from the reviewed compiled environment."""
+    from pathlib import Path
+    import yaml
+    from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_BLOBS
+    path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / workflow
+    raw = path.read_bytes()
+    if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != STRUCTURED_DOGFOOD_BLOBS[workflow]:
+        raise VerticalInvariantError("POLICY_DENIED", "structured metadata source bytes differ")
+    config = yaml.safe_load(raw)
+    env = config["jobs"]["safe_outputs"]["env"]
+    repository = str(run["html_url"]).split("/actions/runs/")[0].removeprefix("https://github.com/")
+    if repository.lower() != "dream-xin/ai-sdlc":
+        raise VerticalInvariantError("POLICY_DENIED", "structured metadata repository differs")
+    workflow_id = workflow.removesuffix(".lock.yml")
+    if (env["GH_AW_WORKFLOW_ID"] != workflow_id or env["GH_AW_ENGINE_ID"] != "copilot"
+            or env["GH_AW_ENGINE_MODEL"] != "deepseek-chat"
+            or env["GH_AW_CALLER_WORKFLOW_ID"] != "${{ github.repository }}/" + workflow_id
+            or any(env.get(k) for k in ("GH_AW_ENGINE_VERSION", "GH_AW_TRACKER_ID"))):
+        raise VerticalInvariantError("POLICY_DENIED", "structured metadata policy differs")
+    return ("<!-- gh-aw-agentic-workflow: " + env["GH_AW_WORKFLOW_NAME"]
+            + ", engine: copilot, model: deepseek-chat, id: " + str(run["id"])
+            + ", workflow_id: " + workflow_id + ", run: " + run["html_url"] + " -->\n"
+            + "<!-- gh-aw-workflow-call-id: " + repository + "/" + workflow_id + " -->")
+
+class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
+    """Visible format is admitted only through exact current structured source and frozen inputs."""
+
+    def _structured_inputs(self, operation_id, key):
+        snapshot = self.reviewer_runtime.backend.read_snapshot()
+        binding = recovery_execution_binding(self.reviewer_policy_authority)
+        if operation_id == RECOVERY_OPERATION_ID and reviewer_structured_present(snapshot):
+            auth, claim = validate_reviewer_structured_authorization(snapshot, consumer_binding=binding)
+            if key == auth["physical_key"]:
+                return claim["dispatch_inputs"]
+        return validate_structured_gate_input_record(snapshot, operation_id=operation_id,
+            external_dispatch_key=key, consumer_binding=binding)["dispatch_inputs"]
+
+    def _gate_observation(self, *, values, run_id, workflow, trusted):
+        if workflow not in STRUCTURED_GATE_WORKFLOWS.values():
+            return super()._gate_observation(values=values, run_id=run_id, workflow=workflow, trusted=trusted)
+        from operator_vertical_gh_aw_github_source import TargetScopedGitHubActionsGhAwResultSource
+        observed = TargetScopedGitHubActionsGhAwResultSource._gate_observation(
+            self, values=values, run_id=run_id, workflow=workflow, trusted=trusted)
+        inputs = self._structured_inputs(trusted["operation_id"], trusted["external_dispatch_key"])
+        if (self._one(values, "TASK_PAYLOAD") != inputs["task_payload"]
+                or self._one(values, "DISPATCH_KEY") != inputs["dispatch_key"]):
+            raise VerticalInvariantError("POLICY_DENIED", "structured Gate logged inputs differ from protected bytes")
+        context = json.loads(inputs["task_payload"])["feature_context"]["gate_context"]
+        identity = context["identity"]
+        for field, key in (("operation_id", "operation_id"), ("operation_generation", "operation_generation"),
+                           ("external_dispatch_key", "external_dispatch_key"), ("role", "role"),
+                           ("expected_revision", "expected_revision"), ("stage", "feature_stage"),
+                           ("candidate_head_sha", "launch_candidate_head_sha")):
+            if canonical_json(identity[field]) != canonical_json(trusted[key]):
+                raise VerticalInvariantError("POLICY_DENIED", "structured Gate context differs from callback task")
+        run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
+        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run))
+        return observed
+
+    def _gate_payload(self, body):
+        active = getattr(self, "_structured_parse", None)
+        if active is None:
+            return super()._gate_payload(body)
+        from v03_dogfood_gate_output import parse_published_gate, GateOutputContractError
+        try:
+            return parse_published_gate(body, *active)
+        except GateOutputContractError as exc:
+            raise VerticalInvariantError("BLOCKED", "structured Gate published contract differs") from exc
+
+    def _gate_content_and_binding(self, *, comment, role):
+        if getattr(self, "_structured_parse", None) is not None:
+            created, updated = comment.get("created_at"), comment.get("updated_at")
+            if (not isinstance(created, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", created)
+                    or updated != created or (comment.get("user") or {}).get("login") != "github-actions[bot]"
+                    or (comment.get("user") or {}).get("type") != "Bot"
+                    or type((comment.get("user") or {}).get("id")) is not int
+                    or (comment.get("user") or {}).get("id") != 41898282):
+                raise VerticalInvariantError("POLICY_DENIED", "structured Gate publication was edited or has another author")
+        return super()._gate_content_and_binding(comment=comment, role=role)
+
+    def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
+        self._structured_parse = None
+        try:
+            if trusted_context.get("operation_id") != RECOVERY_OPERATION_ID:
+                return self._resolve_local_gate(external_dispatch_key=external_dispatch_key,
+                    expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
+            return super().resolve(external_dispatch_key=external_dispatch_key,
+                expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
+        finally:
+            self._structured_parse = None
+
+    def load_content(self, uri):
+        self._structured_parse = None
+        match = _FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
+        if match:
+            run = self._json(self.config.control_repository, f"/actions/runs/{match.group('run')}", self.config.control_token)
+            workflow = self._workflow_file(run)
+            if workflow in STRUCTURED_GATE_WORKFLOWS.values():
+                snapshot = self.reviewer_runtime.backend.read_snapshot()
+                # Identify exactly one protected context by key, never by model-supplied text.
+                key = match.group("key")
+                candidates = []
+                if (str(uri).startswith("docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/")
+                        and reviewer_structured_present(snapshot)):
+                    auth, claim = validate_reviewer_structured_authorization(snapshot,
+                        consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+                    if key == auth["physical_key"]:
+                        candidates.append(claim["dispatch_inputs"])
+                for path in snapshot.files:
+                    if path.endswith("/dogfood-structured-gate-inputs/" + key + ".json"):
+                        document = snapshot.get(path)
+                        candidates.append(validate_structured_gate_input_record(snapshot,
+                            operation_id=document["operation_id"], external_dispatch_key=key,
+                            consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))["dispatch_inputs"])
+                if len(candidates) != 1:
+                    raise VerticalInvariantError("POLICY_DENIED", "structured content lacks unique protected inputs")
+                context = json.loads(candidates[0]["task_payload"])["feature_context"]["gate_context"]
+                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run))
+        try:
+            if not str(uri).startswith("docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/"):
+                return self._load_local_gate(uri)
+            return super().load_content(uri)
+        finally:
+            self._structured_parse = None
+
+    def _reviewer_jobs(self, run_id, source_sha):
+        doc = super()._reviewer_jobs(run_id, source_sha)
+        run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
+        if self._workflow_file(run) in STRUCTURED_GATE_WORKFLOWS.values():
+            required = {"agent": ("Prepare authenticated Gate context before model",
+                                  "Render validated structured Gate output before detection"),
+                "detection": ("Verify Gate detector input bytes before scanning",
+                              "Verify Gate detector input bytes after scanning",
+                              "Upload immutable Gate scan byte receipt"),
+                "safe_outputs": ("Prepare exclusive Gate receipt download directory",
+                                 "Download exact current-run Gate scan byte receipt",
+                                 "Verify scanned Gate bytes before publication")}
+            for job, names in required.items():
+                rows = [row for row in doc["jobs"] if row["name"] == job]
+                for name in names:
+                    steps = [step for step in rows[0]["steps"] if step["name"] == name]
+                    if len(steps) != 1 or steps[0].get("status") != "completed" or steps[0].get("conclusion") != "success":
+                        raise VerticalInvariantError("BLOCKED", "structured Gate trusted context/render/scan guard failed")
+        return doc
+
+
+DOGFOOD_REREVIEW_EVIDENCE_REF = "dogfood:v03:review-remediation:rereview:1"
+DOGFOOD_REREVIEW_CAPABILITY_ID = "ai-sdlc:v03:review-remediation:rereview:1"
+DOGFOOD_REREVIEW_SUFFIX = "/dogfood-remediation-rereview-1/"
+DOGFOOD_REREVIEW_ADMISSION = {
+    "uri": "https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6097262300",
+    "body_digest": "sha256:010998679c1c9a92941acd85da22a9365a3148e77699c21abdc3081719f016cf",
+}
+
+
+def build_dogfood_rereview_capability(*, installation_commit_sha):
+    from v03_dogfood_fixture_pool import require_slot
+    if not isinstance(installation_commit_sha, str) or not _SHA40.fullmatch(installation_commit_sha):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview capability lacks exact installation")
+    slot = require_slot("review_remediation")
+    return {
+        "schema_version": "ai-sdlc.v03-remediation-rereview-capability/v1",
+        "type": "DOGFOOD_REMEDIATION_REREVIEW_CAPABILITY",
+        "capability_id": DOGFOOD_REREVIEW_CAPABILITY_ID,
+        "repository": "dream-xin/ai-sdlc",
+        "state_ref": "refs/heads/ai-sdlc-operator-state",
+        "operation_profile": VERTICAL_PROFILE,
+        "scenario": slot.scenario, "feature_id": slot.feature_id, "target_ref": slot.target_ref,
+        "successor_step": "CODE_REREVIEW", "role": "reviewer", "max_rereviews": 1,
+        "initial_verdict": "REWORK", "terminal_nonpass": ["REWORK", "BLOCKED"],
+        "installation_commit_sha": installation_commit_sha,
+        "admission": dict(DOGFOOD_REREVIEW_ADMISSION),
+    }
+
+
+def verify_dogfood_rereview_capability(*, policy_authority):
+    from operator_effect_resolution import ProtectedEffectResolutionPolicyVerifier
+    base = policy_authority.resolution_policy_verifier
+    if not isinstance(base, ProtectedEffectResolutionPolicyVerifier):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview lacks existing protected policy verifier")
+    current = base.verify_current()
+    expected = build_dogfood_rereview_capability(
+        installation_commit_sha=policy_authority.installation_commit_sha)
+    raw = base.policy_loader(base.repository, base.state_ref, base.operation_profile)
+    observed = base.evidence_fact_loader(current.evidence_verifier.source_id, DOGFOOD_REREVIEW_EVIDENCE_REF)
+    if (base.repository != expected["repository"] or base.state_ref != expected["state_ref"]
+            or base.operation_profile != VERTICAL_PROFILE
+            or canonical_json(observed) != canonical_json(expected)
+            or raw.get("strong_evidence_types") != []
+            or current.evidence_verifier.strong_evidence_types
+            or current.evidence_verifier.source_digest != digest_json({DOGFOOD_REREVIEW_EVIDENCE_REF: expected})
+            or raw.get("trusted_profile_digest") != digest_json({
+                "installation_commit_sha": policy_authority.installation_commit_sha,
+                "operation_profile": VERTICAL_PROFILE})
+            or "RETIRE_OBSOLETE_NO_DUPLICATE_PROVEN" not in current.authority.allowed_choices):
+        raise VerticalInvariantError("POLICY_DENIED", "protected scoped rereview capability differs")
+    return expected
+
+
+
+def dogfood_rereview_paths(operation_id):
+    if not isinstance(operation_id, str) or not re.fullmatch(r"op-[0-9a-f]{40}", operation_id):
+        raise VerticalInvariantError("POLICY_DENIED", "invalid rereview operation identity")
+    base = "state/operator/v1/operations/" + operation_id + DOGFOOD_REREVIEW_SUFFIX
+    return base + "binding.json", base + "terminal-observation.json"
+
+
+def _dogfood_rereview_global_rows(snapshot):
+    if not isinstance(snapshot.ref_sha, str) or not _SHA40.fullmatch(snapshot.ref_sha):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview requires an existing complete protected Store")
+    rows = [(path, value) for path, value in snapshot.files.items()
+            if DOGFOOD_REREVIEW_SUFFIX in path]
+    for path, value in rows:
+        match = re.fullmatch(r"state/operator/v1/operations/(op-[0-9a-f]{40})"
+                            r"/dogfood-remediation-rereview-1/(binding|terminal-observation)\.json", path)
+        if (match is None or not isinstance(value, dict)
+                or value.get("capability_id") != DOGFOOD_REREVIEW_CAPABILITY_ID
+                or value.get("operation_id") != match.group(1)):
+            raise VerticalInvariantError("POLICY_DENIED", "malformed global rereview consumption history")
+    bindings = [(path, row) for path, row in rows if path.endswith("/binding.json")]
+    terminals = [(path, row) for path, row in rows if path.endswith("/terminal-observation.json")]
+    if len(bindings) > 1 or len(terminals) > 1 or (terminals and not bindings):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview capability has ambiguous global consumption")
+    if terminals and terminals[0][1]["operation_id"] != bindings[0][1]["operation_id"]:
+        raise VerticalInvariantError("POLICY_DENIED", "rereview terminal belongs to another operation")
+    return bindings, terminals
+
+
+def validate_dogfood_rereview_binding(snapshot, *, operation_id, consumer_binding):
+    from operator_effect_lineage_model import resolution_path, lineage_members, lineage_proposals
+    from operator_vertical_store import vertical_projection
+    bindings, terminals = _dogfood_rereview_global_rows(snapshot)
+    if not bindings:
+        return None
+    path, row = bindings[0]
+    required = {"schema_version", "capability_id", "admission", "operation_id", "operation_generation",
+                "capability_digest", "consumer_execution_binding", "source_blobs", "proof", "proof_digest",
+                "resolution_id", "successor_semantic_effect_key", "successor_external_dispatch_key"}
+    if (set(row) != required or path != dogfood_rereview_paths(operation_id)[0]
+            or row["schema_version"] != "ai-sdlc.v03-remediation-rereview-binding/v1"
+            or row["operation_id"] != operation_id
+            or type(row["operation_generation"]) is not int
+            or row["admission"] != DOGFOOD_REREVIEW_ADMISSION
+            or canonical_json(row["consumer_execution_binding"]) != canonical_json(consumer_binding)
+            or canonical_json(row["source_blobs"]) != canonical_json(structured_gate_source_blobs())
+            or row["capability_digest"] != digest_json(build_dogfood_rereview_capability(
+                installation_commit_sha=consumer_binding["execution_source_head_sha"]))):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview binding is foreign or changed")
+    proof = row["proof"]
+    proof_keys = {"operation_id", "operation_generation", "event_count", "event_prefix_digest", "feature",
+                  "lineage_id", "proposal", "review", "remediation", "supersession_event_id",
+                  "capability_digest", "consumer_execution_binding"}
+    if (not isinstance(proof, dict) or set(proof) != proof_keys
+            or row["proof_digest"] != digest_json(proof)
+            or proof["operation_id"] != operation_id
+            or proof["operation_generation"] != row["operation_generation"]
+            or proof["capability_digest"] != row["capability_digest"]
+            or canonical_json(proof["consumer_execution_binding"]) != canonical_json(consumer_binding)
+            or type(proof["event_count"]) is not int or proof["event_count"] < 1):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview proof descriptor differs")
+    events = operation_events(snapshot, operation_id)
+    projection = vertical_projection(snapshot, operation_id)
+    if (projection["generation"] != row["operation_generation"]
+            or len(events) < proof["event_count"]
+            or digest_json(events[:proof["event_count"]]) != proof["event_prefix_digest"]):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview predecessor history changed")
+    proposal = proof["proposal"]
+    if (not isinstance(proposal, dict)
+            or proposal.get("operation_id") != operation_id
+            or proposal.get("operation_generation") != row["operation_generation"]
+            or proposal.get("effect_lineage_id") != proof["lineage_id"]
+            or proposal.get("proposed_semantic_effect_key") != row["successor_semantic_effect_key"]):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview successor descriptor changed")
+    resolution = snapshot.get(resolution_path(proof["lineage_id"], row["resolution_id"]))
+    member = lineage_members(snapshot, proof["lineage_id"]).get(row["successor_semantic_effect_key"])
+    if (not isinstance(resolution, dict) or not isinstance(member, dict)
+            or resolution.get("choice") != "RETIRE_OBSOLETE_NO_DUPLICATE_PROVEN"
+            or resolution.get("successor_proposal_id") != proposal.get("proposal_id")
+            or resolution.get("successor_proposed_semantic_effect_key") != row["successor_semantic_effect_key"]
+            or resolution.get("current_operation_id") != operation_id
+            or resolution.get("current_operation_generation") != row["operation_generation"]
+            or member.get("external_dispatch_key") != row["successor_external_dispatch_key"]
+            or member.get("activated_from_proposal_id") != proposal.get("proposal_id")):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview binding lacks its exact shared resolution")
+    stored_proposal = lineage_proposals(snapshot, proof["lineage_id"]).get(proposal.get("proposal_id"))
+    feature = proof["feature"]
+    evidence = resolution.get("evidence")
+    if (canonical_json(stored_proposal) != canonical_json(proposal)
+            or not isinstance(feature, dict)
+            or resolution.get("target_repository") != feature.get("repository")
+            or resolution.get("feature_id") != feature.get("feature_id")
+            or resolution.get("current_feature_revision") != feature.get("revision")
+            or resolution.get("current_target_ref") != feature.get("target_ref")
+            or resolution.get("current_candidate_head_sha") != feature.get("candidate_head_sha")
+            or not isinstance(evidence, list) or len(evidence) != 1):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview frozen tuple differs from shared resolution")
+    fact = {"type": "NON_OVERLAPPING_SCOPE", "proof_digest": row["proof_digest"],
+            "capability_id": DOGFOOD_REREVIEW_CAPABILITY_ID}
+    item = evidence[0]
+    ref = DOGFOOD_REREVIEW_EVIDENCE_REF + "#" + row["proof_digest"]
+    if (not isinstance(item, dict)
+            or set(item) != set(fact) | {"evidence_ref", "trusted_source_id", "trusted_source_digest", "evidence_digest"}
+            or any(item.get(key) != value for key, value in fact.items())
+            or item.get("evidence_ref") != ref
+            or item.get("evidence_digest") != digest_json({
+                "evidence_ref": ref, "trusted_source_id": item.get("trusted_source_id"),
+                "trusted_source_digest": item.get("trusted_source_digest"), "fact": fact})
+            or resolution.get("evidence_digests") != [item.get("evidence_digest")]):
+        raise VerticalInvariantError("POLICY_DENIED", "rereview proof is not the consumed shared evidence")
+    if terminals:
+        terminal = terminals[0][1]
+        fields = {"schema_version", "capability_id", "operation_id", "operation_generation",
+                  "binding_digest", "callback_id", "context", "worker_payload_digest",
+                  "receipt", "content_sha256", "verdict"}
+        if (set(terminal) != fields
+                or terminal["schema_version"] != "ai-sdlc.v03-remediation-rereview-terminal/v1"
+                or terminal["operation_generation"] != row["operation_generation"]
+                or terminal["binding_digest"] != digest_json(row)
+                or terminal["verdict"] not in {"REWORK", "BLOCKED"}):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview terminal descriptor changed")
+        stops = [event for event in events if event["event_type"] == "operation.needs-user"
+                 and event["payload"].get("summary") == "Rereview " + terminal["verdict"]
+                    + "; observation sha256:" + digest_json(terminal)]
+        if len(stops) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview terminal lacks atomic stable stop")
+    return row
+
+
+
+class DogfoodRemediationRereviewAuthority:
+    """One protected, result-bound rereview capability; no generic strong evidence."""
+
+    def __init__(self, *, executor, candidate_provider, content_loader, policy_authority):
+        self.executor = executor
+        self.runtime = executor.runtime
+        self.candidate_provider = candidate_provider
+        self.content_loader = content_loader
+        self.policy_authority = policy_authority
+        if (candidate_provider.slot.scenario != "review_remediation"
+                or candidate_provider.runtime is not self.runtime
+                or content_loader.runtime is not self.runtime):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview authority is outside its frozen runtime")
+
+    def _fresh_capability(self, snapshot):
+        import base64
+        from v03_dogfood_gate_output import strict_json
+        _dogfood_rereview_global_rows(snapshot)
+        self.runtime.protected_receipt()
+        if self.runtime.backend.read_snapshot().ref_sha != snapshot.ref_sha:
+            raise VerticalInvariantError("STALE_REVISION", "rereview Store changed before policy verification")
+        capability = verify_dogfood_rereview_capability(policy_authority=self.policy_authority)
+        base = self.policy_authority.resolution_policy_verifier
+        current = base.verify_current()
+        expected_policy = base.policy_loader(base.repository, base.state_ref, base.operation_profile)
+        expected_evidence = {"source_id": current.evidence_verifier.source_id,
+            "source_digest": current.evidence_verifier.source_digest,
+            "facts": {DOGFOOD_REREVIEW_EVIDENCE_REF: capability}}
+        provider = self.candidate_provider
+        for name, expected in (("effect-resolution-policy.json", expected_policy),
+                               ("effect-resolution-evidence.json", expected_evidence)):
+            path = "config/operator/v03-vertical-policy/" + name
+            url = provider.api_base + "/repos/" + provider.repository + "/contents/" + path + "?ref=" + snapshot.ref_sha
+            status, item = provider.http_get(url, provider._headers())
+            if (status != 200 or not isinstance(item, dict) or item.get("type") != "file"
+                    or item.get("encoding") != "base64"):
+                raise VerticalInvariantError("POLICY_DENIED", "current rereview policy bytes unavailable")
+            try:
+                raw = base64.b64decode(item.get("content", ""), validate=False)
+                value = strict_json(raw)
+            except Exception as exc:
+                raise VerticalInvariantError("POLICY_DENIED", "current rereview policy encoding differs") from exc
+            blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
+            if (len(raw) > 32768 or item.get("sha") != blob
+                    or canonical_json(value) != canonical_json(expected)):
+                raise VerticalInvariantError("POLICY_DENIED", "current rereview policy or scoped facts changed")
+        if self.runtime.backend.read_snapshot().ref_sha != snapshot.ref_sha:
+            raise VerticalInvariantError("STALE_REVISION", "rereview Store changed during policy verification")
+        return capability, current
+
+    def _producer(self, snapshot, callback, *, role):
+        from v03_dogfood_gate_output import strict_json
+        operation_id = callback["operation_id"]
+        events = operation_events(snapshot, operation_id)
+        callback_id = callback["payload"]["callback_id"]
+        envelope = recover_vertical_callback(snapshot, operation_id=operation_id, callback_id=callback_id)
+        context = envelope["trusted_context"]
+        outputs = envelope["collected_outputs"]
+        if (context.get("role") != role or context.get("operation_id") != operation_id
+                or context.get("operation_generation") != callback["operation_generation"]
+                or len(outputs) != 1):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview producer context differs")
+        from operator_external_create_attempt import (
+            external_create_attempt_path, find_external_create_attempt)
+        attempt_path = external_create_attempt_path(context["semantic_effect_key"])
+        attempt = find_external_create_attempt(snapshot,
+            external_dispatch_key=context["external_dispatch_key"])
+        if (attempt_path not in snapshot.files or not isinstance(snapshot.files[attempt_path], dict)
+                or attempt is None
+                or canonical_json(snapshot.files[attempt_path]) != canonical_json(attempt)
+                or attempt.get("created_operation_id") != operation_id
+                or attempt.get("created_generation") != context["operation_generation"]
+                or attempt.get("semantic_effect_key") != context["semantic_effect_key"]
+                or attempt.get("creator_dispatch_id") != context["dispatch_id"]
+                or attempt.get("execution_binding", {}).get("role") != role):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview producer lacks consumed one-shot authority")
+        accepted = [row for row in events if row["event_type"] == "worker.result.validated"
+                    and row["payload"].get("callback_id") == callback_id]
+        rejected = [row for row in events if row["event_type"] == "worker.result.rejected"
+                    and row["payload"].get("callback_id") == callback_id]
+        if len(accepted) != 1 or rejected:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview evidence was not uniquely accepted")
+        output = outputs[0]
+        lease = _FIRST_ATTEMPT_URI_RE.fullmatch(str(output.get("trusted_uri") or ""))
+        if (lease is None or context.get("runtime_receipt_identity") != lease.group("run")
+                or context.get("worker_identity", "").rsplit("@", 1)[-1] != lease.group("head")):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview producer lease identity differs")
+        content = self.content_loader(output["trusted_uri"])
+        if (type(content) is not bytes or len(content) != output.get("size_bytes")
+                or hashlib.sha256(content).hexdigest() != output.get("sha256")):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview producer content changed")
+        translated = [row for row in events if row["event_type"] == "feature.event.translated"
+            and row["payload"].get("callback_id") == callback_id
+            and any(change.get("record", {}).get("uri") == output["trusted_uri"]
+                    for change in row["payload"].get("feature_event", {}).get("changes", []))]
+        if len(translated) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview producer lacks canonical translation")
+        event_id = translated[0]["payload"]["feature_event_id"]
+        confirmed = [row for row in events if row["event_type"] == "persist.confirmed"
+                     and row["payload"].get("feature_event_id") == event_id]
+        if (len(confirmed) != 1 or not callback["sequence"] < accepted[0]["sequence"]
+                < translated[0]["sequence"] < confirmed[0]["sequence"]):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview producer Persist ordering differs")
+        receipt = self.executor.persist_gateway.lookup_feature_event(
+            event_id=event_id, target_ref=context["target_ref"])
+        if receipt != {"event_id": event_id, "result_revision": confirmed[0]["payload"]["result_revision"]}:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview canonical producer Persist unavailable")
+        verdict = strict_json(content).get("verdict") if role == "reviewer" else None
+        return {"callback_id": callback_id, "callback_event_id": callback["event_id"],
+            "validation_event_id": accepted[0]["event_id"], "translation_event_id": translated[0]["event_id"],
+            "persist_event_id": confirmed[0]["event_id"], "context": context,
+            "receipt": output, "content_sha256": hashlib.sha256(content).hexdigest(),
+            "source_head_sha": lease.group("head"), "run_id": int(lease.group("run")),
+            "verdict": verdict, "external_create_attempt_digest": digest_json(attempt)}
+
+    def _proof(self, snapshot, *, operation_id, capability, current_policy):
+        from operator_vertical_store import vertical_projection
+        from operator_vertical_controller import select_vertical_action
+        from operator_effect_lineage_model import rebuild_lineage_projection, lineage_proposals, lineage_members
+        projection = vertical_projection(snapshot, operation_id)
+        slot = self.candidate_provider.slot
+        events = operation_events(snapshot, operation_id)
+        if (projection["feature_id"] != slot.feature_id or projection["target_repository"] != "dream-xin/ai-sdlc"
+                or projection["operation_profile"] != VERTICAL_PROFILE or projection["status"] != "BLOCKED"
+                or len(projection.get("lineage_blocks", [])) != 1):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview is not the frozen blocked remediation")
+        feature, manifest = self.executor.feature_gateway.read_feature(operation_id=operation_id)
+        action = select_vertical_action(feature=feature, manifest=manifest, occurred_at=self.runtime.clock())
+        if (feature.target_ref != slot.target_ref or feature.feature_id != slot.feature_id
+                or feature.repository != "dream-xin/ai-sdlc" or feature.current_stage != "code-review"
+                or feature.revision != projection["expected_feature_revision"]
+                or action.step != "CODE_REREVIEW" or action.role != "reviewer"):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview Feature no longer selects the unique successor")
+        candidate = self.candidate_provider.current_candidate(operation_id=operation_id,
+            repository=feature.repository, feature_id=feature.feature_id, target_ref=feature.target_ref)
+        if candidate.candidate_head_sha != feature.candidate_head_sha:
+            raise VerticalInvariantError("STALE_REVISION", "rereview candidate differs from canonical Feature")
+        callbacks = [row for row in events if row["event_type"] == "worker.callback.recorded"]
+        if len(callbacks) != 3 or any(row["operation_generation"] != projection["generation"] for row in callbacks):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview budget requires exactly the initial three callbacks")
+        roles = [row["payload"]["trusted_callback_envelope"]["trusted_context"]["role"] for row in callbacks]
+        if roles != ["developer", "reviewer", "developer"]:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview predecessor role sequence differs")
+        review = self._producer(snapshot, callbacks[1], role="reviewer")
+        remediation = self._producer(snapshot, callbacks[2], role="developer")
+        if (review["verdict"] != "REWORK" or review["context"]["candidate_head_sha"] == feature.candidate_head_sha
+                or not callbacks[1]["sequence"] < callbacks[2]["sequence"]):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview requires genuine REWORK and a changed candidate")
+        tasks = [row for row in manifest.get("tasks", []) if row.get("id") == remediation["context"]["task_id"]
+                 and row.get("kind") == "remediation" and row.get("status") == "DONE"]
+        review_translation = next(row for row in events if row["event_id"] == review["translation_event_id"])
+        task_changes = [change for change in review_translation["payload"]["feature_event"]["changes"]
+                        if change.get("record", {}).get("id") == remediation["context"]["task_id"]
+                        and change.get("record", {}).get("kind") == "remediation"]
+        if len(tasks) != 1 or len(task_changes) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "completed remediation was not created by accepted REWORK")
+        read_dogfood_handoff(snapshot, operation_id, remediation["callback_id"], require_applied=True)
+        superseded = [row for row in events if row["event_type"] == "feature.event.translated"
+            and row["payload"].get("callback_id") == remediation["callback_id"]
+            and row["payload"].get("purpose") == "remediation_artifact_supersession"]
+        if len(superseded) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview lacks canonical remediation supersession")
+        supersession = superseded[0]
+        event_id = supersession["payload"]["feature_event_id"]
+        confirmations = [row for row in events if row["event_type"] == "persist.confirmed"
+                         and row["payload"].get("feature_event_id") == event_id]
+        if (len(confirmations) != 1 or confirmations[0]["sequence"] <= supersession["sequence"]
+                or self.executor.persist_gateway.lookup_feature_event(event_id=event_id, target_ref=feature.target_ref)
+                != {"event_id": event_id, "result_revision": confirmations[0]["payload"]["result_revision"]}):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview supersession Persist is not confirmed")
+        draft = [row for row in manifest.get("artifacts", []) if row.get("type") == "implementation"
+                 and row.get("status") == "draft"]
+        retired = [row for row in manifest.get("artifacts", []) if row.get("id") ==
+                   supersession["payload"]["superseded_artifact_id"] and row.get("status") == "superseded"]
+        if (len(draft) != 1 or len(retired) != 1
+                or draft[0].get("id") != supersession["payload"]["replacement_artifact_id"]
+                or draft[0].get("uri") != remediation["receipt"]["trusted_uri"]):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview implementation replacement differs")
+        lineage_id = projection["lineage_blocks"][0]
+        lineage = rebuild_lineage_projection(snapshot, lineage_id)
+        proposals = lineage_proposals(snapshot, lineage_id)
+        members = lineage_members(snapshot, lineage_id)
+        proposal = proposals.get(lineage.get("current_proposal_id"))
+        if (len(members) != 1 or len(proposals) != 1 or not isinstance(proposal, dict)
+                or lineage.get("current_leaf_semantic_effect_key") != review["context"]["semantic_effect_key"]
+                or proposal.get("predecessor_semantic_effect_key") != review["context"]["semantic_effect_key"]
+                or proposal.get("operation_id") != operation_id
+                or proposal.get("operation_generation") != projection["generation"]
+                or proposal.get("current_feature_revision") != feature.revision
+                or proposal.get("current_target_ref") != feature.target_ref
+                or proposal.get("current_candidate_head_sha") != feature.candidate_head_sha
+                or proposal.get("trusted_profile_digest") != current_policy.proposal_profile_digest
+                or proposal.get("proposed_exact_semantic_material", {}).get("task_identity") != action.task_identity
+                or proposal.get("proposed_exact_semantic_material", {}).get("role") != "reviewer"):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview exact successor proposal differs")
+        proof = {"operation_id": operation_id, "operation_generation": projection["generation"],
+            "event_count": len(events), "event_prefix_digest": digest_json(events),
+            "feature": {"repository": feature.repository, "feature_id": feature.feature_id,
+                "target_ref": feature.target_ref, "revision": feature.revision,
+                "candidate_head_sha": feature.candidate_head_sha, "candidate_pr_number": candidate.candidate_pr_number,
+                "manifest_digest": feature.manifest_digest},
+            "lineage_id": lineage_id, "proposal": proposal, "review": review, "remediation": remediation,
+            "supersession_event_id": supersession["event_id"], "capability_digest": digest_json(capability),
+            "consumer_execution_binding": recovery_execution_binding(self.policy_authority)}
+        fresh_feature, _ = self.executor.feature_gateway.read_feature(operation_id=operation_id)
+        if (fresh_feature.manifest_digest != feature.manifest_digest
+                or self.runtime.backend.read_snapshot().ref_sha != snapshot.ref_sha):
+            raise VerticalInvariantError("STALE_REVISION", "rereview evidence changed before resolution CAS")
+        return proof
+
+
+    def plan(self, snapshot, *, operation_id):
+        from dataclasses import replace
+        from copy import deepcopy
+        from operator_effect_resolution import (
+            ProtectedEffectResolutionPolicyVerifier, TrustedEffectEvidenceVerifier,
+            plan_effect_resolution, resolution_identity)
+        from operator_store_model import apply_plan_to_snapshot
+        capability, policy = self._fresh_capability(snapshot)
+        existing = validate_dogfood_rereview_binding(snapshot, operation_id=operation_id,
+            consumer_binding=recovery_execution_binding(self.policy_authority))
+        if existing is not None:
+            self._revalidate_producers(snapshot, existing)
+            return StoreMutationPlan(snapshot.ref_sha, (), {"status": "ALREADY_CONSUMED", "binding": existing})
+        proof = self._proof(snapshot, operation_id=operation_id, capability=capability, current_policy=policy)
+        owner = self
+        predecessor_key = proof["review"]["context"]["external_dispatch_key"]
+        proof_digest = digest_json(proof)
+        evidence_ref = DOGFOOD_REREVIEW_EVIDENCE_REF + "#" + proof_digest
+        class ScopedPolicy(ProtectedEffectResolutionPolicyVerifier):
+            def __init__(self):
+                self.__dict__.update(owner.policy_authority.resolution_policy_verifier.__dict__)
+            def verify_current(self):
+                checked_capability, checked_policy = owner._fresh_capability(snapshot)
+                checked = owner._proof(snapshot, operation_id=operation_id,
+                    capability=checked_capability, current_policy=checked_policy)
+                if canonical_json(checked) != canonical_json(proof):
+                    raise VerticalInvariantError("STALE_REVISION", "scoped rereview tuple changed")
+                class ScopedEvidence(TrustedEffectEvidenceVerifier):
+                    def verify(self, refs, *, predecessor_external_dispatch_key):
+                        if refs != [evidence_ref] or predecessor_external_dispatch_key != predecessor_key:
+                            raise VerticalInvariantError("POLICY_DENIED", "scoped rereview proof cannot be reused")
+                        return super().verify(refs,
+                            predecessor_external_dispatch_key=predecessor_external_dispatch_key)
+                evidence = ScopedEvidence(
+                    source_id=checked_policy.evidence_verifier.source_id + "/dogfood-tuple",
+                    source_digest=digest_json({"capability_source": checked_policy.evidence_verifier.source_digest,
+                                               "tuple_digest": proof_digest}),
+                    fact_loader=lambda ref: {"type": "NON_OVERLAPPING_SCOPE", "proof_digest": proof_digest,
+                        "capability_id": DOGFOOD_REREVIEW_CAPABILITY_ID} if ref == evidence_ref else {},
+                    strong_evidence_types=frozenset({"NON_OVERLAPPING_SCOPE"}))
+                return replace(checked_policy, evidence_verifier=evidence)
+        scoped = ScopedPolicy()
+        current = scoped.verify_current()
+        verified = current.evidence_verifier.verify([evidence_ref],
+            predecessor_external_dispatch_key=predecessor_key)
+        if len(current.authority.allowed_resolvers) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "scoped rereview resolver is ambiguous")
+        resolver = next(iter(current.authority.allowed_resolvers))
+        proposal = proof["proposal"]
+        feature, _ = self.executor.feature_gateway.read_feature(operation_id=operation_id)
+        material = {"target_repository": proof["feature"]["repository"],
+            "feature_id": proof["feature"]["feature_id"], "effect_lineage_id": proof["lineage_id"],
+            "predecessor_semantic_effect_key": proof["review"]["context"]["semantic_effect_key"],
+            "predecessor_external_dispatch_key": predecessor_key,
+            "current_operation_id": operation_id, "current_operation_generation": proof["operation_generation"],
+            "current_feature_revision": proof["feature"]["revision"],
+            "current_target_ref": proof["feature"]["target_ref"],
+            "current_candidate_head_sha": proof["feature"]["candidate_head_sha"],
+            "successor_proposal_id": proposal["proposal_id"],
+            "successor_proposed_semantic_effect_key": proposal["proposed_semantic_effect_key"],
+            "choice": "RETIRE_OBSOLETE_NO_DUPLICATE_PROVEN",
+            "trusted_policy_ref": current.authority.trusted_policy_ref,
+            "trusted_policy_digest": current.authority.trusted_policy_digest,
+            "resolver_identity": resolver, "evidence_digests": [row["evidence_digest"] for row in verified]}
+        resolution_id = resolution_identity(material)
+        shared = plan_effect_resolution(snapshot, policy_verifier=scoped, trusted_feature=feature,
+            resolution_id=resolution_id, effect_lineage_id=proof["lineage_id"],
+            predecessor_semantic_effect_key=material["predecessor_semantic_effect_key"],
+            predecessor_external_dispatch_key=predecessor_key,
+            current_operation_id=operation_id, current_operation_generation=proof["operation_generation"],
+            successor_proposal_id=proposal["proposal_id"],
+            successor_proposed_semantic_effect_key=proposal["proposed_semantic_effect_key"],
+            choice=material["choice"], resolver_identity=resolver, evidence_refs=[evidence_ref],
+            occurred_at=self.runtime.clock(), trusted_context_digest=self.executor.config.trusted_context_digest)
+        row = {"schema_version": "ai-sdlc.v03-remediation-rereview-binding/v1",
+            "capability_id": DOGFOOD_REREVIEW_CAPABILITY_ID, "admission": dict(DOGFOOD_REREVIEW_ADMISSION),
+            "operation_id": operation_id, "operation_generation": proof["operation_generation"],
+            "capability_digest": digest_json(capability),
+            "consumer_execution_binding": recovery_execution_binding(self.policy_authority),
+            "source_blobs": structured_gate_source_blobs(), "proof": deepcopy(proof), "proof_digest": proof_digest,
+            "resolution_id": resolution_id, "successor_semantic_effect_key": shared.result["semantic_effect_key"],
+            "successor_external_dispatch_key": shared.result["external_dispatch_key"]}
+        binding_path, _ = dogfood_rereview_paths(operation_id)
+        combined = StoreMutationPlan(snapshot.ref_sha,
+            (StoreMutation("create_immutable", binding_path, row), *shared.mutations),
+            dict(shared.result, binding=row))
+        validate_dogfood_rereview_binding(apply_plan_to_snapshot(snapshot, combined),
+            operation_id=operation_id, consumer_binding=recovery_execution_binding(self.policy_authority))
+        if self.runtime.backend.read_snapshot().ref_sha != snapshot.ref_sha:
+            raise VerticalInvariantError("STALE_REVISION", "rereview Store changed before atomic consumption")
+        return combined
+
+    def _revalidate_producers(self, snapshot, binding):
+        events = operation_events(snapshot, binding["operation_id"])
+        for name, role in (("review", "reviewer"), ("remediation", "developer")):
+            frozen = binding["proof"][name]
+            matches = [row for row in events if row["event_id"] == frozen["callback_event_id"]]
+            if len(matches) != 1 or canonical_json(self._producer(snapshot, matches[0], role=role)) != canonical_json(frozen):
+                raise VerticalInvariantError("POLICY_DENIED", "consumed rereview producer proof changed")
+
+    def after_stop(self, *, operation_id, current):
+        if current.get("status") != "BLOCKED":
+            return current
+        from operator_vertical_store import vertical_projection
+        snapshot = self.runtime.backend.read_snapshot()
+        projection = vertical_projection(snapshot, operation_id)
+        if (projection["feature_id"] != self.candidate_provider.slot.feature_id
+                or not projection.get("lineage_blocks")):
+            return current
+        from v03_dogfood_runtime_driver import _commit_recovery_nonempty
+        result = _commit_recovery_nonempty(self.runtime,
+            lambda snapshot: self.plan(snapshot, operation_id=operation_id))
+        if result["status"] != "RESOLVED":
+            return current
+        # Re-enter the same recovering executor; only the existing dispatch gateway can POST.
+        return super(DogfoodPostHandoffRecoveringExecutor, self.executor).advance_until_stop(
+            operation_id=operation_id)
+
+    def validate_dispatch(self, dispatch):
+        if dispatch.get("role") != "reviewer":
+            return
+        snapshot = self.runtime.backend.read_snapshot()
+        self._fresh_capability(snapshot)
+        binding = validate_dogfood_rereview_binding(snapshot, operation_id=dispatch["operation_id"],
+            consumer_binding=recovery_execution_binding(self.policy_authority))
+        if binding is None:
+            # The initial Reviewer remains governed solely by its original reservation.
+            from operator_store_model import reservation_path
+            reservation = snapshot.get(reservation_path(dispatch["semantic_effect_key"]))
+            if not isinstance(reservation, dict) or "vertical:code-rereview:" in str(reservation.get("task_identity")):
+                raise VerticalInvariantError("POLICY_DENIED", "rereview dispatch lacks consumed capability")
+            return
+        if (dispatch["external_dispatch_key"] != binding["successor_external_dispatch_key"]
+                or dispatch["semantic_effect_key"] != binding["successor_semantic_effect_key"]
+                or dispatch["operation_generation"] != binding["operation_generation"]
+                or dispatch["candidate_head_sha"] != binding["proof"]["feature"]["candidate_head_sha"]
+                or dispatch["expected_revision"] != binding["proof"]["feature"]["revision"]
+                or dogfood_rereview_paths(dispatch["operation_id"])[1] in snapshot.files):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview dispatch exceeds its consumed exact tuple")
+        self._revalidate_producers(snapshot, binding)
+
+    def stop_nonpassing(self, *, context, callback_id, worker_payload, receipts):
+        if context.role != "reviewer":
+            return None
+        from v03_dogfood_gate_output import strict_json
+        from operator_store import plan_needs_user
+        from operator_store_model import apply_plan_to_snapshot
+        snapshot = self.runtime.backend.read_snapshot()
+        self._fresh_capability(snapshot)
+        binding = validate_dogfood_rereview_binding(snapshot, operation_id=context.operation_id,
+            consumer_binding=recovery_execution_binding(self.policy_authority))
+        if binding is None:
+            return None
+        if (context.external_dispatch_key != binding["successor_external_dispatch_key"]
+                or context.semantic_effect_key != binding["successor_semantic_effect_key"]
+                or context.operation_generation != binding["operation_generation"]):
+            raise VerticalInvariantError("POLICY_DENIED", "Reviewer callback is outside the sole rereview")
+        feature, _ = self.executor.feature_gateway.read_feature(operation_id=context.operation_id)
+        validate_worker_result("reviewer", worker_payload)
+        validate_collected_outputs(context=context, feature=feature, worker_payload=worker_payload,
+            receipts=receipts, content_loader=self.content_loader)
+        if len(receipts) != 1:
+            raise VerticalInvariantError("POLICY_DENIED", "rereview requires one authenticated output")
+        content = self.content_loader(receipts[0]["trusted_uri"])
+        payload = strict_json(content)
+        if payload.get("verdict") != worker_payload.get("verdict"):
+            raise VerticalInvariantError("POLICY_DENIED", "rereview recommendation changed in translation")
+        if payload["verdict"] == "PASS":
+            return None
+        if payload["verdict"] not in {"REWORK", "BLOCKED"}:
+            raise VerticalInvariantError("POLICY_DENIED", "unknown rereview recommendation")
+        observation = {"schema_version": "ai-sdlc.v03-remediation-rereview-terminal/v1",
+            "capability_id": DOGFOOD_REREVIEW_CAPABILITY_ID, "operation_id": context.operation_id,
+            "operation_generation": context.operation_generation, "binding_digest": digest_json(binding),
+            "callback_id": callback_id, "context": _context_payload(context),
+            "worker_payload_digest": digest_json(worker_payload), "receipt": receipts[0],
+            "content_sha256": hashlib.sha256(content).hexdigest(), "verdict": payload["verdict"]}
+        from v03_dogfood_runtime_driver import _commit_recovery_nonempty
+        def terminal_plan(current):
+            self._fresh_capability(current)
+            fixed = validate_dogfood_rereview_binding(current, operation_id=context.operation_id,
+                consumer_binding=recovery_execution_binding(self.policy_authority))
+            if canonical_json(fixed) != canonical_json(binding):
+                raise VerticalInvariantError("POLICY_DENIED", "rereview binding changed before terminal observation")
+            _, path = dogfood_rereview_paths(context.operation_id)
+            if path in current.files:
+                if canonical_json(current.get(path)) != canonical_json(observation):
+                    raise VerticalInvariantError("POLICY_DENIED", "conflicting rereview terminal observation")
+                return StoreMutationPlan(current.ref_sha, (), {"status": "NEEDS_USER"})
+            if any(row["event_type"] == "worker.callback.recorded"
+                   and row["payload"]["trusted_callback_envelope"]["trusted_context"]["external_dispatch_key"]
+                   == context.external_dispatch_key for row in operation_events(current, context.operation_id)):
+                raise VerticalInvariantError("POLICY_DENIED", "nonpassing rereview was already accepted")
+            mutation = StoreMutation("create_immutable", path, observation)
+            working = apply_plan_to_snapshot(current, StoreMutationPlan(current.ref_sha, (mutation,), {}))
+            stop = plan_needs_user(working, operation_id=context.operation_id,
+                generation=context.operation_generation, reason_code="VERTICAL_NEEDS_USER",
+                summary="Rereview " + payload["verdict"] + "; observation sha256:" + digest_json(observation),
+                occurred_at=self.runtime.clock(), trusted_context_digest=self.executor.config.trusted_context_digest)
+            combined = StoreMutationPlan(current.ref_sha, (mutation, *stop.mutations), {"status": "NEEDS_USER"})
+            validate_dogfood_rereview_binding(apply_plan_to_snapshot(current, combined),
+                operation_id=context.operation_id, consumer_binding=recovery_execution_binding(self.policy_authority))
+            return combined
+        _commit_recovery_nonempty(self.runtime, terminal_plan)
+        return self.executor._public(context.operation_id)
+
+    def validate_historical(self, *, operation_id):
+        snapshot = self.runtime.backend.read_snapshot()
+        self._fresh_capability(snapshot)
+        binding = validate_dogfood_rereview_binding(snapshot, operation_id=operation_id,
+            consumer_binding=recovery_execution_binding(self.policy_authority))
+        if binding is None:
+            raise VerticalInvariantError("POLICY_DENIED", "completed remediation lacks consumed rereview authority")
+        self._revalidate_producers(snapshot, binding)
+        return binding

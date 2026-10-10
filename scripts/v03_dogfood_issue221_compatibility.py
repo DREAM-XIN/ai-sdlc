@@ -2,9 +2,11 @@
 """Reuse immutable #221 evidence only across this reviewed dogfood-only tree delta.
 
 The original artifacts keep their original installation SHA. Every pre-existing
-path except the exact pinned control/dogfood-contract blobs must be byte-identical.
-Any #221 runtime, policy, dependency, fixture, result-verifier or other existing-file
-change invalidates reuse. New policy materialization still binds current main.
+path except the six exact reviewed control/contract/policy-supply blobs must be
+byte-identical. The two explicit policy-supply exceptions install only the closed
+dogfood rereview capability; generic strong-evidence authority remains empty.
+Any unlisted #221 runtime, policy, dependency, fixture or verifier change invalidates
+reuse. Historical artifacts are not rewritten; materialization binds current main.
 """
 from __future__ import annotations
 
@@ -16,8 +18,8 @@ import subprocess
 
 SOURCE_MAIN = "85b73b76c6fdb96e66a5b70a92b9be30a37e8c68"
 SOURCE_FINAL_LEDGER_RUN = 37030167082
-SOURCE_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"5e76daa9d342d2a488644f7cbed5eed150a28c3c",".github/workflows/validate-v03-trusted-control-command.yml":"5d0e2e5c19f3dcb252fba724aa577955747232a0","scripts/v03_dogfood_trusted_provenance.py":"4087562e9651b9846d05f25ee8a13727daa56d48","scripts/validate_v03_dogfood_evidence.py":"044e76d7d547d67f4fc66aa639b83ac7ba534ba5"}
-DOGFOOD_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"498cf324a12b8257fa7dbb53003f4ff3fa240fc3",".github/workflows/validate-v03-trusted-control-command.yml":"f43fe229679c6fb463b3c3f051c638e4eaee9e31","scripts/v03_dogfood_trusted_provenance.py":"7c2ae9301c5a14324ca180f133246e5a4040832b","scripts/validate_v03_dogfood_evidence.py":"691441edef3d6fb18f4804413805c1d867b74500"}
+SOURCE_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"5e76daa9d342d2a488644f7cbed5eed150a28c3c",".github/workflows/validate-v03-trusted-control-command.yml":"5d0e2e5c19f3dcb252fba724aa577955747232a0","scripts/v03_dogfood_trusted_provenance.py":"4087562e9651b9846d05f25ee8a13727daa56d48","scripts/validate_v03_dogfood_evidence.py":"044e76d7d547d67f4fc66aa639b83ac7ba534ba5","scripts/materialize_v03_vertical_policy_state.py":"d006d1e5c5ca408f76566a3693e477d17d3fa15d","scripts/validate_v03_vertical_policy_materialization_workflow.py":"f7f7d59ea7818db9e78a953eaf2dcebe7aefadfb"}
+DOGFOOD_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"498cf324a12b8257fa7dbb53003f4ff3fa240fc3",".github/workflows/validate-v03-trusted-control-command.yml":"f43fe229679c6fb463b3c3f051c638e4eaee9e31","scripts/v03_dogfood_trusted_provenance.py":"7c2ae9301c5a14324ca180f133246e5a4040832b","scripts/validate_v03_dogfood_evidence.py":"691441edef3d6fb18f4804413805c1d867b74500","scripts/materialize_v03_vertical_policy_state.py":"3e8738ee629ef192df9ff47e58c40e94d182232a","scripts/validate_v03_vertical_policy_materialization_workflow.py":"645c3c07fab9ae21f3ee80b1da05c5d6f77579cc"}
 SOURCE_CONTROL_MODES = {path: ("100755" if path == "scripts/validate_v03_dogfood_evidence.py" else "100644") for path in SOURCE_CONTROL_BLOBS}
 ADDED_PATHS = frozenset({
     ".github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-local.md",
@@ -121,7 +123,8 @@ def validate_delta(rows, *, source_sha, installation_sha, ancestor):
     proof = {
         **reviewed_delta,
         "installation_commit_sha": installation_sha,
-        "existing_runtime_tree_unchanged": True,
+        "unlisted_existing_paths_unchanged": True,
+        "reviewed_existing_path_exceptions": sorted(SOURCE_CONTROL_BLOBS),
         "reviewed_delta_digest": reviewed_delta_digest,
     }
     proof["compatibility_digest"] = "sha256:" + hashlib.sha256(
