@@ -167,7 +167,7 @@ jobs:
           V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
           V03_SCHEMA_CLI_ROOT: ${{ runner.temp }}/v03-joined-copilot
         if: ${{ !cancelled() }}
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py --group joined
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --group joined
 
   validate:
     runs-on: ubuntu-latest
@@ -275,7 +275,7 @@ jobs:
           GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
           V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
         if: ${{ !cancelled() }}
-        run: PYTHONPATH=scripts python scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:

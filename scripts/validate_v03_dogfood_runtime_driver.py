@@ -7381,11 +7381,15 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             expect(not joined or inline, "joined CLI fixture selected a historical Worker")
             roundtrip = verify_joined_context_roundtrip if joined else verify_context_roundtrip
             extra = {} if joined else {"variant": "structured-inline-local" if inline else "structured-local"}
+            if joined:
+                preflight.joined_phase(role + "_cli_start")
             publication = roundtrip(
                 role, context, root=root,
                 actions_root=Path(os.environ["GH_AW_ACTIONS_ROOT"]),
                 verdict=verdict, run_id=run_id, comment_id=comment_id,
                 workflow_sha=source_sha, **extra)
+            if joined:
+                preflight.joined_phase(role + "_cli_ready")
             expect(publication["payload"]["task_id"] == task["id"]
                    and publication["payload"]["candidate_head_sha"] == read_ref(),
                    "actual structured publication escaped dispatched task/candidate")
@@ -9915,7 +9919,10 @@ def reviewer_inline_full_pipeline_tests():
             else:
                 raise AssertionError("inline collector accepted a valid historical-family context record")
     finally:
-        snapshot.files[input_path] = saved_document
+        document.clear()
+        document.update(saved_document)
+    expect(canonical_json(pf.composition.runtime.backend.read_snapshot().get(input_path)) == canonical_json(saved_document),
+           "source-family negative did not restore protected fixture bytes")
     gates.result_source.load_content(uri)
     for path,raw in p.historical_reviewer_sidecar_raw_files.items():
         expect((canonical_json(snapshot.get(path))+"\n").encode()==raw,"corrected route rewrote old sidecar")
@@ -9956,6 +9963,7 @@ def actual_factory_joined_fixture(seed):
         import v03_dogfood_full_composition as composition
 
         pf, provider, feature, gates, _old_coordinator = seed
+        phase = getattr(pf, "joined_phase", lambda _: None)
         old = pf.composition
         snapshot = old.runtime.backend.read_snapshot()
         expect(not gates.state["posts"] and feature.state["puts"] == 0,
@@ -9987,6 +9995,7 @@ def actual_factory_joined_fixture(seed):
                                         capture_output=True, text=True, timeout=30)
                 expect(result.returncode == 0, "isolated Store Git command failed: " + str(args[0]))
                 return result.stdout.strip()
+            phase("git_materialize_start")
             git("init", "--bare", remote)
             git("init", checkout)
             git("config", "core.hooksPath", "/dev/null", cwd=checkout)
@@ -10006,6 +10015,7 @@ def actual_factory_joined_fixture(seed):
             git("push", "origin", "HEAD:" + state_ref, cwd=checkout)
             expect(Path(git("remote", "get-url", "origin", cwd=checkout)).resolve() == remote.resolve(),
                    "test Store remote is not the private local bare repository")
+            phase("git_materialize_ready")
             # The policy receipt names no self-referential commit. Its exact commit
             # anchor becomes known only after the real local Git materialization.
             from operator_vertical import VERTICAL_PROFILE
@@ -10028,6 +10038,7 @@ def actual_factory_joined_fixture(seed):
                 current_sha = git("rev-parse", state_ref, cwd=remote)
                 git("merge-base", "--is-ancestor", sha, current_sha, cwd=remote)
                 return True
+            phase("policy_load_start")
             policy = ProtectedVerticalPolicyBundleLoader(
                 repository=repository, installation_commit_sha=installation_sha,
                 materialization_commit_sha=materialization_sha, state_ref=state_ref,
@@ -10045,6 +10056,7 @@ def actual_factory_joined_fixture(seed):
                 and current_policy(repository, state_ref, path) == value
                 for path, value in policy_files.items()),
                 "joined real policy materialization differs")
+            phase("policy_load_ready")
             def protection_get(url, headers):
                 expect(url == "https://api.github.com/repos/dream-xin/ai-sdlc/branches/"
                        "ai-sdlc-operator-state/protection", "protection read escaped fixture")
@@ -10060,6 +10072,7 @@ def actual_factory_joined_fixture(seed):
             def no_network(*args, **kwargs):
                 raise AssertionError("joined factory attempted external network I/O")
             with patch.dict(os.environ, env, clear=True), patch.object(socket, "create_connection", no_network):
+                phase("factory_construct_start")
                 actual = composition.build_v03_dogfood_full_composition(
                     slot=pf.slot, config=config, adapter_id=ADAPTER_ID,
                     target_read_token="synthetic-read", actions_token="synthetic-actions",
@@ -10069,9 +10082,12 @@ def actual_factory_joined_fixture(seed):
                     collector_namespace_policy="fixture-collector-namespace",
                     trusted_role_policy="fixture-independent-role-policy", clock=clock,
                     persist_poll_attempts=3, persist_poll_seconds=0)
+                phase("factory_construct_ready")
                 expect(type(actual.runtime.backend) is RemoteGitStateRefBackend,
                        "joined fixture bypassed actual RemoteGit backend")
+                phase("factory_snapshot_start")
                 materialized = actual.runtime.backend.read_snapshot()
+                phase("factory_snapshot_ready")
                 expected_files = {name: value for name, value in snapshot.files.items()
                                   if name.startswith("state/operator/v1/")}
                 expect(materialized.files == expected_files and len(materialized.ref_sha) == 40,
@@ -10128,31 +10144,56 @@ def reviewer_inline_joined_factory_tests():
     from operator_store_model import canonical_json, operation_events
     import v03_dogfood_full_composition as c
     import v03_dogfood_runtime_driver as d
-    seed = reviewer_inline_runtime_fixture()
-    seed[0].joined_cli = True
-    with actual_factory_joined_fixture(seed) as (pf, provider, feature, gates, _):
-        before = deepcopy(pf.composition.runtime.backend.read_snapshot())
-        original_effects = deepcopy(provider.effect_counts())
-        d.recover_reviewer_inline(pf)
-        record = finish_reviewer_replacement_pipeline_tests(
-            pf, gate_fixture=gates, feature_fixture=feature, read_ref=provider.read_ref,
-            effect_counts=provider.effect_counts, adapter=pf.composition.responses.adapter,
-            memory_semantic_negatives=False)
-        current = pf.composition.runtime.backend.read_snapshot()
-        expect(record["verdict"] == "PASS" and len(gates.state["roundtrips"]) == 2
-               and [row["role"] for row in gates.state["inputs"]] == ["reviewer", "qa"],
-               "joined actual factory failed the Reviewer/Persist/QA path")
-        for row in gates.state["roundtrips"]:
-            expect(row.get("cli_evidence"), "joined publication lacks actual CLI evidence")
-        for path in (*c.REVIEWER_STRUCTURED_PATHS[:2],):
-            expect(canonical_json(current.get(path)) == canonical_json(before.get(path)),
-                   "joined inline route changed spent ordinal3 history")
-        expect(operation_events(current, c.RECOVERY_OPERATION_ID)[:30] ==
-               operation_events(before, c.RECOVERY_OPERATION_ID)[:30]
-               and provider.effect_counts() == original_effects,
-               "joined inline route changed history or created Developer/candidate effects")
-    print("- actual selected production factory, isolated CLI ledger and collector full lifecycle passed")
-
+    import faulthandler
+    import time
+    started = time.monotonic()
+    stages = {"seed_start", "seed_ready", "git_materialize_start", "git_materialize_ready",
+              "policy_load_start", "policy_load_ready", "factory_construct_start",
+              "factory_construct_ready", "factory_snapshot_start", "factory_snapshot_ready",
+              "factory_ready", "recover_start", "recover_ready", "lifecycle_start",
+              "lifecycle_ready", "reviewer_cli_start", "reviewer_cli_ready",
+              "qa_cli_start", "qa_cli_ready"}
+    def phase(stage):
+        expect(stage in stages, "joined diagnostic stage is not fixed")
+        print("joined_stage=" + stage + " elapsed_seconds=" +
+              str(round(time.monotonic() - started, 3)), flush=True)
+    # Bounded by the unchanged 15-minute hosted job; traceback contains no locals.
+    faulthandler.dump_traceback_later(120, repeat=True)
+    try:
+        phase("seed_start")
+        seed = reviewer_inline_runtime_fixture()
+        phase("seed_ready")
+        seed[0].joined_phase = phase
+        seed[0].joined_cli = True
+        with actual_factory_joined_fixture(seed) as (pf, provider, feature, gates, _):
+            phase("factory_ready")
+            before = deepcopy(pf.composition.runtime.backend.read_snapshot())
+            original_effects = deepcopy(provider.effect_counts())
+            phase("recover_start")
+            d.recover_reviewer_inline(pf)
+            phase("recover_ready")
+            phase("lifecycle_start")
+            record = finish_reviewer_replacement_pipeline_tests(
+                pf, gate_fixture=gates, feature_fixture=feature, read_ref=provider.read_ref,
+                effect_counts=provider.effect_counts, adapter=pf.composition.responses.adapter,
+                memory_semantic_negatives=False)
+            phase("lifecycle_ready")
+            current = pf.composition.runtime.backend.read_snapshot()
+            expect(record["verdict"] == "PASS" and len(gates.state["roundtrips"]) == 2
+                   and [row["role"] for row in gates.state["inputs"]] == ["reviewer", "qa"],
+                   "joined actual factory failed the Reviewer/Persist/QA path")
+            for row in gates.state["roundtrips"]:
+                expect(row.get("cli_evidence"), "joined publication lacks actual CLI evidence")
+            for path in (*c.REVIEWER_STRUCTURED_PATHS[:2],):
+                expect(canonical_json(current.get(path)) == canonical_json(before.get(path)),
+                       "joined inline route changed spent ordinal3 history")
+            expect(operation_events(current, c.RECOVERY_OPERATION_ID)[:30] ==
+                   operation_events(before, c.RECOVERY_OPERATION_ID)[:30]
+                   and provider.effect_counts() == original_effects,
+                   "joined inline route changed history or created Developer/candidate effects")
+        print("- actual selected production factory, isolated CLI ledger and collector full lifecycle passed")
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 if __name__ == "__main__":
     main()
