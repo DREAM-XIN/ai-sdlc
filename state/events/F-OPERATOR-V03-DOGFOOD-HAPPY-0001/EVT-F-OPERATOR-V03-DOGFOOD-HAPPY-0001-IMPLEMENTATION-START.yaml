@@ -1,0 +1,15 @@
+version: 0.1.0
+id: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-IMPLEMENTATION-START
+feature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
+expected_revision: 0
+occurred_at: '2026-08-25T07:21:01Z'
+changes:
+- kind: artifact-record
+  record:
+    id: dogfood-scenario-task
+    type: dogfood-task
+    uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/dogfood-task.md
+    status: draft
+- kind: stage
+  id: implementation
+  status: WORKING
