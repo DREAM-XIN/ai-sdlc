@@ -244,8 +244,9 @@ async function main(){
   ensure(fs.existsSync(base)&&fs.lstatSync(base).isDirectory()&&!fs.lstatSync(base).isSymbolicLink(),"SESSION_DIRECTORY");
   const entries=fs.readdirSync(base,{withFileTypes:true});
   ensure(entries.length<=16&&!entries.some(x=>x.isSymbolicLink()),"SESSION_DIRECTORY");
-  const dirs=entries.filter(x=>x.isDirectory());
-  ensure(dirs.length===1&&/^[0-9a-f-]{36}$/.test(dirs[0].name),"SESSION_DIRECTORY");
+  const dirs=entries.filter(x=>x.isDirectory()&&/^[0-9a-f-]{36}$/.test(x.name));
+  ensure(dirs.length===1&&nativeDiagnostics.event_file_count===1
+   &&nativeDiagnostics.event_symlink_count===0,"SESSION_DIRECTORY");
   const file=path.join(base,dirs[0].name,"events.jsonl");
   const info=fs.lstatSync(file);
   ensure(info.isFile()&&!info.isSymbolicLink()&&info.size<=8*1024*1024,"EVENT_FILE");
