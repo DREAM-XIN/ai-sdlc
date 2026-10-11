@@ -42,11 +42,29 @@ def reject(call, label):
         return
     raise AssertionError("accepted " + label)
 
+OBSERVED_HISTORICAL_SOURCE = "7d7f0b8c92ae06b0091d3620ccb60c71114e6bad"
+OBSERVED_HISTORICAL_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md": "158b4d78ad47f5ceeaf4e198968d0d225fb74f67",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml": "1f0928c78d98845d000388dce6eef3a347fbf082",
+    "scripts/v03_detector_observation.mjs": "0468fd225c9637a629adea8a94545f22f37e302f",
+}
+
+def observed_historical_bytes(relative):
+    check(relative in OBSERVED_HISTORICAL_BLOBS, "historical observed read escaped fixed source closure")
+    raw = subprocess.run(["git", "show", OBSERVED_HISTORICAL_SOURCE + ":" + relative],
+                         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         timeout=30, check=True).stdout
+    check(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+          == OBSERVED_HISTORICAL_BLOBS[relative], "historical observed blob differs")
+    return raw
+
 def selected_config(role, candidate=577, *, variant="structured-local"):
     check(variant in ("structured-local", "structured-inline-local", "observed-inline-local"), "unsupported test workflow variant")
     check(variant != "observed-inline-local" or role == "qa", "observed workflow is QA-only")
     stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
-    lock = yaml.safe_load((ROOT / ".github/workflows" / (stem + ".lock.yml")).read_text())
+    lock = yaml.safe_load(observed_historical_bytes(".github/workflows/" + stem + ".lock.yml")
+                          if variant == "observed-inline-local" else
+                          (ROOT / ".github/workflows" / (stem + ".lock.yml")).read_bytes())
     steps = lock["jobs"]["agent"]["steps"]
     def unique_env(name):
         values = [step["env"][name] for step in steps if name in step.get("env", {})]
@@ -547,7 +565,7 @@ def roundtrip_source_contract(role, variant, lock, metadata):
             (".github/workflows/" + stem + ".lock.yml", "1f0928c78d98845d000388dce6eef3a347fbf082"),
             ("scripts/v03_detector_observation.mjs", "0468fd225c9637a629adea8a94545f22f37e302f"),
         ):
-            raw = (ROOT / relative).read_bytes()
+            raw = observed_historical_bytes(relative)
             actual = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
             check(actual == expected, "frozen observed source/helper pin differs")
         identifiers = [step.get("id") for step in lock["jobs"]["detection"]["steps"]]
@@ -1356,9 +1374,13 @@ function fixture(){
  const temp=fs.mkdtempSync("/tmp/observer-boundary-");
  fs.mkdirSync(path.join(temp,"gh-aw"));
  const id=String(910000000000+process.pid*100+(++serial));
- const env={PATH:process.env.PATH,RUNNER_TEMP:temp,SOURCE_RUN_ID:id,RUN_ATTEMPT:"1",SOURCE_WORKFLOW_SHA:"a".repeat(40),OBSERVER_RUNNER_ENVIRONMENT:"github-hosted",OBSERVER_RUNNER_OS:"Linux",GITHUB_OUTPUT:path.join(temp,"output"),DETECTION_RESULT:"failure",ORIGINAL_EXIT_CODE:"124"};
+ const env={PATH:process.env.PATH,RUNNER_TEMP:temp,SOURCE_RUN_ID:id,RUN_ATTEMPT:"1",SOURCE_WORKFLOW_SHA:"a".repeat(40),OBSERVER_RUNNER_ENVIRONMENT:"github-hosted",OBSERVER_RUNNER_OS:"Linux",GITHUB_OUTPUT:path.join(temp,"output"),GITHUB_ENV:path.join(temp,"env"),DETECTION_RESULT:"failure",ORIGINAL_EXIT_CODE:"124"};
+ fs.writeFileSync(env.GITHUB_ENV,"EXISTING=synthetic\n");
  const root=subject.prepare(env);
- const session=path.join(root,"awf-agent-session-state-ABC123");
+ assert.equal(fs.readFileSync(env.GITHUB_OUTPUT,"utf8"),"parent="+root+"\n"+"copilot_home="+path.join(root,"copilot")+"\n");
+ assert.equal(fs.statSync(path.join(root,"copilot")).mode&0o777,0o700);
+ assert.equal(fs.readFileSync(env.GITHUB_ENV,"utf8"),"EXISTING=synthetic\nCOPILOT_HOME="+path.join(root,"copilot")+"\n");
+ const session=path.join(root,"copilot","session-state");
  const dir=path.join(session,"00000000-0000-0000-0000-000000000001");
  fs.mkdirSync(dir,{recursive:true});const events=path.join(dir,"events.jsonl");fs.writeFileSync(events,encode(records));
  return {temp,env,root,session,dir,events,stamp:path.join(temp,"gh-aw/detector-observation-owner.json"),summary:path.join(temp,"gh-aw/detector-observation-summary.json")};
@@ -1436,7 +1458,7 @@ test("ancestor_symlink",f=>{
  const foreign=path.join(f.temp,"foreign");fs.renameSync(f.session,foreign);fs.symlinkSync(foreign,f.session);
  unavailable(subject.observe(f.env),"PATH");assert.ok(fs.existsSync(path.join(foreign,path.basename(f.dir),"events.jsonl")));
 });
-test("ambiguous_preserved_directories",f=>{fs.mkdirSync(path.join(f.root,"awf-agent-session-state-DEF456"));unavailable(subject.observe(f.env),"SESSION");});
+test("legacy_preservation_cannot_replace_fixed_home",f=>{fs.renameSync(f.session,path.join(f.root,"awf-agent-session-state-DEF456"));unavailable(subject.observe(f.env));});
 test("ambiguous_uuid_directories",f=>{fs.mkdirSync(path.join(f.session,"00000000-0000-0000-0000-000000000002"));unavailable(subject.observe(f.env),"SESSION");});
 test("surviving_work_directory",f=>{fs.mkdirSync(path.join(f.root,"awf-ABC123"));unavailable(subject.observe(f.env),"SESSION");});
 test("wrong_workflow_identity",f=>{
@@ -1455,6 +1477,11 @@ test("root_replaced_at_final_ownership",f=>{
 test("summary_symlink_destination",f=>{
  const target=path.join(f.temp,"foreign");fs.writeFileSync(target,"KEEP");fs.symlinkSync(target,f.summary);
  assert.throws(()=>subject.observe(f.env));assert.equal(fs.readFileSync(target,"utf8"),"KEEP");
+});
+test("failed_prepare_leaves_environment_unchanged",f=>{
+ const bytes=fs.readFileSync(f.env.GITHUB_ENV);
+ const p=spawnSync(process.execPath,[helper,"prepare"],{env:f.env,encoding:"utf8",timeout:5000,maxBuffer:8192});
+ assert.equal(p.status,1);assert.equal(p.signal,null);assert.deepEqual(fs.readFileSync(f.env.GITHUB_ENV),bytes);
 });
 test("untrusted_runner_identity",f=>{assert.throws(()=>subject.observe({...f.env,OBSERVER_RUNNER_ENVIRONMENT:"self-hosted"}),/IDENTITY/);assert.equal(fs.existsSync(f.summary),false);});
 
@@ -1491,6 +1518,49 @@ def observer_boundary_tests():
                          if step.get("id") == "detector_observation_report"]
         check(len(compiled_rows) == 1 and compiled_rows[0]["run"] == report_script,
               "compiled observer delivery changed actual source script")
+    conclusion_rows = [step for step in source["jobs"]["conclusion"]["pre-steps"]
+                       if step.get("name") == "Record non-authoritative Gate execution identity"]
+    check(len(conclusion_rows) == 1, "conclusion identity step ambiguous")
+    conclusion_step = conclusion_rows[0]
+    check(conclusion_step.get("if") == "${{ needs.safe_outputs.result == 'success' }}",
+          "conclusion identity must require actual Safe Outputs success")
+    check(detector["engine"]["env"]["TMPDIR"] == "/tmp"
+          and "COPILOT_HOME" not in detector["engine"]["env"],
+          "observer changed detector temp permissions or unconditional home fallback")
+    if lock_path.exists():
+        identity_steps = [step for step in compiled["jobs"]["conclusion"]["steps"]
+                          if step.get("name") == conclusion_step["name"]]
+        check(len(identity_steps) == 1 and identity_steps[0]["run"] == conclusion_step["run"]
+              and identity_steps[0]["if"] == conclusion_step["if"],
+              "compiled conclusion identity differs from source")
+        execution_steps = [step for step in compiled["jobs"]["detection"]["steps"]
+                           if step.get("id") == "detection_agentic_execution"]
+        check(len(execution_steps) == 1 and execution_steps[0]["env"]["TMPDIR"] == "/tmp",
+              "compiled detector temp permission baseline changed")
+    identity_env = {"PATH": os.environ["PATH"], "SOURCE_RUN_ID": "9001",
+        "SOURCE_WORKFLOW_REF": "dream-xin/ai-sdlc/.github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml@refs/heads/main",
+        "SOURCE_HEAD_SHA": "a" * 40, "TARGET_REPOSITORY": "dream-xin/ai-sdlc",
+        "TARGET_REF": "synthetic", "FEATURE_ID": "synthetic", "EXPECTED_REVISION": "5",
+        "STAGE": "verification", "ROLE": "qa", "CANDIDATE_PR_NUMBER": "552",
+        "CANDIDATE_HEAD_SHA": "b" * 40, "TRUSTED_TASK_ID": "synthetic-task",
+        "TASK_PAYLOAD": json.dumps({"task": {"id": "synthetic-task"}}),
+        "DISPATCH_KEY": "dispatch-" + "c" * 40, "COMMENT_ID": "9002",
+        "COMMENT_URL": "https://github.com/dream-xin/ai-sdlc/pull/552#issuecomment-9002"}
+    for state in ("success", "failure", "skipped", "cancelled"):
+        # The source expression is exactly the single equality asserted above.
+        eligible = state == "success"
+        check(eligible == (state not in {"failure", "skipped", "cancelled"}),
+              "conclusion eligibility matrix differs")
+        if not eligible:
+            continue
+        completed_identity = subprocess.run(["bash", "-c", conclusion_step["run"]],
+            env=identity_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        check(completed_identity.returncode == 0, "actual successful conclusion script rejected identity")
+        missing = dict(identity_env, COMMENT_ID="")
+        rejected_identity = subprocess.run(["bash", "-c", conclusion_step["run"]],
+            env=missing, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        check(rejected_identity.returncode != 0, "successful Safe Outputs without comment ID passed identity")
+    print("Current observer temp/home and success-only conclusion source/compiled boundary verified")
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", OBSERVER_BOUNDARY_NODE,
          "observer-boundary-fixture", str(ROOT / "scripts/v03_detector_observation.mjs")],
@@ -1500,7 +1570,7 @@ def observer_boundary_tests():
     report = json.loads(completed.stdout)
     print(json.dumps(report, sort_keys=True))
     check(completed.returncode == 0, "observer boundary suite failed: " + report.get("case", "unknown"))
-    check(report["status"] == "PASS" and report["case_count"] == 30,
+    check(report["status"] == "PASS" and report["case_count"] == 31,
           "observer finite case matrix drift")
 
 def main():
