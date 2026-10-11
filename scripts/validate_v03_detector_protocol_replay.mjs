@@ -18,7 +18,7 @@ const allowedErrors = new Set([
  "CLI_START","CLI_WATCHDOG","CLI_OUTPUT_BOUND","CLI_EXIT","REQUEST_BOUND","REQUEST_SHAPE","REQUEST_COUNT",
  "REQUEST_ROUTE","SHELL_SCHEMA","SHELL_TOOL","TOOL_FEEDBACK","PROVIDER_FAILURE","SESSION_DIRECTORY",
  "EVENT_FILE","EVENT_BOUND","EVENT_TRUNCATED","EVENT_JSON","EVENT_SHAPE","START_SHAPE","COMPLETE_SHAPE",
- "TOOL_LINKAGE","COMMAND_IDENTITY","EXPLICIT_STATUS","RESULT_VALUE","TERMINATION","NEGATIVE_NOT_REJECTED"
+ "AWF_EXIT","TOOL_LINKAGE","COMMAND_IDENTITY","EXPLICIT_STATUS","RESULT_VALUE","TERMINATION","NEGATIVE_NOT_REJECTED"
 ]);
 const commands = [
  "printf 'OBS_SUCCESS_4d73\\n'",
@@ -33,12 +33,12 @@ function stop(child) {
  if (!child?.pid) return;
  try { process.kill(-child.pid, "SIGKILL"); } catch {}
 }
-function run(command, args, env, cwd) {
+function run(command, args, env, cwd, timeoutMs=90000) {
  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
   let bytes=0, settled=false;
   const fail=code=>{ if(!settled){settled=true;stop(child);clearTimeout(timer);reject(new Error(code));} };
-  const timer=setTimeout(()=>fail("CLI_WATCHDOG"),90000);
+  const timer=setTimeout(()=>fail("CLI_WATCHDOG"),timeoutMs);
   for(const output of [child.stdout,child.stderr]) output.on("data",b=>{
    bytes+=b.length; if(bytes>4*1024*1024)fail("CLI_OUTPUT_BOUND");
   });
@@ -305,6 +305,113 @@ async function main(){
   opaqueKey.fill(0);
  }
 }
-try{const report=await main();console.log(JSON.stringify(report));}
-catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",
- stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",native_diagnostics:nativeDiagnostics,native_field_diagnostics:nativeFieldDiagnostics,raw_exported:false}));process.exitCode=1;}
+
+const proofRoot="/tmp/gh-aw/awf-native-proof";
+const proofCli=proofRoot+"/copilot/copilot";
+const proofScript=proofRoot+"/replay.mjs";
+const imageTag="0.28.23,squid=sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0,agent=sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2";
+function noSecrets(env){ensure(!Object.entries(env).some(([k,v])=>v&&/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL|API_KEY/i.test(k)),"INHERITED_AUTHORITY");}
+function fixtureDirectory(p){const st=fs.lstatSync(p);ensure(st.isDirectory()&&!st.isSymbolicLink(),"SESSION_DIRECTORY");return st;}
+function readBounded(p,max){const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const st=fs.fstatSync(fd);ensure(st.isFile()&&st.size>0&&st.size<=max,"EVENT_FILE");const buf=Buffer.alloc(max+1);let n=0,r;while(n<buf.length&&(r=fs.readSync(fd,buf,n,buf.length-n,null))>0)n+=r;ensure(n<=max,"EVENT_BOUND");return buf.subarray(0,n);}finally{fs.closeSync(fd);}}
+async function awfChild(label){
+ ensure(["zero","nonzero"].includes(label)&&process.getuid()!==0,"INPUT_PATH");noSecrets(process.env);
+ const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
+ ensure(process.env.TMPDIR===tmp&&path.isAbsolute(process.env.HOME||""),"INPUT_PATH");
+ fixtureDirectory(tmp);fs.writeFileSync(path.join(tmp,"child-temp-check"),"synthetic",{flag:"wx"});fs.unlinkSync(path.join(tmp,"child-temp-check"));
+ let server,providerError=null,requests=0,feedbacks=0;
+ try{
+   server=http.createServer((req,res)=>{
+   let data=Buffer.alloc(0);
+   req.on("data",chunk=>{
+    data=Buffer.concat([data,chunk]);
+    if(data.length>4*1024*1024){providerError="REQUEST_BOUND";req.destroy();}
+   });
+   req.on("end",()=>{
+    try{
+     if(req.method==="GET"&&/\/models(?:\/[^?]*)?$/.test(req.url)){
+      res.writeHead(200,{"Content-Type":"application/json"});
+      res.end(JSON.stringify({object:"list",data:[{id:"deepseek-chat",object:"model",owned_by:"offline"}]}));return;
+     }
+     ensure(req.method==="POST"&&/\/chat\/completions$/.test(req.url),"REQUEST_ROUTE");
+     const request=JSON.parse(data.toString("utf8"));
+     ensure(Array.isArray(request.messages)&&Array.isArray(request.tools),"REQUEST_SHAPE");
+     requests++;ensure(requests<=4,"REQUEST_COUNT");
+     if(requests>1){
+      const previous=requests-2;
+      const matches=request.messages.filter(m=>m.role==="tool"&&m.tool_call_id===ids[previous]);
+      ensure(matches.length===1&&JSON.stringify(matches[0].content).includes(markers[previous]),"TOOL_FEEDBACK");
+      feedbacks++;
+     }
+     if(requests===4){done(res,request);return;}
+     const shell=request.tools.map(x=>x.function||x).find(x=>x.name==="bash");
+     ensure(shell,"SHELL_TOOL");
+     completion(res,request,ids[requests-1],shell.name,shellArguments(shell,commands[requests-1]));
+    }catch(e){
+     providerError=allowedErrors.has(e.message)?e.message:"PROVIDER_FAILURE";
+     res.writeHead(400,{"Content-Type":"application/json"});
+     res.end('{"error":{"message":"offline protocol rejected","type":"offline_protocol"}}');
+    }
+   });
+  });
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+
+ const env={HOME:process.env.HOME,TMPDIR:tmp,PATH:"/usr/local/bin:/usr/bin:/bin",LANG:"C.UTF-8",
+  COPILOT_MODEL:"deepseek-chat",COPILOT_PROVIDER_TYPE:"openai",COPILOT_PROVIDER_WIRE_API:"completions",
+  COPILOT_PROVIDER_API_KEY:"offline-dummy",COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:"+server.address().port};
+ const code=await run(proofCli,["--model","deepseek-chat","--disable-builtin-mcps","--no-ask-user","--allow-all-tools","--log-level","all","--prompt","Run the three prescribed synthetic read-only shell checks, then stop."],env,path.join(caseRoot,"work"));
+ ensure(providerError===null,providerError||"PROVIDER_FAILURE");ensure(code===0,"CLI_EXIT");ensure(requests===4&&feedbacks===3,"TOOL_FEEDBACK");
+ fs.writeFileSync(path.join(caseRoot,"child-proof.json"),JSON.stringify({cli_exit:code,requests,feedbacks,tmpdir_usable:true})+"\n",{flag:"wx",mode:0o600});
+ return label==="zero"?0:7;
+ }finally{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}}
+}
+function preservedEvents(tmp){
+ const entries=fs.readdirSync(tmp,{withFileTypes:true});ensure(entries.length<=128&&!entries.some(e=>e.isSymbolicLink()),"SESSION_DIRECTORY");
+ ensure(!entries.some(e=>/^awf-[A-Za-z0-9]{6}$/.test(e.name)),"SESSION_DIRECTORY");
+ const sessions=entries.filter(e=>e.name.startsWith("awf-agent-session-state-"));
+ ensure(sessions.length===1&&sessions[0].isDirectory()&&/^awf-agent-session-state-[A-Za-z0-9]{6}$/.test(sessions[0].name),"SESSION_DIRECTORY");
+ const base=path.join(tmp,sessions[0].name);fixtureDirectory(base);
+ const children=fs.readdirSync(base,{withFileTypes:true});ensure(children.length<=16&&!children.some(e=>e.isSymbolicLink()),"SESSION_DIRECTORY");
+ const dirs=children.filter(e=>e.isDirectory()&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(e.name));
+ ensure(dirs.length===1,"SESSION_DIRECTORY");
+ let files=0;for(const e of children){if(!e.isDirectory())continue;const f=path.join(base,e.name,"events.jsonl");try{const st=fs.lstatSync(f);ensure(st.isFile()&&!st.isSymbolicLink(),"EVENT_FILE");files++;}catch(error){if(error.code!=="ENOENT")throw error;}}
+ ensure(files===1,"SESSION_DIRECTORY");return path.join(base,dirs[0].name,"events.jsonl");
+}
+async function awfHost(bundle){
+ stage="AWF_INPUT";
+ ensure(path.isAbsolute(bundle)&&process.getuid()!==0,"INPUT_PATH");fixtureDirectory(proofRoot);
+ ensure(crypto.createHash("sha256").update(readBounded(bundle,2*1024*1024)).digest("hex")==="cf611445d648fe8ec03eb7b1e6e47ae4870d375f88e449adce7176c256f7f3b8","INPUT_PATH");
+ const reports=[];
+ for(const label of ["zero","nonzero"]){
+  stage="AWF_"+label.toUpperCase();const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
+  ensure(!fs.existsSync(caseRoot),"INPUT_PATH");fs.mkdirSync(caseRoot,{mode:0o700});fs.mkdirSync(tmp,{mode:0o700});fs.mkdirSync(path.join(caseRoot,"work"),{mode:0o700});
+  const before=fixtureDirectory(tmp),config=path.join(caseRoot,"awf.json");
+  fs.writeFileSync(config,JSON.stringify({version:1,network:{allowDomains:[]},apiProxy:{enabled:false},container:{imageTag},logging:{auditDir:path.join(caseRoot,"audit")}}),{flag:"wx",mode:0o600});
+  const env={PATH:process.env.PATH,HOME:process.env.HOME,USER:os.userInfo().username,LOGNAME:os.userInfo().username,LANG:"C.UTF-8",TMPDIR:tmp,GITHUB_WORKSPACE:path.join(caseRoot,"work")};
+  noSecrets(env);
+  let report;
+  try{
+   const code=await run(process.execPath,[bundle,"--config",config,"--container-workdir",path.join(caseRoot,"work"),"--mount","/tmp/gh-aw:/tmp/gh-aw:rw","--env-all","--log-level","error","--skip-pull","--","/usr/bin/node",proofScript,"awf-child",label],env,caseRoot,240000);
+   ensure(code===(label==="zero"?0:7),"AWF_EXIT");
+   const child=JSON.parse(readBounded(path.join(caseRoot,"child-proof.json"),4096).toString("utf8"));
+   ensure(child.cli_exit===0&&child.requests===4&&child.feedbacks===3&&child.tmpdir_usable===true,"TOOL_FEEDBACK");
+   const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
+   stage="AWF_NATIVE_"+label.toUpperCase();
+   const raw=readBounded(preservedEvents(tmp),8*1024*1024),events=parseEvents(raw),protocol=analyze(events);
+   let truncated=false,incomplete=false;
+   try{parseEvents(raw.subarray(0,raw.length-1));}catch(e){truncated=e.message==="EVENT_TRUNCATED";}
+   try{analyze(events.filter(e=>!(e.type==="tool.execution_complete"&&e.data.toolCallId===ids[2])));}catch(e){incomplete=e.message==="TOOL_LINKAGE";}
+   ensure(truncated&&incomplete,"NEGATIVE_NOT_REJECTED");
+   report={case:label,awf_exit:code,cli_exit:0,provider_requests:child.requests,provider_feedbacks:child.feedbacks,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
+  }finally{
+   const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
+   fs.rmSync(caseRoot,{recursive:true,force:false});
+  }
+  reports.push(report);
+ }
+ return {schema:"v03-awf-native-preservation-feasibility/v1",status:"PASS",scope:"synthetic_framework_only",cases:reports,raw_cleanup_complete:true,raw_exported:false};
+}
+
+try{
+ if(cli==="awf-child"){process.exitCode=await awfChild(root);}
+ else{const report=cli==="awf-host"?await awfHost(root):await main();console.log(JSON.stringify(report));}
+}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",raw_exported:false}));process.exitCode=1;}

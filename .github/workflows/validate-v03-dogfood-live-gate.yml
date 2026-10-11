@@ -1,4 +1,4 @@
-name: Synthetic CLI observability proof (no model)
+name: Synthetic AWF preservation proof (no model)
 on:
   pull_request:
     paths:
@@ -7,10 +7,10 @@ on:
 permissions:
   contents: read
 jobs:
-  synthetic-cli-observability:
+  synthetic-awf-preservation:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -38,20 +38,22 @@ jobs:
           assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
           PY
           docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
-      - name: Verify native protocol capture with isolated synthetic tools
+      - name: Prepare pinned actual AWF preservation fixture
         shell: bash
         run: |
           set -euo pipefail
-          name="v03-observe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
-          trap cleanup EXIT
-          timeout --signal=TERM --kill-after=15s 120s docker run --name "$name" --pull=never --rm --init \
-            --network none --cap-drop ALL --security-opt no-new-privileges \
-            --user "$(id -u):$(id -g)" --read-only --workdir /tmp \
-            --tmpfs "/tmp:rw,nosuid,nodev,exec,uid=$(id -u),gid=$(id -g),mode=700" \
-            --mount "type=bind,src=$RUNNER_TEMP/v03-joined-copilot,dst=/inputs/copilot,readonly" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/validate_v03_detector_protocol_replay.mjs,dst=/inputs/replay.mjs,readonly" \
-            --env HOME=/tmp/home --env PATH=/usr/local/bin:/usr/bin:/bin \
-            --entrypoint node \
-            ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2 \
-            /inputs/replay.mjs /inputs/copilot/copilot /tmp/observe
+          umask 077
+          curl --fail --location --silent --show-error --max-time 120 https://github.com/github/gh-aw-firewall/releases/download/v0.28.23/awf-bundle.js -o "$RUNNER_TEMP/awf-bundle.js"
+          test "$(wc -c < "$RUNNER_TEMP/awf-bundle.js")" = 1229802
+          echo "cf611445d648fe8ec03eb7b1e6e47ae4870d375f88e449adce7176c256f7f3b8  $RUNNER_TEMP/awf-bundle.js" | sha256sum --check --status
+          docker pull ghcr.io/github/gh-aw-firewall/squid:0.28.23@sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0
+          test ! -e /tmp/gh-aw/awf-native-proof
+          mkdir -p /tmp/gh-aw
+          mkdir -m 700 /tmp/gh-aw/awf-native-proof
+          cp -a "$RUNNER_TEMP/v03-joined-copilot" /tmp/gh-aw/awf-native-proof/copilot
+          cp scripts/validate_v03_detector_protocol_replay.mjs /tmp/gh-aw/awf-native-proof/replay.mjs
+      - name: Verify actual AWF native preservation with synthetic protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          node /tmp/gh-aw/awf-native-proof/replay.mjs awf-host "$RUNNER_TEMP/awf-bundle.js"
