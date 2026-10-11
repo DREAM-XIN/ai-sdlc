@@ -1064,6 +1064,8 @@ def _archived_producer_source(preflight, run_id):
     from v03_dogfood_full_composition import qa_replacement_present,validate_qa_replacement_predecessor
     current=preflight.composition.runtime.backend.read_snapshot()
     if qa_replacement_present(current) and run_id==38074007355:
+        from v03_dogfood_full_composition import qa_replacement_route
+        qa_replacement_route(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         reviewer,_=validate_qa_replacement_predecessor(current)
         return reviewer["sealed"]["execution_binding"]["execution_source_head_sha"]
     if run_id != POST_HANDOFF_RUN:

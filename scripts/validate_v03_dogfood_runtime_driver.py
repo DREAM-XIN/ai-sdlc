@@ -11100,6 +11100,44 @@ def qa_replacement_joined_factory_tests():
                    and record["runtime"]["workflow_run_ids"]==list(run_ids)
                    and c.QA_REPLACEMENT_ADMISSION["uri"].lower() in {u.lower() for u in record["evidence_uris"]},
                    "actual QA-only finalizer omitted authenticated recovery evidence")
+
+            frozen=deepcopy(runtime.backend.read_snapshot())
+            posts_before,puts_before=len(gates.state["posts"]),feature.state["puts"]
+            altered=[False]
+            def wrong_reviewer_source(req,timeout):
+                response=fake_urlopen(req,timeout)
+                if req.full_url.endswith("/actions/runs/38074007355"):
+                    row=__import__("json").loads(response.raw)
+                    expect(row["head_sha"]==c.QA_HISTORICAL_SOURCE,"accepted Reviewer source changed")
+                    row["head_sha"]=pf.execution.installation_commit_sha
+                    expect(row["head_sha"]!=c.QA_HISTORICAL_SOURCE,"source negative lacks distinct consumer")
+                    altered[0]=True
+                    return Response(__import__("json").dumps(row).encode())
+                return response
+            def finalize_again():
+                return finalizer.finalize(observation=observation,preflight=final_pf,
+                    source_run_id=47905505045,finalizer_run_id=47905505046,github_token="fixture")
+            with patch.object(provenance,"urlopen",side_effect=wrong_reviewer_source):
+                try:finalize_again()
+                except AssertionError as exc:
+                    expect("real run differs from protected exact-main launch binding" in str(exc),
+                           "Reviewer source negative missed exact provenance fence")
+                else:raise AssertionError("QA finalizer accepted relabeled historical Reviewer")
+            original_resolver=finalizer._archived_producer_source
+            for invalid_source in (None,"9"*40):
+                def wrong_resolver(preflight,run_id):
+                    return invalid_source if run_id==38074007355 else original_resolver(preflight,run_id)
+                with patch.object(provenance,"urlopen",side_effect=fake_urlopen), \
+                     patch.object(finalizer,"_archived_producer_source",side_effect=wrong_resolver):
+                    try:finalize_again()
+                    except AssertionError as exc:
+                        expect("accepted Reviewer lacks fixed protected historical source" in str(exc),
+                               "Reviewer resolver negative failed outside scoped fence")
+                    else:raise AssertionError("QA provenance accepted missing/wrong archived Reviewer source")
+            unchanged=runtime.backend.read_snapshot()
+            expect(altered[0] and unchanged.ref_sha==frozen.ref_sha and unchanged.files==frozen.files
+                   and len(gates.state["posts"])==posts_before and feature.state["puts"]==puts_before
+                   and provider.effect_counts()==effects,"Reviewer provenance rejection changed effects")
             phase("finalizer_ready")
             expect(len(gates.state["posts"])==1 and provider.effect_counts()==effects,
                    "QA replay/finalization renewed an external effect")
