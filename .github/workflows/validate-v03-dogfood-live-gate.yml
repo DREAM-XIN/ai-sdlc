@@ -447,6 +447,473 @@ jobs:
         if: ${{ !cancelled() }}
         run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --group joined
 
+  validate-qa-joined-gate:
+    needs: validate-snapshot-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Setup pinned detector conclusion scripts
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-detector-test-actions
+      - name: Acquire exact historical detector bytes privately
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re, stat, sys
+          from pathlib import Path
+          from urllib import error, parse, request
+          class NoRedirect(request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          try:
+              opener = request.build_opener(NoRedirect())
+              token = os.environ["AI_SDLC_ACTIONS_READ_TOKEN"]
+              req = request.Request(
+                  "https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/jobs/113810489745/logs",
+                  headers={"Authorization": "Bearer " + token,
+                           "Accept": "application/vnd.github+json",
+                           "X-GitHub-Api-Version": "2022-11-28"},
+              )
+              try:
+                  response = opener.open(req, timeout=30)
+              except error.HTTPError as exc:
+                  if exc.code != 302:
+                      raise RuntimeError("API status")
+                  location = exc.headers.get("Location", "")
+                  exc.close()
+                  target = parse.urlsplit(location)
+                  if (target.scheme != "https" or target.username is not None
+                          or target.password is not None or target.port not in (None, 443)
+                          or target.fragment or not re.fullmatch(
+                              r"productionresultssa[0-9]+\.blob\.core\.windows\.net",
+                              target.hostname or "")):
+                      raise RuntimeError("storage destination")
+                  # New request: never forward API authorization or cookies to storage.
+                  response = opener.open(request.Request(location), timeout=30)
+              with response:
+                  if response.status != 200:
+                      raise RuntimeError("download status")
+                  raw = response.read(315717)
+              if (len(raw) != 315716 or hashlib.sha256(raw).hexdigest()
+                      != "b6f950ae1f0536946475e4a05d9bf7948c5963d3ddde9099dc24248188add374"):
+                  raise RuntimeError("historical digest")
+              root = Path(os.environ["RUNNER_TEMP"])
+              if not root.is_absolute() or root.is_symlink() or root.resolve() != root:
+                  raise RuntimeError("temporary root")
+              path = root / "v03-ordinal2-detector.log"
+              fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+              with os.fdopen(fd, "wb") as stream:
+                  stream.write(raw)
+              if stat.S_IMODE(path.stat().st_mode) != 0o600:
+                  raise RuntimeError("private mode")
+              print("Historical detector bytes verified privately.")
+          except Exception:
+              print("Historical detector byte acquisition failed.", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Acquire fixed accepted Reviewer fixture privately
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, stat, sys
+          from pathlib import Path
+          from urllib import error, parse, request
+          class NoRedirect(request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          try:
+              opener = request.build_opener(NoRedirect())
+              token = os.environ["AI_SDLC_ACTIONS_READ_TOKEN"]
+              base = "https://api.github.com/repos/DREAM-XIN/ai-sdlc"
+              def get(path, limit, storage=False):
+                  req = request.Request(base + path, headers={"Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+                  try:
+                      response = opener.open(req, timeout=30)
+                  except error.HTTPError as exc:
+                      if not storage or exc.code != 302:
+                          raise RuntimeError("API status")
+                      location = exc.headers.get("Location", "")
+                      exc.close()
+                      target = parse.urlsplit(location)
+                      if (target.scheme != "https" or target.username is not None
+                              or target.password is not None or target.port not in (None, 443)
+                              or target.fragment or not re.fullmatch(
+                                  r"productionresultssa[0-9]+\.blob\.core\.windows\.net", target.hostname or "")):
+                          raise RuntimeError("storage destination")
+                      response = opener.open(request.Request(location), timeout=30)
+                  with response:
+                      if response.status != 200:
+                          raise RuntimeError("download status")
+                      raw = response.read(limit + 1)
+                  if not raw or len(raw) > limit:
+                      raise RuntimeError("download bound")
+                  return raw
+              def project(row, fields):
+                  if not isinstance(row, dict) or not set(fields) <= set(row):
+                      raise RuntimeError("metadata fields")
+                  return {key: row[key] for key in fields}
+              def documents():
+                  run = project(json.loads(get("/actions/runs/38074007355", 1048576)),
+                      ("id","run_attempt","html_url","path","display_title","event","head_branch","head_sha","status","conclusion","repository"))
+                  run["repository"] = project(run["repository"], ("id","full_name"))
+                  if (run["id"] != 38074007355 or run["run_attempt"] != 1
+                          or run["head_sha"] != "868d3dc25e5331392063b674496eb16b01208b42"
+                          or run["status"] != "completed" or run["conclusion"] != "success"
+                          or run["repository"]["id"] != 1326302284):
+                      raise RuntimeError("run identity")
+                  jobs = json.loads(get("/actions/runs/38074007355/attempts/1/jobs?per_page=100", 2097152))
+                  artifacts = json.loads(get("/actions/runs/38074007355/artifacts?per_page=100", 1048576))
+                  for document, key in ((jobs, "jobs"), (artifacts, "artifacts")):
+                      if (not isinstance(document.get(key), list) or type(document.get("total_count")) is not int
+                              or document["total_count"] != len(document[key]) or len(document[key]) > 100):
+                          raise RuntimeError("inventory")
+                  job_rows = []
+                  for row in jobs["jobs"]:
+                      item = project(row, ("id","name","status","conclusion","run_id","run_attempt","head_sha","steps"))
+                      if not isinstance(item["steps"], list):
+                          raise RuntimeError("job steps")
+                      item["steps"] = [project(step, ("name","status","conclusion","number")) for step in item["steps"]]
+                      job_rows.append(item)
+                  artifact_rows = []
+                  for row in artifacts["artifacts"]:
+                      item = project(row, ("id","name","expired","size_in_bytes","digest","archive_download_url","created_at","updated_at","expires_at","workflow_run"))
+                      item["workflow_run"] = project(item["workflow_run"], ("id","head_sha","head_branch","repository_id","head_repository_id"))
+                      artifact_rows.append(item)
+                  selected = [row for row in artifact_rows if row["id"] == 11677748041]
+                  if (len(selected) != 1 or selected[0]["name"] != "safe-outputs-items"
+                          or selected[0]["expired"] is not False or selected[0]["size_in_bytes"] != 494
+                          or selected[0]["digest"] != "sha256:f90cea1f334a437d14eb19ffb1715b5b0d85fd2e1c3e1324060a4877dd66b06d"
+                          or selected[0]["workflow_run"]["id"] != 38074007355
+                          or selected[0]["workflow_run"]["head_sha"] != run["head_sha"]):
+                      raise RuntimeError("archive identity")
+                  comment = project(json.loads(get("/issues/comments/6100563138", 262144)),
+                      ("id","node_id","html_url","issue_url","user","body","created_at","updated_at"))
+                  comment["user"] = project(comment["user"], ("id","login","type"))
+                  if (comment["id"] != 6100563138 or comment["user"] !=
+                          {"id":41898282,"login":"github-actions[bot]","type":"Bot"}
+                          or not isinstance(comment["body"], str)):
+                      raise RuntimeError("comment identity")
+                  return {"run.json":run,"jobs.json":{"total_count":len(job_rows),"jobs":job_rows},
+                      "artifacts.json":{"total_count":len(artifact_rows),"artifacts":artifact_rows},"comment.json":comment}
+              before = documents()
+              archive = get("/actions/artifacts/11677748041/zip", 494, True)
+              if len(archive) != 494 or hashlib.sha256(archive).hexdigest() != "f90cea1f334a437d14eb19ffb1715b5b0d85fd2e1c3e1324060a4877dd66b06d":
+                  raise RuntimeError("archive digest")
+              log = get("/actions/jobs/114277805438/logs", 1048576, True)
+              keys = {"SOURCE_RUN_ID","SOURCE_WORKFLOW_REF","TARGET_REPOSITORY","TARGET_REF","FEATURE_ID",
+                  "EXPECTED_REVISION","STAGE","ROLE","TRUSTED_TASK_ID","CANDIDATE_PR_NUMBER","CANDIDATE_HEAD_SHA",
+                  "COMMENT_ID","COMMENT_URL","DISPATCH_KEY","TASK_PAYLOAD"}
+              pattern = re.compile(r"^[^\n]*Z\s{3}([A-Z][A-Z0-9_]*):\s?(.*)$")
+              selected_lines, found = [], set()
+              for line in log.decode("utf-8-sig").splitlines(keepends=True):
+                  match = pattern.match(line.rstrip("\r\n"))
+                  if match and match.group(1) in keys:
+                      selected_lines.append(line)
+                      found.add(match.group(1))
+              if found != keys or not 15 <= len(selected_lines) <= 256:
+                  raise RuntimeError("conclusion fields")
+              if documents() != before:
+                  raise RuntimeError("metadata changed")
+              encode = lambda value: (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+              files = {name:encode(value) for name,value in before.items()}
+              files["conclusion.txt"] = "".join(selected_lines).encode("utf-8")
+              files["safe-outputs.zip"] = archive
+              root = Path(os.environ["RUNNER_TEMP"])
+              if not root.is_absolute() or root.is_symlink() or root.resolve() != root:
+                  raise RuntimeError("temporary root")
+              directory = root / "v03-accepted-reviewer-fixture"
+              directory.mkdir(mode=0o700)
+              if stat.S_IMODE(directory.stat().st_mode) != 0o700:
+                  raise RuntimeError("private directory")
+              manifest = {"schema_version":"ai-sdlc.qa-accepted-reviewer-fixture/v1",
+                  "run_id":38074007355,"source_sha":"868d3dc25e5331392063b674496eb16b01208b42",
+                  "files":{name:{"size":len(data),"sha256":hashlib.sha256(data).hexdigest()} for name,data in files.items()}}
+              files["manifest.json"] = encode(manifest)
+              for name,data in files.items():
+                  fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                  with os.fdopen(fd, "wb") as stream:
+                      stream.write(data)
+              print("Accepted Reviewer fixture verified privately; components=6.")
+          except Exception:
+              print("Accepted Reviewer fixture acquisition failed.", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Install pinned CLI for joined offline Gate regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 120 https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz -o "$RUNNER_TEMP/v03-joined-copilot.tar.gz"
+          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $RUNNER_TEMP/v03-joined-copilot.tar.gz" | sha256sum --check --status
+          python3 - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          dest = Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot"
+          dest.mkdir(mode=0o700)
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot.tar.gz", "r:gz") as archive:
+              entries = archive.getmembers()
+              assert 0 < len(entries) <= 64 and sum(e.size for e in entries) <= 524288000
+              for entry in entries:
+                  path = PurePosixPath(entry.name)
+                  assert not path.is_absolute() and ".." not in path.parts and "\\" not in entry.name
+                  assert entry.isdir() or entry.isfile()
+                  assert 0 <= entry.size <= 314572800
+              archive.extractall(dest, filter="data")
+          assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
+          PY
+          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
+      - name: Validate QA-only selected factory and real CLI lifecycle
+        env:
+          GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
+          V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
+          V03_ACCEPTED_REVIEWER_FIXTURE_DIR: ${{ runner.temp }}/v03-accepted-reviewer-fixture
+          V03_SCHEMA_CLI_ROOT: ${{ runner.temp }}/v03-joined-copilot
+        if: ${{ !cancelled() }}
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --group qa-joined
+
+  validate-qa-safety:
+    needs: validate-snapshot-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Setup pinned detector conclusion scripts
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-detector-test-actions
+      - name: Observe fixed failed QA through read-only GitHub API
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import json, os
+          from v03_dogfood_runtime_driver import observe_qa_failure_for_review
+          failed_qa = observe_qa_failure_for_review(
+              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
+          )
+          assert failed_qa["schema_version"] == "ai-sdlc.v03-qa-failure-read-only-result/v1"
+          assert failed_qa["historical_proof_verified"] is True and failed_qa["read_only"] is True
+          assert failed_qa["model_invoked"] is False and failed_qa["current_claim_created"] is False
+          assert failed_qa["run_id"] == 38074618111
+          print(json.dumps(failed_qa, sort_keys=True))
+          PY
+      - name: Acquire exact historical detector bytes privately
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re, stat, sys
+          from pathlib import Path
+          from urllib import error, parse, request
+          class NoRedirect(request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          try:
+              opener = request.build_opener(NoRedirect())
+              token = os.environ["AI_SDLC_ACTIONS_READ_TOKEN"]
+              req = request.Request(
+                  "https://api.github.com/repos/DREAM-XIN/ai-sdlc/actions/jobs/113810489745/logs",
+                  headers={"Authorization": "Bearer " + token,
+                           "Accept": "application/vnd.github+json",
+                           "X-GitHub-Api-Version": "2022-11-28"},
+              )
+              try:
+                  response = opener.open(req, timeout=30)
+              except error.HTTPError as exc:
+                  if exc.code != 302:
+                      raise RuntimeError("API status")
+                  location = exc.headers.get("Location", "")
+                  exc.close()
+                  target = parse.urlsplit(location)
+                  if (target.scheme != "https" or target.username is not None
+                          or target.password is not None or target.port not in (None, 443)
+                          or target.fragment or not re.fullmatch(
+                              r"productionresultssa[0-9]+\.blob\.core\.windows\.net",
+                              target.hostname or "")):
+                      raise RuntimeError("storage destination")
+                  # New request: never forward API authorization or cookies to storage.
+                  response = opener.open(request.Request(location), timeout=30)
+              with response:
+                  if response.status != 200:
+                      raise RuntimeError("download status")
+                  raw = response.read(315717)
+              if (len(raw) != 315716 or hashlib.sha256(raw).hexdigest()
+                      != "b6f950ae1f0536946475e4a05d9bf7948c5963d3ddde9099dc24248188add374"):
+                  raise RuntimeError("historical digest")
+              root = Path(os.environ["RUNNER_TEMP"])
+              if not root.is_absolute() or root.is_symlink() or root.resolve() != root:
+                  raise RuntimeError("temporary root")
+              path = root / "v03-ordinal2-detector.log"
+              fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+              with os.fdopen(fd, "wb") as stream:
+                  stream.write(raw)
+              if stat.S_IMODE(path.stat().st_mode) != 0o600:
+                  raise RuntimeError("private mode")
+              print("Historical detector bytes verified privately.")
+          except Exception:
+              print("Historical detector byte acquisition failed.", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Acquire fixed accepted Reviewer fixture privately
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, stat, sys
+          from pathlib import Path
+          from urllib import error, parse, request
+          class NoRedirect(request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          try:
+              opener = request.build_opener(NoRedirect())
+              token = os.environ["AI_SDLC_ACTIONS_READ_TOKEN"]
+              base = "https://api.github.com/repos/DREAM-XIN/ai-sdlc"
+              def get(path, limit, storage=False):
+                  req = request.Request(base + path, headers={"Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+                  try:
+                      response = opener.open(req, timeout=30)
+                  except error.HTTPError as exc:
+                      if not storage or exc.code != 302:
+                          raise RuntimeError("API status")
+                      location = exc.headers.get("Location", "")
+                      exc.close()
+                      target = parse.urlsplit(location)
+                      if (target.scheme != "https" or target.username is not None
+                              or target.password is not None or target.port not in (None, 443)
+                              or target.fragment or not re.fullmatch(
+                                  r"productionresultssa[0-9]+\.blob\.core\.windows\.net", target.hostname or "")):
+                          raise RuntimeError("storage destination")
+                      response = opener.open(request.Request(location), timeout=30)
+                  with response:
+                      if response.status != 200:
+                          raise RuntimeError("download status")
+                      raw = response.read(limit + 1)
+                  if not raw or len(raw) > limit:
+                      raise RuntimeError("download bound")
+                  return raw
+              def project(row, fields):
+                  if not isinstance(row, dict) or not set(fields) <= set(row):
+                      raise RuntimeError("metadata fields")
+                  return {key: row[key] for key in fields}
+              def documents():
+                  run = project(json.loads(get("/actions/runs/38074007355", 1048576)),
+                      ("id","run_attempt","html_url","path","display_title","event","head_branch","head_sha","status","conclusion","repository"))
+                  run["repository"] = project(run["repository"], ("id","full_name"))
+                  if (run["id"] != 38074007355 or run["run_attempt"] != 1
+                          or run["head_sha"] != "868d3dc25e5331392063b674496eb16b01208b42"
+                          or run["status"] != "completed" or run["conclusion"] != "success"
+                          or run["repository"]["id"] != 1326302284):
+                      raise RuntimeError("run identity")
+                  jobs = json.loads(get("/actions/runs/38074007355/attempts/1/jobs?per_page=100", 2097152))
+                  artifacts = json.loads(get("/actions/runs/38074007355/artifacts?per_page=100", 1048576))
+                  for document, key in ((jobs, "jobs"), (artifacts, "artifacts")):
+                      if (not isinstance(document.get(key), list) or type(document.get("total_count")) is not int
+                              or document["total_count"] != len(document[key]) or len(document[key]) > 100):
+                          raise RuntimeError("inventory")
+                  job_rows = []
+                  for row in jobs["jobs"]:
+                      item = project(row, ("id","name","status","conclusion","run_id","run_attempt","head_sha","steps"))
+                      if not isinstance(item["steps"], list):
+                          raise RuntimeError("job steps")
+                      item["steps"] = [project(step, ("name","status","conclusion","number")) for step in item["steps"]]
+                      job_rows.append(item)
+                  artifact_rows = []
+                  for row in artifacts["artifacts"]:
+                      item = project(row, ("id","name","expired","size_in_bytes","digest","archive_download_url","created_at","updated_at","expires_at","workflow_run"))
+                      item["workflow_run"] = project(item["workflow_run"], ("id","head_sha","head_branch","repository_id","head_repository_id"))
+                      artifact_rows.append(item)
+                  selected = [row for row in artifact_rows if row["id"] == 11677748041]
+                  if (len(selected) != 1 or selected[0]["name"] != "safe-outputs-items"
+                          or selected[0]["expired"] is not False or selected[0]["size_in_bytes"] != 494
+                          or selected[0]["digest"] != "sha256:f90cea1f334a437d14eb19ffb1715b5b0d85fd2e1c3e1324060a4877dd66b06d"
+                          or selected[0]["workflow_run"]["id"] != 38074007355
+                          or selected[0]["workflow_run"]["head_sha"] != run["head_sha"]):
+                      raise RuntimeError("archive identity")
+                  comment = project(json.loads(get("/issues/comments/6100563138", 262144)),
+                      ("id","node_id","html_url","issue_url","user","body","created_at","updated_at"))
+                  comment["user"] = project(comment["user"], ("id","login","type"))
+                  if (comment["id"] != 6100563138 or comment["user"] !=
+                          {"id":41898282,"login":"github-actions[bot]","type":"Bot"}
+                          or not isinstance(comment["body"], str)):
+                      raise RuntimeError("comment identity")
+                  return {"run.json":run,"jobs.json":{"total_count":len(job_rows),"jobs":job_rows},
+                      "artifacts.json":{"total_count":len(artifact_rows),"artifacts":artifact_rows},"comment.json":comment}
+              before = documents()
+              archive = get("/actions/artifacts/11677748041/zip", 494, True)
+              if len(archive) != 494 or hashlib.sha256(archive).hexdigest() != "f90cea1f334a437d14eb19ffb1715b5b0d85fd2e1c3e1324060a4877dd66b06d":
+                  raise RuntimeError("archive digest")
+              log = get("/actions/jobs/114277805438/logs", 1048576, True)
+              keys = {"SOURCE_RUN_ID","SOURCE_WORKFLOW_REF","TARGET_REPOSITORY","TARGET_REF","FEATURE_ID",
+                  "EXPECTED_REVISION","STAGE","ROLE","TRUSTED_TASK_ID","CANDIDATE_PR_NUMBER","CANDIDATE_HEAD_SHA",
+                  "COMMENT_ID","COMMENT_URL","DISPATCH_KEY","TASK_PAYLOAD"}
+              pattern = re.compile(r"^[^\n]*Z\s{3}([A-Z][A-Z0-9_]*):\s?(.*)$")
+              selected_lines, found = [], set()
+              for line in log.decode("utf-8-sig").splitlines(keepends=True):
+                  match = pattern.match(line.rstrip("\r\n"))
+                  if match and match.group(1) in keys:
+                      selected_lines.append(line)
+                      found.add(match.group(1))
+              if found != keys or not 15 <= len(selected_lines) <= 256:
+                  raise RuntimeError("conclusion fields")
+              if documents() != before:
+                  raise RuntimeError("metadata changed")
+              encode = lambda value: (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+              files = {name:encode(value) for name,value in before.items()}
+              files["conclusion.txt"] = "".join(selected_lines).encode("utf-8")
+              files["safe-outputs.zip"] = archive
+              root = Path(os.environ["RUNNER_TEMP"])
+              if not root.is_absolute() or root.is_symlink() or root.resolve() != root:
+                  raise RuntimeError("temporary root")
+              directory = root / "v03-accepted-reviewer-fixture"
+              directory.mkdir(mode=0o700)
+              if stat.S_IMODE(directory.stat().st_mode) != 0o700:
+                  raise RuntimeError("private directory")
+              manifest = {"schema_version":"ai-sdlc.qa-accepted-reviewer-fixture/v1",
+                  "run_id":38074007355,"source_sha":"868d3dc25e5331392063b674496eb16b01208b42",
+                  "files":{name:{"size":len(data),"sha256":hashlib.sha256(data).hexdigest()} for name,data in files.items()}}
+              files["manifest.json"] = encode(manifest)
+              for name,data in files.items():
+                  fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                  with os.fdopen(fd, "wb") as stream:
+                      stream.write(data)
+              print("Accepted Reviewer fixture verified privately; components=6.")
+          except Exception:
+              print("Accepted Reviewer fixture acquisition failed.", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Validate QA non-PASS and pre-effect safety boundaries
+        env:
+          GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
+          V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
+          V03_ACCEPTED_REVIEWER_FIXTURE_DIR: ${{ runner.temp }}/v03-accepted-reviewer-fixture
+        if: ${{ !cancelled() }}
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --group qa-safety
+
   validate:
     needs: validate-snapshot-cache
     runs-on: ubuntu-latest
@@ -549,12 +1016,143 @@ jobs:
               print("Historical detector byte acquisition failed.", file=sys.stderr)
               sys.exit(1)
           PY
+      - name: Acquire fixed accepted Reviewer fixture privately
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, stat, sys
+          from pathlib import Path
+          from urllib import error, parse, request
+          class NoRedirect(request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          try:
+              opener = request.build_opener(NoRedirect())
+              token = os.environ["AI_SDLC_ACTIONS_READ_TOKEN"]
+              base = "https://api.github.com/repos/DREAM-XIN/ai-sdlc"
+              def get(path, limit, storage=False):
+                  req = request.Request(base + path, headers={"Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+                  try:
+                      response = opener.open(req, timeout=30)
+                  except error.HTTPError as exc:
+                      if not storage or exc.code != 302:
+                          raise RuntimeError("API status")
+                      location = exc.headers.get("Location", "")
+                      exc.close()
+                      target = parse.urlsplit(location)
+                      if (target.scheme != "https" or target.username is not None
+                              or target.password is not None or target.port not in (None, 443)
+                              or target.fragment or not re.fullmatch(
+                                  r"productionresultssa[0-9]+\.blob\.core\.windows\.net", target.hostname or "")):
+                          raise RuntimeError("storage destination")
+                      response = opener.open(request.Request(location), timeout=30)
+                  with response:
+                      if response.status != 200:
+                          raise RuntimeError("download status")
+                      raw = response.read(limit + 1)
+                  if not raw or len(raw) > limit:
+                      raise RuntimeError("download bound")
+                  return raw
+              def project(row, fields):
+                  if not isinstance(row, dict) or not set(fields) <= set(row):
+                      raise RuntimeError("metadata fields")
+                  return {key: row[key] for key in fields}
+              def documents():
+                  run = project(json.loads(get("/actions/runs/38074007355", 1048576)),
+                      ("id","run_attempt","html_url","path","display_title","event","head_branch","head_sha","status","conclusion","repository"))
+                  run["repository"] = project(run["repository"], ("id","full_name"))
+                  if (run["id"] != 38074007355 or run["run_attempt"] != 1
+                          or run["head_sha"] != "868d3dc25e5331392063b674496eb16b01208b42"
+                          or run["status"] != "completed" or run["conclusion"] != "success"
+                          or run["repository"]["id"] != 1326302284):
+                      raise RuntimeError("run identity")
+                  jobs = json.loads(get("/actions/runs/38074007355/attempts/1/jobs?per_page=100", 2097152))
+                  artifacts = json.loads(get("/actions/runs/38074007355/artifacts?per_page=100", 1048576))
+                  for document, key in ((jobs, "jobs"), (artifacts, "artifacts")):
+                      if (not isinstance(document.get(key), list) or type(document.get("total_count")) is not int
+                              or document["total_count"] != len(document[key]) or len(document[key]) > 100):
+                          raise RuntimeError("inventory")
+                  job_rows = []
+                  for row in jobs["jobs"]:
+                      item = project(row, ("id","name","status","conclusion","run_id","run_attempt","head_sha","steps"))
+                      if not isinstance(item["steps"], list):
+                          raise RuntimeError("job steps")
+                      item["steps"] = [project(step, ("name","status","conclusion","number")) for step in item["steps"]]
+                      job_rows.append(item)
+                  artifact_rows = []
+                  for row in artifacts["artifacts"]:
+                      item = project(row, ("id","name","expired","size_in_bytes","digest","archive_download_url","created_at","updated_at","expires_at","workflow_run"))
+                      item["workflow_run"] = project(item["workflow_run"], ("id","head_sha","head_branch","repository_id","head_repository_id"))
+                      artifact_rows.append(item)
+                  selected = [row for row in artifact_rows if row["id"] == 11677748041]
+                  if (len(selected) != 1 or selected[0]["name"] != "safe-outputs-items"
+                          or selected[0]["expired"] is not False or selected[0]["size_in_bytes"] != 494
+                          or selected[0]["digest"] != "sha256:f90cea1f334a437d14eb19ffb1715b5b0d85fd2e1c3e1324060a4877dd66b06d"
+                          or selected[0]["workflow_run"]["id"] != 38074007355
+                          or selected[0]["workflow_run"]["head_sha"] != run["head_sha"]):
+                      raise RuntimeError("archive identity")
+                  comment = project(json.loads(get("/issues/comments/6100563138", 262144)),
+                      ("id","node_id","html_url","issue_url","user","body","created_at","updated_at"))
+                  comment["user"] = project(comment["user"], ("id","login","type"))
+                  if (comment["id"] != 6100563138 or comment["user"] !=
+                          {"id":41898282,"login":"github-actions[bot]","type":"Bot"}
+                          or not isinstance(comment["body"], str)):
+                      raise RuntimeError("comment identity")
+                  return {"run.json":run,"jobs.json":{"total_count":len(job_rows),"jobs":job_rows},
+                      "artifacts.json":{"total_count":len(artifact_rows),"artifacts":artifact_rows},"comment.json":comment}
+              before = documents()
+              archive = get("/actions/artifacts/11677748041/zip", 494, True)
+              if len(archive) != 494 or hashlib.sha256(archive).hexdigest() != "f90cea1f334a437d14eb19ffb1715b5b0d85fd2e1c3e1324060a4877dd66b06d":
+                  raise RuntimeError("archive digest")
+              log = get("/actions/jobs/114277805438/logs", 1048576, True)
+              keys = {"SOURCE_RUN_ID","SOURCE_WORKFLOW_REF","TARGET_REPOSITORY","TARGET_REF","FEATURE_ID",
+                  "EXPECTED_REVISION","STAGE","ROLE","TRUSTED_TASK_ID","CANDIDATE_PR_NUMBER","CANDIDATE_HEAD_SHA",
+                  "COMMENT_ID","COMMENT_URL","DISPATCH_KEY","TASK_PAYLOAD"}
+              pattern = re.compile(r"^[^\n]*Z\s{3}([A-Z][A-Z0-9_]*):\s?(.*)$")
+              selected_lines, found = [], set()
+              for line in log.decode("utf-8-sig").splitlines(keepends=True):
+                  match = pattern.match(line.rstrip("\r\n"))
+                  if match and match.group(1) in keys:
+                      selected_lines.append(line)
+                      found.add(match.group(1))
+              if found != keys or not 15 <= len(selected_lines) <= 256:
+                  raise RuntimeError("conclusion fields")
+              if documents() != before:
+                  raise RuntimeError("metadata changed")
+              encode = lambda value: (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+              files = {name:encode(value) for name,value in before.items()}
+              files["conclusion.txt"] = "".join(selected_lines).encode("utf-8")
+              files["safe-outputs.zip"] = archive
+              root = Path(os.environ["RUNNER_TEMP"])
+              if not root.is_absolute() or root.is_symlink() or root.resolve() != root:
+                  raise RuntimeError("temporary root")
+              directory = root / "v03-accepted-reviewer-fixture"
+              directory.mkdir(mode=0o700)
+              if stat.S_IMODE(directory.stat().st_mode) != 0o700:
+                  raise RuntimeError("private directory")
+              manifest = {"schema_version":"ai-sdlc.qa-accepted-reviewer-fixture/v1",
+                  "run_id":38074007355,"source_sha":"868d3dc25e5331392063b674496eb16b01208b42",
+                  "files":{name:{"size":len(data),"sha256":hashlib.sha256(data).hexdigest()} for name,data in files.items()}}
+              files["manifest.json"] = encode(manifest)
+              for name,data in files.items():
+                  fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                  with os.fdopen(fd, "wb") as stream:
+                      stream.write(data)
+              print("Accepted Reviewer fixture verified privately; components=6.")
+          except Exception:
+              print("Accepted Reviewer fixture acquisition failed.", file=sys.stderr)
+              sys.exit(1)
+          PY
       - name: Validate trusted-main dogfood runtime driver
         env:
+          V03_ACCEPTED_REVIEWER_FIXTURE_DIR: ${{ runner.temp }}/v03-accepted-reviewer-fixture
           GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
           V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
         if: ${{ !cancelled() }}
-        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined --exclude-group cache
+        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined --exclude-group cache --exclude-group qa-joined --exclude-group qa-safety
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:

@@ -43,7 +43,8 @@ def reject(call, label):
     raise AssertionError("accepted " + label)
 
 def selected_config(role, candidate=577, *, variant="structured-local"):
-    check(variant in ("structured-local", "structured-inline-local"), "unsupported test workflow variant")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local"), "unsupported test workflow variant")
+    check(variant != "observed-inline-local" or role == "qa", "observed workflow is QA-only")
     stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
     lock = yaml.safe_load((ROOT / ".github/workflows" / (stem + ".lock.yml")).read_text())
     steps = lock["jobs"]["agent"]["steps"]
@@ -531,6 +532,29 @@ def _roundtrip(official, payload, context, role, *, raw_ledger=None):
 
     return raw, collected, output, proof, publication, body
 
+def roundtrip_source_contract(role, variant, lock, metadata):
+    stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
+    check(metadata["GH_AW_WORKFLOW_ID"] == stem, "roundtrip used a different selected workflow")
+    check(metadata["GH_AW_CALLER_WORKFLOW_ID"] == "dream-xin/ai-sdlc/" + stem,
+          "roundtrip caller footer differs from selected workflow")
+    check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
+          "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
+          "roundtrip source footer differs")
+    if variant == "observed-inline-local":
+        check(role == "qa", "observed source is QA-only")
+        for relative, expected in (
+            (".github/workflows/" + stem + ".md", "158b4d78ad47f5ceeaf4e198968d0d225fb74f67"),
+            (".github/workflows/" + stem + ".lock.yml", "1f0928c78d98845d000388dce6eef3a347fbf082"),
+            ("scripts/v03_detector_observation.mjs", "0468fd225c9637a629adea8a94545f22f37e302f"),
+        ):
+            raw = (ROOT / relative).read_bytes()
+            actual = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            check(actual == expected, "frozen observed source/helper pin differs")
+        identifiers = [step.get("id") for step in lock["jobs"]["detection"]["steps"]]
+        for required in ("detector_observation_prepare", "detector_observation_observe", "detector_observation_report"):
+            check(identifiers.count(required) == 1, "observed detector step absent or ambiguous")
+
+
 def verify_context_roundtrip(role, context, *, root, actions_root,
                              verdict="PASS", run_id=9001, comment_id=9002,
                              workflow_sha="e" * 40, variant="structured-local"):
@@ -539,17 +563,19 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
-    check(variant in {"structured-local", "structured-inline-local"}, "roundtrip variant differs")
-    payload = (inline_payload(role, verdict) if variant == "structured-inline-local"
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local"}, "roundtrip variant differs")
+    check(variant != "observed-inline-local" or role == "qa", "observed roundtrip is QA-only")
+    payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
         payload[key] = context["identity"][key]
     payload["evidence"][0]["uri"] = (
         "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"]))
-    if role == "qa" and variant == "structured-inline-local":
+    if role == "qa" and variant != "structured-local":
         payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
-    _, config, validation, metadata = selected_config(
+    lock, config, validation, metadata = selected_config(
         role, payload["candidate_pr_number"], variant=variant)
+    roundtrip_source_contract(role, variant, lock, metadata)
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
@@ -562,12 +588,14 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
 
 def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                                     verdict="PASS", run_id=9001, comment_id=9002,
-                                    workflow_sha="e" * 40):
+                                    workflow_sha="e" * 40, variant="structured-inline-local"):
     """Synthetic recommendation through actual CLI/MCP bytes and official publication.
 
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
+    check(variant in {"structured-inline-local", "observed-inline-local"}, "joined variant differs")
+    check(variant != "observed-inline-local" or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
@@ -582,7 +610,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         payload["coverage"][0]["evidence"] = uri
     subject.validate_payload(payload, context, role)
     lock, config, validation, metadata = selected_config(
-        role, payload["candidate_pr_number"], variant="structured-inline-local")
+        role, payload["candidate_pr_number"], variant=variant)
+    roundtrip_source_contract(role, variant, lock, metadata)
     compiled_contract(lock)
     actions = resolve_actions_root(actions_root).resolve(strict=True)
     cli_root = Path(os.environ["V03_SCHEMA_CLI_ROOT"]).resolve(strict=True)
@@ -644,7 +673,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
             "metadata_suffix": publication["suffix"],
-            "cli_evidence": {"provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
+            "cli_evidence": {"workflow_file": f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}.lock.yml",
+                             "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
 
@@ -701,7 +731,8 @@ def temporary_id_contract_tests(role, actions_root, temporary):
 
 def exercise_role(role, actions_root, temporary, *, variant="structured-local"):
     lock, config, validation, metadata = selected_config(role, variant=variant)
-    make_payload = inline_payload if variant == "structured-inline-local" else role_payload
+    make_payload = inline_payload if variant != "structured-local" else role_payload
+    roundtrip_source_contract(role, variant, lock, metadata)
     compiled_contract(lock)
     fixture_dir = temporary / (role + "-" + variant)
     fixture_dir.mkdir()
@@ -1495,6 +1526,20 @@ def main():
             inline_native_schema_tests(role, actions_root, Path(directory))
             temporary_id_contract_tests(role, actions_root, Path(directory))
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
+        exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
+    old_lock, _, _, old_metadata = selected_config("qa", variant="structured-inline-local")
+    try:
+        roundtrip_source_contract("qa", "observed-inline-local", old_lock, old_metadata)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("old QA source silently substituted for observed source")
+    try:
+        selected_config("reviewer", variant="observed-inline-local")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("observed QA source accepted Reviewer role")
     print("Structured Gate output contract passed with fake provider boundaries only.")
 
 if __name__ == "__main__":
