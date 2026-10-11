@@ -17,6 +17,7 @@ on:
       - 'scripts/operator_store_remote_git.py'
       - 'scripts/validate_operator_store_runtime.py'
       - 'scripts/v03_dogfood_gate_output.py'
+      - 'scripts/v03_dogfood_gate_output_v2.py'
       - 'scripts/validate_v03_gate_output_contract.py'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml'
@@ -162,6 +163,9 @@ jobs:
               assert step.get("if") in (None, "success()", "$"+"{{ success() }}")
               assert "github.workflow_sha" in step["env"]["WORKFLOW_SHA"]
               assert "GATE_HELPER_MODE" in step["env"]
+              assert "/scripts/v03_dogfood_gate_output_v2.py" in step["run"]
+              assert "aff76251c232e5cdaeec21306c52d9da09d20e01" in step["run"]
+              assert "/scripts/v03_dogfood_gate_output.py" not in step["run"]
           renderer_policy = agent_steps[render_index]["env"]
           handler_policy = effect_steps[step_index(effect_steps, id="process_safe_outputs")]["env"]
           for key in ("GH_AW_ALLOWED_DOMAINS", "GH_AW_SAFE_OUTPUTS_URLS", "GITHUB_SERVER_URL", "GITHUB_API_URL"):
