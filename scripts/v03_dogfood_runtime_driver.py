@@ -2421,15 +2421,7 @@ def recover_reviewer_structured(preflight):
     if result["acquired"]:
         if receipt["lookup_state"]!="NOT_LAUNCHED":
             raise V03DogfoodRuntimeDriverError("corrected Reviewer CAS winner lost absence")
-        try:
-            receipt=transport.dispatch(workflow=auth["workflow_file"],ref="main",inputs=claim["dispatch_inputs"])
-        except (OSError,ValueError,c.VerticalInvariantError,V03DogfoodRuntimeDriverError):
-            # The consumed CAS claim is never replenished, even if acknowledgement or
-            # a fresh pre-POST guard fails. Only a fresh lookup may identify a launch.
-            try:
-                receipt=c.qa_replacement_scan(transport,physical_key=auth["physical_key"])
-            except (OSError,ValueError,c.VerticalInvariantError,V03DogfoodRuntimeDriverError):
-                receipt={"lookup_state":"UNKNOWN","receipt_id":None}
+        receipt=transport.dispatch(workflow=auth["workflow_file"],ref="main",inputs=claim["dispatch_inputs"])
     elif receipt["lookup_state"]!="LAUNCHED":
         raise V03DogfoodRuntimeDriverError("corrected Reviewer claim consumed without a known run; no retry")
     if receipt.get("lookup_state")!="LAUNCHED":

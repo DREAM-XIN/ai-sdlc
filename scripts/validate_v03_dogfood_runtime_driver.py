@@ -9423,8 +9423,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--group", choices=("joined", "cache", "qa-joined"))
-    selection.add_argument("--exclude-group", choices=("joined", "cache", "qa-joined"), action="append", default=[])
+    selection.add_argument("--group", choices=("joined", "cache", "qa-joined", "qa-safety"))
+    selection.add_argument("--exclude-group", choices=("joined", "cache", "qa-joined", "qa-safety"), action="append", default=[])
     args = parser.parse_args()
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -9511,15 +9511,21 @@ def main():
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
     named_groups = {
+        "qa-safety": ("QA-only non-PASS terminal", "QA-only pre-effect rejection"),
         "qa-joined": "QA-only actual joined lifecycle",
         "joined": "inline selected factory joined CLI lifecycle",
         "cache": "exact-SHA remote snapshot cache",
     }
     if args.group:
-        groups = tuple(row for row in groups if row[0] == named_groups[args.group])
-        expect(len(groups) == 1, "selected regression group must be exact")
+        selected=named_groups[args.group]
+        selected={selected} if isinstance(selected,str) else set(selected)
+        groups = tuple(row for row in groups if row[0] in selected)
+        expect(len(groups) == len(selected), "selected regression groups must be exact")
     elif args.exclude_group:
-        excluded = {named_groups[name] for name in args.exclude_group}
+        excluded = set()
+        for name in args.exclude_group:
+            selected=named_groups[name]
+            excluded.update({selected} if isinstance(selected,str) else selected)
         groups = tuple(row for row in groups if row[0] not in excluded)
     for name, execute in groups:
         try:
@@ -10980,7 +10986,13 @@ def qa_replacement_nonpass_tests():
         effects=deepcopy(p.effect_counts())
         result=d.recover_qa_replacement(pf)
         after=runtime.backend.read_snapshot()
-        expect(result["terminal"]["outcome"]==verdict
+        terminal=result["terminal"]
+        expect(len(gates.state["roundtrips"])==1
+               and gates.state["roundtrips"][0]["payload"]["verdict"]==verdict
+               and terminal["outcome"]=="BLOCKED"
+               and terminal["observation"]["role_payload"]["verdict"]=="BLOCKED"
+               and {row["status"] for row in terminal["observation"]["role_payload"]["checks"]}==
+                   ({"FAIL"} if verdict=="FAIL" else {"SKIP"})
                and c.QA_REPLACEMENT_SEAL_PATH not in after.files
                and len(gates.state["posts"])==1
                and [row["role"] for row in gates.state["inputs"]]==["qa"]
@@ -11250,7 +11262,7 @@ def qa_replacement_pre_effect_rejection_tests():
     """Reject source/candidate and frozen-payload substitutions before a replacement POST."""
     import json
     from copy import deepcopy
-    from operator_store_model import canonical_json
+    from operator_store_model import canonical_json, operation_events
     import v03_dogfood_full_composition as c
     import v03_dogfood_runtime_driver as d
     errors=(c.VerticalInvariantError,d.V03DogfoodRuntimeDriverError,ValueError,
@@ -11284,11 +11296,23 @@ def qa_replacement_pre_effect_rejection_tests():
         runtime=pf.composition.runtime
         original_commit=runtime.backend.commit
         injected=[False]
+        observed_heads=[]
+        frozen_claim=[]
+        def track_reader(original):
+            def read(*,method,url,token,body=None):
+                status,headers,raw=original(method=method,url=url,token=token,body=body)
+                if injected[0] and method=="GET" and url.endswith("/pulls/552") and status==200:
+                    observed_heads.append(json.loads(raw)["head"]["sha"])
+                return status,headers,raw
+            return read
+        p.http=track_reader(p.http)
+        gates.transport.http=track_reader(gates.transport.http)
         def commit_then_change(plan,receipt):
             result=original_commit(plan,receipt)
             if not injected[0] and c.QA_REPLACEMENT_CLAIM_PATH in runtime.backend.snapshot.files:
                 injected[0]=True
                 if label=="postclaim-candidate":
+                    frozen_claim.append(canonical_json(runtime.backend.snapshot.files[c.QA_REPLACEMENT_CLAIM_PATH]))
                     p.state["head"]="9"*40
                 else:
                     claim=runtime.backend.snapshot.files[c.QA_REPLACEMENT_CLAIM_PATH]
@@ -11300,9 +11324,20 @@ def qa_replacement_pre_effect_rejection_tests():
                         claim["dispatch_inputs"]["task_payload"]=canonical_json(payload)
             return result
         runtime.backend.commit=commit_then_change
-        try:d.recover_qa_replacement(pf)
-        except errors:pass
-        else:raise AssertionError("QA accepted "+label+" before POST")
+        try:result=d.recover_qa_replacement(pf)
+        except errors:
+            expect(label!="postclaim-candidate","candidate seam did not preserve durable unknown outcome")
+        else:
+            expect(label=="postclaim-candidate"
+                   and result["terminal"]["outcome"]=="UNKNOWN"
+                   and result["terminal"]["observation"]["reason"]=="launch_unresolved",
+                   "QA accepted "+label+" before POST")
+            snapshot=runtime.backend.read_snapshot()
+            tail=operation_events(snapshot,c.RECOVERY_OPERATION_ID)[45:]
+            expect("9"*40 in observed_heads and len(tail)==1
+                   and tail[0]["event_type"]=="operation.needs-user"
+                   and canonical_json(snapshot.get(c.QA_REPLACEMENT_CLAIM_PATH))==frozen_claim[0],
+                   "candidate stop lacks fresh consumed head or changed frozen claim")
         expect(injected[0] and not gates.state["posts"] and feature.state["puts"]==0
                and c.QA_REPLACEMENT_SEAL_PATH not in runtime.backend.read_snapshot().files,
                "QA frozen-input/candidate fence ran after external effect")
