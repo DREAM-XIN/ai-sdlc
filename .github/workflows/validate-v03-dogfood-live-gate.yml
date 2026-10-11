@@ -701,6 +701,23 @@ jobs:
         uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
         with:
           destination: ${{ runner.temp }}/v03-detector-test-actions
+      - name: Observe fixed failed QA through read-only GitHub API
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import json, os
+          from v03_dogfood_runtime_driver import observe_qa_failure_for_review
+          failed_qa = observe_qa_failure_for_review(
+              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
+          )
+          assert failed_qa["schema_version"] == "ai-sdlc.v03-qa-failure-read-only-result/v1"
+          assert failed_qa["historical_proof_verified"] is True and failed_qa["read_only"] is True
+          assert failed_qa["model_invoked"] is False and failed_qa["current_claim_created"] is False
+          assert failed_qa["run_id"] == 38074618111
+          print(json.dumps(failed_qa, sort_keys=True))
+          PY
       - name: Acquire exact historical detector bytes privately
         env:
           AI_SDLC_ACTIONS_READ_TOKEN: ${{ github.token }}
@@ -1173,15 +1190,6 @@ jobs:
           assert failed["model_invoked"] is False and failed["current_claim_created"] is False
           assert failed["run_id"] == 38060547019
           print(json.dumps(failed, sort_keys=True))
-          from v03_dogfood_runtime_driver import observe_qa_failure_for_review
-          failed_qa = observe_qa_failure_for_review(
-              actions_read_token=os.environ["AI_SDLC_ACTIONS_READ_TOKEN"],
-          )
-          assert failed_qa["schema_version"] == "ai-sdlc.v03-qa-failure-read-only-result/v1"
-          assert failed_qa["historical_proof_verified"] is True and failed_qa["read_only"] is True
-          assert failed_qa["model_invoked"] is False and failed_qa["current_claim_created"] is False
-          assert failed_qa["run_id"] == 38074618111
-          print(json.dumps(failed_qa, sort_keys=True))
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: github.event.pull_request.head.repo.full_name == github.repository

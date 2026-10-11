@@ -3650,6 +3650,7 @@ def observe_qa_failure(preflight):
 
 def observe_qa_failure_for_review(*, actions_read_token):
     """Read-only fixed failed QA evidence; no runtime creation/dispatch path."""
+    import re
     from types import SimpleNamespace
     from operator_vertical_gh_aw_actions_transport import GitHubActionsWorkflowTransportConfig
     from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig,TargetScopedGitHubActionsGhAwResultSource
