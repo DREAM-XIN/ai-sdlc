@@ -9537,10 +9537,12 @@ def main():
         groups = tuple(row for row in groups if row[0] not in excluded)
     historical_qa_groups={"QA-only actual joined lifecycle","QA-only frozen CAS and replay",
         "QA-only non-PASS terminal","QA-only provider failure and lookup","QA-only pre-effect rejection"}
+    historical_qa2_groups={"QA2 actual joined lifecycle","QA2 frozen CAS and replay",
+        "QA2 non-PASS terminal","QA2 provider failure and lookup","QA2 pre-effect rejection"}
     for name, execute in groups:
         try:
-            if name in historical_qa_groups:
-                with historical_qa_worker_tree():
+            if name in historical_qa_groups or name in historical_qa2_groups:
+                with historical_qa_worker_tree(qa_second=name in historical_qa2_groups):
                     execute()
             else:
                 execute()
@@ -11398,7 +11400,7 @@ def qa_replacement_pre_effect_rejection_tests():
     print("- QA source, candidate and frozen-input substitutions reject before POST",flush=True)
 
 
-def historical_qa_worker_tree():
+def historical_qa_worker_tree(*, qa_second=False):
     """Real immutable Worker files for the explicit synthetic spent-QA installation."""
     from contextlib import contextmanager
     @contextmanager
@@ -11408,9 +11410,11 @@ def historical_qa_worker_tree():
         from unittest.mock import patch
         import v03_dogfood_full_composition as composition
         from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_BLOBS, INLINE_DOGFOOD_BLOBS
-        from validate_v03_gate_output_contract import observed_historical_bytes
+        from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes
         root=Path(__file__).resolve().parents[1]
-        source="7d7f0b8c92ae06b0091d3620ccb60c71114e6bad"
+        expect(type(qa_second) is bool, "historical QA source mode differs")
+        source=("461f465ffc6788c612c290c747d1190558a9a833" if qa_second
+                else "7d7f0b8c92ae06b0091d3620ccb60c71114e6bad")
         module_path="scripts/v03_dogfood_full_composition.py"
         original_file=composition.__file__
         expect(__import__("threading").active_count()==1,"historical QA source scope requires sequential tests")
@@ -11440,7 +11444,8 @@ def historical_qa_worker_tree():
             relative=".github/workflows/"+composition.QA_OBSERVED_WORKFLOW
             path=tree/relative
             path.parent.mkdir(parents=True,exist_ok=True)
-            path.write_bytes(observed_historical_bytes(relative))
+            fixed_bytes = qa2_observed_bytes if qa_second else observed_historical_bytes
+            path.write_bytes(fixed_bytes(relative))
             # The only composition __file__ consumer locates the metadata lock.
             # No verifier function, authority map or current checkout file is changed.
             try:
@@ -12045,7 +12050,8 @@ def qa_second_joined_factory_tests():
     def phase(stage):
         expect(stage in stages,"QA joined diagnostic stage differs")
         print("qa_joined_stage="+stage+" elapsed_seconds="+str(round(time.monotonic()-started,3)),flush=True)
-    faulthandler.dump_traceback_later(120,repeat=True)
+    fatal_diagnostics_enabled = faulthandler.is_enabled()
+    faulthandler.enable()
     try:
         phase("seed_start")
         seed=qa_second_runtime_fixture()
@@ -12270,7 +12276,8 @@ def qa_second_joined_factory_tests():
                    "QA replay/finalization renewed an external effect")
         print("- actual fixed46 QA-only factory, observed CLI ledger, collector, Persist and finalizer passed",flush=True)
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        if not fatal_diagnostics_enabled:
+            faulthandler.disable()
 
 
 def qa_second_provider_failure_tests():

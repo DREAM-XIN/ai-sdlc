@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import v03_dogfood_gate_output as subject
 PINS = {
+    "safe_outputs_handlers.cjs": "ef2a42e3c1edc8c046219c47923b3d8fceb370a5",
+    "safe_outputs_append.cjs": "4a6fc13e3435173218f499342cc1cdf7dcb2348a",
     "add_comment.cjs": "71d24f71eebf18af249c967dc0130a11bad9f0c1",
     "collect_ndjson_output.cjs": "c1e6a67e0703fa123275d04e46f3708bd2e4b5db",
     "generate_footer.cjs": "7c1413d7c6422a456e2f505a67fcb8b2c06dd090",
@@ -173,6 +175,9 @@ class Official:
         )
         check(completed.returncode == 0, "pinned official module execution failed")
         return json.loads(completed.stdout)
+    def mcp_add_comment(self, args):
+        return self.call({"mode": "mcp_add_comment", "args": args,
+                          "config": self.config})["raw"].encode()
     def ingest(self, raw):
         return self.call({"mode": "ingest", "raw": raw.decode(),
                           "config": self.config, "validation": self.validation})["collected"].encode()
@@ -287,7 +292,20 @@ global.github = {
 global.getOctokit = () => { throw Error('FORBIDDEN_AUTH_CLIENT'); };
 global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
 (async () => {
-  if (request.mode === 'ingest') {
+  if (request.mode === 'mcp_add_comment') {
+    fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,'');
+    const {createAppendFunction}=require(path.join(actions,'safe_outputs_append.cjs'));
+    const {createHandlers}=require(path.join(actions,'safe_outputs_handlers.cjs'));
+    const handlers=createHandlers({debug(){}},createAppendFunction(process.env.GH_AW_SAFE_OUTPUTS),request.config);
+    const result=await handlers.addCommentHandler(request.args);
+    assert.notEqual(result?.isError,true);
+    const raw=fs.readFileSync(process.env.GH_AW_SAFE_OUTPUTS,'utf8');
+    const rows=raw.trim().split('\n'); assert.equal(rows.length,1);
+    const item=JSON.parse(rows[0]);
+    assert.equal(item.item_number,request.args.item_number);
+    assert.equal(typeof item.item_number,typeof request.args.item_number);
+    process.stdout.write(JSON.stringify({raw}));
+  } else if (request.mode === 'ingest') {
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,request.raw,'utf8');
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(request.config));
     fs.writeFileSync(process.env.GH_AW_VALIDATION_CONFIG_PATH,JSON.stringify(request.validation));
@@ -492,7 +510,7 @@ def detector_digest_contract(lock, temporary):
     finally:
         path.unlink()
 
-def cli_validation(official, context, output, should_pass):
+def gate_cli_environment(official, context):
     identity = context["identity"]
     task = {"contract": "ai-sdlc-task-v0.1",
             "task": {"id": identity["task_id"], "feature_id": identity["feature_id"],
@@ -512,6 +530,22 @@ def cli_validation(official, context, output, should_pass):
                "TARGET_REF": "target_ref", "CANDIDATE_PR_NUMBER": "candidate_pr_number",
                "CANDIDATE_HEAD_SHA": "candidate_head_sha"}
     env.update({name: str(identity[key]) for name, key in mapping.items()})
+    return env
+
+def cli_render(official, context, raw, collected, renderer):
+    Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw)
+    path = Path("/tmp/gh-aw/agent_output.json")
+    path.write_bytes(collected)
+    result = subprocess.run(
+        [sys.executable, renderer.__file__, "render", "--actions-root", str(official.actions)],
+        env=gate_cli_environment(official, context), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=30, check=False)
+    check(result.returncode == 0, "actual v2 render CLI rejected official ledger")
+    return path.read_bytes()
+
+def cli_validation(official, context, output, should_pass, *, helper_path=None):
+    helper_path = helper_path or ROOT / "scripts/v03_dogfood_gate_output.py"
+    env = gate_cli_environment(official, context)
     receipt_path = Path(official.env["RUNNER_TEMP"]) / "ai-sdlc-gate-scan-receipt/receipt.json"
     receipt_path.parent.mkdir(exist_ok=True)
     receipt_path.write_bytes(canonical(scan_receipt(
@@ -520,7 +554,7 @@ def cli_validation(official, context, output, should_pass):
     env["SCANNED_RECEIPT_PATH"] = str(receipt_path)
     path = Path("/tmp/gh-aw/agent_output.json")
     path.write_bytes(output)
-    result = subprocess.run([sys.executable, str(ROOT / "scripts/v03_dogfood_gate_output.py"),
+    result = subprocess.run([sys.executable, str(helper_path),
                              "validate"], env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=30, check=False)
     check((result.returncode == 0) is should_pass,
@@ -531,7 +565,7 @@ def cli_validation(official, context, output, should_pass):
         for changes in ({"DETECTION_RESULT": "failure"}, {"DETECTION_RESULT": "skipped"},
                         {"SCANNED_RECEIPT_PATH": str(receipt_path.parent / "missing.json")}):
             failed = subprocess.run(
-                [sys.executable, str(ROOT / "scripts/v03_dogfood_gate_output.py"), "validate"],
+                [sys.executable, str(helper_path), "validate"],
                 env={**env, **changes}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             check(failed.returncode != 0, "CLI accepted failed detector or missing receipt")
 
@@ -547,18 +581,22 @@ def sanitizer_closure_tests(actions_root, temporary):
     core.write_bytes(core.read_bytes() + b"\n// synthetic transitive tamper\n")
     reject(lambda: subject._official_sanitizer(copied),
            "changed transitive sanitizer dependency")
-def _roundtrip(official, payload, context, role, *, raw_ledger=None):
+def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=subject, render_cli=False):
     raw = raw_item(payload) if raw_ledger is None else raw_ledger
     collected = official.ingest(raw)
     ingested = json.loads(collected)
     check(not ingested["errors"] and len(ingested["items"]) == 1, "official ingestion failed")
     check(ingested["items"][0]["data"] == payload, "official data semantic drift")
-    output, proof = subject.render_gate_output(
+    output, proof = renderer.render_gate_output(
         raw, collected, context, role,
         sanitize=lambda value: official.call({"mode": "sanitize", "body": value})["body"])
-    cli_validation(official, context, output, True)
-    cli_validation(official, context, collected, False)
-    check(subject.validate_scanned_output(output, proof, context, role,
+    if render_cli:
+        actual = cli_render(official, context, raw, collected, renderer)
+        check(actual == output, "render CLI differs from exact canonical function bytes")
+        output = actual
+    cli_validation(official, context, output, True, helper_path=Path(renderer.__file__))
+    cli_validation(official, context, collected, False, helper_path=Path(renderer.__file__))
+    check(renderer.validate_scanned_output(output, proof, context, role,
                                            scanned_sha256=hashlib.sha256(output).hexdigest()) == payload,
           "scan-input payload drift")
     publication = official.publish(output)
@@ -566,7 +604,7 @@ def _roundtrip(official, payload, context, role, *, raw_ledger=None):
     check(publication["sanitized"] == body, "official sanitizer changed rendered bytes")
     check(publication["body"] == body + "\n\n" + publication["suffix"],
           "official metadata assembly drift")
-    check(subject.parse_published_gate(publication["body"], context, role,
+    check(renderer.parse_published_gate(publication["body"], context, role,
                                        publication["suffix"]) == payload,
           "published recommendation drift")
     check("data" not in json.loads(output)["items"][0],
@@ -730,6 +768,110 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
+
+
+def item_number_contract_tests(role, actions_root, temporary):
+    """Official ingestion preserves target types; rendering emits only the bound integer."""
+    import v03_dogfood_gate_output_v2 as current
+    def reject_current(call, label):
+        try:
+            call()
+        except current.GateOutputContractError:
+            return
+        raise AssertionError("accepted " + label)
+    candidate = 552
+    _, config, validation, metadata = selected_config(
+        role, candidate=candidate, variant="structured-inline-local")
+    directory = temporary / (role + "-item-number")
+    directory.mkdir()
+    official = Official(actions_root, directory, config, validation, metadata)
+    payload = inline_payload(role, "PASS")
+    payload["candidate_pr_number"] = candidate
+    payload["evidence"][0]["uri"] = "https://github.com/dream-xin/ai-sdlc/pull/552"
+    if role == "qa":
+        payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
+    context = fixture_context(payload)
+    sanitize = lambda value: official.call({"mode": "sanitize", "body": value})["body"]
+    artifacts = []
+    for target in (candidate, str(candidate)):
+        item = json.loads(raw_item(payload))
+        item["item_number"] = target
+        item.pop("type")
+        item["temporary_id"] = "aw_target001"
+        raw = official.mcp_add_comment(item)
+        _, collected, artifact, proof, publication, body = _roundtrip(
+            official, payload, context, role, raw_ledger=raw, renderer=current, render_cli=True)
+        ingested = json.loads(collected)["items"][0]["item_number"]
+        check(type(ingested) is type(target) and ingested == target,
+              "official ingestion changed item_number representation")
+        canonical_target = json.loads(artifact)["items"][0]["item_number"]
+        check(type(canonical_target) is int and canonical_target == candidate,
+              "renderer did not emit the authenticated integer candidate")
+        check(publication["posts"] == 1, "target roundtrip duplicated publication")
+        # Exercise only the unchanged production collector parser/context boundary.
+        # Source authentication and full factory replay remain separate regressions.
+        from v03_dogfood_full_composition import DogfoodStructuredGateResultSource
+        from operator_vertical import VerticalInvariantError
+        parser = object.__new__(DogfoodStructuredGateResultSource)
+        parser._structured_parse = (context, role, publication["suffix"])
+        check(parser._gate_payload(publication["body"]) == payload,
+              "unchanged collector parser rejected normalized publication")
+        for changed_body, expected_suffix in (
+            (publication["body"] + "\nforged", publication["suffix"]),
+            (publication["body"], publication["suffix"] + "\nforged"),
+        ):
+            parser._structured_parse = (context, role, expected_suffix)
+            try:
+                parser._gate_payload(changed_body)
+            except VerticalInvariantError:
+                pass
+            else:
+                raise AssertionError("collector parser accepted modified body/suffix")
+        check(proof["raw_ndjson_sha256"] == hashlib.sha256(raw).hexdigest(),
+              "target normalization lost the actual raw ledger digest")
+        artifacts.append(artifact)
+        # A representation substitution is rejected even if both target the same PR.
+        altered = json.loads(collected)
+        altered["items"][0]["item_number"] = str(candidate) if type(target) is int else candidate
+        reject_current(lambda: current.render_gate_output(
+            raw, packed(altered), context, role, sanitize=sanitize),
+            "raw/ingested candidate representation substitution")
+    integer_artifact, string_artifact = map(json.loads, artifacts)
+    check(integer_artifact["items"] == string_artifact["items"],
+          "accepted target representations changed canonical publication items")
+    check(integer_artifact["gate_render_proof"]["raw_ndjson_sha256"] !=
+          string_artifact["gate_render_proof"]["raw_ndjson_sha256"],
+          "different raw target representations lost their distinct provenance")
+    for proof in (integer_artifact["gate_render_proof"], string_artifact["gate_render_proof"]):
+        proof.pop("raw_ndjson_sha256")
+    check(integer_artifact == string_artifact,
+          "target normalization changed fields beyond the retained raw digest")
+
+    valid_raw = raw_item(payload)
+    valid_collected = official.ingest(valid_raw)
+    for target in (True, False, 552.0, 0, -552, None, "", "+552", "-552",
+                   " 552", "552 ", "552\n", "0552", "000552", "552.0",
+                   "5.52e2", "５５２", "٥٥٢", "aw_gate_001", "#552", 553, "553"):
+        item = json.loads(valid_raw)
+        item["item_number"] = target
+        collected = json.loads(valid_collected)
+        collected["items"][0]["item_number"] = target
+        raw = packed(item) + b"\n"
+        reject_current(lambda raw=raw, collected=collected: current.render_gate_output(
+            raw, packed(collected), context, role, sanitize=sanitize),
+            "noncanonical or foreign item_number")
+    # Even a legitimate raw string is forbidden in the post-scan canonical artifact.
+    scanned = json.loads(artifacts[0])
+    proof = scanned["gate_render_proof"]
+    for target in (str(candidate), True, 552.0, "0552", "553"):
+        changed = copy.deepcopy(scanned)
+        changed["items"][0]["item_number"] = target
+        encoded = canonical(changed)
+        reject_current(lambda encoded=encoded: current.validate_scanned_output(
+            encoded, proof, context, role,
+            scanned_sha256=hashlib.sha256(encoded).hexdigest()),
+            "noninteger scanned candidate")
+    print(role + ": official integer/canonical-string targets preserve exact ingestion and scan boundaries")
 
 
 def temporary_id_contract_tests(role, actions_root, temporary):
@@ -1630,6 +1772,7 @@ def main():
             exercise_role(role, actions_root, Path(directory))
             inline_native_schema_tests(role, actions_root, Path(directory))
             temporary_id_contract_tests(role, actions_root, Path(directory))
+            item_number_contract_tests(role, actions_root, Path(directory))
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-qa2-local")
