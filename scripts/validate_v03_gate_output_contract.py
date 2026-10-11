@@ -1302,8 +1302,9 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
 import {pathToFileURL} from "node:url";
-const helper=path.resolve(process.argv[1]);
+const helper=path.resolve(process.argv[2]);
 const subject=await import(pathToFileURL(helper).href);
+const reportScript=fs.readFileSync(0,"utf8");assert.ok(reportScript.length>0&&reportScript.length<16384);
 assert.equal(process.platform,"linux");
 fs.mkdirSync("/tmp/gh-aw",{recursive:true});
 const startFd=fs.readdirSync("/proc/self/fd").length;
@@ -1347,7 +1348,9 @@ function test(name,action){
  finally{reset();fs.rmSync(f.root,{recursive:true,force:true});fs.rmSync(f.root+".moved",{recursive:true,force:true});fs.rmSync(f.temp,{recursive:true,force:true});}
 }
 test("observed_partial_readonly",f=>{
- const bytes=fs.readFileSync(f.events),s=subject.observe(f.env);safeSummary(s);
+ const bytes=fs.readFileSync(f.events);
+ const cli=spawnSync(process.execPath,[helper,"observe"],{env:f.env,encoding:"utf8",timeout:5000,maxBuffer:8192});assert.equal(cli.status,0);assert.equal(cli.signal,null);assert.equal(cli.stdout,"");assert.equal(cli.stderr,"");
+ const s=JSON.parse(fs.readFileSync(f.summary));safeSummary(s);
  assert.equal(s.status,"observed");assert.equal(s.cleanup,"deferred_to_ephemeral_runner");
  assert.equal(s.counts.linked_calls,2);assert.equal(s.counts.native_tool_success,2);
  assert.equal(s.counts.shell_exit_zero,1);assert.equal(s.counts.shell_exit_nonzero,1);
@@ -1423,21 +1426,50 @@ test("summary_symlink_destination",f=>{
  assert.throws(()=>subject.observe(f.env));assert.equal(fs.readFileSync(target,"utf8"),"KEEP");
 });
 test("untrusted_runner_identity",f=>{assert.throws(()=>subject.observe({...f.env,OBSERVER_RUNNER_ENVIRONMENT:"self-hosted"}),/IDENTITY/);assert.equal(fs.existsSync(f.summary),false);});
+
+function deliver(f){
+ const p=spawnSync("bash",["-c",reportScript],{env:f.env,encoding:"utf8",timeout:5000,maxBuffer:32768});
+ assert.equal(p.status,0);assert.equal(p.stderr,"");
+ for(const secret of ["SYNTHETIC_PRIVATE","synthetic-private-","/tmp/"])assert.equal(p.stdout.includes(secret),false);
+ return JSON.parse(p.stdout);
+}
+const unavailableDelivery={schema_version:"ai-sdlc.detector-observation.delivery/v1",status:"unavailable",coverage:"partial",safety_authority:false};
+test("actual_report_observed",f=>{const s=subject.observe(f.env);assert.equal(s.status,"observed");assert.deepEqual(deliver(f),s);});
+test("actual_report_unavailable",f=>{fs.unlinkSync(f.events);const s=subject.observe(f.env);unavailable(s,"SESSION");assert.deepEqual(deliver(f),s);});
+test("actual_report_rejects_raw_extra",f=>{const s=subject.observe(f.env);s.raw="SYNTHETIC_PRIVATE_BODY";fs.writeFileSync(f.summary,JSON.stringify(s));assert.deepEqual(deliver(f),unavailableDelivery);});
+test("actual_report_rejects_malformed",f=>{fs.writeFileSync(f.summary,"{broken SYNTHETIC_PRIVATE_BODY");assert.deepEqual(deliver(f),unavailableDelivery);});
+
 reset();assert.ok(fs.readdirSync("/proc/self/fd").length<=startFd+1);
 console.log(JSON.stringify({schema:"v03-observer-boundary-tests/v1",status:"PASS",cases:reports,case_count:reports.length,scope:"synthetic helper boundaries; cancellation record unavailable, original status unchanged",raw_exported:false}));
 '''
 
 def observer_boundary_tests():
+    source_path = ROOT / ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md"
+    source = yaml.safe_load(source_path.read_text().split("---", 2)[1])
+    detector = source["safe-outputs"]["threat-detection"]
+    rows = [step for step in detector["post-steps"] if step.get("id") == "detector_observation_report"]
+    check(len(rows) == 1, "missing actual observer report step")
+    report_step = rows[0]
+    check(report_step.get("continue-on-error") is True and report_step.get("if") == "${{ always() }}",
+          "observer report must not replace original detector outcome")
+    report_script = report_step["run"]
+    lock_path = source_path.with_suffix(".lock.yml")
+    if lock_path.exists():
+        compiled = yaml.safe_load(lock_path.read_text())
+        compiled_rows = [step for step in compiled["jobs"]["detection"]["steps"]
+                         if step.get("id") == "detector_observation_report"]
+        check(len(compiled_rows) == 1 and compiled_rows[0]["run"] == report_script,
+              "compiled observer delivery changed actual source script")
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", OBSERVER_BOUNDARY_NODE,
-         str(ROOT / "scripts/v03_detector_observation.mjs")],
-        env={"PATH": os.environ["PATH"]}, stdout=subprocess.PIPE,
+         "observer-boundary-fixture", str(ROOT / "scripts/v03_detector_observation.mjs")],
+        input=report_script.encode(), env={"PATH": os.environ["PATH"]}, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, timeout=60, check=False,
     )
     report = json.loads(completed.stdout)
     print(json.dumps(report, sort_keys=True))
     check(completed.returncode == 0, "observer boundary suite failed: " + report.get("case", "unknown"))
-    check(report["status"] == "PASS" and report["case_count"] == 26,
+    check(report["status"] == "PASS" and report["case_count"] == 30,
           "observer finite case matrix drift")
 
 def main():

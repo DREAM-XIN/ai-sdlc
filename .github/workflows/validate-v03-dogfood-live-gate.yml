@@ -193,7 +193,8 @@ jobs:
               assert "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL" in observer["run"]
           assert steps[observer_post]["if"] == "$"+"{{ always() }}"
           assert engines[0]["env"]["TMPDIR"] == "$"+"{{ steps.detector_observation_prepare.outputs.parent || '/tmp' }}"
-          assert str(engines[0]["timeout-minutes"]) == "5"
+          assert str(engines[0]["timeout-minutes"]) == "10"
+          assert str(workflow["jobs"]["detection"]["timeout-minutes"]) == "10"
           assert sum("TMPDIR" in step.get("env", {}) for job_ in workflow["jobs"].values() for step in job_.get("steps", [])) == 1
           for job_ in workflow["jobs"].values():
               for step in job_.get("steps", []):
