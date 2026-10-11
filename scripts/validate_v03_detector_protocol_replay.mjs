@@ -38,13 +38,15 @@ function run(command, args, env, cwd, timeoutMs=90000) {
  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
   let bytes=0, settled=false, captured="";
-  lastProcess={exit_code:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[],runtime_probe:null};
-  const classify=()=>{const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i,AUTH_REQUIRED:/missing.*(?:token|key|credential)|(?:token|key|credential).*required/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(captured)).map(([k])=>k);
+  lastProcess={exit_code:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[],runtime_probe:null,child_failure:null};
+  const classify=()=>{const failures=[];let classifiedText=captured;
+   if(cli==="awf-host"){classifiedText=captured.split(/\r?\n/).filter(line=>{const at=line.indexOf('{"schema":"v03-native-cli-observability/v1"');if(at<0)return true;try{const x=JSON.parse(line.slice(at));if(Object.keys(x).sort().join(",")==="error,process,raw_exported,schema,stage,status"&&x.schema==="v03-native-cli-observability/v1"&&x.status==="FAIL"&&["ISOLATION","CLI_PROTOCOL","NATIVE_EVENTS","INCOMPLETE_NEGATIVES"].includes(x.stage)&&allowedErrors.has(x.error)&&x.process===null&&x.raw_exported===false){failures.push({stage:x.stage,error:x.error});return false;}}catch{}return true;}).join("\n");if(failures.length===1)lastProcess.child_failure=failures[0];}
+   const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i,AUTH_REQUIRED:/missing.*(?:token|key|credential)|(?:token|key|credential).*required/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(classifiedText)).map(([k])=>k);
    if(cli==="awf-host"){
     const probes=[];
     for(const l of captured.split(/\r?\n/)){const at=l.indexOf("AWF_NATIVE_RUNTIME_PROBE ");if(at<0)continue;try{const p=JSON.parse(l.slice(at+25));if(Object.keys(p).sort().join(",")==="path_node,usr_bin_node,usr_local_bin_node"&&Object.values(p).every(x=>typeof x==="boolean"))probes.push(p);}catch{}}
     if(probes.length===1)lastProcess.runtime_probe=probes[0];
-    const lines=captured.replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").split(/\r?\n/);
+    const lines=classifiedText.replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").split(/\r?\n/);
     for(let line of lines){
      if(lastProcess.sanitized_startup_errors.length===4)break;
      if(line.length>400||!/(?:error|fatal|invalid|failed|missing|not found|no such file|cannot execute|ENOENT|EACCES|TypeError|ReferenceError|SyntaxError)/i.test(line))continue;
@@ -333,11 +335,18 @@ const proofRoot="/tmp/gh-aw/awf-native-proof";
 const proofCli=proofRoot+"/copilot/copilot";
 const proofScript=proofRoot+"/replay.mjs";
 const imageTag="0.28.23,squid=sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0,agent=sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2,api-proxy=sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64";
-function noSecrets(env){ensure(!Object.entries(env).some(([k,v])=>v&&/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL|API_KEY/i.test(k)),"INHERITED_AUTHORITY");}
+// Exact public metadata from pinned AWF core-environment.ts 868d9c0491f66300d10c71f7b4b27d2de4253f8e.
+const awfOneShotVariableNames="COPILOT_GITHUB_TOKEN,GITHUB_TOKEN,GH_TOKEN,GITHUB_API_TOKEN,GITHUB_PAT,GH_ACCESS_TOKEN,OPENAI_API_KEY,OPENAI_KEY,ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_API_KEY,CODEX_API_KEY,COPILOT_PROVIDER_API_KEY,ADO_MCP_AUTH_TOKEN,OTEL_EXPORTER_OTLP_HEADERS,OTEL_EXPORTER_OTLP_TRACES_HEADERS,OTEL_EXPORTER_OTLP_METRICS_HEADERS,OTEL_EXPORTER_OTLP_LOGS_HEADERS";
+function noSecrets(env,awfChildMetadata=false){let metadata=0;for(const [k,v] of Object.entries(env)){if(awfChildMetadata&&k==="AWF_ONE_SHOT_TOKENS"&&v===awfOneShotVariableNames){metadata++;continue;}ensure(!(v&&/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL|API_KEY/i.test(k)),"INHERITED_AUTHORITY");}return metadata;}
 function fixtureDirectory(p){const st=fs.lstatSync(p);ensure(st.isDirectory()&&!st.isSymbolicLink(),"SESSION_DIRECTORY");return st;}
 function readBounded(p,max){const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const st=fs.fstatSync(fd);ensure(st.isFile()&&st.size>0&&st.size<=max,"EVENT_FILE");const buf=Buffer.alloc(max+1);let n=0,r;while(n<buf.length&&(r=fs.readSync(fd,buf,n,buf.length-n,null))>0)n+=r;ensure(n<=max,"EVENT_BOUND");return buf.subarray(0,n);}finally{fs.closeSync(fd);}}
+function metadataGuardNegatives(){
+ for(const env of [{AWF_ONE_SHOT_TOKENS:"offline-wrong"},{AWF_ONE_SHOT_TOKENS:awfOneShotVariableNames,COPILOT_PROVIDER_API_KEY:"offline-forbidden"}]){let rejected=false;try{noSecrets(env,true);}catch(e){rejected=e.message==="INHERITED_AUTHORITY";}ensure(rejected,"NEGATIVE_NOT_REJECTED");}
+ let hostRejected=false;try{noSecrets({AWF_ONE_SHOT_TOKENS:awfOneShotVariableNames});}catch(e){hostRejected=e.message==="INHERITED_AUTHORITY";}ensure(hostRejected,"NEGATIVE_NOT_REJECTED");
+}
 async function awfChild(label){
- ensure(["zero","nonzero"].includes(label)&&process.getuid()!==0,"INPUT_PATH");noSecrets(process.env);
+ metadataGuardNegatives();
+ ensure(["zero","nonzero"].includes(label)&&process.getuid()!==0,"INPUT_PATH");const knownMetadata=noSecrets(process.env,true);
  const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
  ensure(process.env.TMPDIR===tmp&&path.isAbsolute(process.env.HOME||""),"INPUT_PATH");
  fixtureDirectory(tmp);fs.writeFileSync(path.join(tmp,"child-temp-check"),"synthetic",{flag:"wx"});fs.unlinkSync(path.join(tmp,"child-temp-check"));
@@ -383,7 +392,7 @@ async function awfChild(label){
   COPILOT_PROVIDER_API_KEY:"offline-dummy",COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:"+server.address().port};
  const code=await run(proofCli,["--model","deepseek-chat","--disable-builtin-mcps","--no-ask-user","--allow-all-tools","--log-level","all","--prompt","Run the three prescribed synthetic read-only shell checks, then stop."],env,path.join(caseRoot,"work"));
  ensure(providerError===null,providerError||"PROVIDER_FAILURE");ensure(code===0,"CLI_EXIT");ensure(requests===4&&feedbacks===3,"TOOL_FEEDBACK");
- fs.writeFileSync(path.join(caseRoot,"child-proof.json"),JSON.stringify({cli_exit:code,requests,feedbacks,tmpdir_usable:true})+"\n",{flag:"wx",mode:0o600});
+ fs.writeFileSync(path.join(caseRoot,"child-proof.json"),JSON.stringify({cli_exit:code,requests,feedbacks,tmpdir_usable:true,known_awf_metadata_count:knownMetadata})+"\n",{flag:"wx",mode:0o600});
  return label==="zero"?0:7;
  }finally{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}}
 }
@@ -418,7 +427,7 @@ async function awfHost(bundle){
    ensure(code===(label==="zero"?0:7),"AWF_EXIT");
    ensure(lastProcess.runtime_probe?.path_node===true,"INPUT_PATH");
    const child=JSON.parse(readBounded(path.join(caseRoot,"child-proof.json"),4096).toString("utf8"));
-   ensure(child.cli_exit===0&&child.requests===4&&child.feedbacks===3&&child.tmpdir_usable===true,"TOOL_FEEDBACK");
+   ensure(child.cli_exit===0&&child.requests===4&&child.feedbacks===3&&child.tmpdir_usable===true&&child.known_awf_metadata_count===1,"TOOL_FEEDBACK");
    const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
    stage="AWF_NATIVE_"+label.toUpperCase();
    const raw=readBounded(preservedEvents(tmp),8*1024*1024),events=parseEvents(raw),protocol=analyze(events);
@@ -426,7 +435,7 @@ async function awfHost(bundle){
    try{parseEvents(raw.subarray(0,raw.length-1));}catch(e){truncated=e.message==="EVENT_TRUNCATED";}
    try{analyze(events.filter(e=>!(e.type==="tool.execution_complete"&&e.data.toolCallId===ids[2])));}catch(e){incomplete=e.message==="TOOL_LINKAGE";}
    ensure(truncated&&incomplete,"NEGATIVE_NOT_REJECTED");
-   report={case:label,awf_exit:code,runtime_probe:lastProcess.runtime_probe,cli_exit:0,provider_requests:child.requests,provider_feedbacks:child.feedbacks,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
+   report={case:label,awf_exit:code,runtime_probe:lastProcess.runtime_probe,cli_exit:0,provider_requests:child.requests,provider_feedbacks:child.feedbacks,known_awf_metadata_count:child.known_awf_metadata_count,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
   }finally{
    const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
    fs.rmSync(caseRoot,{recursive:true,force:false});
