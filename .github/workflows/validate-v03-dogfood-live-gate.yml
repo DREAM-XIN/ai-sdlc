@@ -47,6 +47,7 @@ jobs:
           test "$(wc -c < "$RUNNER_TEMP/awf-bundle.js")" = 1229802
           echo "cf611445d648fe8ec03eb7b1e6e47ae4870d375f88e449adce7176c256f7f3b8  $RUNNER_TEMP/awf-bundle.js" | sha256sum --check --status
           docker pull ghcr.io/github/gh-aw-firewall/squid:0.28.23@sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0
+          docker pull ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64
           test ! -e /tmp/gh-aw/awf-native-proof
           mkdir -p /tmp/gh-aw
           mkdir -m 700 /tmp/gh-aw/awf-native-proof

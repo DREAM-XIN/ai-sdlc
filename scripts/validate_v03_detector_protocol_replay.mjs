@@ -38,12 +38,29 @@ function run(command, args, env, cwd, timeoutMs=90000) {
  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
   let bytes=0, settled=false, captured="";
-  lastProcess={exit_code:null,error_classes:[]};
-  const classify=()=>{const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(captured)).map(([k])=>k);captured="";};
+  lastProcess={exit_code:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[]};
+  const classify=()=>{const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i,AUTH_REQUIRED:/missing.*(?:token|key|credential)|(?:token|key|credential).*required/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(captured)).map(([k])=>k);
+   if(cli==="awf-host"){
+    const lines=captured.replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").split(/\r?\n/);
+    for(let line of lines){
+     if(lastProcess.sanitized_startup_errors.length===4)break;
+     if(line.length>400||!/(?:error|fatal|invalid|failed|missing|ENOENT|EACCES|TypeError|ReferenceError|SyntaxError)/i.test(line))continue;
+     if(/(?:prompt|messages|arguments|content|token|secret|password|api.?key|credential)/i.test(line))continue;
+     line=line.replace(/https?:\/\/[^\s]+/g,"<url>")
+      .replace(/(?:[A-Za-z]:)?\/[^\s,;:)]+/g,"<path>")
+      .replace(/["'`][^"'\`]*["'`]/g,"<quoted>")
+      .replace(/\b[A-Z_][A-Z0-9_]*=[^\s]+/g,"<assignment>")
+      .replace(/\b[0-9a-f]{16,}\b/gi,"<id>").replace(/\b[0-9]{6,}\b/g,"<number>")
+      .replace(/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/g,"<ip>")
+      .replace(/[^\x20-\x7e]/g,"").trim().slice(0,200);
+     if(line)lastProcess.sanitized_startup_errors.push(line);
+    }
+   }
+   captured="";};
   const fail=code=>{ if(!settled){settled=true;stop(child);clearTimeout(timer);classify();reject(new Error(code));} };
   const timer=setTimeout(()=>fail("CLI_WATCHDOG"),timeoutMs);
   for(const output of [child.stdout,child.stderr]) output.on("data",b=>{
-   bytes+=b.length; if(captured.length<65536)captured+=b.toString("utf8").slice(0,65536-captured.length); if(bytes>4*1024*1024)fail("CLI_OUTPUT_BOUND");
+   bytes+=b.length; lastProcess[output===child.stdout?"stdout_bytes":"stderr_bytes"]+=b.length; if(captured.length<65536)captured+=b.toString("utf8").slice(0,65536-captured.length); if(bytes>4*1024*1024)fail("CLI_OUTPUT_BOUND");
   });
   child.once("error",()=>fail("CLI_START"));
   child.once("close",code=>{if(!settled){settled=true;clearTimeout(timer);stop(child);lastProcess.exit_code=code;classify();resolve(code);}});
@@ -312,7 +329,7 @@ async function main(){
 const proofRoot="/tmp/gh-aw/awf-native-proof";
 const proofCli=proofRoot+"/copilot/copilot";
 const proofScript=proofRoot+"/replay.mjs";
-const imageTag="0.28.23,squid=sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0,agent=sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2";
+const imageTag="0.28.23,squid=sha256:02ffc56dd40158223064ef03a78c2d9717473c93723b4e403d455ea6f0b09ae0,agent=sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2,api-proxy=sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64";
 function noSecrets(env){ensure(!Object.entries(env).some(([k,v])=>v&&/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL|API_KEY/i.test(k)),"INHERITED_AUTHORITY");}
 function fixtureDirectory(p){const st=fs.lstatSync(p);ensure(st.isDirectory()&&!st.isSymbolicLink(),"SESSION_DIRECTORY");return st;}
 function readBounded(p,max){const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const st=fs.fstatSync(fd);ensure(st.isFile()&&st.size>0&&st.size<=max,"EVENT_FILE");const buf=Buffer.alloc(max+1);let n=0,r;while(n<buf.length&&(r=fs.readSync(fd,buf,n,buf.length-n,null))>0)n+=r;ensure(n<=max,"EVENT_BOUND");return buf.subarray(0,n);}finally{fs.closeSync(fd);}}
@@ -388,7 +405,7 @@ async function awfHost(bundle){
   stage="AWF_"+label.toUpperCase();const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
   ensure(!fs.existsSync(caseRoot),"INPUT_PATH");fs.mkdirSync(caseRoot,{mode:0o700});fs.mkdirSync(tmp,{mode:0o700});fs.mkdirSync(path.join(caseRoot,"work"),{mode:0o700});
   const before=fixtureDirectory(tmp),config=path.join(caseRoot,"awf.json");
-  fs.writeFileSync(config,JSON.stringify({network:{allowDomains:[]},apiProxy:{enabled:false},container:{imageTag},logging:{auditDir:path.join(caseRoot,"audit")}}),{flag:"wx",mode:0o600});
+  fs.writeFileSync(config,JSON.stringify({network:{allowDomains:[]},container:{imageTag},logging:{auditDir:path.join(caseRoot,"audit")}}),{flag:"wx",mode:0o600});
   const env={PATH:process.env.PATH,HOME:process.env.HOME,USER:os.userInfo().username,LOGNAME:os.userInfo().username,LANG:"C.UTF-8",TMPDIR:tmp,GITHUB_WORKSPACE:path.join(caseRoot,"work")};
   noSecrets(env);
   let report;
