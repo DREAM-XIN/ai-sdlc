@@ -38,13 +38,16 @@ function run(command, args, env, cwd, timeoutMs=90000) {
  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
   let bytes=0, settled=false, captured="";
-  lastProcess={exit_code:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[]};
+  lastProcess={exit_code:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[],runtime_probe:null};
   const classify=()=>{const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i,AUTH_REQUIRED:/missing.*(?:token|key|credential)|(?:token|key|credential).*required/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(captured)).map(([k])=>k);
    if(cli==="awf-host"){
+    const probes=[];
+    for(const l of captured.split(/\r?\n/)){const at=l.indexOf("AWF_NATIVE_RUNTIME_PROBE ");if(at<0)continue;try{const p=JSON.parse(l.slice(at+25));if(Object.keys(p).sort().join(",")==="path_node,usr_bin_node,usr_local_bin_node"&&Object.values(p).every(x=>typeof x==="boolean"))probes.push(p);}catch{}}
+    if(probes.length===1)lastProcess.runtime_probe=probes[0];
     const lines=captured.replace(/\x1b\[[0-9;]*[A-Za-z]/g,"").split(/\r?\n/);
     for(let line of lines){
      if(lastProcess.sanitized_startup_errors.length===4)break;
-     if(line.length>400||!/(?:error|fatal|invalid|failed|missing|ENOENT|EACCES|TypeError|ReferenceError|SyntaxError)/i.test(line))continue;
+     if(line.length>400||!/(?:error|fatal|invalid|failed|missing|not found|no such file|cannot execute|ENOENT|EACCES|TypeError|ReferenceError|SyntaxError)/i.test(line))continue;
      if(/(?:prompt|messages|arguments|content|token|secret|password|api.?key|credential)/i.test(line))continue;
      line=line.replace(/https?:\/\/[^\s]+/g,"<url>")
       .replace(/(?:[A-Za-z]:)?\/[^\s,;:)]+/g,"<path>")
@@ -410,8 +413,10 @@ async function awfHost(bundle){
   noSecrets(env);
   let report;
   try{
-   const code=await run(process.execPath,[bundle,"--config",config,"--container-workdir",path.join(caseRoot,"work"),"--mount","/tmp/gh-aw:/tmp/gh-aw:rw","--env-all","--log-level","error","--skip-pull","--","/usr/bin/node",proofScript,"awf-child",label],env,caseRoot,240000);
+   const launch='a=false; b=false; c=false; [ -x /usr/bin/node ] && a=true; [ -x /usr/local/bin/node ] && b=true; command -v node >/dev/null 2>&1 && c=true; printf \'AWF_NATIVE_RUNTIME_PROBE {"usr_bin_node":%s,"usr_local_bin_node":%s,"path_node":%s}\\n\' "$a" "$b" "$c"; [ "$c" = true ] || exit 127; exec node "$1" awf-child "$2"';
+   const code=await run(process.execPath,[bundle,"--config",config,"--container-workdir",path.join(caseRoot,"work"),"--mount","/tmp/gh-aw:/tmp/gh-aw:rw","--env-all","--log-level","error","--skip-pull","--","/bin/bash","-c",launch,"awf-native-proof",proofScript,label],env,caseRoot,240000);
    ensure(code===(label==="zero"?0:7),"AWF_EXIT");
+   ensure(lastProcess.runtime_probe?.path_node===true,"INPUT_PATH");
    const child=JSON.parse(readBounded(path.join(caseRoot,"child-proof.json"),4096).toString("utf8"));
    ensure(child.cli_exit===0&&child.requests===4&&child.feedbacks===3&&child.tmpdir_usable===true,"TOOL_FEEDBACK");
    const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
@@ -421,7 +426,7 @@ async function awfHost(bundle){
    try{parseEvents(raw.subarray(0,raw.length-1));}catch(e){truncated=e.message==="EVENT_TRUNCATED";}
    try{analyze(events.filter(e=>!(e.type==="tool.execution_complete"&&e.data.toolCallId===ids[2])));}catch(e){incomplete=e.message==="TOOL_LINKAGE";}
    ensure(truncated&&incomplete,"NEGATIVE_NOT_REJECTED");
-   report={case:label,awf_exit:code,cli_exit:0,provider_requests:child.requests,provider_feedbacks:child.feedbacks,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
+   report={case:label,awf_exit:code,runtime_probe:lastProcess.runtime_probe,cli_exit:0,provider_requests:child.requests,provider_feedbacks:child.feedbacks,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
   }finally{
    const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
    fs.rmSync(caseRoot,{recursive:true,force:false});
