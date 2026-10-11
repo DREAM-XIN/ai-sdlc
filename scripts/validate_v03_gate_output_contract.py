@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import v03_dogfood_gate_output as subject
 PINS = {
+    "safe_outputs_handlers.cjs": "ef2a42e3c1edc8c046219c47923b3d8fceb370a5",
+    "safe_outputs_append.cjs": "4a6fc13e3435173218f499342cc1cdf7dcb2348a",
     "add_comment.cjs": "71d24f71eebf18af249c967dc0130a11bad9f0c1",
     "collect_ndjson_output.cjs": "c1e6a67e0703fa123275d04e46f3708bd2e4b5db",
     "generate_footer.cjs": "7c1413d7c6422a456e2f505a67fcb8b2c06dd090",
@@ -173,6 +175,9 @@ class Official:
         )
         check(completed.returncode == 0, "pinned official module execution failed")
         return json.loads(completed.stdout)
+    def mcp_add_comment(self, args):
+        return self.call({"mode": "mcp_add_comment", "args": args,
+                          "config": self.config})["raw"].encode()
     def ingest(self, raw):
         return self.call({"mode": "ingest", "raw": raw.decode(),
                           "config": self.config, "validation": self.validation})["collected"].encode()
@@ -287,7 +292,20 @@ global.github = {
 global.getOctokit = () => { throw Error('FORBIDDEN_AUTH_CLIENT'); };
 global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
 (async () => {
-  if (request.mode === 'ingest') {
+  if (request.mode === 'mcp_add_comment') {
+    fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,'');
+    const {createAppendFunction}=require(path.join(actions,'safe_outputs_append.cjs'));
+    const {createHandlers}=require(path.join(actions,'safe_outputs_handlers.cjs'));
+    const handlers=createHandlers({debug(){}},createAppendFunction(process.env.GH_AW_SAFE_OUTPUTS),request.config);
+    const result=await handlers.addCommentHandler(request.args);
+    assert.notEqual(result?.isError,true);
+    const raw=fs.readFileSync(process.env.GH_AW_SAFE_OUTPUTS,'utf8');
+    const rows=raw.trim().split('\n'); assert.equal(rows.length,1);
+    const item=JSON.parse(rows[0]);
+    assert.equal(item.item_number,request.args.item_number);
+    assert.equal(typeof item.item_number,typeof request.args.item_number);
+    process.stdout.write(JSON.stringify({raw}));
+  } else if (request.mode === 'ingest') {
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,request.raw,'utf8');
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(request.config));
     fs.writeFileSync(process.env.GH_AW_VALIDATION_CONFIG_PATH,JSON.stringify(request.validation));
@@ -492,8 +510,7 @@ def detector_digest_contract(lock, temporary):
     finally:
         path.unlink()
 
-def cli_validation(official, context, output, should_pass, *, helper_path=None):
-    helper_path = helper_path or ROOT / "scripts/v03_dogfood_gate_output.py"
+def gate_cli_environment(official, context):
     identity = context["identity"]
     task = {"contract": "ai-sdlc-task-v0.1",
             "task": {"id": identity["task_id"], "feature_id": identity["feature_id"],
@@ -513,6 +530,22 @@ def cli_validation(official, context, output, should_pass, *, helper_path=None):
                "TARGET_REF": "target_ref", "CANDIDATE_PR_NUMBER": "candidate_pr_number",
                "CANDIDATE_HEAD_SHA": "candidate_head_sha"}
     env.update({name: str(identity[key]) for name, key in mapping.items()})
+    return env
+
+def cli_render(official, context, raw, collected, renderer):
+    Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw)
+    path = Path("/tmp/gh-aw/agent_output.json")
+    path.write_bytes(collected)
+    result = subprocess.run(
+        [sys.executable, renderer.__file__, "render", "--actions-root", str(official.actions)],
+        env=gate_cli_environment(official, context), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=30, check=False)
+    check(result.returncode == 0, "actual v2 render CLI rejected official ledger")
+    return path.read_bytes()
+
+def cli_validation(official, context, output, should_pass, *, helper_path=None):
+    helper_path = helper_path or ROOT / "scripts/v03_dogfood_gate_output.py"
+    env = gate_cli_environment(official, context)
     receipt_path = Path(official.env["RUNNER_TEMP"]) / "ai-sdlc-gate-scan-receipt/receipt.json"
     receipt_path.parent.mkdir(exist_ok=True)
     receipt_path.write_bytes(canonical(scan_receipt(
@@ -548,7 +581,7 @@ def sanitizer_closure_tests(actions_root, temporary):
     core.write_bytes(core.read_bytes() + b"\n// synthetic transitive tamper\n")
     reject(lambda: subject._official_sanitizer(copied),
            "changed transitive sanitizer dependency")
-def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=subject):
+def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=subject, render_cli=False):
     raw = raw_item(payload) if raw_ledger is None else raw_ledger
     collected = official.ingest(raw)
     ingested = json.loads(collected)
@@ -557,6 +590,10 @@ def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=su
     output, proof = renderer.render_gate_output(
         raw, collected, context, role,
         sanitize=lambda value: official.call({"mode": "sanitize", "body": value})["body"])
+    if render_cli:
+        actual = cli_render(official, context, raw, collected, renderer)
+        check(actual == output, "render CLI differs from exact canonical function bytes")
+        output = actual
     cli_validation(official, context, output, True, helper_path=Path(renderer.__file__))
     cli_validation(official, context, collected, False, helper_path=Path(renderer.__file__))
     check(renderer.validate_scanned_output(output, proof, context, role,
@@ -759,9 +796,11 @@ def item_number_contract_tests(role, actions_root, temporary):
     for target in (candidate, str(candidate)):
         item = json.loads(raw_item(payload))
         item["item_number"] = target
-        raw = packed(item) + b"\n"
+        item.pop("type")
+        item["temporary_id"] = "aw_target001"
+        raw = official.mcp_add_comment(item)
         _, collected, artifact, proof, publication, body = _roundtrip(
-            official, payload, context, role, raw_ledger=raw, renderer=current)
+            official, payload, context, role, raw_ledger=raw, renderer=current, render_cli=True)
         ingested = json.loads(collected)["items"][0]["item_number"]
         check(type(ingested) is type(target) and ingested == target,
               "official ingestion changed item_number representation")
