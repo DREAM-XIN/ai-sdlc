@@ -247,7 +247,7 @@ safe-outputs:
               fail()
           if not data or len(data) > 262144:
               fail()
-          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "b21ec23e03e99be017cb4efdae27e1f75a1b81a1":
+          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "85d792241d3d20b0f1051d01e1054c608bfcabdc":
               fail()
           mode = os.environ.get("OBSERVATION_MODE", "")
           if mode not in ("prepare", "observe"):
@@ -364,7 +364,7 @@ safe-outputs:
               fail()
           if not data or len(data) > 262144:
               fail()
-          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "b21ec23e03e99be017cb4efdae27e1f75a1b81a1":
+          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "85d792241d3d20b0f1051d01e1054c608bfcabdc":
               fail()
           mode = os.environ.get("OBSERVATION_MODE", "")
           if mode not in ("prepare", "observe"):

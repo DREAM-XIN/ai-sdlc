@@ -30,7 +30,7 @@ function anchoredOpen(file,directoryOnly=false,scope=null){
    if(scope&&current===scope.root){const st=fs.fstatSync(fd);requireThat(st.isDirectory()&&String(st.dev)===scope.dev&&String(st.ino)===scope.ino,"OWNERSHIP");}
   }
   return fd;
- }catch(error){fs.closeSync(fd);throw error;}
+ }catch(error){fs.closeSync(fd);if(["ELOOP","ENOTDIR"].includes(error.code))throw new Error("PATH");throw error;}
 }
 function regular(file,max,scope=null){
  const fd=anchoredOpen(file,false,scope);
