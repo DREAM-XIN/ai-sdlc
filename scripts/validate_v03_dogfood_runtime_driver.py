@@ -10151,7 +10151,7 @@ def actual_factory_joined_fixture(seed):
                 raise AssertionError("joined factory attempted external network I/O")
             with patch.dict(os.environ, env, clear=True), patch.object(socket, "create_connection", no_network):
                 phase("factory_construct_start")
-                actual = composition.build_v03_dogfood_full_composition(
+                factory_arguments = dict(
                     slot=pf.slot, config=config, adapter_id=ADAPTER_ID,
                     target_read_token="synthetic-read", actions_token="synthetic-actions",
                     event_write_token="synthetic-event", control_repository=pf.execution.repository,
@@ -10161,6 +10161,9 @@ def actual_factory_joined_fixture(seed):
                     trusted_role_policy="fixture-independent-role-policy", clock=clock,
                     persist_poll_attempts=3, persist_poll_seconds=0,
                     **({"producer_descriptor": descriptor} if current_v3 else {}))
+                actual = composition.build_v03_dogfood_full_composition(**factory_arguments)
+                if current_v3:
+                    pf.current_v3_factory_arguments = dict(factory_arguments)
                 phase("factory_construct_ready")
                 expect(type(actual.runtime.backend) is RemoteGitStateRefBackend,
                        "joined fixture bypassed actual RemoteGit backend")
@@ -13644,6 +13647,77 @@ def current_v3_runtime_fixture():
 
 
 
+
+def current_v3_pre_effect_tests():
+    """Actual fresh start reaches the consumer source fence before any Worker POST."""
+    import json
+    from copy import deepcopy
+    from dataclasses import replace
+    from operator_store_model import operation_events, canonical_json
+    from operator_vertical import VerticalInvariantError
+    import v03_dogfood_full_composition as c
+    with actual_factory_joined_fixture(current_v3_runtime_fixture()) as (pf,external,feature,gates,coordinator):
+        runtime=pf.composition.runtime
+        frozen=deepcopy(runtime.backend.read_snapshot())
+        kwargs=pf.current_v3_factory_arguments
+        for invalid in ({},c.CurrentV3ProducerDescriptor("9"*40)):
+            try:
+                c.build_v03_dogfood_full_composition(**dict(kwargs,producer_descriptor=invalid))
+            except VerticalInvariantError:
+                pass
+            else:
+                raise AssertionError("factory accepted a foreign/partial producer descriptor")
+        wrong=replace(pf.workflows,qa_workflow="ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml")
+        try:
+            c.build_v03_dogfood_full_composition(**dict(kwargs,workflows=wrong))
+        except VerticalInvariantError:
+            pass
+        else:
+            raise AssertionError("factory accepted a descriptor/workflow mismatch")
+        expect(runtime.backend.read_snapshot().ref_sha==frozen.ref_sha and not external.state["inputs"]
+               and not gates.state["posts"] and feature.state["puts"]==0,
+               "constructor rejection created effects")
+        source=pf.composition.result_source
+        original=source.http
+        touched=[]
+        target=next(iter(c.CURRENT_V3_WORKER_BLOBS))
+        def changed_source(*,method,url,token,body=None):
+            status,headers,raw=original(method=method,url=url,token=token,body=body)
+            from urllib.parse import urlparse,unquote,parse_qs
+            parsed=urlparse(url)
+            if (method=="GET" and unquote(parsed.path)=="/repos/dream-xin/ai-sdlc/contents/"+target):
+                expect(parse_qs(parsed.query)=={"ref":[pf.execution.installation_commit_sha]}
+                       and status==200,"source negative did not consume actual installation")
+                row=json.loads(raw)
+                expect(row["sha"]==c.CURRENT_V3_WORKER_BLOBS[target],"source negative lacks authentic baseline")
+                row["content"]="Y2hhbmdlZA=="
+                touched.append(True)
+                return status,headers,json.dumps(row).encode()
+            return status,headers,raw
+        source.http=changed_source
+        host=build_ordinary_dogfood_host(pf)
+        try:
+            host.host.run(scenario_instruction=__import__("v03_dogfood_scenario_runner").scenario_instruction(
+                pf.slot,expected_revision=1))
+        except Exception as exc:
+            # The real host may surface a rejected tool response; the facts below
+            # establish the actual source boundary rather than accepting the exception.
+            expect(type(exc).__name__ in {"AssertionError","VerticalInvariantError","V03DogfoodOpenAIHostError"},
+                   "source negative raised an unrelated exception")
+        finally:
+            source.http=original
+        after=runtime.backend.read_snapshot()
+        starts=[row for row in after.files.values() if isinstance(row,dict)
+                and row.get("event_type")=="operation.started"]
+        expect(touched and len(starts)==1,"source negative did not reach actual start and source read")
+        events=operation_events(after,starts[0]["operation_id"])
+        expect(not external.state["inputs"] and not gates.state["posts"] and feature.state["puts"]==0
+               and not any(row["event_type"] in {"worker.callback.recorded","worker.result.validated","persist.confirmed"}
+                           for row in events),"bad consumer source crossed a physical/canonical effect boundary")
+        print("current-v3 pre-effect source proof: consumed_actual_commit=true physical_posts=0 callbacks=0 persist=0",
+              flush=True)
+
+
 def current_v3_factory_tests():
     """Fresh synthetic operation: actual factory and Store; external providers are fake."""
     import json
@@ -13662,6 +13736,9 @@ def current_v3_factory_tests():
     start=time.monotonic()
     def phase(name):
         print("current-v3 stage="+name+" elapsed="+str(round(time.monotonic()-start,3)),flush=True)
+    phase("negative_start")
+    current_v3_pre_effect_tests()
+    phase("negative_ready")
     phase("seed_start")
     seed=current_v3_runtime_fixture()
     seed[0].joined_phase=phase
