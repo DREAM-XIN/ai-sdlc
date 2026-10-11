@@ -1094,7 +1094,8 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
 def validate_reviewer_controller_bridge(snapshot, consumer_binding, *, inspection_only=False):
     old, _ = validate_reviewer_predecessor(snapshot, fresh=not reviewer_replacement_present(snapshot))
     if (all(path in snapshot.files for path in QA_HISTORY_BLOBS)
-            and snapshot.get(REVIEWER_INLINE_AUTH_PATH,{}).get("consumer_execution_binding") != consumer_binding):
+            and isinstance(snapshot.get(REVIEWER_INLINE_AUTH_PATH), dict)
+            and snapshot.get(REVIEWER_INLINE_AUTH_PATH).get("consumer_execution_binding") != consumer_binding):
         validate_qa_replacement_predecessor(snapshot, fresh=not qa_replacement_present(snapshot))
         if (set(consumer_binding)!=set(recovery_execution_binding_fields())
                 or consumer_binding["execution_source_head_sha"]==QA_HISTORICAL_SOURCE):
