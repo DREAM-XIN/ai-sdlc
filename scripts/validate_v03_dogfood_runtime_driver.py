@@ -11897,7 +11897,9 @@ def qa_second_admission_tests():
            and runtime.backend.read_snapshot().get(c.QA_SECOND_CLAIM_PATH)==frozen,
            "QA terminal replay wrote or regenerated frozen inputs")
     pf,p,feature,gates,_=qa_second_runtime_fixture()
-    before=deepcopy(pf.composition.runtime.backend.read_snapshot())
+    runtime=pf.composition.runtime
+    binding=c.recovery_execution_binding(pf.composition.policy_authority)
+    before=deepcopy(runtime.backend.read_snapshot())
     result=d.recover_qa_second(pf)
     current=pf.composition.runtime.backend.read_snapshot()
     auth,claim=c.validate_qa_second_authorization(current)
@@ -11911,6 +11913,13 @@ def qa_second_admission_tests():
     expect(events[:46]==operation_events(before,c.RECOVERY_OPERATION_ID) and len(events)==47
            and events[46]["event_type"]=="dispatch.launch.lookup-recorded",
            "QA2 PASS did not preserve46prefix and append only its atomic lookup")
+    from operator_vertical_gh_aw_collector import _current_launch_binding
+    try:_current_launch_binding(current,operation_id=c.RECOVERY_OPERATION_ID,external_dispatch_key=c.QA_OLD_KEY)
+    except c.VerticalInvariantError:pass
+    else:raise AssertionError("generic collector unexpectedly accepted two logical receipts")
+    _,_,selected_receipt=c.qa_second_launch_binding(current,operation_id=c.RECOVERY_OPERATION_ID,
+        external_dispatch_key=c.QA_OLD_KEY,consumer_binding=binding)
+    expect(selected_receipt==str(result["sealed"]["run_id"]),"QA2 resolver did not select exact sealed successor")
     for kind in ("wrong_receipt","missing_lookup","missing_seal"):
         changed=deepcopy(current)
         lookup_path=next(path for path,row in changed.files.items()
@@ -11925,6 +11934,51 @@ def qa_second_admission_tests():
         except errors:pass
         else:raise AssertionError("QA2 accepted forged or non-atomic PASS unlock")
 
+    from operator_store_model import apply_plan_to_snapshot,reservation_path,event_path
+    from operator_store import plan_cancel,plan_takeover
+    from operator_effect_lineage_integration import plan_lineage_gated_reservation
+    for label in ("extra_receipt","duplicate_receipt","reservation","generation"):
+        changed=deepcopy(current)
+        if label in {"extra_receipt","duplicate_receipt"}:
+            event=deepcopy(events[46]);event["sequence"]=48
+            event["event_id"]="dispatch-launch-lookup-recorded-"+"f"*32
+            if label=="extra_receipt":event["payload"]["receipt_id"]="99999999999"
+            changed.files[event_path(c.RECOVERY_OPERATION_ID,48,event["event_id"])]=event
+        elif label=="reservation":
+            changed.files[reservation_path(c.QA_SEMANTIC_KEY)]["expected_revision"]=6
+        else:
+            changed=apply_plan_to_snapshot(changed,plan_takeover(changed,operation_id=c.RECOVERY_OPERATION_ID,
+                occurred_at=runtime.clock(),trusted_context_digest=pf.trusted_context_digest))
+        try:c.qa_second_launch_binding(changed,operation_id=c.RECOVERY_OPERATION_ID,
+            external_dispatch_key=c.QA_OLD_KEY,consumer_binding=binding)
+        except errors:pass
+        else:raise AssertionError("QA2 accepted inconsistent "+label)
+    for stopped in ("cancelled","lineage"):
+        if stopped=="cancelled":
+            plan=plan_cancel(current,operation_id=c.RECOVERY_OPERATION_ID,reason="fixed QA2 test cancellation",
+                occurred_at=runtime.clock(),trusted_context_digest=pf.trusted_context_digest)
+        else:
+            plan=plan_lineage_gated_reservation(current,operation_id=c.RECOVERY_OPERATION_ID,generation=1,
+                target_repository=pf.execution.repository,feature_id=pf.slot.feature_id,expected_revision=5,
+                current_stage="verification",task_identity="vertical:verification:"+"9"*40,role="qa",
+                candidate_head_sha="9"*40,current_target_ref=pf.slot.target_ref,operation_profile=c.VERTICAL_PROFILE,
+                effect_kind="worker-dispatch",logical_work_slot="VERIFICATION_QA",task_id=c.QA_TASK,
+                occurred_at=runtime.clock(),trusted_context_digest=pf.trusted_context_digest,
+                trusted_profile_digest="7"*64)
+            expect(plan.result["status"]=="BLOCKED","QA2 lineage negative did not create real blocked state")
+        stopped_snapshot=apply_plan_to_snapshot(current,plan)
+        runtime.backend.snapshot=deepcopy(stopped_snapshot)
+        before_stop=canonical_json(runtime.backend.read_snapshot().files)
+        posts=len(gates.state["posts"]);puts=feature.state["puts"]
+        try:
+            try:pf.composition.collector.handle(operation_id=c.RECOVERY_OPERATION_ID,external_dispatch_key=c.QA_OLD_KEY)
+            except errors:pass
+            else:raise AssertionError("QA2 collector consumed a stopped successor")
+            expect(canonical_json(runtime.backend.read_snapshot().files)==before_stop
+                   and len(gates.state["posts"])==posts and feature.state["puts"]==puts,
+                   "QA2 stopped collector appended callback/Persist or another effect")
+        finally:
+            runtime.backend.snapshot=deepcopy(current)
     for path in c.QA_SECOND_DOCUMENT_BLOBS:
         expect(canonical_json(current.get(path))==canonical_json(before.get(path)),
                "QA replacement rewrote historical authority")

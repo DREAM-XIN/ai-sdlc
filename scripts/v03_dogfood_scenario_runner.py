@@ -284,9 +284,15 @@ def wait_for_worker_run(*, read_run, receipt, workflow, installation_sha, extern
 
 def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
     snapshot = preflight.composition.runtime.backend.read_snapshot()
-    _projection, launch, receipt = _current_launch_binding(
-        snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
-    )
+    from v03_dogfood_full_composition import QA_OLD_KEY,qa_second_present,qa_second_launch_binding
+    if operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_second_present(snapshot):
+        _projection,launch,receipt=qa_second_launch_binding(snapshot,operation_id=operation_id,
+            external_dispatch_key=external_dispatch_key,
+            consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    else:
+        _projection, launch, receipt = _current_launch_binding(
+            snapshot, operation_id=operation_id, external_dispatch_key=external_dispatch_key
+        )
     source = preflight.composition.result_source
     workflow = preflight.workflows.workflow_for(str(launch["role"]))
     lookup_key = external_dispatch_key

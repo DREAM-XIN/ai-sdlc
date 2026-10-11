@@ -6951,8 +6951,9 @@ class DogfoodQaSecondCollector(DogfoodQaReplacementCollector):
             return super().handle(operation_id=operation_id,external_dispatch_key=external_dispatch_key)
         route=qa_second_route(snapshot,consumer_binding=recovery_execution_binding(self.policy_authority))
         auth,sealed=route["authorization"],route["sealed"]
-        projection,launch,receipt=_current_launch_binding(snapshot,
-            operation_id=operation_id,external_dispatch_key=external_dispatch_key)
+        projection,launch,receipt=qa_second_launch_binding(snapshot,
+            operation_id=operation_id,external_dispatch_key=external_dispatch_key,
+            consumer_binding=recovery_execution_binding(self.policy_authority))
         if receipt!=str(sealed["run_id"]):
             raise VerticalInvariantError("POLICY_DENIED","QA original launch receipt changed")
         resolved=self.result_source.resolve(external_dispatch_key=auth["physical_key"],
@@ -7165,3 +7166,35 @@ def validate_qa2_failure_relation(frozen, fresh):
             or rank[new["activation_state"]] < rank[old["activation_state"]]):
         raise V03DogfoodCompositionError("QA2 predecessor observation rolled back")
     return fresh
+def qa_second_launch_binding(snapshot, *, operation_id, external_dispatch_key, consumer_binding):
+    """Resolve only the authenticated QA2 successor without hiding its failed predecessor."""
+    if operation_id!=RECOVERY_OPERATION_ID or external_dispatch_key!=QA_OLD_KEY:
+        raise VerticalInvariantError("POLICY_DENIED","QA2 launch resolver escaped fixed logical identity")
+    route=qa_second_route(snapshot,consumer_binding=consumer_binding)
+    from operator_vertical_store import vertical_projection
+    projection=vertical_projection(snapshot,operation_id)
+    if projection.get("operation_profile")!=VERTICAL_PROFILE or projection["generation"]!=1:
+        raise VerticalInvariantError("POLICY_DENIED","QA2 launch projection differs")
+    if projection["status"] in {"CANCELLED","BLOCKED","NEEDS_USER"}:
+        raise VerticalInvariantError("POLICY_DENIED","QA2 callback is stopped by current canonical state")
+    events=operation_events(snapshot,operation_id)
+    launches=[e["payload"] for e in events if e["operation_generation"]==1
+        and e["event_type"]=="dispatch.launch.authorized"
+        and e["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+    lookups=[e["payload"] for e in events if e["operation_generation"]==1
+        and e["event_type"]=="dispatch.launch.lookup-recorded"
+        and e["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+    expected=[{"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":str(QA_FAILED_RUN)},
+        {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":route["receipt_id"]}]
+    if len(launches)!=1 or lookups!=expected:
+        raise VerticalInvariantError("POLICY_DENIED","QA2 launch receipt chain differs from exact predecessor and seal")
+    launch=launches[0]
+    if launch.get("semantic_effect_key")!=QA_SEMANTIC_KEY:
+        raise VerticalInvariantError("POLICY_DENIED","QA2 semantic launch differs")
+    reservation=snapshot.get(reservation_path(QA_SEMANTIC_KEY))
+    expected={"external_dispatch_key":QA_OLD_KEY,"feature_id":projection["feature_id"],
+        "expected_revision":projection["expected_feature_revision"],"current_stage":launch.get("stage"),
+        "role":launch.get("role")}
+    if not isinstance(reservation,dict) or any(reservation.get(k)!=v for k,v in expected.items()):
+        raise VerticalInvariantError("STALE_REVISION","QA2 launch/reservation projection differs")
+    return projection,launch,route["receipt_id"]
