@@ -817,6 +817,7 @@ def _reconstruct_release_authority(
     events: list[dict[str, Any]],
     projection: Mapping[str, Any],
     observation: Mapping[str, Any],
+    *, qa_second_snapshot=None, qa_second_binding=None,
 ) -> tuple[Mapping[str, set[str]], Mapping[str, bool]]:
     profile = SCENARIO_PROFILES.get(scenario)
     expected_roles = SCENARIO_ROLE_SEQUENCES.get(scenario)
@@ -856,10 +857,29 @@ def _reconstruct_release_authority(
         and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"
     ]
     expected_validated = 0 if scenario == "session_recovery" else len(expected_roles)
+    expected_launched=len(expected_roles)
+    if qa_second_snapshot is not None:
+        from operator_store_model import canonical_json
+        if not isinstance(qa_second_binding,dict):
+            raise V03DogfoodPostRunFinalizerError("QA2 launch accounting lacks authenticated consumer")
+        from v03_dogfood_full_composition import qa_second_route,RECOVERY_OPERATION_ID,QA_OLD_KEY,QA_FAILED_RUN
+        route=qa_second_route(qa_second_snapshot,consumer_binding=qa_second_binding)
+        if (scenario!="happy_path" or observation.get("operation_id")!=RECOVERY_OPERATION_ID
+                or canonical_json(events)!=canonical_json(operation_events(qa_second_snapshot,RECOVERY_OPERATION_ID))
+                or canonical_json(projection)!=canonical_json(vertical_projection(qa_second_snapshot,RECOVERY_OPERATION_ID))):
+            raise V03DogfoodPostRunFinalizerError("QA2 launch accounting is not the exact protected history")
+        qa_lookups=[row for row in events if row["event_type"]=="dispatch.launch.lookup-recorded"
+            and row["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+        if (len(qa_lookups)!=2 or [row["sequence"] for row in qa_lookups]!=[45,47]
+                or [row["payload"] for row in qa_lookups]!=[
+                    {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":str(QA_FAILED_RUN)},
+                    {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":route["receipt_id"]}]):
+            raise V03DogfoodPostRunFinalizerError("QA2 physical lookup accounting differs from failed predecessor and accepted successor")
+        expected_launched=4
     if (
         len(validated) != expected_validated
         or len(accepted_callbacks) != expected_validated
-        or len(launched) != len(expected_roles)
+        or len(launched) != expected_launched
     ):
         raise V03DogfoodPostRunFinalizerError("durable worker validation/launch count differs from frozen role sequence")
     if tuple(row["role"] for row in accepted_callbacks) != expected_roles[:expected_validated]:
@@ -1113,7 +1133,12 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
 
     events, projection = _durable_operation_facts(preflight, observation)
     receipt = _durable_receipt(preflight, events, observation)
-    categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation)
+    from v03_dogfood_full_composition import qa_second_present
+    accounting_snapshot=preflight.composition.runtime.backend.read_snapshot()
+    second_accounting=qa_second_present(accounting_snapshot)
+    categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation,
+        qa_second_snapshot=accounting_snapshot if second_accounting else None,
+        qa_second_binding=recovery_execution_binding(preflight.composition.policy_authority) if second_accounting else None)
     generation = projection.get("generation")
     if type(generation) is not int or generation < 0:
         raise V03DogfoodPostRunFinalizerError("protected Store lacks a valid Operation generation")
@@ -1149,8 +1174,9 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         from v03_dogfood_runtime_driver import observe_qa_second_predecessor
         qa=qa_second_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         validate_qa_second_relation(qa["authorization"]["predecessor_proof"],observe_qa_second_predecessor(preflight))
-        evidence_uris.extend([QA_SECOND_ADMISSION["uri"],_run_uri(repository,QA_SECOND_FAILED_RUN),
-            "https://github.com/DREAM-XIN/ai-sdlc/issues/593"])
+        evidence_uris.extend([QA_SECOND_ADMISSION["uri"],QA_REPLACEMENT_ADMISSION["uri"],
+            _run_uri(repository,QA_FAILED_RUN),"https://github.com/DREAM-XIN/ai-sdlc/issues/590",
+            _run_uri(repository,QA_SECOND_FAILED_RUN),"https://github.com/DREAM-XIN/ai-sdlc/issues/593"])
     elif qa_replacement_present(qa_snapshot):
         from v03_dogfood_runtime_driver import observe_qa_replacement_predecessor
         qa=qa_replacement_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))

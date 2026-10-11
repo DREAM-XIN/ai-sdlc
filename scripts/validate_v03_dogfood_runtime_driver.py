@@ -12179,6 +12179,39 @@ def qa_second_joined_factory_tests():
                    and c.QA_SECOND_ADMISSION["uri"].lower() in {u.lower() for u in record["evidence_uris"]},
                    "actual QA-only finalizer omitted authenticated recovery evidence")
 
+            proof_snapshot=runtime.backend.read_snapshot()
+            proof_events=operation_events(proof_snapshot,c.RECOVERY_OPERATION_ID)
+            lookups=[row for row in proof_events if row["event_type"]=="dispatch.launch.lookup-recorded"
+                and row["payload"].get("lookup_state")=="LAUNCHED"]
+            expected_history={c.QA_REPLACEMENT_ADMISSION["uri"],c.QA_SECOND_ADMISSION["uri"],
+                "https://github.com/dream-xin/ai-sdlc/actions/runs/38074618111",
+                "https://github.com/dream-xin/ai-sdlc/actions/runs/38113812134",
+                "https://github.com/dream-xin/ai-sdlc/issues/590",
+                "https://github.com/dream-xin/ai-sdlc/issues/593"}
+            expect(len(lookups)==4 and len(record["runtime"]["workflow_run_ids"])==3
+                   and {u.lower() for u in expected_history}<={u.lower() for u in record["evidence_uris"]},
+                   "QA2 release accounting lost a failed history or counted it as accepted role")
+            print("qa2_accounting accepted_roles=3 launched_lookup_records=4 retained_failed_qa_histories=2",flush=True)
+            from operator_store_model import event_path
+            forged=deepcopy(proof_snapshot)
+            tail_paths=[path for path,row in forged.files.items() if "/events/" in path
+                and isinstance(row,dict) and row.get("operation_id")==c.RECOVERY_OPERATION_ID
+                and row.get("sequence",0)>47]
+            tail_rows=[forged.files.pop(path) for path in tail_paths]
+            for row in tail_rows:
+                row["sequence"]+=1
+                forged.files[event_path(c.RECOVERY_OPERATION_ID,row["sequence"],row["event_id"])]=row
+            duplicate=deepcopy(proof_events[46]);duplicate["sequence"]=48
+            duplicate["event_id"]="dispatch-launch-lookup-recorded-"+"e"*32
+            duplicate["payload"]["receipt_id"]="99999999999"
+            forged.files[event_path(c.RECOVERY_OPERATION_ID,48,duplicate["event_id"])]=duplicate
+            try:
+                finalizer._reconstruct_release_authority("happy_path",
+                    operation_events(forged,c.RECOVERY_OPERATION_ID),
+                    vertical_projection(forged,c.RECOVERY_OPERATION_ID),observation,
+                    qa_second_snapshot=forged,qa_second_binding=c.recovery_execution_binding(pf.composition.policy_authority))
+            except (c.VerticalInvariantError,finalizer.V03DogfoodPostRunFinalizerError):pass
+            else:raise AssertionError("QA2 finalizer accepted an extra physical receipt")
             frozen=deepcopy(runtime.backend.read_snapshot())
             posts_before,puts_before=len(gates.state["posts"]),feature.state["puts"]
             altered=[False]
