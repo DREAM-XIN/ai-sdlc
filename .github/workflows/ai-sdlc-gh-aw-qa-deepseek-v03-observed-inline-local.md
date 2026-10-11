@@ -152,7 +152,7 @@ safe-outputs:
         for parent in (root, *root.parents):
             if parent.is_symlink() or not parent.is_dir():
                 fail()
-        url = "https://raw.githubusercontent.com/DREAM-XIN/ai-sdlc/" + sha + "/scripts/v03_dogfood_gate_output_v2.py"
+        url = "https://raw.githubusercontent.com/DREAM-XIN/ai-sdlc/" + sha + "/scripts/v03_dogfood_gate_output_v3.py"
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
@@ -167,7 +167,7 @@ safe-outputs:
         if not data or len(data) > 262144:
             fail()
         blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        if blob != "aff76251c232e5cdaeec21306c52d9da09d20e01":
+        if blob != "74202b5c027414453acf5f3bb471a8310b91ac3c":
             fail()
         directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
         path = directory / "helper.py"
@@ -179,7 +179,7 @@ safe-outputs:
             fail()
         args = [sys.executable, "-I", str(path), mode]
         if mode == "render":
-            args += ["--actions-root", str(root / "gh-aw" / "actions")]
+            args += ["--actions-root", str(root / "gh-aw" / "actions"), "--config-path", str(root / "gh-aw" / "safeoutputs" / "config.json")]
         os.execv(sys.executable, args)
         PY
   threat-detection:
@@ -532,7 +532,7 @@ post-steps:
       for parent in (root, *root.parents):
           if parent.is_symlink() or not parent.is_dir():
               fail()
-      url = "https://raw.githubusercontent.com/DREAM-XIN/ai-sdlc/" + sha + "/scripts/v03_dogfood_gate_output_v2.py"
+      url = "https://raw.githubusercontent.com/DREAM-XIN/ai-sdlc/" + sha + "/scripts/v03_dogfood_gate_output_v3.py"
       class NoRedirect(urllib.request.HTTPRedirectHandler):
           def redirect_request(self, req, fp, code, msg, headers, newurl):
               return None
@@ -547,7 +547,7 @@ post-steps:
       if not data or len(data) > 262144:
           fail()
       blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-      if blob != "aff76251c232e5cdaeec21306c52d9da09d20e01":
+      if blob != "74202b5c027414453acf5f3bb471a8310b91ac3c":
           fail()
       directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
       path = directory / "helper.py"
@@ -559,7 +559,7 @@ post-steps:
           fail()
       args = [sys.executable, "-I", str(path), mode]
       if mode == "render":
-          args += ["--actions-root", str(root / "gh-aw" / "actions")]
+          args += ["--actions-root", str(root / "gh-aw" / "actions"), "--config-path", str(root / "gh-aw" / "safeoutputs" / "config.json")]
       os.execv(sys.executable, args)
       PY
 jobs:
@@ -616,7 +616,7 @@ jobs:
           for parent in (root, *root.parents):
               if parent.is_symlink() or not parent.is_dir():
                   fail()
-          url = "https://raw.githubusercontent.com/DREAM-XIN/ai-sdlc/" + sha + "/scripts/v03_dogfood_gate_output_v2.py"
+          url = "https://raw.githubusercontent.com/DREAM-XIN/ai-sdlc/" + sha + "/scripts/v03_dogfood_gate_output_v3.py"
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   return None
@@ -631,7 +631,7 @@ jobs:
           if not data or len(data) > 262144:
               fail()
           blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-          if blob != "aff76251c232e5cdaeec21306c52d9da09d20e01":
+          if blob != "74202b5c027414453acf5f3bb471a8310b91ac3c":
               fail()
           directory = pathlib.Path(tempfile.mkdtemp(prefix="verified-gate-helper-", dir=root))
           path = directory / "helper.py"
@@ -643,7 +643,7 @@ jobs:
               fail()
           args = [sys.executable, "-I", str(path), mode]
           if mode == "render":
-              args += ["--actions-root", str(root / "gh-aw" / "actions")]
+              args += ["--actions-root", str(root / "gh-aw" / "actions"), "--config-path", str(root / "gh-aw" / "safeoutputs" / "config.json")]
           os.execv(sys.executable, args)
           PY
   conclusion:
