@@ -10,6 +10,7 @@ import {spawn} from "node:child_process";
 
 const [cli, root] = process.argv.slice(2);
 let stage = "ISOLATION";
+let lastProcess = null;
 let nativeDiagnostics = null;
 let nativeFieldDiagnostics = null;
 const ensure = (ok, code) => { if (!ok) throw new Error(code); };
@@ -36,14 +37,16 @@ function stop(child) {
 function run(command, args, env, cwd, timeoutMs=90000) {
  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
-  let bytes=0, settled=false;
-  const fail=code=>{ if(!settled){settled=true;stop(child);clearTimeout(timer);reject(new Error(code));} };
+  let bytes=0, settled=false, captured="";
+  lastProcess={exit_code:null,error_classes:[]};
+  const classify=()=>{const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(captured)).map(([k])=>k);captured="";};
+  const fail=code=>{ if(!settled){settled=true;stop(child);clearTimeout(timer);classify();reject(new Error(code));} };
   const timer=setTimeout(()=>fail("CLI_WATCHDOG"),timeoutMs);
   for(const output of [child.stdout,child.stderr]) output.on("data",b=>{
-   bytes+=b.length; if(bytes>4*1024*1024)fail("CLI_OUTPUT_BOUND");
+   bytes+=b.length; if(captured.length<65536)captured+=b.toString("utf8").slice(0,65536-captured.length); if(bytes>4*1024*1024)fail("CLI_OUTPUT_BOUND");
   });
   child.once("error",()=>fail("CLI_START"));
-  child.once("close",code=>{if(!settled){settled=true;clearTimeout(timer);stop(child);resolve(code);}});
+  child.once("close",code=>{if(!settled){settled=true;clearTimeout(timer);stop(child);lastProcess.exit_code=code;classify();resolve(code);}});
  });
 }
 function shellArguments(definition, command) {
@@ -385,7 +388,7 @@ async function awfHost(bundle){
   stage="AWF_"+label.toUpperCase();const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
   ensure(!fs.existsSync(caseRoot),"INPUT_PATH");fs.mkdirSync(caseRoot,{mode:0o700});fs.mkdirSync(tmp,{mode:0o700});fs.mkdirSync(path.join(caseRoot,"work"),{mode:0o700});
   const before=fixtureDirectory(tmp),config=path.join(caseRoot,"awf.json");
-  fs.writeFileSync(config,JSON.stringify({version:1,network:{allowDomains:[]},apiProxy:{enabled:false},container:{imageTag},logging:{auditDir:path.join(caseRoot,"audit")}}),{flag:"wx",mode:0o600});
+  fs.writeFileSync(config,JSON.stringify({network:{allowDomains:[]},apiProxy:{enabled:false},container:{imageTag},logging:{auditDir:path.join(caseRoot,"audit")}}),{flag:"wx",mode:0o600});
   const env={PATH:process.env.PATH,HOME:process.env.HOME,USER:os.userInfo().username,LOGNAME:os.userInfo().username,LANG:"C.UTF-8",TMPDIR:tmp,GITHUB_WORKSPACE:path.join(caseRoot,"work")};
   noSecrets(env);
   let report;
@@ -414,4 +417,4 @@ async function awfHost(bundle){
 try{
  if(cli==="awf-child"){process.exitCode=await awfChild(root);}
  else{const report=cli==="awf-host"?await awfHost(root):await main();console.log(JSON.stringify(report));}
-}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",raw_exported:false}));process.exitCode=1;}
+}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:cli==="awf-host"?lastProcess:null,raw_exported:false}));process.exitCode=1;}
