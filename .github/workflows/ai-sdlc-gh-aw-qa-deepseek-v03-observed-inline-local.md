@@ -247,7 +247,7 @@ safe-outputs:
               fail()
           if not data or len(data) > 262144:
               fail()
-          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "0468fd225c9637a629adea8a94545f22f37e302f":
+          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "b21ec23e03e99be017cb4efdae27e1f75a1b81a1":
               fail()
           mode = os.environ.get("OBSERVATION_MODE", "")
           if mode not in ("prepare", "observe"):
@@ -259,6 +259,7 @@ safe-outputs:
           child_env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
           if mode == "prepare":
               child_env["GITHUB_OUTPUT"] = os.environ["GITHUB_OUTPUT"]
+              child_env["GITHUB_ENV"] = os.environ["GITHUB_ENV"]
           with tempfile.TemporaryDirectory(prefix="verified-detector-observation-", dir=root) as directory:
               path = pathlib.Path(directory) / "helper.mjs"
               fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -363,7 +364,7 @@ safe-outputs:
               fail()
           if not data or len(data) > 262144:
               fail()
-          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "0468fd225c9637a629adea8a94545f22f37e302f":
+          if hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() != "b21ec23e03e99be017cb4efdae27e1f75a1b81a1":
               fail()
           mode = os.environ.get("OBSERVATION_MODE", "")
           if mode not in ("prepare", "observe"):
@@ -375,6 +376,7 @@ safe-outputs:
           child_env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
           if mode == "prepare":
               child_env["GITHUB_OUTPUT"] = os.environ["GITHUB_OUTPUT"]
+              child_env["GITHUB_ENV"] = os.environ["GITHUB_ENV"]
           with tempfile.TemporaryDirectory(prefix="verified-detector-observation-", dir=root) as directory:
               path = pathlib.Path(directory) / "helper.mjs"
               fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -460,7 +462,7 @@ safe-outputs:
       model: deepseek-chat
       max-turns: 50
       env:
-        TMPDIR: ${{ steps.detector_observation_prepare.outputs.parent || '/tmp' }}
+        TMPDIR: /tmp
         COPILOT_PROVIDER_BASE_URL: https://api.deepseek.com
         COPILOT_MODEL: deepseek-chat
         COPILOT_PROVIDER_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -649,6 +651,7 @@ jobs:
       contents: read
     pre-steps:
       - name: Record non-authoritative Gate execution identity
+        if: ${{ needs.safe_outputs.result == 'success' }}
         env:
           SOURCE_RUN_ID: ${{ github.run_id }}
           SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}

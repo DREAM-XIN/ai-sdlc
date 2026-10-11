@@ -64,12 +64,22 @@ export function prepare(env=process.env){
  const id=identity(env),p=locations(env,id);
  directory("/tmp/gh-aw");directory(path.join(env.RUNNER_TEMP,"gh-aw"));
  requireThat(!fs.existsSync(p.root)&&!fs.existsSync(p.stamp)&&!fs.existsSync(p.summary),"OWNERSHIP");
- fs.mkdirSync(p.root,{mode:0o700});const st=directory(p.root);
+ fs.mkdirSync(p.root,{mode:0o700});fs.mkdirSync(path.join(p.root,"copilot"),{mode:0o700});const st=directory(p.root);
  const stamp={schema_version:PREFIX+".owner/v1",...id,root:p.root,dev:String(st.dev),ino:String(st.ino)};
  fs.writeFileSync(p.stamp,JSON.stringify(stamp)+"\n",{flag:"wx",mode:0o600});
  owned(p,id);
  requireThat(typeof env.GITHUB_OUTPUT==="string"&&path.isAbsolute(env.GITHUB_OUTPUT),"PATH");
- fs.appendFileSync(env.GITHUB_OUTPUT,"parent="+p.root+"\n");
+ fs.appendFileSync(env.GITHUB_OUTPUT,"parent="+p.root+"\n"+"copilot_home="+path.join(p.root,"copilot")+"\n");
+ requireThat(typeof env.GITHUB_ENV==="string"&&path.isAbsolute(env.GITHUB_ENV)&&path.normalize(env.GITHUB_ENV)===env.GITHUB_ENV,"PATH");
+ const envParent=anchoredOpen(path.dirname(env.GITHUB_ENV),true);
+ try{
+  const envFd=fs.openSync("/proc/self/fd/"+envParent+"/"+path.basename(env.GITHUB_ENV),fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+  try{
+   const envStat=fs.fstatSync(envFd);requireThat(envStat.isFile()&&envStat.nlink===1&&envStat.uid===process.getuid()&&envStat.size<=65536,"PATH");
+   owned(p,id);directory(path.join(p.root,"copilot"),stamp);
+   fs.writeSync(envFd,"COPILOT_HOME="+path.join(p.root,"copilot")+"\n");
+  }finally{fs.closeSync(envFd);}
+ }finally{fs.closeSync(envParent);}
  return p.root;
 }
 export function analyzeNative(raw){
@@ -117,9 +127,10 @@ function eventsPath(root,scope){
  const entries=boundedEntries(root,128,scope);
  // A surviving AWF work directory may still be owned by an interrupted process.
  requireThat(!entries.some(e=>/^awf-[A-Za-z0-9]{6}$/.test(e.name)),"SESSION");
- const sessions=entries.filter(e=>e.name.startsWith("awf-agent-session-state-"));
- requireThat(sessions.length===1&&/^awf-agent-session-state-[A-Za-z0-9]{6}$/.test(sessions[0].name)&&sessions[0].st.isDirectory(),"SESSION");
- const children=boundedEntries(sessions[0].file,16,scope),uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ const home=path.join(root,"copilot");
+ const selectedHome=entries.filter(e=>e.name==="copilot");
+ requireThat(selectedHome.length===1&&selectedHome[0].st.isDirectory(),"SESSION");
+ const children=boundedEntries(path.join(home,"session-state"),16,scope),uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  const selected=children.filter(e=>uuid.test(e.name)&&e.st.isDirectory());requireThat(selected.length===1,"SESSION");
  let found=0;
  for(const child of children){if(!child.st.isDirectory())continue;const fd=anchoredOpen(child.file,true,scope);try{let st;try{st=fs.lstatSync("/proc/self/fd/"+fd+"/events.jsonl");}catch(error){if(error.code!=="ENOENT")throw error;}if(st){requireThat(st.isFile()&&!st.isSymbolicLink()&&st.nlink===1,"PATH");found++;}}finally{fs.closeSync(fd);}}
