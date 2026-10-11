@@ -3639,6 +3639,7 @@ def build_v03_dogfood_full_composition(
     github_api_base: str = "https://api.github.com",
     persist_poll_attempts: int = 60,
     persist_poll_seconds: float = 2.0,
+    producer_descriptor: CurrentV3ProducerDescriptor | None = None,
 ) -> V03DogfoodFullComposition:
     if not isinstance(config, TrustedOperatorRuntimeConfig):
         raise ValueError("trusted Operator runtime config is required")
@@ -3660,6 +3661,8 @@ def build_v03_dogfood_full_composition(
         if getattr(policy_authority, name, None) is None:
             raise ValueError(f"protected policy authority lacks {name}")
 
+    if producer_descriptor is not None:
+        _current_v3_source_contract(producer_descriptor, workflows=workflows)
     feature_event_gateway = build_release_decision_event_gateway(
         token=event_write_token,
         repository=config.target_repository,
@@ -3684,13 +3687,14 @@ def build_v03_dogfood_full_composition(
         collector_identity=COLLECTOR_IDENTITY,
         api_url=github_api_base,
     )
-    structured = any(workflows.reviewer_workflow == mapping["reviewer"]
+    structured = producer_descriptor is not None or any(workflows.reviewer_workflow == mapping["reviewer"]
                      and workflows.qa_workflow == mapping["qa"]
                      for mapping in (STRUCTURED_GATE_WORKFLOWS, INLINE_GATE_WORKFLOWS))
     result_source = (DogfoodQaThirdResultSource if structured else DogfoodReviewerReplacementSource)(
         source_config,
         target_repository=config.target_repository,
     )
+    result_source.producer_descriptor = producer_descriptor
     actions_transport = DogfoodCandidateBoundActionsTransport(
         GitHubActionsWorkflowTransportConfig(
             control_repository=control_repository,
@@ -3797,7 +3801,8 @@ def build_v03_dogfood_full_composition(
             feature_gateway=durable_truth, persist_gateway=persist_bridge.delegate,
             content_loader=content_loader, candidate_provider=candidate_provider, policy_authority=policy_authority)
         dispatch_gateway.delegate = DogfoodCurrentStructuredDispatchGateway(
-            transport=actions_transport, workflows=workflows, context_builder=builder)
+            transport=actions_transport, workflows=workflows, context_builder=builder,
+            producer_descriptor=producer_descriptor)
     candidate_handoff = DogfoodCandidateHandoff(
         slot=slot,
         repository=config.target_repository,
@@ -4172,7 +4177,8 @@ class DogfoodStructuredGateDispatchGateway(GhAwVerticalRoleDispatchGateway):
     def _inputs(self, dispatch):
         from v03_dogfood_gate_output import canonical
         role = dispatch.get("role")
-        if not any(role in mapping and self.workflows.workflow_for(role) == mapping[role]
+        if not (getattr(self,"producer_descriptor",None) is not None
+                and self.workflows==current_v3_workflows(self.producer_descriptor) and role in {"reviewer","qa"}) and not any(role in mapping and self.workflows.workflow_for(role) == mapping[role]
                    for mapping in (STRUCTURED_GATE_WORKFLOWS, INLINE_GATE_WORKFLOWS)):
             raise VerticalInvariantError("POLICY_DENIED", "structured context is restricted to unselected Gate workflows")
         inputs = super()._inputs(dispatch)
@@ -4507,18 +4513,27 @@ def _structured_dispatch_binding(snapshot, dispatch):
             raise VerticalInvariantError("POLICY_DENIED", "happy follow-on dispatch requires corrected Reviewer PASS")
     return launch
 
-def validate_structured_gate_input_record(snapshot, *, operation_id, external_dispatch_key, consumer_binding):
+def validate_structured_gate_input_record(snapshot, *, operation_id, external_dispatch_key, consumer_binding, producer_descriptor=None):
     document = snapshot.get(structured_gate_input_path(operation_id,external_dispatch_key))
     fields = {"admission","schema_version","operation_id","operation_generation","external_dispatch_key","dispatch",
         "launch_event_id","launch_event_digest","preclaim_store_commit","consumer_execution_binding",
         "source_blobs","dispatch_inputs","dispatch_inputs_digest","context_digest"}
+    dormant=producer_descriptor is not None
+    if dormant:
+        fields=(fields-{"admission"})|{"producer_descriptor"}
     if not isinstance(document,dict) or set(document)!=fields:
         raise VerticalInvariantError("POLICY_DENIED","structured input record missing/malformed")
     dispatch=document["dispatch"]
-    workflows, source_blobs, admission = _structured_input_source_contract(source_blobs=document["source_blobs"])
+    if dormant:
+        workflows,source_blobs,descriptor_value=_current_v3_source_contract(producer_descriptor,source_blobs=document["source_blobs"])
+        if document["producer_descriptor"]!=descriptor_value or operation_id==RECOVERY_OPERATION_ID:
+            raise VerticalInvariantError("POLICY_DENIED","dormant producer provenance differs")
+        admission=None
+    else:
+        workflows, source_blobs, admission = _structured_input_source_contract(source_blobs=document["source_blobs"])
     launch=_structured_dispatch_binding(snapshot,dispatch)
-    if (document["admission"] != admission or "PENDING" in admission["uri"]
-            or document["schema_version"]!="ai-sdlc.v03-structured-gate-inputs/v1"
+    if ((not dormant and (document["admission"] != admission or "PENDING" in admission["uri"]))
+            or document["schema_version"]!=("ai-sdlc.v03-structured-producer-inputs/v1" if dormant else "ai-sdlc.v03-structured-gate-inputs/v1")
             or document["operation_id"]!=operation_id or document["external_dispatch_key"]!=external_dispatch_key
             or dispatch["operation_id"]!=operation_id or dispatch["external_dispatch_key"]!=external_dispatch_key
             or type(document["operation_generation"]) is not int or document["operation_generation"]!=dispatch["operation_generation"]
@@ -4537,15 +4552,19 @@ def validate_structured_gate_input_record(snapshot, *, operation_id, external_di
         raise VerticalInvariantError("POLICY_DENIED","structured input context provenance differs")
     return document
 
-def plan_structured_gate_inputs(snapshot, *, dispatch, inputs, consumer_binding, workflows=None):
+def plan_structured_gate_inputs(snapshot, *, dispatch, inputs, consumer_binding, workflows=None, producer_descriptor=None):
     path=structured_gate_input_path(dispatch["operation_id"],dispatch["external_dispatch_key"])
     if path in snapshot.files:
         row=validate_structured_gate_input_record(snapshot,operation_id=dispatch["operation_id"],
-            external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=consumer_binding)
+            external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=consumer_binding,producer_descriptor=producer_descriptor)
         if canonical_json(row["dispatch"])!=canonical_json(dispatch):
             raise VerticalInvariantError("POLICY_DENIED","structured input replay dispatch differs")
         return StoreMutationPlan(snapshot.ref_sha,(),{"record":row})
-    _, source_blobs, admission = _structured_input_source_contract(workflows=workflows)
+    if producer_descriptor is None:
+        _, source_blobs, admission = _structured_input_source_contract(workflows=workflows)
+    else:
+        _,source_blobs,descriptor_value=_current_v3_source_contract(producer_descriptor,workflows=workflows)
+        admission=None
     launch=_structured_dispatch_binding(snapshot,dispatch)
     context=json.loads(inputs["task_payload"])["feature_context"]["gate_context"]
     row={"admission":admission,"schema_version":"ai-sdlc.v03-structured-gate-inputs/v1","operation_id":dispatch["operation_id"],
@@ -4554,15 +4573,34 @@ def plan_structured_gate_inputs(snapshot, *, dispatch, inputs, consumer_binding,
         "preclaim_store_commit":snapshot.ref_sha,"consumer_execution_binding":consumer_binding,
         "source_blobs":source_blobs,"dispatch_inputs":inputs,
         "dispatch_inputs_digest":"sha256:"+digest_json(inputs),"context_digest":context["context_sha256"]}
+    if producer_descriptor is not None:
+        row.pop("admission")
+        row["schema_version"]="ai-sdlc.v03-structured-producer-inputs/v1"
+        row["producer_descriptor"]=descriptor_value
     from operator_store_model import apply_plan_to_snapshot
     plan=StoreMutationPlan(snapshot.ref_sha,(StoreMutation("create_immutable",path,row),),{"record":row})
     validate_structured_gate_input_record(apply_plan_to_snapshot(snapshot,plan),operation_id=dispatch["operation_id"],
-        external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=consumer_binding)
+        external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=consumer_binding,producer_descriptor=producer_descriptor)
     return plan
 
 class DogfoodCurrentStructuredDispatchGateway(DogfoodStructuredGateDispatchGateway):
     """Existing protected claims remain the only ordinary dispatch authority."""
+    def __init__(self, *, transport, workflows, context_builder, producer_descriptor=None):
+        super().__init__(transport=transport,workflows=workflows,context_builder=context_builder)
+        if producer_descriptor is not None:
+            _current_v3_source_contract(producer_descriptor,workflows=workflows)
+        self.producer_descriptor=producer_descriptor
+
+    def _verify_descriptor(self, dispatch):
+        if self.producer_descriptor is None:
+            return
+        if dispatch["operation_id"]==RECOVERY_OPERATION_ID:
+            raise VerticalInvariantError("POLICY_DENIED","dormant producer cannot consume recovery authority")
+        _verify_current_v3_installation(self.context_builder.content_loader.result_source,
+            self.producer_descriptor,recovery_execution_binding(self.context_builder.policy_authority))
+
     def _inputs(self,dispatch):
+        self._verify_descriptor(dispatch)
         if dispatch["role"]=="developer":
             if dispatch["operation_id"]==RECOVERY_OPERATION_ID:
                 raise VerticalInvariantError("POLICY_DENIED","corrected happy route authorizes no Developer")
@@ -4579,12 +4617,13 @@ class DogfoodCurrentStructuredDispatchGateway(DogfoodStructuredGateDispatchGatew
         if path not in snapshot.files:
             raise VerticalInvariantError("POLICY_DENIED","structured dispatch inputs were not frozen")
         row=validate_structured_gate_input_record(snapshot,operation_id=dispatch["operation_id"],
-            external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=binding)
+            external_dispatch_key=dispatch["external_dispatch_key"],consumer_binding=binding,producer_descriptor=self.producer_descriptor)
         if canonical_json(row["dispatch"])!=canonical_json(dispatch):
             raise VerticalInvariantError("POLICY_DENIED","structured dispatch replay identity differs")
         return dict(row["dispatch_inputs"])
 
     def launch(self,*,dispatch):
+        self._verify_descriptor(dispatch)
         authority = getattr(self, "remediation_rereview_authority", None)
         if authority is not None:
             authority.validate_dispatch(dispatch)
@@ -4596,15 +4635,16 @@ class DogfoodCurrentStructuredDispatchGateway(DogfoodStructuredGateDispatchGatew
             def freeze(snapshot):
                 path=structured_gate_input_path(dispatch["operation_id"],dispatch["external_dispatch_key"])
                 if path in snapshot.files:
-                    return plan_structured_gate_inputs(snapshot,dispatch=dispatch,inputs=None,consumer_binding=binding,workflows=self.workflows)
+                    return plan_structured_gate_inputs(snapshot,dispatch=dispatch,inputs=None,consumer_binding=binding,workflows=self.workflows,producer_descriptor=self.producer_descriptor)
                 inputs=DogfoodStructuredGateDispatchGateway._inputs(self,dispatch)
                 if runtime.backend.read_snapshot().ref_sha!=snapshot.ref_sha:
                     raise VerticalInvariantError("BLOCKED","Store changed during structured input preparation")
-                return plan_structured_gate_inputs(snapshot,dispatch=dispatch,inputs=inputs,consumer_binding=binding,workflows=self.workflows)
+                return plan_structured_gate_inputs(snapshot,dispatch=dispatch,inputs=inputs,consumer_binding=binding,workflows=self.workflows,producer_descriptor=self.producer_descriptor)
             _commit_recovery_nonempty(runtime,freeze)
         return super().launch(dispatch=dispatch)
 
-def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_third_authority=None):
+def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_third_authority=None,
+                                producer_descriptor=None, producer_record=None):
     """Exact pinned official metadata, derived from the reviewed compiled environment."""
     from pathlib import Path
     import yaml
@@ -4630,6 +4670,19 @@ def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_t
                 or run.get("display_title")!="AI-SDLC gh-aw "+auth["physical_key"]):
             raise VerticalInvariantError("POLICY_DENIED","QA2 metadata source authority differs")
         source_blobs={workflow:QA_SECOND_WORKER_BLOBS[".github/workflows/"+workflow]}
+    if producer_descriptor is not None:
+        mapping,blobs,value=_current_v3_source_contract(producer_descriptor)
+        if (qa_second_authority is not None or qa_third_authority is not None
+                or not isinstance(producer_record,dict)
+                or producer_record.get("producer_descriptor")!=value
+                or producer_record.get("schema_version")!="ai-sdlc.v03-structured-producer-inputs/v1"
+                or producer_record.get("source_blobs")!=blobs
+                or producer_record["dispatch"]["operation_id"]==RECOVERY_OPERATION_ID
+                or mapping.workflow_for(producer_record["dispatch"]["role"])!=workflow
+                or run.get("head_sha")!=producer_record["consumer_execution_binding"]["execution_source_head_sha"]
+                or run.get("display_title")!="AI-SDLC gh-aw "+producer_record["external_dispatch_key"]):
+            raise VerticalInvariantError("POLICY_DENIED","dormant metadata lacks exact protected source record")
+        source_blobs={workflow:blobs[".github/workflows/"+workflow]}
     path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / workflow
     raw = path.read_bytes()
     if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != source_blobs[workflow]:
@@ -4656,6 +4709,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
     def _structured_inputs(self, operation_id, key, workflow):
         snapshot = self.reviewer_runtime.backend.read_snapshot()
         binding = recovery_execution_binding(self.reviewer_policy_authority)
+        self._current_v3_metadata_record=None
         self._qa_third_metadata_auth=None
         self._qa_second_metadata_auth=None
         if operation_id==RECOVERY_OPERATION_ID and qa_third_present(snapshot):
@@ -4687,8 +4741,14 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
             if key == auth["physical_key"]:
                 return claim["dispatch_inputs"]
         document = validate_structured_gate_input_record(snapshot, operation_id=operation_id,
-            external_dispatch_key=key, consumer_binding=binding)
-        mapping, _, _ = _structured_input_source_contract(source_blobs=document["source_blobs"])
+            external_dispatch_key=key, consumer_binding=binding, producer_descriptor=getattr(self,"producer_descriptor",None))
+        descriptor=getattr(self,"producer_descriptor",None)
+        if descriptor is not None:
+            _verify_current_v3_installation(self,descriptor,binding)
+            mapping,_,_=_current_v3_source_contract(descriptor,source_blobs=document["source_blobs"])
+            self._current_v3_metadata_record=document
+        else:
+            mapping, _, _ = _structured_input_source_contract(source_blobs=document["source_blobs"])
         if mapping.workflow_for(document["dispatch"]["role"]) != workflow:
             raise VerticalInvariantError("POLICY_DENIED", "structured input record belongs to another source family")
         return document["dispatch_inputs"]
@@ -4712,7 +4772,8 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
             if canonical_json(identity[field]) != canonical_json(trusted[key]):
                 raise VerticalInvariantError("POLICY_DENIED", "structured Gate context differs from callback task")
         run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
-        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None)))
+        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None),
+                    producer_descriptor=getattr(self,"producer_descriptor",None), producer_record=getattr(self,"_current_v3_metadata_record",None)))
         return observed
 
     def _gate_payload(self, body):
@@ -4758,6 +4819,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 # Identify exactly one protected context by key, never by model-supplied text.
                 key = match.group("key")
                 candidates = []
+                self._current_v3_metadata_record=None
                 self._qa_third_metadata_auth=None
                 self._qa_second_metadata_auth=None
                 binding=recovery_execution_binding(self.reviewer_policy_authority)
@@ -4793,16 +4855,25 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 for path in snapshot.files:
                     if path.endswith("/dogfood-structured-gate-inputs/" + key + ".json"):
                         document = snapshot.get(path)
-                        mapping, _, _ = _structured_input_source_contract(source_blobs=document["source_blobs"])
+                        descriptor=getattr(self,"producer_descriptor",None)
+                        if descriptor is not None:
+                            _verify_current_v3_installation(self,descriptor,binding)
+                            mapping,_,_=_current_v3_source_contract(descriptor,source_blobs=document["source_blobs"])
+                        else:
+                            mapping, _, _ = _structured_input_source_contract(source_blobs=document["source_blobs"])
                         if mapping.workflow_for(document["dispatch"]["role"]) != workflow:
                             raise VerticalInvariantError("POLICY_DENIED", "structured lease belongs to another source family")
                         candidates.append(validate_structured_gate_input_record(snapshot,
                             operation_id=document["operation_id"], external_dispatch_key=key,
-                            consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))["dispatch_inputs"])
+                            consumer_binding=recovery_execution_binding(self.reviewer_policy_authority),
+                            producer_descriptor=getattr(self,"producer_descriptor",None))["dispatch_inputs"])
+                        if descriptor is not None:
+                            self._current_v3_metadata_record=document
                 if len(candidates) != 1:
                     raise VerticalInvariantError("POLICY_DENIED", "structured content lacks unique protected inputs")
                 context = json.loads(candidates[0]["task_payload"])["feature_context"]["gate_context"]
-                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None)))
+                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None),
+                    producer_descriptor=getattr(self,"producer_descriptor",None), producer_record=getattr(self,"_current_v3_metadata_record",None)))
         try:
             if not str(uri).startswith("docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/"):
                 return self._load_local_gate(uri)
@@ -7965,3 +8036,60 @@ def qa_third_launch_binding(snapshot, *, operation_id, external_dispatch_key, co
     if not isinstance(reservation,dict) or any(reservation.get(k)!=v for k,v in expected.items()):
         raise VerticalInvariantError("STALE_REVISION","QA3 launch/reservation projection differs")
     return projection,launch,route["receipt_id"]
+
+# Explicit constructor-only source configuration. This descriptor grants no launch.
+CURRENT_V3_SOURCE = "5186ff7cb1e54e60b5e4ca734b22993409b88ae7"
+CURRENT_V3_WORKER_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md": "8c6ef2373e5cb927336610be473fdc43212979f2",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml": "1d0e1f3abdf2b603353ffe9486c07e4cf2b86490",
+    "scripts/v03_detector_observation.mjs": "85d792241d3d20b0f1051d01e1054c608bfcabdc",
+    "scripts/v03_dogfood_gate_output_v3.py": "74202b5c027414453acf5f3bb471a8310b91ac3c",
+}
+
+@dataclass(frozen=True)
+class CurrentV3ProducerDescriptor:
+    producer_source_commit: str = CURRENT_V3_SOURCE
+
+def current_v3_descriptor_value(descriptor):
+    if type(descriptor) is not CurrentV3ProducerDescriptor or descriptor.producer_source_commit != CURRENT_V3_SOURCE:
+        raise VerticalInvariantError("POLICY_DENIED", "unknown dormant producer descriptor")
+    return {"schema_version": "ai-sdlc.v03-producer-descriptor/v1",
+        "producer_source_commit": CURRENT_V3_SOURCE, "worker_blobs": dict(CURRENT_V3_WORKER_BLOBS),
+        "workflow_file": QA_OBSERVED_WORKFLOW}
+
+def current_v3_workflows(descriptor):
+    current_v3_descriptor_value(descriptor)
+    from v03_dogfood_live_gate import INLINE_DOGFOOD_WORKFLOWS
+    return GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow=INLINE_DOGFOOD_WORKFLOWS["developer"],
+        reviewer_workflow=INLINE_DOGFOOD_WORKFLOWS["reviewer"], qa_workflow=QA_OBSERVED_WORKFLOW)
+
+def _current_v3_source_contract(descriptor, *, workflows=None, source_blobs=None):
+    value=current_v3_descriptor_value(descriptor)
+    mapping=current_v3_workflows(descriptor)
+    blobs={**inline_gate_source_blobs(), **CURRENT_V3_WORKER_BLOBS}
+    if ((workflows is not None and workflows != mapping)
+            or (source_blobs is not None and canonical_json(source_blobs) != canonical_json(blobs))):
+        raise VerticalInvariantError("POLICY_DENIED", "dormant producer source/map differs")
+    return mapping, blobs, value
+
+def _verify_current_v3_installation(source, descriptor, binding):
+    import base64
+    _, blobs, _ = _current_v3_source_contract(descriptor)
+    sha=binding["execution_source_head_sha"]
+    if not isinstance(sha,str) or not _SHA40.fullmatch(sha):
+        raise VerticalInvariantError("POLICY_DENIED", "dormant producer installation is not exact")
+    for path, expected in blobs.items():
+        row=source._json(source.config.control_repository,
+            "/contents/"+parse.quote(path,safe="/")+"?ref="+sha, source.config.control_token)
+        if (not isinstance(row,dict) or row.get("type")!="file" or row.get("path")!=path
+                or row.get("sha")!=expected or row.get("encoding")!="base64"):
+            raise VerticalInvariantError("POLICY_DENIED", "dormant producer installation blob differs")
+        try:
+            raw=base64.b64decode("".join(row["content"].split()),validate=True)
+        except (ValueError,TypeError,KeyError) as exc:
+            raise VerticalInvariantError("POLICY_DENIED", "dormant producer bytes unavailable") from exc
+        if hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\x00"+raw).hexdigest()!=expected:
+            raise VerticalInvariantError("POLICY_DENIED", "dormant producer installation bytes differ")
+    return sha
+
