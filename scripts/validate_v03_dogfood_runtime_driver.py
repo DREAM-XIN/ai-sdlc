@@ -9517,7 +9517,8 @@ def main():
     )
     named_groups = {
         "qa2-joined": "QA2 actual joined lifecycle",
-        "qa2-safety": ("QA2 non-PASS terminal", "QA2 pre-effect rejection"),
+        "qa2-safety": ("QA2 frozen CAS and replay", "QA2 non-PASS terminal",
+                       "QA2 provider failure and lookup", "QA2 pre-effect rejection"),
         "qa-safety": ("QA-only non-PASS terminal", "QA-only pre-effect rejection"),
         "qa-joined": "QA-only actual joined lifecycle",
         "joined": "inline selected factory joined CLI lifecycle",
@@ -12285,7 +12286,7 @@ def qa_second_provider_failure_tests():
         pf, provider, feature, gates, _ = qa_second_runtime_fixture(provider_fault=fault)
         runtime = pf.composition.runtime
         original = deepcopy(operation_events(runtime.backend.read_snapshot(), c.RECOVERY_OPERATION_ID))
-        expect(len(original) == 45, "QA failure test did not start at real historical prefix")
+        expect(len(original) == 46, "QA failure test did not start at real historical prefix")
         result = driver.recover_qa_second(pf)
         terminal = c.qa_second_terminal(runtime.backend.read_snapshot(),
             consumer_binding=c.recovery_execution_binding(pf.composition.policy_authority))
