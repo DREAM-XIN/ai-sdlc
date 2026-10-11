@@ -58,11 +58,35 @@ def observed_historical_bytes(relative):
           == OBSERVED_HISTORICAL_BLOBS[relative], "historical observed blob differs")
     return raw
 
+QA2_OBSERVED_SOURCE = "461f465ffc6788c612c290c747d1190558a9a833"
+QA2_OBSERVED_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md": "5c577b5073df0e70da17570b261338c91535df6c",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml": "0752ac822bd7362a666d60a8898d4d748765d4c4",
+    "scripts/v03_detector_observation.mjs": "85d792241d3d20b0f1051d01e1054c608bfcabdc",
+}
+
+def qa2_observed_bytes(relative):
+    check(relative in QA2_OBSERVED_BLOBS, "QA2 read escaped fixed source closure")
+    raw = subprocess.run(["git", "show", QA2_OBSERVED_SOURCE + ":" + relative],
+                         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         timeout=30, check=True).stdout
+    check(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+          == QA2_OBSERVED_BLOBS[relative], "QA2 observed source blob differs")
+    return raw
+
+def roundtrip_workflow_stem(role, variant):
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local"},
+          "unsupported roundtrip source variant")
+    check(not variant.startswith("observed-") or role == "qa", "observed source is QA-only")
+    actual = "observed-inline-local" if variant == "observed-qa2-local" else variant
+    return f"ai-sdlc-gh-aw-{role}-deepseek-v03-{actual}"
+
 def selected_config(role, candidate=577, *, variant="structured-local"):
-    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local"), "unsupported test workflow variant")
-    check(variant != "observed-inline-local" or role == "qa", "observed workflow is QA-only")
-    stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
-    lock = yaml.safe_load(observed_historical_bytes(".github/workflows/" + stem + ".lock.yml")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local"), "unsupported test workflow variant")
+    check(variant not in {"observed-inline-local", "observed-qa2-local"} or role == "qa", "observed workflow is QA-only")
+    stem = roundtrip_workflow_stem(role, variant)
+    lock = yaml.safe_load(qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml")
+                          if variant == "observed-qa2-local" else observed_historical_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-inline-local" else
                           (ROOT / ".github/workflows" / (stem + ".lock.yml")).read_bytes())
     steps = lock["jobs"]["agent"]["steps"]
@@ -551,13 +575,22 @@ def _roundtrip(official, payload, context, role, *, raw_ledger=None):
     return raw, collected, output, proof, publication, body
 
 def roundtrip_source_contract(role, variant, lock, metadata):
-    stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
+    stem = roundtrip_workflow_stem(role, variant)
     check(metadata["GH_AW_WORKFLOW_ID"] == stem, "roundtrip used a different selected workflow")
     check(metadata["GH_AW_CALLER_WORKFLOW_ID"] == "dream-xin/ai-sdlc/" + stem,
           "roundtrip caller footer differs from selected workflow")
     check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
           "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
           "roundtrip source footer differs")
+    if variant == "observed-qa2-local":
+        for relative in QA2_OBSERVED_BLOBS:
+            qa2_observed_bytes(relative)
+        exact_lock = yaml.safe_load(qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml"))
+        check(lock == exact_lock, "QA2 actual lock differs from frozen corrected producer")
+        detector = lock["jobs"]["detection"]
+        execution = [step for step in detector["steps"] if step.get("id") == "detection_agentic_execution"]
+        check(len(execution) == 1 and execution[0]["env"]["TMPDIR"] == "/tmp",
+              "QA2 detector lost original temp permission baseline")
     if variant == "observed-inline-local":
         check(role == "qa", "observed source is QA-only")
         for relative, expected in (
@@ -581,8 +614,8 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local"}, "roundtrip variant differs")
-    check(variant != "observed-inline-local" or role == "qa", "observed roundtrip is QA-only")
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local"}, "roundtrip variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local"} or role == "qa", "observed roundtrip is QA-only")
     payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
@@ -612,8 +645,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
-    check(variant in {"structured-inline-local", "observed-inline-local"}, "joined variant differs")
-    check(variant != "observed-inline-local" or role == "qa", "observed joined workflow is QA-only")
+    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local"}, "joined variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local"} or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
@@ -691,7 +724,9 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
             "metadata_suffix": publication["suffix"],
-            "cli_evidence": {"workflow_file": f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}.lock.yml",
+            "cli_evidence": {"workflow_file": roundtrip_workflow_stem(role, variant) + ".lock.yml",
+                             "source_variant": variant,
+                             "fixed_source_sha": QA2_OBSERVED_SOURCE if variant == "observed-qa2-local" else None,
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
@@ -1597,6 +1632,22 @@ def main():
             temporary_id_contract_tests(role, actions_root, Path(directory))
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
+        exercise_role("qa", actions_root, Path(directory), variant="observed-qa2-local")
+    qa1_lock, _, _, qa1_metadata = selected_config("qa", variant="observed-inline-local")
+    try:
+        roundtrip_source_contract("qa", "observed-qa2-local", qa1_lock, qa1_metadata)
+    except AssertionError as exc:
+        check(str(exc) == "QA2 actual lock differs from frozen corrected producer",
+              "QA2 historical-lock negative failed at an unexpected boundary")
+    else:
+        raise AssertionError("QA2 accepted same-filename historical QA1 lock")
+    try:
+        selected_config("reviewer", variant="observed-qa2-local")
+    except AssertionError as exc:
+        check(str(exc) == "observed workflow is QA-only",
+              "QA2 wrong-role negative failed at an unexpected boundary")
+    else:
+        raise AssertionError("QA2 variant accepted another role")
     old_lock, _, _, old_metadata = selected_config("qa", variant="structured-inline-local")
     try:
         roundtrip_source_contract("qa", "observed-inline-local", old_lock, old_metadata)
