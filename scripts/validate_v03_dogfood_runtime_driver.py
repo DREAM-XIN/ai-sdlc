@@ -9527,9 +9527,15 @@ def main():
             selected=named_groups[name]
             excluded.update({selected} if isinstance(selected,str) else selected)
         groups = tuple(row for row in groups if row[0] not in excluded)
+    historical_qa_groups={"QA-only actual joined lifecycle","QA-only frozen CAS and replay",
+        "QA-only non-PASS terminal","QA-only provider failure and lookup","QA-only pre-effect rejection"}
     for name, execute in groups:
         try:
-            execute()
+            if name in historical_qa_groups:
+                with historical_qa_worker_tree():
+                    execute()
+            else:
+                execute()
         except Exception:
             failures.append(name)
             print("FAILED regression group: " + name, flush=True)
@@ -10704,6 +10710,17 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
     expect(provider_fault is None or expected == (("qa", "PASS"),), "QA fault escaped sole QA fixture")
     state = {"ack_lost": False, "runs": [], "posts": [], "routes": {}, "inputs": [], "roundtrips": []}
 
+    def compiled_lock(workflow):
+        relative=".github/workflows/"+workflow
+        if workflow=="ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml":
+            expect(getattr(preflight,"qa_replacement_fixture",False) is True and source_sha=="5"*40,
+                   "historical compiled QA metadata escaped synthetic installation")
+            from validate_v03_gate_output_contract import observed_historical_bytes
+            raw=observed_historical_bytes(relative)
+        else:
+            raw=(Path(__file__).resolve().parents[1]/relative).read_bytes()
+        return yaml.safe_load(raw)
+
     def respond(value):
         return 200, {}, value if isinstance(value, bytes) else json.dumps(value).encode()
 
@@ -10758,7 +10775,7 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
                 routes = state["routes"]
                 routes[f"/actions/runs/{run_id}"] = run
                 if provider_fault == "result_unavailable":
-                    lock = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows" / workflow).read_text())
+                    lock = compiled_lock(workflow)
                     jobs = []
                     for position, (name, job) in enumerate(lock["jobs"].items()):
                         identity = job_id if name == "conclusion" else job_id + position + 1
@@ -10834,7 +10851,7 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
                 "created_at": preflight.composition.runtime.clock(),
                 "updated_at": preflight.composition.runtime.clock(),
                 "body": publication["published_body"]}
-            lock = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows" / workflow).read_text())
+            lock = compiled_lock(workflow)
             identity_steps = [step for step in lock["jobs"]["conclusion"]["steps"]
                 if {"COMMENT_ID", "COMMENT_URL", "TRUSTED_TASK_ID", "SOURCE_RUN_ID", "SOURCE_WORKFLOW_REF"}
                 <= set(step.get("env", {}))]
@@ -11060,6 +11077,9 @@ def qa_replacement_joined_factory_tests():
             phase("recover_start")
             recovered=d.recover_qa_replacement(pf)
             phase("recover_ready")
+            expect(isinstance(recovered.get("sealed"),dict),
+                   "historical QA expected PASS seal; outcome="+str(recovered.get("terminal",{}).get("outcome"))+
+                   "; reason="+str(recovered.get("terminal",{}).get("observation",{}).get("reason")))
             expect(recovered["sealed"]["recommendation"]=="PASS"
                    and [row["role"] for row in gates.state["inputs"]]==["qa"]
                    and len(gates.state["posts"])==len(gates.state["roundtrips"])==1,
@@ -11361,6 +11381,57 @@ def qa_replacement_pre_effect_rejection_tests():
                and c.QA_REPLACEMENT_SEAL_PATH not in runtime.backend.read_snapshot().files,
                "QA frozen-input/candidate fence ran after external effect")
     print("- QA source, candidate and frozen-input substitutions reject before POST",flush=True)
+
+
+def historical_qa_worker_tree():
+    """Real immutable Worker files for the explicit synthetic spent-QA installation."""
+    from contextlib import contextmanager
+    @contextmanager
+    def mounted():
+        import hashlib, subprocess, tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import v03_dogfood_full_composition as composition
+        from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_BLOBS, INLINE_DOGFOOD_BLOBS
+        from validate_v03_gate_output_contract import observed_historical_bytes
+        root=Path(__file__).resolve().parents[1]
+        source="7d7f0b8c92ae06b0091d3620ccb60c71114e6bad"
+        module_path="scripts/v03_dogfood_full_composition.py"
+        original_file=composition.__file__
+        expect(__import__("threading").active_count()==1,"historical QA source scope requires sequential tests")
+        def historical(relative,expected):
+            raw=subprocess.run(["git","show",source+":"+relative],cwd=root,
+                check=True,capture_output=True,timeout=30).stdout
+            expect(hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\x00"+raw).hexdigest()==expected,
+                   "historical QA source tree blob differs")
+            return raw
+        module=historical(module_path,"d9ccbabb5e5d79fc0a39402381cd1a3d04514cba")
+        expect(Path(original_file).read_bytes()==module,
+               "historical QA fixture requires unchanged production composition code")
+        pins={".github/workflows/"+name:sha
+              for name,sha in {**STRUCTURED_DOGFOOD_BLOBS,**INLINE_DOGFOOD_BLOBS}.items()
+              if name.endswith(".lock.yml")}
+        with tempfile.TemporaryDirectory(prefix="v03-spent-qa-source-") as directory:
+            tree=Path(directory)
+            target=tree/module_path
+            target.parent.mkdir(parents=True)
+            target.write_bytes(module)
+            for relative,sha in pins.items():
+                path=tree/relative
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_bytes(historical(relative,sha))
+            relative=".github/workflows/"+composition.QA_OBSERVED_WORKFLOW
+            path=tree/relative
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(observed_historical_bytes(relative))
+            # The only composition __file__ consumer locates the metadata lock.
+            # No verifier function, authority map or current checkout file is changed.
+            try:
+                with patch.object(composition,"__file__",str(target)):
+                    yield
+            finally:
+                expect(composition.__file__==original_file,"historical QA source location was not restored")
+    return mounted()
 
 if __name__ == "__main__":
     main()
