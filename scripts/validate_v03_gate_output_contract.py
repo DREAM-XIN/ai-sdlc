@@ -1634,10 +1634,20 @@ def main():
         exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-qa2-local")
     qa1_lock, _, _, qa1_metadata = selected_config("qa", variant="observed-inline-local")
-    reject(lambda: roundtrip_source_contract("qa", "observed-qa2-local", qa1_lock, qa1_metadata),
-           "QA2 accepted same-filename historical QA1 lock")
-    reject(lambda: selected_config("reviewer", variant="observed-qa2-local"),
-           "QA2 variant accepted another role")
+    try:
+        roundtrip_source_contract("qa", "observed-qa2-local", qa1_lock, qa1_metadata)
+    except AssertionError as exc:
+        check(str(exc) == "QA2 actual lock differs from frozen corrected producer",
+              "QA2 historical-lock negative failed at an unexpected boundary")
+    else:
+        raise AssertionError("QA2 accepted same-filename historical QA1 lock")
+    try:
+        selected_config("reviewer", variant="observed-qa2-local")
+    except AssertionError as exc:
+        check(str(exc) == "observed workflow is QA-only",
+              "QA2 wrong-role negative failed at an unexpected boundary")
+    else:
+        raise AssertionError("QA2 variant accepted another role")
     old_lock, _, _, old_metadata = selected_config("qa", variant="structured-inline-local")
     try:
         roundtrip_source_contract("qa", "observed-inline-local", old_lock, old_metadata)
