@@ -10474,6 +10474,29 @@ def qa_replacement_runtime_fixture(*, verdict='PASS', provider_fault=None):
     from urllib.parse import urlparse, parse_qs, unquote
     attach_structured_predecessor_controller_fixture(provider, Path(__file__).resolve().parents[1])
     provider = attach_qa_replacement_provider(provider, Path(__file__).resolve().parents[1])
+    # Current provider availability starts at the genuine spent ordinal3 capture.
+    # Older immutable authorization bytes remain untouched; expired activation rows
+    # cannot reappear in a later ordinal4 observation.
+    prior_auth = provider.snapshot.files[composition.REVIEWER_STRUCTURED_AUTH_PATH]
+    captured = prior_auth["predecessor_proof"]["retention_observations"]
+    provider.inline_absent_activation_rows = {}
+    for name, run_id, missing_id in (
+        ("reviewer_observed", 37917962742, 11611241425),
+        ("reviewer_post_model_observed", 37927328438, 11614602643),
+    ):
+        observation = next(row for row in captured if row["run_id"] == run_id)
+        expect(observation["activation_state"] == "absent",
+               "spent ordinal3 capture no longer establishes activation absence")
+        listing = provider.state[name]["artifacts"]
+        removed = [row for row in listing["artifacts"] if row["id"] == missing_id]
+        expect(len(removed) == 1 and removed[0]["name"] == "activation",
+               "ordinal4 current inventory removal differs from fixed activation")
+        provider.inline_absent_activation_rows[name] = deepcopy(removed[0])
+        listing["artifacts"] = [row for row in listing["artifacts"] if row["id"] != missing_id]
+        listing["total_count"] = len(listing["artifacts"])
+        expect(sorted(row["id"] for row in listing["artifacts"]) ==
+               sorted(row["id"] for row in observation["current_artifacts"]),
+               "ordinal4 current inventory differs from genuine captured availability")
     old_provider_http = provider.http
     original_detector_log = fixed_ordinal_two_detector_log_bytes()
     def candidate_document_http(*, method, url, token, body=None):
@@ -10626,6 +10649,11 @@ def qa_replacement_runtime_fixture(*, verdict='PASS', provider_fault=None):
         actions_transport=gates.transport, dispatch_gateway=dispatch, bundle=responses.operator_bundle,
         responses=responses, graph_before=graph_before, predecessor_events=predecessor_events,
         callback_coordinator=coordinator)
+    attach_reviewer_retention_fixture(pf, provider)
+    attach_reviewer_inline_failure_fixture(pf, provider)
+    expect(not any(row["id"] == provider.inline_failure_observed["run"]["id"]
+                   for row in pf.historical_gate_runs), "QA predecessor workflow listing duplicated a run")
+    pf.historical_gate_runs.append(provider.inline_failure_observed["run"])
     expect(len(operation_events(runtime.backend.read_snapshot(), composition.RECOVERY_OPERATION_ID)) == 45
            and not gates.state["posts"] and feature.state["puts"] == 0,
            "QA fixture executed or seeded a tested transition")
