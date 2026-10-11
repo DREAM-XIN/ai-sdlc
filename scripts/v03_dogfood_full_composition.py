@@ -8093,3 +8093,227 @@ def _verify_current_v3_installation(source, descriptor, binding):
             raise VerticalInvariantError("POLICY_DENIED", "dormant producer installation bytes differ")
     return sha
 
+
+
+# Read-only fixed predecessor preparation. No execution admission or write entrypoint.
+QA_FOURTH_STORE = "243516b3731054480ca14486957d724ae35785c1"
+QA_FOURTH_ADMISSION = None
+QA_FOURTH_PROJECTION_PATH = "state/operator/v1/projections/"+RECOVERY_OPERATION_ID+".json"
+QA_FOURTH_PROJECTION_BLOB = "ad352baa2a4e0a96debcc8c47aa4aa6b10fc2afe"
+QA_FOURTH_HISTORY_BLOBS = {
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000001-operation-started-739f4331137732d6184000cf3d8b4915.json": "86e43c43941b03e9721844b58479d95db93ce5c8",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000002-loop-step-selected-2cf82f42399ec59c7283df1711819426.json": "f26de71400211607359fb60b58e77ddbab7216ed",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000003-dispatch-claimed-687520874a948a5c4534e4e30d97b366.json": "6741a203a62d31e81f1d619d705bb18feddc0173",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000004-dispatch-launch-authorized-5f6d063282780be1d174254ce8ef9134.json": "1840f7cac50722dad83cb0118e441e475175d859",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000005-dispatch-launch-lookup-recorded-8629bfae40264dc5d15df601bc67686d.json": "6f73721b7c8847ddae58e59bbee801d28cd9ef43",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000006-operation-superseded-972620170d72306fdfa27f564dbc68c4.json": "a11e8f98ab5a9511fe30cf22f0ba6fa0c41253d9",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000007-operation-generation-started-559d6292df44700862ae642429872527.json": "def317058e40c16a8b35c7390ab5847e678192c5",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000008-loop-step-selected-d13700446f0139fb96e5717dc101bbdf.json": "275a6134e086e95c72f7a8c0aa8940a9f35a67c8",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000009-dispatch-claimed-f55e33e1ea7fd6b35eb44831e700d91f.json": "09cbb9201c82d1e69bcce5b0febc8c28f8948fac",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000010-dispatch-launch-authorized-8ea8faac43fb02dc1c3c8e481a40da93.json": "f6f793ce9725e618be0b7b25712e5abe44a55b59",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000011-dispatch-launch-lookup-recorded-ef426f7c675283149f805fdab65861ec.json": "ca4581772d9271f0e7d4dece22479a376504e8d5",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000012-dispatch-launch-lookup-recorded-cff7b708649dcf3b6ca354d3f72fbb6d.json": "96c43dcefda8558aa73750eb12a5e0d5af419d82",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000013-worker-callback-recorded-6e9bb8c4081e7ac28af2c5bccda2dcb4.json": "d773017efeec4ceccd65aaf28c1574c5aa6c9f69",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000014-worker-result-rejected-6e6b1ab67000b9207463c8676cad7be7.json": "93c3c64ea155b65bdbeaf78eed0067590aed9ede",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000015-loop-stable-stop-cd01bb348e233107a60b54928e336a00.json": "5a6969ba938f6153705d999065f786d4bb3159ec",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000016-worker-callback-recorded-8f4c403e06ae9355b0b245c9df740bf7.json": "069beb76d507b71109a1219722e03bf9bd4179f2",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000017-worker-result-validated-ed56d7eadf7efdb50d607eebb60c09e1.json": "54c9ddf16627d495c4ef06f80016fda173e12475",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000018-feature-event-translated-146e91f4ed5fa9420bdc79e69576a866.json": "b277131c21142e815de9825c9c7f02f5283bf19a",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000019-persist-requested-05b10f2f65d52ecbde4f92a6f48ad0a8.json": "03c6cb5628f5896c3dedcfddeb6abb0257b0886d",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000020-persist-linearized-9a302d406aac5e4a2b8aede284386a4c.json": "e8ea390b14f84173a2f2ba65003fb7fcb21d1faf",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000021-persist-confirmed-a92f43c724a6f37ad3eef0d7f217977e.json": "3f1dac41fef483899b0af3d1de6634e502497986",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000022-loop-step-selected-185d0cd557b4337a582cdcdc9ed7075c.json": "19c681ab77d90849e6b67aa53b8ccc3e271c16e6",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000023-feature-event-translated-5bd0311cb465491d30a7027e617c4c4c.json": "09aedd1fa3bd0fb8b71ef6fd75390e2edc520db4",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000024-persist-requested-1e166d13887db2dee0b82e6a979b850e.json": "4dcf56f2ad6a941ccf5b6204cbb418d86f9be0b6",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000025-persist-linearized-5681cee3f8344418644af863d69d5ce8.json": "1b807744b90d39564e05ce2f378e28fba6ece5b1",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000026-persist-confirmed-c1ee4698394d605b8ba50d7529227216.json": "1bd7b63e0b30882f1c304d1be16dad17f3b1dfbe",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000027-loop-step-selected-0c44caba02897e2237f92649007a66fa.json": "2400f03e80d353ba989b66a8609f780e955d5dff",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000028-dispatch-claimed-1d7f9416b07a819c38b27bf7535ccc18.json": "792494e66a1d31529993832e3cc8b0940ab58244",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000029-dispatch-launch-authorized-551bf29f723465460beea589087e5adf.json": "905d1b7f02ebb4a4b59342de885a5120ca2ff089",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000030-dispatch-launch-lookup-recorded-cd54b307a841588acaa8f4ccb197323f.json": "20ced53e567b946554fdaaa166f64167c4fe78c8",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000031-worker-callback-recorded-97dcaf609c8eb7fb7352e729a4eb45d5.json": "6b7baa07d8a0b299e4b7fa05bef7c8caf569db24",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000032-worker-result-validated-8f7eef58ef8da6a56027551073aa6c3a.json": "e4297b927347f3728fb71eb6535c20ff9d8cecb2",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000033-feature-event-translated-756d20045f455f7152a4ab3fa7b3e666.json": "c8b3944ed6ec35bc6bf5f045295986949e5c5232",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000034-persist-requested-2a545f06231b826857f54f37081df18c.json": "ed702b8f2210bc66bf8f686fd599f5a59e2209db",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000035-persist-linearized-62d438c7043348546c7070b236087293.json": "7492950c9ec16a324f8b2b35c6396abbf5f54998",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000036-persist-confirmed-5f0a99676452156cfe5d854c0bc9e3fe.json": "27008954b5f88f59b487e6c152c2e24c50344f61",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000037-loop-step-selected-337b5062210e82e201239a16b9daf37a.json": "2c9be6dac11678da302f730e2c882cb419bbfb2e",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000038-feature-event-translated-882ff54e02f834853cbdda160062b8b6.json": "4249b2db30dad21873db5e930d3095e2bd3afa43",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000039-persist-requested-58cd6e25e86992806ff43475e395bb0b.json": "9cfa050933b816022433e8fd2f5cc88329e0c20f",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000040-persist-linearized-1adf19fd678c5c07a5dbc467ca7760f6.json": "03faf985d053a38183224f17d8e4c9f38cd22fee",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000041-persist-confirmed-a75485aa94a802a16f2ca6b5ac842b7f.json": "0220f317a783c6fb07c3b64b94cc32ba212a4c48",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000042-loop-step-selected-71097d0527ea72d50b17252d6bb42fd7.json": "e78116ab034e9dad6e480ed8af159fc0089a079a",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000043-dispatch-claimed-26b03eaf27e8a41025f3bab67381ae74.json": "ed96a7f735b58ccbf2109225f8cf6001703ca7f7",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000044-dispatch-launch-authorized-05f4d00c6116770425d4386898305572.json": "32a9f30d4fd06bafbbae50d6ff9b1ca72f11c825",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000045-dispatch-launch-lookup-recorded-d1a032202fedca14626f1d6d8ba5573b.json": "9b3b92b25f77739939d9a0eb20189db667101db4",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000046-operation-needs-user-79692292e9ebe18c469e4890172b5abd.json": "4f61dce6132eb7b83a3a7d83b30b494821ae3a94",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000047-operation-needs-user-a442105f277a22cf56273e1dbc8e0036.json": "5270e15aa79bebdd6ec3ac5b5bb1fc2d952811e8",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000048-operation-needs-user-49b1d37519c1f0c44a79e3eedc1c8165.json": "d9461de0cfca21fd374199493cd57188f3a48b69"
+}
+QA_FOURTH_DOCUMENT_BLOBS = {
+    "state/operator/v1/claims/dispatch/dc-f295a7a956dbca80bc6d5b3ac891c14651e0b16d.json": "2fcc99e5cb72f52f8db9a460a4bcd368373b3b94",
+    "state/operator/v1/effect-lineages/members/lin-955d611c1ddae1efdf5cb3bd942716d94bbb81b5b7cf9327/e78599e25cf2641d0a6df7e8d147984ae955d9cde86ed28b1aacd137ed2eb233.json": "bfcae8b16db5ed183e26fa5db6d3ff17007c2fcd",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/authorization.json": "e68d45041c47083c2da5521aa325fcf58bef256b",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/create-claim.json": "706888dddd1acc157cdbeb5b54ace6539125e16b",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/post-handoff-reconciliation-1.json": "5178d7697c9b140c64c4dc2cf3fca94bf223c1ab",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/approved-replacement-1/sealed-receipt.json": "7558b2b3ffe08bb255d3c287fffa49f5fc988f0e",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/authorization.json": "d344fca61af21038c929897bc3fd636d4297ee17",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/create-attempt.json": "db183bc850c8e9add5abad38ced5728325192aba",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-bounded-recovery/transport-continuation.json": "e2b2edf5e50eedaacbdaee7ef1b0ae64c5f94580",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-candidate-handoffs/1f546bd51bfea6214480ecea7789f74bb7c26356a2362357f4bd22aa0367b7be/applied.json": "eb63e61ff00ae20bbe465d205c98924056e77827",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-candidate-handoffs/1f546bd51bfea6214480ecea7789f74bb7c26356a2362357f4bd22aa0367b7be/intent.json": "da06cd8849fff194e3cdbeb1df54d3efa69f850e",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-prehttp-recovery-attempt.json": "e9bf99cc5fd8810a6fd08666ff4c17b136bee1b3",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-inline-replacement-4/authorization.json": "62cbb5cfc89ecd2f21cfa63fca9883c832e5e876",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-inline-replacement-4/create-claim.json": "638457b45567fcbc51141744bfe0b31712fca69d",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-inline-replacement-4/sealed-result.json": "cf0438fee6e9cbbcd68cb74f113bed03b2da573c",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-post-model-replacement-2/authorization.json": "789007f3e0fa8ae57538237db1cb0301a49b7e5b",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-post-model-replacement-2/create-claim.json": "72a617a115d349f9a9b9c18565621917d112d52e",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-pre-model-replacement-1/authorization.json": "9887312d2053849c64986be4bb661938fa08a7e6",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-pre-model-replacement-1/create-claim.json": "f8092c2cfea63b9da61ebc21a5e967b2e4fd6ad3",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-structured-replacement-3/authorization.json": "908bcfa9da4f6bf3dc294157a0ca2672262d2e3d",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-reviewer-structured-replacement-3/create-claim.json": "59212089f0e8c1892d90476fc87467cb345f09a1",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-structured-gate-inputs/dispatch-b9fae78041914d03b5b5c55c9a56ae3f62b06be4.json": "6c30a39bfb2ea97f742f73dc5cee2f7327ab9710",
+    "state/operator/v1/reservations/external/e78599e25cf2641d0a6df7e8d147984ae955d9cde86ed28b1aacd137ed2eb233.json": "ce0f213954f24b1b6f6e1acb87af51278372fbfa",
+    "state/operator/v1/reservations/external/e78599e25cf2641d0a6df7e8d147984ae955d9cde86ed28b1aacd137ed2eb233/external-create-attempt.json": "53a200eabaf2d6c878c37c4b2070b67a546ed0ba",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-1/authorization.json": "df1febdaab5997d22ee2d8239f12ef90f33c035e",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-1/create-claim.json": "c5da4668c3eed91d54d59aa8c9e3e9db65ef570b",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-1/terminal-observation.json": "29f87c9adb49878ebfed81d0e1801ae9c5481223",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-2/authorization.json": "527cecfeb5a28e2cbd6e911cb9c70577fba95b06",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-2/create-claim.json": "8bd7f10d1a0b893d3d04bf795a9f0859aa466db9",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-2/terminal-observation.json": "e64466dd990b8903598be56464593c65c6d50f20",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-3/authorization.json": "1bd1e725c427396e6be38eedca58a4c6788bae60",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-3/create-claim.json": "be0c9bcc5cc57a26f1b8828bd86157d4d2ce9c0d",
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/dogfood-qa-replacement-3/terminal-observation.json": "114044b9a4443aa6454aefc262d921d97f322dc2"
+}
+
+def require_qa_fourth_admission():
+    # Changing a data constant cannot turn preparation into a launch capability.
+    raise VerticalInvariantError("POLICY_DENIED","QA4 execution has no admitted implementation")
+
+def validate_qa_fourth_predecessor(snapshot):
+    """Authenticate only the existing 48-event predecessor; never create authority."""
+    if not _SHA40.fullmatch(str(snapshot.ref_sha or "")):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation lacks existing protected Store")
+    pins={**QA_FOURTH_HISTORY_BLOBS,**QA_FOURTH_DOCUMENT_BLOBS}
+    if any(path not in snapshot.files or _recovery_document_blob(snapshot.get(path))!=blob
+           for path,blob in pins.items()):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation historical bytes differ")
+    if (_recovery_document_blob(snapshot.get(QA_FOURTH_PROJECTION_PATH))!=QA_FOURTH_PROJECTION_BLOB
+            or canonical_json(snapshot.get(QA_FOURTH_PROJECTION_PATH))!=canonical_json(rebuild_projection(snapshot,RECOVERY_OPERATION_ID))):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation cached projection differs")
+    prefix=f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/"
+    if any(path.startswith(prefix) and path not in pins for path in snapshot.files):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation has unknown operation namespace")
+    events=operation_events(snapshot,RECOVERY_OPERATION_ID)
+    if len(events)!=48 or [row["sequence"] for row in events]!=list(range(1,49)):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation journal differs")
+    reviewer=reviewer_replacement_route(snapshot)
+    if (reviewer["ordinal"]!=4 or reviewer["sealed"]["run_id"]!=38074007355
+            or reviewer["sealed"]["execution_binding"]["execution_source_head_sha"]!=QA_HISTORICAL_SOURCE):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation lacks immutable accepted Reviewer")
+    from operator_vertical_store import vertical_projection
+    projection=vertical_projection(snapshot,RECOVERY_OPERATION_ID)
+    if (projection["generation"]!=1 or projection["status"]!="NEEDS_USER"
+            or projection["expected_feature_revision"]!=5
+            or any(path in snapshot.files for path in
+                   (QA_REPLACEMENT_SEAL_PATH,QA_SECOND_SEAL_PATH,QA_THIRD_SEAL_PATH))
+            or [row["event_type"] for row in events[45:]]!=["operation.needs-user"]*3):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 preparation fixed stopped boundary differs")
+    return reviewer,events
+
+
+QA4_FAILURE_RUN = {"id":38144537577,"run_attempt":1,"workflow_id":380954060,"path":".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml","event":"workflow_dispatch","head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423","status":"completed","conclusion":"failure","display_title":"AI-SDLC gh-aw dispatch-ed15cc06d43530b754825cd71fb86c790008a651","created_at":"2026-10-11T13:46:49Z","updated_at":"2026-10-11T13:50:30Z"}
+QA4_FAILURE_JOBS = [{"id":114485029227,"name":"activation","run_id":38144537577,"run_attempt":1,"head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423","status":"completed","conclusion":"success","steps":[{"name":"Interpolate variables and render templates","status":"completed","conclusion":"success"},{"name":"Upload activation artifact","status":"completed","conclusion":"success"}]},{"id":114485075209,"name":"agent","run_id":38144537577,"run_attempt":1,"head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423","status":"completed","conclusion":"failure","steps":[{"name":"Prepare authenticated Gate context before model","status":"completed","conclusion":"success"},{"name":"Execute GitHub Copilot CLI","status":"completed","conclusion":"success"},{"name":"Ingest agent output","status":"completed","conclusion":"success"},{"name":"Render validated structured Gate output before detection","status":"completed","conclusion":"failure"}]},{"id":114485410495,"name":"detection","run_id":38144537577,"run_attempt":1,"head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423","status":"completed","conclusion":"success","steps":[{"name":"Verify Gate detector input bytes before scanning","status":"completed","conclusion":"success"},{"name":"Execute threat detection with AWF","status":"completed","conclusion":"success"},{"name":"Verify Gate detector input bytes after scanning","status":"completed","conclusion":"success"},{"name":"Upload immutable Gate scan byte receipt","status":"completed","conclusion":"success"},{"name":"Conclude threat detection","status":"completed","conclusion":"success"}]},{"id":114485616764,"name":"safe_outputs","run_id":38144537577,"run_attempt":1,"head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423","status":"completed","conclusion":"failure","steps":[{"name":"Require first attempt and affirmative detection before Safe Outputs effects","status":"completed","conclusion":"failure"},{"name":"Download exact current-run Gate scan byte receipt","status":"completed","conclusion":"skipped"},{"name":"Verify scanned Gate bytes before publication","status":"completed","conclusion":"skipped"},{"name":"Process Safe Outputs","status":"completed","conclusion":"skipped"},{"name":"Upload Safe Outputs Items","status":"completed","conclusion":"success"}]},{"id":114485655088,"name":"conclusion","run_id":38144537577,"run_attempt":1,"head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423","status":"completed","conclusion":"success","steps":[{"name":"Record non-authoritative Gate execution identity","status":"completed","conclusion":"skipped"},{"name":"Handle agent failure","status":"completed","conclusion":"success"}]}]
+QA4_FAILURE_ARTIFACTS = [{"id":11703639578,"name":"usage","digest":"sha256:443d2566738045925bc8ded528a3c12823057cf134a88cc682058f9a72da6bb4","size_in_bytes":3370,"created_at":"2026-10-11T13:50:22Z","updated_at":"2026-10-11T13:50:22Z","expires_at":"2027-01-09T13:46:50Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}},{"id":11704078478,"name":"ai-sdlc-gate-scanned-bytes-38144537577-attempt-1","digest":"sha256:7a8a8ce31c0c27c673d6bb13109cbc16b115836880e3aab77ec12a1afc3e2066","size_in_bytes":314,"created_at":"2026-10-11T13:49:51Z","updated_at":"2026-10-11T13:49:51Z","expires_at":"2027-01-09T13:46:50Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}},{"id":11704123340,"name":"detection","digest":"sha256:7ab7bc56a74ab83068ae0f489c673b89bf9f8cff9df15e6e0d92153988f090be","size_in_bytes":21200,"created_at":"2026-10-11T13:49:52Z","updated_at":"2026-10-11T13:49:52Z","expires_at":"2027-01-09T13:46:50Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}},{"id":11704202908,"name":"activation","digest":"sha256:50b7453f7bb0a419662afc52780a7220ec3ddf26b704f8ef62a2d9634190bdc5","size_in_bytes":1381775,"created_at":"2026-10-11T13:47:03Z","updated_at":"2026-10-11T13:47:03Z","expires_at":"2026-10-12T13:47:02Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}},{"id":11704241851,"name":"agent","digest":"sha256:5febfca9cfde7de8aeb2c3d59a2a729e33080793b75b2e7cf1e196d7dccccfe9","size_in_bytes":332037,"created_at":"2026-10-11T13:48:48Z","updated_at":"2026-10-11T13:48:48Z","expires_at":"2027-01-09T13:46:50Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}},{"id":11704346042,"name":"agent-output-fallback","digest":"sha256:0cf9ed38fa6c55f66435d8ef3c20f668fc488017ebd63a01c6b0d893f32641c2","size_in_bytes":6708,"created_at":"2026-10-11T13:48:47Z","updated_at":"2026-10-11T13:48:47Z","expires_at":"2027-01-09T13:46:50Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}},{"id":11704375791,"name":"info","digest":"sha256:a9183139383a6c116f86928fb4265ad7976e96220508059cbdcca115baf287ad","size_in_bytes":639,"created_at":"2026-10-11T13:47:02Z","updated_at":"2026-10-11T13:47:02Z","expires_at":"2027-01-09T13:46:50Z","workflow_run":{"id":38144537577,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"}}]
+QA4_FAILURE_AGENT_LINES = ["2026-10-11T13:48:46.7050679Z Structured Gate contract blocked.","2026-10-11T13:48:46.7119346Z ##[error]Process completed with exit code 1."]
+QA4_FAILURE_DETECTION_LINES = ["2026-10-11T13:49:50.3735104Z [threat-detect] run start: version=v0.5.2 engine=copilot model=deepseek-chat retries=0 max_turns=50 engine_timeout=5m0s","2026-10-11T13:49:52.5608254Z ✔️  Structured result file found and parsed successfully.","2026-10-11T13:49:52.5609647Z    prompt_injection : false","2026-10-11T13:49:52.5609926Z    secret_leak      : false","2026-10-11T13:49:52.5610190Z    malicious_patch  : false","2026-10-11T13:49:52.5610706Z    reasons          : (none)","2026-10-11T13:49:52.5611134Z    warnings         : (none)","2026-10-11T13:49:52.5611613Z ✅ No security threats detected. Safe outputs may proceed."]
+QA4_FAILURE_PUBLICATION_LINES = ["2026-10-11T13:50:03.5824310Z   AGENT_RESULT: failure","2026-10-11T13:50:03.5824800Z   DETECTION_CONCLUSION: success","2026-10-11T13:50:03.5825311Z   DETECTION_RESULT: success","2026-10-11T13:50:03.5825798Z   DETECTION_SUCCESS: true","2026-10-11T13:50:03.5826280Z   RUN_ATTEMPT: 1","2026-10-11T13:50:03.5865345Z ##[error]Process completed with exit code 1.","2026-10-11T13:50:03.7818687Z No files were found with the provided path: /tmp/gh-aw/safe-output-items.jsonl","2026-10-11T13:50:03.7819723Z /tmp/gh-aw/temporary-id-map.json","2026-10-11T13:50:03.7820453Z /tmp/gh-aw/safe-output-errors.json. No artifacts will be uploaded."]
+QA4_FAILURE_STATUS_LINES = ["2026-10-11T13:48:46.7050679Z Structured Gate contract blocked.","2026-10-11T13:48:46.7119346Z ##[error]Process completed with exit code 1.","2026-10-11T13:49:50.3735104Z [threat-detect] run start: version=v0.5.2 engine=copilot model=deepseek-chat retries=0 max_turns=50 engine_timeout=5m0s","2026-10-11T13:49:52.5608254Z ✔️  Structured result file found and parsed successfully.","2026-10-11T13:49:52.5609647Z    prompt_injection : false","2026-10-11T13:49:52.5609926Z    secret_leak      : false","2026-10-11T13:49:52.5610190Z    malicious_patch  : false","2026-10-11T13:49:52.5610706Z    reasons          : (none)","2026-10-11T13:49:52.5611134Z    warnings         : (none)","2026-10-11T13:49:52.5611613Z ✅ No security threats detected. Safe outputs may proceed.","2026-10-11T13:50:03.5824310Z   AGENT_RESULT: failure","2026-10-11T13:50:03.5824800Z   DETECTION_CONCLUSION: success","2026-10-11T13:50:03.5825311Z   DETECTION_RESULT: success","2026-10-11T13:50:03.5825798Z   DETECTION_SUCCESS: true","2026-10-11T13:50:03.5826280Z   RUN_ATTEMPT: 1","2026-10-11T13:50:03.5865345Z ##[error]Process completed with exit code 1.","2026-10-11T13:50:03.7818687Z No files were found with the provided path: /tmp/gh-aw/safe-output-items.jsonl","2026-10-11T13:50:03.7819723Z /tmp/gh-aw/temporary-id-map.json","2026-10-11T13:50:03.7820453Z /tmp/gh-aw/safe-output-errors.json. No artifacts will be uploaded."]
+QA4_FAILURE_UPLOAD_LINES = ["2026-10-11T13:47:02.3783341Z   retention-days: 1","2026-10-11T13:47:03.4997785Z SHA256 digest of uploaded artifact is 50b7453f7bb0a419662afc52780a7220ec3ddf26b704f8ef62a2d9634190bdc5","2026-10-11T13:47:03.7227855Z Artifact activation successfully finalized. Artifact ID 11704202908","2026-10-11T13:47:03.7229081Z Artifact activation has been successfully uploaded! Final size is 1381775 bytes. Artifact ID is 11704202908"]
+QA4_FAILURE_SOURCE_BLOBS = {".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md":"62d56d3a053eb372104f463430dccf8459511ce0",".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml":"8600ce893d0f71d06e33939abe05add672d449e7","scripts/v03_dogfood_gate_output_v2.py":"aff76251c232e5cdaeec21306c52d9da09d20e01","scripts/v03_detector_observation.mjs":"85d792241d3d20b0f1051d01e1054c608bfcabdc"}
+
+def qa4_failure_historical_proof():
+    from copy import deepcopy
+    return {"schema_version": "ai-sdlc.v03-qa4-failure-history/v1",
+        "run": deepcopy(QA4_FAILURE_RUN), "jobs": deepcopy(QA4_FAILURE_JOBS),
+        "source_blobs": dict(QA4_FAILURE_SOURCE_BLOBS),
+        "fixed_failure": "agent renderer contract blocked; clean detector result did not override failed Worker; publication guard blocked",
+        "selected_log_digest": digest_json(QA4_FAILURE_STATUS_LINES),
+        "activation_upload_digest": digest_json(QA4_FAILURE_UPLOAD_LINES),
+        "fixed_artifact_manifest": deepcopy(QA4_FAILURE_ARTIFACTS),
+        "failure_issue": {"id": 5800488789, "number": 596, "author_id": 41898282,
+            "workflow_id": "ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local",
+            "failure_category": "agent_failure"},
+        "failure_comment": {"id": 6109717878, "author_id": 41898282,
+            "body_sha256": "9584780a87dd44bd982ba8c62fa69820dc1dd1902b039361b75ac1e4774a3e60",
+            "created_at": "2026-10-11T13:50:24Z", "updated_at": "2026-10-11T13:50:24Z"},
+        "safe_outputs_skipped": False, "publication_skipped": True,
+        "clean_detection_only": True, "whole_worker_pass": False, "result_adopted": False}
+
+
+def validate_qa4_failure_observation(value):
+    import datetime
+    def stamp(text):
+        if not isinstance(text, str):
+            raise V03DogfoodCompositionError("QA4 predecessor timestamp type differs")
+        try:
+            parsed = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as exc:
+            raise V03DogfoodCompositionError("QA4 predecessor timestamp differs") from exc
+        return parsed
+    if (not isinstance(value, dict) or set(value) != {
+            "schema_version", "run_id", "historical_digest", "observed_at",
+            "activation_state", "current_artifacts"}
+            or type(value.get("run_id")) is not int or value["run_id"] != 38144537577
+            or value.get("schema_version") != "ai-sdlc.v03-qa4-failure-observation/v1"
+            or value.get("historical_digest") != digest_json(qa4_failure_historical_proof())):
+        raise V03DogfoodCompositionError("QA4 predecessor observation shape differs")
+    observed = stamp(value["observed_at"])
+    if observed < stamp(QA4_FAILURE_RUN["updated_at"]):
+        raise V03DogfoodCompositionError("QA4 predecessor observation predates failure")
+    rows = value["current_artifacts"]
+    if not isinstance(rows, list) or len(rows) not in (6, 7):
+        raise V03DogfoodCompositionError("QA4 predecessor artifact count differs")
+    if any(not isinstance(row, dict) or type(row.get("id")) is not int for row in rows):
+        raise V03DogfoodCompositionError("QA4 predecessor artifact shape differs")
+    if [row["id"] for row in rows] != sorted(set(row["id"] for row in rows)):
+        raise V03DogfoodCompositionError("QA4 predecessor artifact IDs duplicate or unordered")
+    expected = {row["id"]: row for row in QA4_FAILURE_ARTIFACTS}
+    activation_id = 11704202908
+    by_id = {row["id"]: row for row in rows}
+    if set(by_id) - set(expected) or (set(expected) - {activation_id}) - set(by_id):
+        raise V03DogfoodCompositionError("QA4 predecessor required evidence missing or unknown")
+    for artifact_id, row in by_id.items():
+        expired = row.get("expired")
+        if type(expired) is not bool or set(row) != set(expected[artifact_id]) | {"expired"}:
+            raise V03DogfoodCompositionError("QA4 predecessor artifact fields differ")
+        if canonical_json({key: row[key] for key in expected[artifact_id]}) != canonical_json(expected[artifact_id]):
+            raise V03DogfoodCompositionError("QA4 predecessor artifact immutable metadata differs")
+        if artifact_id != activation_id and (expired or observed >= stamp(row["expires_at"])):
+            raise V03DogfoodCompositionError("QA4 predecessor result or diagnostic evidence expired")
+    row = by_id.get(activation_id)
+    actual = "absent" if row is None else "expired_listed" if row["expired"] else "present"
+    if value["activation_state"] != actual:
+        raise V03DogfoodCompositionError("QA4 predecessor activation state differs")
+    expiry = stamp(expected[activation_id]["expires_at"])
+    if actual != "present" and observed < expiry:
+        raise V03DogfoodCompositionError("QA4 predecessor activation lifetime differs")
+    return value
+
+
+def validate_qa4_failure_relation(frozen, fresh):
+    if (not isinstance(frozen, dict) or not isinstance(fresh, dict)
+            or set(frozen) != {"historical_proof", "current_observation"}
+            or set(fresh) != set(frozen)):
+        raise V03DogfoodCompositionError("QA4 predecessor proof shape differs")
+    expected = qa4_failure_historical_proof()
+    if (canonical_json(frozen["historical_proof"]) != canonical_json(expected)
+            or canonical_json(fresh["historical_proof"]) != canonical_json(expected)):
+        raise V03DogfoodCompositionError("QA4 predecessor stable history changed")
+    old = validate_qa4_failure_observation(frozen["current_observation"])
+    new = validate_qa4_failure_observation(fresh["current_observation"])
+    rank = {"present": 0, "expired_listed": 1, "absent": 2}
+    if (new["observed_at"] < old["observed_at"]
+            or rank[new["activation_state"]] < rank[old["activation_state"]]):
+        raise V03DogfoodCompositionError("QA4 predecessor observation rolled back")
+    return fresh

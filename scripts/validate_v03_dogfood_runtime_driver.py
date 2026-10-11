@@ -9475,6 +9475,7 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("QA4 read-only predecessor preparation", qa_fourth_preparation_tests),
         ("current v3 fresh factory lifecycle", current_v3_factory_tests),
         ("QA3 actual joined lifecycle", qa_third_joined_factory_tests),
         ("QA3 frozen CAS and replay", qa_third_admission_tests),
@@ -13889,6 +13890,106 @@ def validate_runtime_group_partition(groups,named_groups):
     complement=set(names)-set(flattened)
     expect(set(flattened).isdisjoint(complement) and set(flattened)|complement==set(names),
            "CI runtime group union is not complete")
+
+
+
+
+def qa_fourth_preparation_tests():
+    """Fixed historical pins and pure proof validators; live observer integration is separate."""
+    import hashlib, json, subprocess
+    from copy import deepcopy
+    from pathlib import Path
+    from operator_store_model import StoreSnapshot, canonical_json
+    from operator_vertical import VerticalInvariantError
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    root=Path(__file__).resolve().parents[1]
+    def git_bytes(sha,path):
+        return subprocess.run(["git","show",sha+":"+path],cwd=root,check=True,
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30).stdout
+    pins={**c.QA_FOURTH_HISTORY_BLOBS,**c.QA_FOURTH_DOCUMENT_BLOBS}
+    expect(len(c.QA_FOURTH_HISTORY_BLOBS)==48 and len(c.QA_FOURTH_DOCUMENT_BLOBS)==33,
+           "QA4 preparation manifest count differs")
+    files={}
+    for path,sha in pins.items():
+        raw=git_bytes(c.QA_FOURTH_STORE,path)
+        expect(hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()==sha,
+               "QA4 fixed historical Git blob differs")
+        files[path]=json.loads(raw)
+    projection="state/operator/v1/projections/"+c.RECOVERY_OPERATION_ID+".json"
+    raw=git_bytes(c.QA_FOURTH_STORE,projection)
+    expect(hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()=="ad352baa2a4e0a96debcc8c47aa4aa6b10fc2afe",
+           "QA4 fixed projection Git blob differs")
+    files[projection]=json.loads(raw)
+    snapshot=StoreSnapshot(c.QA_FOURTH_STORE,files)
+    original=canonical_json(snapshot.files)
+    reviewer,events=c.validate_qa_fourth_predecessor(snapshot)
+    expect(len(events)==48 and reviewer["sealed"]["run_id"]==38074007355,
+           "QA4 preparation lost accepted Reviewer history")
+    def rejected(call,label):
+        try: call()
+        except (VerticalInvariantError,c.V03DogfoodCompositionError,d.V03DogfoodRuntimeDriverError):
+            return
+        raise AssertionError("QA4 preparation accepted "+label)
+    for path in pins:
+        changed=deepcopy(snapshot)
+        changed.files.pop(path)
+        rejected(lambda:c.validate_qa_fourth_predecessor(changed),"missing mandatory history")
+    for path in (c.QA_REPLACEMENT_TERMINAL_PATH,c.QA_SECOND_TERMINAL_PATH,c.QA_THIRD_TERMINAL_PATH,
+                 c.REVIEWER_INLINE_SEAL_PATH,list(c.QA_FOURTH_HISTORY_BLOBS)[-1],projection):
+        changed=deepcopy(snapshot)
+        changed.files[path]["unexpected"]=True
+        if path==projection:
+            changed.files[path]["status"]="WAITING_EXTERNAL"
+        rejected(lambda:c.validate_qa_fourth_predecessor(changed),"changed historical boundary")
+    for value in (None,{}):
+        changed=deepcopy(snapshot)
+        changed.files["state/operator/v1/operations/"+c.RECOVERY_OPERATION_ID+
+                      "/dogfood-qa-replacement-4/unknown.json"]=value
+        rejected(lambda:c.validate_qa_fourth_predecessor(changed),"unknown QA4 namespace")
+    expect(c.QA_FOURTH_ADMISSION is None,"QA4 preparation acquired admission")
+    rejected(c.require_qa_fourth_admission,"missing execution admission")
+    saved=c.QA_FOURTH_ADMISSION
+    try:
+        c.QA_FOURTH_ADMISSION={"fixture_only":True}
+        rejected(c.require_qa_fourth_admission,"data-only activation")
+    finally:
+        c.QA_FOURTH_ADMISSION=saved
+    expect(not hasattr(d,"recover_qa_fourth") and not hasattr(c,"plan_qa_fourth_replacement"),
+           "read-only preparation exposed an execution entrypoint")
+    # Pure metadata validation only. The strict live comment-body observer is
+    # independently reviewed, but is deliberately not simulated with invented bytes.
+    history=c.qa4_failure_historical_proof()
+    proof={"historical_proof":history,"current_observation":{
+        "schema_version":"ai-sdlc.v03-qa4-failure-observation/v1",
+        "run_id":38144537577,"historical_digest":__import__("operator_store_model").digest_json(history),
+        "observed_at":"2026-10-11T16:00:00Z","activation_state":"present",
+        "current_artifacts":[dict(deepcopy(row),expired=False) for row in c.QA4_FAILURE_ARTIFACTS]}}
+    c.validate_qa4_failure_relation(proof,deepcopy(proof))
+    for field in ("failure_comment","source_blobs","whole_worker_pass"):
+        bad=deepcopy(proof)
+        if field=="failure_comment":
+            bad["historical_proof"][field]["body_sha256"]="0"*64
+        elif field=="source_blobs":
+            bad["historical_proof"][field][next(iter(c.QA4_FAILURE_SOURCE_BLOBS))]="0"*40
+        else:
+            bad["historical_proof"][field]=True
+        rejected(lambda:c.validate_qa4_failure_relation(proof,bad),"tampered proof metadata/hash")
+    gone=deepcopy(proof)
+    row=gone["current_observation"]
+    row["observed_at"]="2026-10-12T13:47:03Z"
+    row["activation_state"]="absent"
+    row["current_artifacts"]=[item for item in row["current_artifacts"] if item["id"]!=11704202908]
+    c.validate_qa4_failure_relation(proof,gone)
+    resurrected=deepcopy(proof)
+    resurrected["current_observation"]["observed_at"]="2026-10-12T13:47:04Z"
+    rejected(lambda:c.validate_qa4_failure_relation(gone,resurrected),"resurrected activation")
+    missing=deepcopy(gone)
+    missing["current_observation"]["current_artifacts"].pop()
+    rejected(lambda:c.validate_qa4_failure_relation(proof,missing),"missing mandatory diagnostic")
+    expect(canonical_json(snapshot.files)==original,"QA4 read-only checks changed predecessor bytes")
+    print("- QA4 preparation: history48/docs33 verified; fresh Reviewer reread=false; observer integration executed=false; execution_enabled=false; all effects=0")
+
 
 if __name__ == "__main__":
     main()

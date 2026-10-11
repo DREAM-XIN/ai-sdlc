@@ -4370,5 +4370,159 @@ def observe_qa3_failure_for_review(*, actions_read_token):
         "observed_at":row["observed_at"]}
 
 
+
+def observe_qa4_failure(preflight):
+    """Authenticate the fixed failed QA run; no result adoption or creation API."""
+    import re
+    import yaml
+    from v03_dogfood_full_composition import (
+        QA4_FAILURE_RUN, QA4_FAILURE_JOBS, QA4_FAILURE_ARTIFACTS,
+        QA4_FAILURE_AGENT_LINES, QA4_FAILURE_DETECTION_LINES, QA4_FAILURE_PUBLICATION_LINES,
+        QA4_FAILURE_UPLOAD_LINES, QA4_FAILURE_SOURCE_BLOBS,
+        qa4_failure_historical_proof, validate_qa4_failure_observation)
+    def project(row, expected, label):
+        if (not isinstance(row, dict)
+                or canonical_json({key: row.get(key) for key in expected}) != canonical_json(expected)):
+            raise V03DogfoodRuntimeDriverError("QA4 predecessor " + label + " differs")
+        return {key: row[key] for key in expected}
+    run_id = 38144537577
+    run_path = f"/actions/runs/{run_id}"
+    jobs_path = f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"
+    artifacts_path = f"/actions/runs/{run_id}/artifacts?per_page=100"
+    before = _github_json(preflight, run_path)
+    project(before, QA4_FAILURE_RUN, "run")
+    jobs = _github_json(preflight, jobs_path)
+    rows = jobs.get("jobs")
+    if (not isinstance(rows, list) or type(jobs.get("total_count")) is not int
+            or jobs["total_count"] != 5 or len(rows) != 5):
+        raise V03DogfoodRuntimeDriverError("QA4 predecessor job inventory incomplete")
+    for expected in QA4_FAILURE_JOBS:
+        matches = [row for row in rows if isinstance(row, dict) and row.get("id") == expected["id"]]
+        if len(matches) != 1:
+            raise V03DogfoodRuntimeDriverError("QA4 predecessor job duplicate or missing")
+        row = matches[0]
+        project(row, {key: value for key, value in expected.items() if key != "steps"}, "job")
+        steps = row.get("steps")
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise V03DogfoodRuntimeDriverError("QA4 predecessor steps malformed")
+        for step in expected["steps"]:
+            selected = [item for item in steps if item.get("name") == step["name"]]
+            if len(selected) != 1:
+                raise V03DogfoodRuntimeDriverError("QA4 predecessor selected step ambiguous")
+            project(selected[0], step, "selected step")
+    sources = {}
+    for path, blob in QA4_FAILURE_SOURCE_BLOBS.items():
+        suffix = "/contents/" + path + "?ref=" + QA4_FAILURE_RUN["head_sha"]
+        doc = _github_json(preflight, suffix)
+        if doc.get("sha") != blob or doc.get("encoding") != "base64":
+            raise V03DogfoodRuntimeDriverError("QA4 predecessor source metadata differs")
+        raw = base64.b64decode("".join(doc["content"].split()), validate=True)
+        if len(raw) > 512 * 1024 or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != blob:
+            raise V03DogfoodRuntimeDriverError("QA4 predecessor source bytes differ")
+        sources[suffix] = doc
+        if path.endswith(".lock.yml"):
+            workflow = yaml.safe_load(raw)
+            uploads = [step for step in workflow["jobs"]["activation"]["steps"]
+                if isinstance(step, dict) and isinstance(step.get("with"), dict)
+                and step["with"].get("name") == "activation"]
+            if (len(uploads) != 1 or uploads[0].get("uses")
+                    != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+                    or type(uploads[0]["with"].get("retention-days")) is not int
+                    or uploads[0]["with"]["retention-days"] != 1):
+                raise V03DogfoodRuntimeDriverError("QA4 predecessor retention source differs")
+    transport = preflight.composition.actions_transport
+    def selected_logs():
+        selected = []
+        for job_id, expected, limit in (
+                (114485075209, QA4_FAILURE_AGENT_LINES, 16 * 1024 * 1024),
+                (114485410495, QA4_FAILURE_DETECTION_LINES, 16 * 1024 * 1024),
+                (114485616764, QA4_FAILURE_PUBLICATION_LINES, 2 * 1024 * 1024),
+                (114485029227, QA4_FAILURE_UPLOAD_LINES, 2 * 1024 * 1024)):
+            status, _, raw = transport.http(method="GET",
+                url=transport._api(f"/actions/jobs/{job_id}/logs"),
+                token=transport.config.token, body=None)
+            if status != 200 or type(raw) is not bytes or len(raw) > limit:
+                raise V03DogfoodRuntimeDriverError("QA4 predecessor selected log unavailable")
+            lines = raw.decode("utf-8", errors="strict").splitlines()
+            if any(lines.count(line) != 1 for line in expected):
+                raise V03DogfoodRuntimeDriverError("QA4 predecessor selected records changed")
+            positions = [lines.index(line) for line in expected]
+            if positions != sorted(positions):
+                raise V03DogfoodRuntimeDriverError("QA4 predecessor selected record ordering changed")
+            selected.append(list(expected))
+        return selected
+    selected = selected_logs()
+    issue = _github_json(preflight, "/issues/596")
+    issue_user = issue.get("user") or {}
+    if (type(issue.get("id")) is not int or issue["id"] != 5800488789
+            or type(issue.get("number")) is not int or issue["number"] != 596
+            or issue.get("html_url") != "https://github.com/DREAM-XIN/ai-sdlc/issues/596"
+            or issue_user.get("login") != "github-actions[bot]" or issue_user.get("type") != "Bot"
+            or type(issue_user.get("id")) is not int or issue_user["id"] != 41898282
+            or not isinstance(issue.get("body"), str)
+            or "**Run:** https://github.com/DREAM-XIN/ai-sdlc/actions/runs/38134198185" not in issue["body"]
+            or "<!-- gh-aw-failure-issue: true, workflow_id: ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local, branch: main, failure_categories: agent_failure -->" not in issue["body"]):
+        raise V03DogfoodRuntimeDriverError("QA4 predecessor automatic failure issue differs")
+    comment = _github_json(preflight, "/issues/comments/6109717878")
+    comment_user = comment.get("user") or {}
+    comment_body = comment.get("body")
+    if (type(comment.get("id")) is not int or comment["id"] != 6109717878
+            or comment.get("html_url") != "https://github.com/DREAM-XIN/ai-sdlc/issues/596#issuecomment-6109717878"
+            or comment.get("issue_url") != "https://api.github.com/repos/DREAM-XIN/ai-sdlc/issues/596"
+            or comment_user.get("login") != "github-actions[bot]" or comment_user.get("type") != "Bot"
+            or type(comment_user.get("id")) is not int or comment_user["id"] != 41898282
+            or comment.get("created_at") != "2026-10-11T13:50:24Z"
+            or comment.get("updated_at") != "2026-10-11T13:50:24Z"
+            or not isinstance(comment_body, str) or len(comment_body.encode("utf-8")) > 16384
+            or hashlib.sha256(comment_body.encode("utf-8")).hexdigest() != "9584780a87dd44bd982ba8c62fa69820dc1dd1902b039361b75ac1e4774a3e60"
+            or "https://github.com/DREAM-XIN/ai-sdlc/actions/runs/38144537577" not in comment_body):
+        raise V03DogfoodRuntimeDriverError("QA4 predecessor automatic failure comment differs")
+    artifacts = _github_json(preflight, artifacts_path)
+    rows = artifacts.get("artifacts")
+    if (not isinstance(rows, list) or type(artifacts.get("total_count")) is not int
+            or artifacts["total_count"] != len(rows) or len(rows) not in (6, 7)
+            or any(not isinstance(row, dict) for row in rows)):
+        raise V03DogfoodRuntimeDriverError("QA4 predecessor current artifact inventory incomplete")
+    keys = set(QA4_FAILURE_ARTIFACTS[0]) | {"expired"}
+    current = [{key: row.get(key) for key in keys} for row in rows]
+    if any(type(row["id"]) is not int for row in current):
+        raise V03DogfoodRuntimeDriverError("QA4 predecessor artifact ID type differs")
+    current.sort(key=lambda row: row["id"])
+    activation = [row for row in current if row["id"] == 11704202908]
+    state = "absent" if not activation else "expired_listed" if activation[0]["expired"] is True else "present"
+    history = qa4_failure_historical_proof()
+    observation = {"schema_version": "ai-sdlc.v03-qa4-failure-observation/v1",
+        "run_id": run_id, "historical_digest": digest_json(history),
+        "observed_at": preflight.composition.runtime.clock(),
+        "activation_state": state, "current_artifacts": current}
+    validate_qa4_failure_observation(observation)
+    if (_github_json(preflight, run_path) != before or _github_json(preflight, jobs_path) != jobs
+            or _github_json(preflight, artifacts_path) != artifacts or selected_logs() != selected
+            or any(_github_json(preflight, suffix) != doc for suffix, doc in sources.items())
+            or _github_json(preflight, "/issues/596") != issue
+            or _github_json(preflight, "/issues/comments/6109717878") != comment):
+        raise V03DogfoodRuntimeDriverError("QA4 predecessor changed during observation")
+    return {"historical_proof": history, "current_observation": observation}
+
+
+def observe_qa_fourth_predecessor(preflight):
+    """Read-only preparation, not activation readiness or a fresh Reviewer lease."""
+    import v03_dogfood_full_composition as c
+    runtime=preflight.composition.runtime
+    before=runtime.backend.read_snapshot()
+    reviewer,events=c.validate_qa_fourth_predecessor(before)
+    failed=observe_qa4_failure(preflight)
+    after=runtime.backend.read_snapshot()
+    if after.ref_sha!=before.ref_sha or canonical_json(after.files)!=canonical_json(before.files):
+        raise V03DogfoodRuntimeDriverError("Store changed during QA4 read-only preparation")
+    return {"schema_version":"ai-sdlc.v03-qa-fourth-preparation/v1",
+        "store_commit":before.ref_sha,"event_count":len(events),
+        "history_pin_verified":True,"fresh_reviewer_reread_performed":False,
+        "accepted_reviewer_run_id":reviewer["sealed"]["run_id"],
+        "execution_enabled":False,"activation_ready":False,"admission":None,
+        "read_only":True,"model_invoked":False,"current_claim_created":False,
+        "failed_qa":failed}
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
