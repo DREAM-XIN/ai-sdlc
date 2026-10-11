@@ -13,6 +13,7 @@ let stage = "ISOLATION";
 let lastProcess = null;
 let nativeDiagnostics = null;
 let nativeFieldDiagnostics = null;
+let preservationDiagnostics = null;
 const ensure = (ok, code) => { if (!ok) throw new Error(code); };
 const allowedErrors = new Set([
  "INPUT_PATH","NONROOT","NETWORK_INTERFACE","INHERITED_AUTHORITY","EGRESS_AVAILABLE","EGRESS_INCONCLUSIVE",
@@ -41,7 +42,7 @@ function run(command, args, env, cwd, timeoutMs=90000, onSpawn=null) {
   let bytes=0, settled=false, captured="";
   lastProcess={exit_code:null,close_signal:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[],runtime_probe:null,child_failure:null};
   const classify=()=>{const failures=[];let classifiedText=captured;
-   if(["awf-host","awf-cancel"].includes(cli)){classifiedText=captured.split(/\r?\n/).filter(line=>{const at=line.indexOf('{"schema":"v03-native-cli-observability/v1"');if(at<0)return true;try{const x=JSON.parse(line.slice(at));if(Object.keys(x).sort().join(",")==="error,process,raw_exported,schema,stage,status"&&x.schema==="v03-native-cli-observability/v1"&&x.status==="FAIL"&&["ISOLATION","CLI_PROTOCOL","NATIVE_EVENTS","INCOMPLETE_NEGATIVES"].includes(x.stage)&&allowedErrors.has(x.error)&&x.process===null&&x.raw_exported===false){failures.push({stage:x.stage,error:x.error});return false;}}catch{}return true;}).join("\n");if(failures.length===1)lastProcess.child_failure=failures[0];}
+   if(["awf-host","awf-cancel"].includes(cli)){classifiedText=captured.split(/\r?\n/).filter(line=>{const at=line.indexOf('{"schema":"v03-native-cli-observability/v1"');if(at<0)return true;try{const x=JSON.parse(line.slice(at));if(Object.keys(x).sort().join(",")==="error,preservation,process,raw_exported,schema,stage,status"&&x.schema==="v03-native-cli-observability/v1"&&x.status==="FAIL"&&["ISOLATION","CLI_PROTOCOL","NATIVE_EVENTS","INCOMPLETE_NEGATIVES"].includes(x.stage)&&allowedErrors.has(x.error)&&x.process===null&&x.preservation===null&&x.raw_exported===false){failures.push({stage:x.stage,error:x.error});return false;}}catch{}return true;}).join("\n");if(failures.length===1)lastProcess.child_failure=failures[0];}
    const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i,AUTH_REQUIRED:/missing.*(?:token|key|credential)|(?:token|key|credential).*required/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(classifiedText)).map(([k])=>k);
    if(["awf-host","awf-cancel"].includes(cli)){
     const probes=[];
@@ -400,7 +401,14 @@ async function awfChild(label){
  }finally{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}}
 }
 function preservedEvents(tmp){
- const entries=fs.readdirSync(tmp,{withFileTypes:true});ensure(entries.length<=128&&!entries.some(e=>e.isSymbolicLink()),"SESSION_DIRECTORY");
+ const entries=fs.readdirSync(tmp,{withFileTypes:true});ensure(entries.length<=128,"SESSION_DIRECTORY");
+ preservationDiagnostics={root_entry_count:entries.length,root_symlink_count:entries.filter(e=>e.isSymbolicLink()).length,remaining_workdir_count:entries.filter(e=>/^awf-[A-Za-z0-9]{6}$/.test(e.name)).length,preserved_candidate_count:0,preserved_candidate_valid:false,child_count:null,child_symlink_count:null,uuid_directory_count:null,regular_event_count:null,event_symlink_count:null,other_event_count:null};
+ const candidates=entries.filter(e=>e.name.startsWith("awf-agent-session-state-"));preservationDiagnostics.preserved_candidate_count=candidates.length;
+ if(candidates.length===1&&candidates[0].isDirectory()&&!candidates[0].isSymbolicLink()&&/^awf-agent-session-state-[A-Za-z0-9]{6}$/.test(candidates[0].name)){
+  preservationDiagnostics.preserved_candidate_valid=true;const fixedBase=path.join(tmp,candidates[0].name);fixtureDirectory(fixedBase);const cs=fs.readdirSync(fixedBase,{withFileTypes:true});ensure(cs.length<=16,"SESSION_DIRECTORY");preservationDiagnostics.child_count=cs.length;preservationDiagnostics.child_symlink_count=cs.filter(e=>e.isSymbolicLink()).length;preservationDiagnostics.uuid_directory_count=cs.filter(e=>e.isDirectory()&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(e.name)).length;preservationDiagnostics.regular_event_count=0;preservationDiagnostics.event_symlink_count=0;preservationDiagnostics.other_event_count=0;
+  for(const e of cs){if(!e.isDirectory()||e.isSymbolicLink())continue;try{const st=fs.lstatSync(path.join(fixedBase,e.name,"events.jsonl"));if(st.isSymbolicLink())preservationDiagnostics.event_symlink_count++;else if(st.isFile())preservationDiagnostics.regular_event_count++;else preservationDiagnostics.other_event_count++;}catch(error){if(error.code!=="ENOENT")throw error;}}
+ }
+ ensure(!entries.some(e=>e.isSymbolicLink()),"SESSION_DIRECTORY");
  ensure(!entries.some(e=>/^awf-[A-Za-z0-9]{6}$/.test(e.name)),"SESSION_DIRECTORY");
  const sessions=entries.filter(e=>e.name.startsWith("awf-agent-session-state-"));
  ensure(sessions.length===1&&sessions[0].isDirectory()&&/^awf-agent-session-state-[A-Za-z0-9]{6}$/.test(sessions[0].name),"SESSION_DIRECTORY");
@@ -452,4 +460,4 @@ async function awfHost(bundle){
 try{
  if(cli==="awf-child"){process.exitCode=await awfChild(root);}
  else{const report=["awf-host","awf-cancel"].includes(cli)?await awfHost(root):await main();console.log(JSON.stringify(report));}
-}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:["awf-host","awf-cancel"].includes(cli)?lastProcess:null,raw_exported:false}));process.exitCode=1;}
+}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:["awf-host","awf-cancel"].includes(cli)?lastProcess:null,preservation:preservationDiagnostics,raw_exported:false}));process.exitCode=1;}
