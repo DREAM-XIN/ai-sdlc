@@ -8105,7 +8105,7 @@ def build_ordinary_dogfood_provider(preflight):
 
 
 
-def ordinary_structured_runtime_fixture(template, scenario, *, rereview_verdict="PASS"):
+def ordinary_structured_runtime_fixture(template, scenario, *, rereview_verdict="PASS", current_v3=False):
     """Assemble canonical classes over fresh Store and fake provider state."""
     import json
     from copy import deepcopy
@@ -8129,10 +8129,14 @@ def ordinary_structured_runtime_fixture(template, scenario, *, rereview_verdict=
     from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
     from validate_v03_dogfood_runtime_composition import assemble_post_handoff_responses_graph
     import v03_dogfood_full_composition as composition
-    expect(scenario in {"review_remediation", "session_recovery"}, "ordinary fixture escaped frozen scenarios")
+    expect((current_v3 is True and scenario == "happy_path") or
+           (current_v3 is False and scenario in {"review_remediation", "session_recovery"}),
+           "ordinary fixture escaped explicit test selection")
     slot = require_slot(scenario)
     repository = template.execution.repository
-    files, load_policy_authority = ordinary_rereview_policy_fixture(template)
+    current_installation = current_v3_fixture_installation() if current_v3 else None
+    files, load_policy_authority = ordinary_rereview_policy_fixture(
+        template, installation_commit_sha=current_installation)
     initial_policy = load_policy_authority(lambda: StoreSnapshot("1" * 40, files))
     rollout = initial_policy.rollout_verifier.verify(repository=repository,
         state_ref="refs/heads/ai-sdlc-operator-state", operation_profile=VERTICAL_PROFILE)
@@ -8152,15 +8156,23 @@ def ordinary_structured_runtime_fixture(template, scenario, *, rereview_verdict=
         bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=scenario))
     workflows = _workflow_map(gate)
     bindings = _execution_bindings(gate, workflows)
+    descriptor = None
+    if current_v3:
+        descriptor, workflows, bindings = current_v3_fixture_selection(scenario)
     policy = load_policy_authority(runtime.backend.read_snapshot)
     resolution = policy.resolution_policy_verifier
     pf = SimpleNamespace(slot=slot, workflows=workflows,
-        candidate_pr_number=1950 if scenario == "review_remediation" else 1951,
+        candidate_pr_number=1952 if current_v3 else 1950 if scenario == "review_remediation" else 1951,
         candidate_head_sha="c" * 40,
         execution=SimpleNamespace(repository=repository, installation_commit_sha=policy.installation_commit_sha),
         trusted_context_digest="6" * 64,
         composition=SimpleNamespace(runtime=runtime, policy_authority=policy))
+    pf.current_v3_fixture = current_v3
+    pf.current_v3_installation_sha = current_installation
+    pf.producer_descriptor = descriptor
     external = build_ordinary_dogfood_provider(pf)
+    if current_v3:
+        attach_current_v3_source_provider(pf, external)
     recovery_source = composition.RecoverySafeOutputGhAwResultSource(
         GitHubActionsGhAwResultSourceConfig(control_repository=repository,
             control_token="fixture", target_token="fixture", workflows=workflows,
@@ -8172,6 +8184,8 @@ def ordinary_structured_runtime_fixture(template, scenario, *, rereview_verdict=
     expected = (("reviewer", "REWORK"), ("reviewer", rereview_verdict)) + (
         (("qa", "PASS"),) if rereview_verdict == "PASS" else ()) if (
         scenario == "review_remediation") else ()
+    if current_v3:
+        expected = (("reviewer", "PASS"), ("qa", "PASS"))
     gates = build_structured_dogfood_gate_fixture(pf, read_ref=external.read_ref,
         fallback_http=external.http, expected=expected)
     def get_json(url, headers):
@@ -9423,8 +9437,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--group", choices=("joined", "cache", "qa-joined", "qa-safety", "qa2-joined", "qa2-safety", "qa3-joined", "qa3-safety"))
-    selection.add_argument("--exclude-group", choices=("joined", "cache", "qa-joined", "qa-safety", "qa2-joined", "qa2-safety", "qa3-joined", "qa3-safety"), action="append", default=[])
+    selection.add_argument("--group", choices=("joined", "cache", "qa-joined", "qa-safety", "qa2-joined", "qa2-safety", "qa3-joined", "qa3-safety", "current-v3"))
+    selection.add_argument("--exclude-group", choices=("joined", "cache", "qa-joined", "qa-safety", "qa2-joined", "qa2-safety", "qa3-joined", "qa3-safety", "current-v3"), action="append", default=[])
     args = parser.parse_args()
     for scenario in ("happy_path", "review_remediation", "session_recovery"):
         expect(
@@ -9461,6 +9475,7 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("current v3 fresh factory lifecycle", current_v3_factory_tests),
         ("QA3 actual joined lifecycle", qa_third_joined_factory_tests),
         ("QA3 frozen CAS and replay", qa_third_admission_tests),
         ("QA3 non-PASS terminal", qa_third_nonpass_tests),
@@ -9521,6 +9536,7 @@ def main():
         ("normal and remediation auto-close", lambda: normal_and_remediation_autoclose_tests(post_handoff_runtime_fixture()[0])),
     )
     named_groups = {
+        "current-v3": "current v3 fresh factory lifecycle",
         "qa3-joined": "QA3 actual joined lifecycle",
         "qa3-safety": ("QA3 frozen CAS and replay", "QA3 non-PASS terminal",
                        "QA3 provider failure and lookup", "QA3 pre-effect rejection"),
@@ -9532,6 +9548,7 @@ def main():
         "joined": "inline selected factory joined CLI lifecycle",
         "cache": "exact-SHA remote snapshot cache",
     }
+    validate_runtime_group_partition(groups,named_groups)
     if args.group:
         selected=named_groups[args.group]
         selected={selected} if isinstance(selected,str) else set(selected)
@@ -10002,6 +10019,10 @@ def actual_factory_joined_fixture(seed):
         import v03_dogfood_full_composition as composition
 
         pf, provider, feature, gates, _old_coordinator = seed
+        current_v3 = getattr(pf, "current_v3_fixture", False) is True
+        if current_v3:
+            expect(pf.execution.installation_commit_sha == current_v3_fixture_installation(),
+                   "fresh v3 factory source changed since fixture construction")
         phase = getattr(pf, "joined_phase", lambda _: None)
         old = pf.composition
         snapshot = old.runtime.backend.read_snapshot()
@@ -10016,8 +10037,13 @@ def actual_factory_joined_fixture(seed):
         gate = SimpleNamespace(scenario=pf.slot.scenario,
             bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=pf.slot.scenario))
         workflows = _workflow_map(gate)
-        expect(workflows == pf.workflows, "actual selector differs from joined seed")
         bindings = _execution_bindings(gate, workflows)
+        descriptor = None
+        if current_v3:
+            descriptor, workflows, bindings = current_v3_fixture_selection(pf.slot.scenario)
+            expect(not any(name.startswith("state/operator/v1/") for name in snapshot.files),
+                   "fresh v3 factory seed contains operation history")
+        expect(workflows == pf.workflows, "actual selector differs from joined seed")
         with tempfile.TemporaryDirectory(prefix="v03-real-factory-") as directory:
             root = Path(directory)
             remote, checkout, home = root / "store.git", root / "checkout", root / "home"
@@ -10100,6 +10126,9 @@ def actual_factory_joined_fixture(seed):
                     repo == repository and sha == installation_sha),
                 materialization_commit_verifier=materialization_authority,
             ).load()
+            if getattr(pf,"current_v3_fixture",False):
+                expect(policy.installation_commit_sha == pf.current_v3_installation_sha == current_v3_fixture_installation(),
+                       "current producer policy installation differs from actual Git consumer")
             expect(policy.materialization_commit_sha == materialization_sha and all(
                 exact_policy(materialization_sha, path) == value
                 and current_policy(repository, state_ref, path) == value
@@ -10130,7 +10159,8 @@ def actual_factory_joined_fixture(seed):
                     policy_authority=policy, trusted_context_digest=pf.trusted_context_digest,
                     collector_namespace_policy="fixture-collector-namespace",
                     trusted_role_policy="fixture-independent-role-policy", clock=clock,
-                    persist_poll_attempts=3, persist_poll_seconds=0)
+                    persist_poll_attempts=3, persist_poll_seconds=0,
+                    **({"producer_descriptor": descriptor} if current_v3 else {}))
                 phase("factory_construct_ready")
                 expect(type(actual.runtime.backend) is RemoteGitStateRefBackend,
                        "joined fixture bypassed actual RemoteGit backend")
@@ -10164,6 +10194,8 @@ def actual_factory_joined_fixture(seed):
                 actual.collector.callback_coordinator.candidate_handoff.http_request = (
                     lambda *args, **kwargs: (_ for _ in ()).throw(
                         AssertionError("fixed Reviewer continuation attempted another candidate PATCH")))
+                if current_v3:
+                    actual.collector.callback_coordinator.candidate_handoff.http_request = provider.handoff_http
                 builder = actual.dispatch_gateway.delegate.context_builder
                 executor = actual.bundle.executor
                 expect(builder.runtime is actual.runtime and
@@ -10734,10 +10766,12 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
     def compiled_lock(workflow):
         relative=".github/workflows/"+workflow
         if workflow=="ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml":
-            expect((getattr(preflight,"qa_replacement_fixture",False) is True or getattr(preflight,"qa_second_fixture",False) is True or getattr(preflight,"qa_third_fixture",False) is True) and source_sha=="5"*40,
+            expect((getattr(preflight,"qa_replacement_fixture",False) is True or getattr(preflight,"qa_second_fixture",False) is True or getattr(preflight,"qa_third_fixture",False) is True or getattr(preflight,"current_v3_fixture",False) is True) and (source_sha=="5"*40 or
+                    (getattr(preflight,"current_v3_fixture",False) is True and
+                     source_sha == preflight.current_v3_installation_sha)),
                    "historical compiled QA metadata escaped synthetic installation")
-            from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes, qa3_observed_bytes
-            raw=(qa3_observed_bytes(relative) if getattr(preflight,"qa_third_fixture",False) else
+            from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes, qa3_observed_bytes, current_v3_bytes, CURRENT_V3_BLOBS
+            raw=(current_v3_bytes(relative) if getattr(preflight,"current_v3_fixture",False) else qa3_observed_bytes(relative) if getattr(preflight,"qa_third_fixture",False) else
                  qa2_observed_bytes(relative) if getattr(preflight,"qa_second_fixture",False) else observed_historical_bytes(relative))
         else:
             raw=(Path(__file__).resolve().parents[1]/relative).read_bytes()
@@ -10821,12 +10855,14 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             observed = role == "qa" and workflow == composition.QA_OBSERVED_WORKFLOW
             root = Path(__file__).resolve().parents[1]
             if observed:
-                expect((getattr(preflight, "qa_replacement_fixture", False) is True or getattr(preflight,"qa_second_fixture",False) is True or getattr(preflight,"qa_third_fixture",False) is True) and source_sha == "5" * 40,
+                expect((getattr(preflight, "qa_replacement_fixture", False) is True or getattr(preflight,"qa_second_fixture",False) is True or getattr(preflight,"qa_third_fixture",False) is True or getattr(preflight,"current_v3_fixture",False) is True) and (source_sha == "5" * 40 or
+                        (getattr(preflight,"current_v3_fixture",False) is True and
+                         source_sha == preflight.current_v3_installation_sha)),
                        "historical observed QA fixture escaped its synthetic installation")
-                from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes, qa3_observed_bytes
-                fixed_bytes = (qa3_observed_bytes if getattr(preflight,"qa_third_fixture",False) else
+                from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes, qa3_observed_bytes, current_v3_bytes, CURRENT_V3_BLOBS
+                fixed_bytes = (current_v3_bytes if getattr(preflight,"current_v3_fixture",False) else qa3_observed_bytes if getattr(preflight,"qa_third_fixture",False) else
                                qa2_observed_bytes if getattr(preflight,"qa_second_fixture",False) else observed_historical_bytes)
-                fixed_pins = (composition.QA_THIRD_WORKER_BLOBS if getattr(preflight,"qa_third_fixture",False) else
+                fixed_pins = (CURRENT_V3_BLOBS if getattr(preflight,"current_v3_fixture",False) else composition.QA_THIRD_WORKER_BLOBS if getattr(preflight,"qa_third_fixture",False) else
                               composition.QA_SECOND_WORKER_BLOBS if getattr(preflight,"qa_second_fixture",False) else composition.QA_WORKER_BLOBS)
                 for relative, expected_blob in fixed_pins.items():
                     raw_source = ((root / relative).read_bytes()
@@ -10850,7 +10886,7 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             joined = bool(getattr(preflight, "joined_cli", False))
             expect(not joined or inline or observed, "joined CLI fixture selected a historical Worker")
             roundtrip = verify_joined_context_roundtrip if joined else verify_context_roundtrip
-            extra = {"variant": ("observed-qa3-local" if getattr(preflight,"qa_third_fixture",False) else
+            extra = {"variant": ("observed-v3-local" if getattr(preflight,"current_v3_fixture",False) else "observed-qa3-local" if getattr(preflight,"qa_third_fixture",False) else
                                   "observed-qa2-local" if getattr(preflight,"qa_second_fixture",False) else "observed-inline-local") if observed else ("structured-inline-local" if inline else "structured-local")}
             if joined:
                 expect(extra["variant"] != "structured-local", "joined legacy route is forbidden")
@@ -10864,6 +10900,11 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             if joined:
                 expect(publication["cli_evidence"]["workflow_file"] == workflow,
                        "actual joined CLI used another workflow source")
+                if getattr(preflight,"current_v3_fixture",False) and role == "qa":
+                    expect(publication["cli_evidence"]["source_variant"] == "observed-v3-local"
+                           and publication["cli_evidence"]["fixed_source_sha"] == "5186ff7cb1e54e60b5e4ca734b22993409b88ae7"
+                           and publication["cli_evidence"]["renderer_version"] == "v3",
+                           "current joined QA used a different producer")
                 if getattr(preflight,"qa_third_fixture",False):
                     expect(publication["cli_evidence"]["source_variant"] == "observed-qa3-local"
                            and publication["cli_evidence"]["fixed_source_sha"] == "37804095421feea6c478ff79fac2803afe1e738a"
@@ -10957,7 +10998,6 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
         target_repository=repository, http=http)
     source.bind_reviewer(preflight.composition.runtime, preflight.composition.policy_authority)
     return SimpleNamespace(transport=transport, result_source=source, state=state, http=http)
-
 
 def qa_replacement_admission_tests():
     """The fixed QA claim never renews the original or successful Reviewer slots."""
@@ -13489,6 +13529,289 @@ def qa_third_pre_effect_rejection_tests():
     print("- QA source, candidate and frozen-input substitutions reject before POST",flush=True)
 
 
+
+
+def current_v3_fixture_installation():
+    """Authenticate the real checked-out consumer commit and its four producer files."""
+    import subprocess
+    from pathlib import Path
+    from validate_v03_gate_output_contract import CURRENT_V3_BLOBS, current_v3_bytes
+    from v03_dogfood_live_gate import INLINE_DOGFOOD_BLOBS, INLINE_GATE_HELPER_BLOB
+    import hashlib
+    root = Path(__file__).resolve().parents[1]
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).stdout
+    commit = git("rev-parse", "HEAD").decode().strip()
+    expect(len(commit) == 40 and all(c in "0123456789abcdef" for c in commit)
+           and git("cat-file", "-t", commit).strip() == b"commit",
+           "current v3 consumer installation is not a real Git commit")
+    for relative in CURRENT_V3_BLOBS:
+        expect(git("show", commit + ":" + relative) == current_v3_bytes(relative)
+               == (root / relative).read_bytes(),
+               "current v3 consumer Git/checkout producer bytes differ")
+    closure = {".github/workflows/" + name: blob for name, blob in INLINE_DOGFOOD_BLOBS.items()}
+    closure["scripts/v03_dogfood_gate_output.py"] = INLINE_GATE_HELPER_BLOB
+    for relative, expected in closure.items():
+        raw = git("show", commit + ":" + relative)
+        expect(raw == (root / relative).read_bytes() and
+               hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == expected,
+               "current v3 consumer base producer bytes differ")
+    return commit
+
+
+def current_v3_fixture_selection(scenario):
+    """Explicit offline constructor selection; never changes the live scenario registry."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from v03_dogfood_live_gate import resolve_current_dogfood_bindings
+    from v03_dogfood_runtime_preflight import _workflow_map, _execution_bindings
+    import v03_dogfood_full_composition as composition
+    expect(scenario == "happy_path", "current v3 fixture escaped fresh happy scenario")
+    gate = SimpleNamespace(scenario=scenario,
+        bindings=resolve_current_dogfood_bindings({"DEEPSEEK_API_KEY": True}, scenario=scenario))
+    original = _workflow_map(gate)
+    bindings = deepcopy(_execution_bindings(gate, original))
+    descriptor = composition.CurrentV3ProducerDescriptor()
+    workflows = composition.current_v3_workflows(descriptor)
+    expect(workflows.developer_workflow == original.developer_workflow and
+           workflows.reviewer_workflow == original.reviewer_workflow,
+           "current v3 fixture changed Developer/Reviewer selection")
+    bindings["qa"]["workflow_file"] = workflows.qa_workflow
+    bindings["qa"]["worker_id"] = workflows.qa_workflow.removesuffix(".lock.yml")
+    return descriptor, workflows, bindings
+
+
+def attach_current_v3_source_provider(preflight, external):
+    """Serve only exact real-consumer Git source bytes at the external Contents boundary."""
+    import base64, hashlib, json, subprocess
+    from pathlib import Path
+    from urllib.parse import urlparse, parse_qs, unquote
+    import v03_dogfood_full_composition as composition
+    _, blobs, _ = composition._current_v3_source_contract(preflight.producer_descriptor)
+    source = preflight.current_v3_installation_sha
+    root = Path(__file__).resolve().parents[1]
+    documents = {}
+    for relative, expected in blobs.items():
+        raw = subprocess.run(["git", "show", source + ":" + relative], cwd=root, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).stdout
+        expect(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == expected,
+               "current v3 source provider Git blob differs")
+        documents[relative] = {"type": "file", "path": relative, "sha": expected,
+            "encoding": "base64", "content": base64.b64encode(raw).decode()}
+    original = external.http
+    def http(*, method, url, token, body=None):
+        parsed = urlparse(url)
+        prefix = "/repos/" + preflight.execution.repository + "/contents/"
+        if method == "GET" and parsed.netloc == "api.github.com" and parsed.path.startswith(prefix):
+            relative = unquote(parsed.path[len(prefix):])
+            if relative in documents:
+                expect(parse_qs(parsed.query) == {"ref": [source]},
+                       "current v3 producer source read changed consumer commit")
+                return 200, {}, json.dumps(documents[relative]).encode()
+        return original(method=method, url=url, token=token, body=body)
+    external.http = http
+
+
+def current_v3_runtime_fixture():
+    """Fresh logical Store over a synthetic bootstrap proof; no historical archives."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from operator_store_model import StoreSnapshot
+    from validate_v03_vertical_policy_materialization_workflow import fixture_policy_documents
+    installation = current_v3_fixture_installation()
+    documents = fixture_policy_documents(repository="dream-xin/ai-sdlc",
+                                         installation_sha=installation)
+    fence_path = "config/operator/v03-vertical-policy/writer-fence-receipt.json"
+    rows = [row.value for row in documents if row.path == fence_path]
+    expect(len(rows) == 1, "synthetic bootstrap proof missing")
+    # Only the established test proof is reused. Real policy documents, seals,
+    # loader and local Git materialization are produced by the actual fixture path.
+    proof_files = {fence_path: {"quiescence_proof": deepcopy(rows[0]["quiescence_proof"])}}
+    template = SimpleNamespace(execution=SimpleNamespace(repository="dream-xin/ai-sdlc"),
+        composition=SimpleNamespace(
+            policy_authority=SimpleNamespace(installation_commit_sha=installation),
+            runtime=SimpleNamespace(backend=SimpleNamespace(
+                read_snapshot=lambda: StoreSnapshot("1" * 40, deepcopy(proof_files))))))
+    pf, external, feature, gates = ordinary_structured_runtime_fixture(
+        template, "happy_path", current_v3=True)
+    expect(not any(name.startswith("state/operator/v1/")
+                   for name in pf.composition.runtime.backend.read_snapshot().files)
+           and not external.state["inputs"] and not gates.state["posts"]
+           and feature.state["puts"] == 0,
+           "fresh current v3 fixture seeded tested work")
+    return pf, external, feature, gates, pf.composition.callback_coordinator
+
+
+
+def current_v3_factory_tests():
+    """Fresh synthetic operation: actual factory and Store; external providers are fake."""
+    import json
+    import time
+    from copy import deepcopy
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from operator_store_model import canonical_json, operation_events
+    from operator_vertical_store import vertical_projection
+    from operator_vertical import VerticalInvariantError
+    from v03_dogfood_scenario_runner import run_scenario
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_post_run_finalizer as finalizer
+    import v03_dogfood_production_provenance as provenance
+    start=time.monotonic()
+    def phase(name):
+        print("current-v3 stage="+name+" elapsed="+str(round(time.monotonic()-start,3)),flush=True)
+    phase("seed_start")
+    seed=current_v3_runtime_fixture()
+    seed[0].joined_phase=phase
+    seed[0].joined_cli=True
+    phase("seed_ready")
+    with actual_factory_joined_fixture(seed) as (pf,external,feature,gates,coordinator):
+        runtime=pf.composition.runtime
+        initial=runtime.backend.read_snapshot()
+        expect(not initial.files,"fresh producer fixture seeded protected transitions")
+        descriptor=c.CurrentV3ProducerDescriptor()
+        expect(pf.workflows==c.current_v3_workflows(descriptor)
+               and pf.composition.dispatch_gateway.delegate.producer_descriptor==descriptor
+               and pf.composition.result_source.producer_descriptor==descriptor,
+               "actual factory lost explicit source descriptor")
+        host=build_ordinary_dogfood_host(pf)
+        phase("lifecycle_start")
+        observation=run_scenario(preflight=pf,host=host.host)
+        phase("lifecycle_ready")
+        snapshot=runtime.backend.read_snapshot()
+        events=operation_events(snapshot,observation.operation_id)
+        projection=vertical_projection(snapshot,observation.operation_id)
+        expect(observation.operation_id!=c.RECOVERY_OPERATION_ID
+               and observation.final_status=="DONE" and projection["status"]=="DONE"
+               and observation.dispatch_roles==("developer","reviewer","qa")
+               and observation.worker_results_consumed==3
+               and len(host.requests)==2
+               and len(external.state["inputs"])==external.state["patches"]==1
+               and len(gates.state["inputs"])==len(gates.state["roundtrips"])==2,
+               "fresh current producer did not complete exact three-role lifecycle")
+        expect(len([e for e in events if e["event_type"]=="operation.started"])==1
+               and len([e for e in events if e["event_type"]=="worker.callback.recorded"])==3
+               and len([e for e in events if e["event_type"]=="worker.result.validated"])==3
+               and feature.state["puts"]==feature.state["applied"]
+                   ==len([e for e in events if e["event_type"]=="persist.confirmed"]),
+               "fresh producer bypassed callback or canonical Persist")
+        binding=c.recovery_execution_binding(pf.composition.policy_authority)
+        records=[(path,row) for path,row in snapshot.files.items()
+                 if "/dogfood-structured-gate-inputs/" in path]
+        expect(len(records)==2,"fresh producer lacks exact immutable Gate records")
+        for path,row in records:
+            checked=c.validate_structured_gate_input_record(snapshot,
+                operation_id=observation.operation_id,external_dispatch_key=row["external_dispatch_key"],
+                consumer_binding=binding,producer_descriptor=descriptor)
+            expect(checked["producer_descriptor"]==c.current_v3_descriptor_value(descriptor)
+                   and "admission" not in checked
+                   and json.loads(checked["dispatch_inputs"]["task_payload"])["feature_context"]["gate_context"]["provenance"]["producer_source_sha"]
+                       ==pf.execution.installation_commit_sha,
+                   "producer origin and consumer execution identity were conflated")
+            for label in ("missing constructor","wrong descriptor","wrong source","old schema","wrong map"):
+                broken=deepcopy(snapshot)
+                item=broken.files[path]
+                selected=descriptor
+                if label=="missing constructor":
+                    selected=None
+                elif label=="wrong descriptor":
+                    selected=c.CurrentV3ProducerDescriptor("9"*40)
+                elif label=="wrong source":
+                    item["source_blobs"][next(iter(c.CURRENT_V3_WORKER_BLOBS))]="9"*40
+                elif label=="old schema":
+                    item["schema_version"]="ai-sdlc.v03-structured-gate-inputs/v1"
+                    item["admission"]=deepcopy(c.STRUCTURED_INPUT_RECORD_ADMISSION)
+                    item.pop("producer_descriptor")
+                else:
+                    item["producer_descriptor"]["workflow_file"]="ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local.lock.yml"
+                try:
+                    c.validate_structured_gate_input_record(broken,operation_id=observation.operation_id,
+                        external_dispatch_key=row["external_dispatch_key"],consumer_binding=binding,
+                        producer_descriptor=selected)
+                except VerticalInvariantError:
+                    pass
+                else:
+                    raise AssertionError("dormant provenance accepted "+label)
+        qa=gates.state["roundtrips"][-1]
+        evidence=qa["cli_evidence"]
+        expect(evidence["fixed_source_sha"]==c.CURRENT_V3_SOURCE
+               and evidence["renderer_version"]=="v3"
+               and evidence["workflow_file"]==c.QA_OBSERVED_WORKFLOW,
+               "joined QA did not use current selected v3 pipeline")
+        raw=asdict(observation)
+        raw.update(repository=pf.execution.repository,feature_id=pf.slot.feature_id,
+            target_ref=pf.slot.target_ref,installation_commit_sha=pf.execution.installation_commit_sha,
+            candidate_pr_number=pf.candidate_pr_number,candidate_head_sha=external.read_ref(),
+            provenance_verified=False)
+        final_pf=SimpleNamespace(**dict(vars(pf),candidate_head_sha=external.read_ref()))
+        class Response:
+            status=200
+            def __init__(self,body): self.body=body
+            def __enter__(self): return self
+            def __exit__(self,*args): return None
+            def read(self): return self.body
+        def provider_read(req,timeout):
+            expect(req.get_method()=="GET","producer finalizer attempted provider write")
+            status,_,body=gates.http(method="GET",url=req.full_url,token="fixture")
+            expect(status==200,"producer finalizer escaped fake provider")
+            return Response(body)
+        effects=(len(external.state["inputs"]),len(gates.state["inputs"]),external.state["patches"],feature.state["puts"])
+        with patch.object(provenance,"urlopen",side_effect=provider_read):
+            record=finalizer.finalize(observation=raw,preflight=final_pf,
+                source_run_id=87905505045,finalizer_run_id=87905505046,github_token="fixture")
+        expect(record["verdict"]=="PASS" and record["release_eligible"] is True
+               and record["runtime"]["workflow_run_ids"]==list(observation.workflow_run_ids),
+               "current producer actual finalizer did not reconstruct PASS")
+        unchanged=runtime.backend.read_snapshot()
+        expect(unchanged.ref_sha==snapshot.ref_sha and canonical_json(unchanged.files)==canonical_json(snapshot.files)
+               and effects==(len(external.state["inputs"]),len(gates.state["inputs"]),external.state["patches"],feature.state["puts"]),
+               "source negatives or read-only finalizer changed effects")
+        print("current-v3 identity proof: "+json.dumps({
+            "producer_origin_matches":evidence["fixed_source_sha"]==c.CURRENT_V3_SOURCE,
+            "consumer_matches_protected_context":all(
+                row["consumer_execution_binding"]["execution_source_head_sha"]==pf.execution.installation_commit_sha
+                for _,row in records),
+            "consumer_distinct_from_origin":pf.execution.installation_commit_sha!=c.CURRENT_V3_SOURCE,
+            "fresh_operation":observation.operation_id!=c.RECOVERY_OPERATION_ID,
+            "external_provider_fake":True,"existing_live_recovery_proven":False},sort_keys=True),flush=True)
+        phase("finalizer_ready")
+
+
+def validate_runtime_group_partition(groups,named_groups):
+    """Closed existing CI partition: every dedicated group appears exactly once."""
+    import re
+    import yaml
+    from pathlib import Path
+    names=[name for name,_ in groups]
+    expect(len(names)==len(set(names)),"duplicate runtime group name")
+    members={key:({value} if isinstance(value,str) else set(value)) for key,value in named_groups.items()}
+    flattened=[name for values in members.values() for name in values]
+    expect(all(values and values<=set(names) for values in members.values())
+           and len(flattened)==len(set(flattened))
+           and members["current-v3"]=={"current v3 fresh factory lifecycle"},
+           "dedicated runtime selectors overlap or omit a named group")
+    workflow=yaml.safe_load((Path(__file__).resolve().parents[1]/
+        ".github/workflows/validate-v03-dogfood-live-gate.yml").read_text())
+    dedicated=[]
+    complements=[]
+    for job in workflow["jobs"].values():
+        for step in job.get("steps",[]):
+            run=step.get("run","")
+            if "validate_v03_dogfood_runtime_driver.py" not in run:
+                continue
+            dedicated.extend(re.findall(r"--group\s+([a-z0-9-]+)",run))
+            exclusions=re.findall(r"--exclude-group\s+([a-z0-9-]+)",run)
+            if exclusions:
+                complements.append(exclusions)
+    expect(len(dedicated)==len(set(dedicated)) and set(dedicated)==set(named_groups)
+           and len(complements)==1 and len(complements[0])==len(set(complements[0]))
+           and set(complements[0])==set(named_groups),
+           "CI jobs and complementary runtime selector coverage differ")
+    complement=set(names)-set(flattened)
+    expect(set(flattened).isdisjoint(complement) and set(flattened)|complement==set(names),
+           "CI runtime group union is not complete")
 
 if __name__ == "__main__":
     main()
