@@ -3915,7 +3915,8 @@ class DogfoodStructuredGateContextBuilder:
             if logical_key != auth["physical_key"] or logical_dispatch_id != auth["physical_dispatch_id"]:
                 raise VerticalInvariantError("POLICY_DENIED", "unknown structured context physical mapping")
             logical_key, logical_dispatch_id = auth["logical_key"], auth["logical_dispatch_id"]
-        if operation_id == RECOVERY_OPERATION_ID and role == "qa" and logical_key != QA_OLD_KEY:
+        if (operation_id == RECOVERY_OPERATION_ID and role == "qa" and logical_key != QA_OLD_KEY
+                and (prospective_authorization is not None or qa_replacement_present(snapshot))):
             if prospective_authorization is not None:
                 validate_qa_replacement_predecessor(snapshot,fresh=True)
                 auth=qa_replacement_authorization(snapshot,
@@ -5811,7 +5812,7 @@ QA_WORKER_BLOBS = {
 }
 
 def qa_replacement_present(snapshot):
-    return any(path in snapshot.files for path in QA_REPLACEMENT_PATHS)
+    return any(path.startswith(QA_REPLACEMENT_BASE + "/") for path in snapshot.files)
 
 def qa_replacement_workflows():
     from v03_dogfood_live_gate import INLINE_DOGFOOD_WORKFLOWS

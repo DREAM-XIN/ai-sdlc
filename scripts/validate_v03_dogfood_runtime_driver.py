@@ -9464,6 +9464,8 @@ def main():
         ("QA-only actual joined lifecycle", qa_replacement_joined_factory_tests),
         ("QA-only frozen CAS and replay", qa_replacement_admission_tests),
         ("QA-only non-PASS terminal", qa_replacement_nonpass_tests),
+        ("QA-only provider failure and lookup", qa_replacement_provider_failure_tests),
+        ("QA-only pre-effect rejection", qa_replacement_pre_effect_rejection_tests),
         ("exact-SHA remote snapshot cache", remote_snapshot_cache_tests),
         ("inline selected factory joined CLI lifecycle", reviewer_inline_joined_factory_tests),
         ("inline Reviewer frozen CAS", reviewer_inline_admission_tests),
@@ -10014,8 +10016,18 @@ def actual_factory_joined_fixture(seed):
                 target = checkout / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(canonical_json(value) + "\n")
+            bootstrap = getattr(provider, "qa_bootstrap_bytes", None)
+            if bootstrap is not None:
+                import hashlib
+                expect(type(bootstrap) is bytes and hashlib.sha1(b"blob " + str(len(bootstrap)).encode() + b"\0" + bootstrap).hexdigest() == "f300684f71e7724fb4bede97f406e24e6835ed99", "joined physical bootstrap bytes differ")
+                marker = checkout / "state/operator/v1/.bootstrap"
+                expect(not marker.exists(), "joined bootstrap collided with logical snapshot")
+                marker.write_bytes(bootstrap)
             git("add", ".", cwd=checkout)
             git("commit", "-m", "Seed immutable historical Store fixture", cwd=checkout)
+            if bootstrap is not None:
+                expect(git("rev-parse", "HEAD:state/operator/v1/.bootstrap", cwd=checkout) == "f300684f71e7724fb4bede97f406e24e6835ed99",
+                       "joined physical bootstrap commit differs")
             git("push", "origin", "HEAD:" + state_ref, cwd=checkout)
             expect(Path(git("remote", "get-url", "origin", cwd=checkout)).resolve() == remote.resolve(),
                    "test Store remote is not the private local bare repository")
@@ -10288,11 +10300,22 @@ def attach_qa_replacement_provider(provider, root):
     for name in tuple(files):
         if name.startswith("state/operator/v1/"):
             del files[name]
-    names = git("ls-tree", "-r", "-z", "--name-only", c.QA_REPLACEMENT_STORE, "--",
-                "state/operator/v1").decode().split("\0")
-    for name in filter(None, names):
+    entries = git("ls-tree", "-r", "-z", c.QA_REPLACEMENT_STORE, "--", "state/operator/v1").decode().split("\0")
+    bootstrap_seen = False
+    for entry in filter(None, entries):
+        metadata, name = entry.split("\t", 1)
+        mode, kind, sha = metadata.split()
+        expect(mode == "100644" and kind == "blob", "protected fixture contains unexpected entry mode/type")
+        raw = git("show", c.QA_REPLACEMENT_STORE + ":" + name)
+        expect(blob(raw) == sha, "protected fixture tree/blob differs")
+        if name == "state/operator/v1/.bootstrap":
+            expect(not bootstrap_seen and sha == "f300684f71e7724fb4bede97f406e24e6835ed99", "protected fixture bootstrap marker differs")
+            bootstrap_seen = True
+            provider.qa_bootstrap_bytes = raw
+            continue
         expect(name.endswith(".json"), "protected fixture contains unexpected non-JSON state")
-        files[name] = json.loads(git("show", c.QA_REPLACEMENT_STORE + ":" + name))
+        files[name] = json.loads(raw)
+    expect(bootstrap_seen, "protected fixture bootstrap marker missing")
     provider.snapshot = StoreSnapshot(c.QA_REPLACEMENT_STORE, files)
     expect(len(operation_events(provider.snapshot, c.RECOVERY_OPERATION_ID)) == 45
            and not any(name in files for name in c.QA_REPLACEMENT_PATHS),
@@ -10425,7 +10448,7 @@ def build_qa_frozen_feature_fixture(preflight, candidate_provider, provider):
     fixture.state["historical_applied_event_ids"] = tuple(manifest["applied_events"])
     return fixture
 
-def qa_replacement_runtime_fixture(*, verdict='PASS'):
+def qa_replacement_runtime_fixture(*, verdict='PASS', provider_fault=None):
     import base64
     import json
     from copy import deepcopy
@@ -10539,7 +10562,7 @@ def qa_replacement_runtime_fixture(*, verdict='PASS'):
     pf.historical_gate_runs = [provider.qa_accepted_observed["run"], provider.qa_failed_observed["run"]]
     gates = build_structured_dogfood_gate_fixture(pf, read_ref=provider.read_ref, fallback_http=provider.http,
         expected=(("qa", verdict),), source_type=composition.DogfoodQaReplacementResultSource,
-        workflow_override=composition.qa_replacement_workflows())
+        workflow_override=composition.qa_replacement_workflows(), provider_fault=provider_fault)
     bindings = _execution_bindings(gate, workflows)
     dispatch = composition.DogfoodExecutionBoundDispatchGateway(
         delegate=__import__("operator_vertical_gh_aw").GhAwVerticalRoleDispatchGateway(
@@ -10608,9 +10631,8 @@ def qa_replacement_runtime_fixture(*, verdict='PASS'):
            "QA fixture executed or seeded a tested transition")
     return pf, provider, feature, gates, coordinator
 
-
 def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
-                                          expected=(('reviewer', 'PASS'), ('qa', 'PASS')), source_type=None, workflow_override=None):
+                                          expected=(('reviewer', 'PASS'), ('qa', 'PASS')), source_type=None, workflow_override=None, provider_fault=None):
     """Actual structured publication/source over finite fake Gate HTTP results.
 
     Gate payloads are derived only from the actual production dispatch POST.
@@ -10637,7 +10659,10 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
     source_sha = preflight.execution.installation_commit_sha
     expect(all(role in {"reviewer", "qa"} for role, _ in expected),
            "structured fixture expected a non-Gate role")
-    state = {"runs": [], "posts": [], "routes": {}, "inputs": [], "roundtrips": []}
+    expect(provider_fault in {None, "execution_failure", "result_unavailable", "lost_ack"},
+           "unsupported finite QA provider fault")
+    expect(provider_fault is None or expected == (("qa", "PASS"),), "QA fault escaped sole QA fixture")
+    state = {"ack_lost": False, "runs": [], "posts": [], "routes": {}, "inputs": [], "roundtrips": []}
 
     def respond(value):
         return 200, {}, value if isinstance(value, bytes) else json.dumps(value).encode()
@@ -10686,6 +10711,27 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             state["runs"].append(run)
             state["posts"].append(deepcopy(submitted))
             state["inputs"].append(deepcopy(inputs))
+
+            if provider_fault in {"execution_failure", "result_unavailable"}:
+                if provider_fault == "execution_failure":
+                    run["conclusion"] = "failure"
+                routes = state["routes"]
+                routes[f"/actions/runs/{run_id}"] = run
+                if provider_fault == "result_unavailable":
+                    lock = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows" / workflow).read_text())
+                    jobs = []
+                    for position, (name, job) in enumerate(lock["jobs"].items()):
+                        identity = job_id if name == "conclusion" else job_id + position + 1
+                        jobs.append({"id": identity, "name": name, "conclusion": "success",
+                            "status": "completed", "run_id": run_id, "run_attempt": 1, "head_sha": source_sha,
+                            "steps": [{"name": step.get("name", step.get("id", "step")),
+                                       "status": "completed", "conclusion": "success"}
+                                      for step in job.get("steps", [])]})
+                    routes[f"/actions/runs/{run_id}/jobs"] = {"total_count": len(jobs), "jobs": jobs}
+                    routes[f"/actions/runs/{run_id}/attempts/1/jobs"] = {"total_count": len(jobs), "jobs": jobs}
+                    routes[f"/actions/jobs/{job_id}/logs"] = b""
+                    routes[f"/actions/runs/{run_id}/artifacts"] = {"total_count": 0, "artifacts": []}
+                return 204, {}, b""
             comment_url = f"https://github.com/{repository}/pull/{inputs['candidate_pr_number']}#issuecomment-{comment_id}"
             task_payload = json.loads(inputs["task_payload"])
             context = task_payload["feature_context"]["gate_context"]
@@ -10793,6 +10839,9 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             }
             routes[f"/actions/runs/{run_id}/artifacts"] = {"total_count": 1, "artifacts": [artifact]}
             routes[f"/actions/artifacts/{artifact_id}/zip"] = archive_bytes
+            if provider_fault == "lost_ack":
+                state["ack_lost"] = True
+                raise OSError("synthetic acknowledged creation lost its transport response")
             return 204, {}, b""
         expect(method == "GET", "gate HTTP provider allowed an unapproved effect")
         if path in state["routes"]:
@@ -10811,8 +10860,6 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
     source.bind_reviewer(preflight.composition.runtime, preflight.composition.policy_authority)
     return SimpleNamespace(transport=transport, result_source=source, state=state, http=http)
 
-
-
 def qa_replacement_admission_tests():
     """The fixed QA claim never renews the original or successful Reviewer slots."""
     import json
@@ -10823,7 +10870,7 @@ def qa_replacement_admission_tests():
     import v03_dogfood_runtime_driver as d
     errors=(c.VerticalInvariantError,d.V03DogfoodRuntimeDriverError,ValueError,
             __import__("operator_store").StoreCommandError)
-    for path in c.QA_REPLACEMENT_PATHS:
+    for path in (*c.QA_REPLACEMENT_PATHS, c.QA_REPLACEMENT_BASE + "/unknown.json"):
         for value in (None,{},[]):
             pf,p,feature,gates,_=qa_replacement_runtime_fixture()
             runtime=pf.composition.runtime
@@ -11031,6 +11078,127 @@ def qa_replacement_joined_factory_tests():
         print("- actual fixed45 QA-only factory, observed CLI ledger, collector, Persist and finalizer passed",flush=True)
     finally:
         faulthandler.cancel_dump_traceback_later()
+
+def qa_replacement_provider_failure_tests():
+    """Memory-CAS fixture; real recovery/source/transport, no synthetic failed publication."""
+    from copy import deepcopy
+    from operator_store_model import operation_events
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as driver
+    for fault, outcome, reason in (
+        ("execution_failure", "EXECUTION_FAILED", "worker_unsuccessful"),
+        ("result_unavailable", "UNKNOWN", "result_unavailable"),
+    ):
+        pf, provider, feature, gates, _ = qa_replacement_runtime_fixture(provider_fault=fault)
+        runtime = pf.composition.runtime
+        original = deepcopy(operation_events(runtime.backend.read_snapshot(), c.RECOVERY_OPERATION_ID))
+        expect(len(original) == 45, "QA failure test did not start at real historical prefix")
+        result = driver.recover_qa_replacement(pf)
+        terminal = c.qa_replacement_terminal(runtime.backend.read_snapshot(),
+            consumer_binding=c.recovery_execution_binding(pf.composition.policy_authority))
+        expect(result["terminal"] == terminal and terminal["outcome"] == outcome
+               and terminal["observation"]["reason"] == reason, "QA provider failure terminal differs")
+        events = operation_events(runtime.backend.read_snapshot(), c.RECOVERY_OPERATION_ID)
+        expect(events[:45] == original and all(row["event_type"] in
+               {"operation.needs-user", "loop.stable-stop"} for row in events[45:]),
+               "failed QA entered callback/Persist lifecycle")
+        expect(len(gates.state["posts"]) == 1 and len(gates.state["inputs"]) == 1
+               and gates.state["inputs"][0]["role"] == "qa" and not gates.state["roundtrips"]
+               and not any(path.startswith("/issues/comments/") for path in gates.state["routes"]),
+               "failed/unknown QA produced another role or publication")
+        expect(feature.state["puts"] == feature.state["applied"] == 0 and not feature.state["commits"]
+               and provider.read_ref() == c.QA_CANDIDATE
+               and all(value == 0 for value in provider.effect_counts().values()),
+               "failed QA mutated Feature/candidate or Developer boundary")
+        before = deepcopy(runtime.backend.read_snapshot())
+        replay = driver.recover_qa_replacement(pf)
+        after = runtime.backend.read_snapshot()
+        expect(replay["terminal"] == terminal and before.files == after.files
+               and before.ref_sha == after.ref_sha and len(gates.state["posts"]) == 1,
+               "terminal replay renewed QA slot or Store effects")
+    pf, provider, feature, gates, _ = qa_replacement_runtime_fixture(provider_fault="lost_ack")
+    runtime = pf.composition.runtime
+    result = driver.recover_qa_replacement(pf)
+    route = c.qa_replacement_route(runtime.backend.read_snapshot(),
+        consumer_binding=c.recovery_execution_binding(pf.composition.policy_authority))
+    expect(gates.state["ack_lost"] and len(gates.state["posts"]) == 1
+           and len(gates.state["runs"]) == 1 and len(gates.state["roundtrips"]) == 1
+           and result["sealed"] == route["sealed"]
+           and route["sealed"]["run_id"] == gates.state["runs"][0]["id"],
+           "lost acknowledgement did not recover the same actual run/publication")
+    before = deepcopy(runtime.backend.read_snapshot())
+    replay = driver.recover_qa_replacement(pf)
+    after = runtime.backend.read_snapshot()
+    expect(replay["sealed"] == result["sealed"] and before.files == after.files
+           and before.ref_sha == after.ref_sha and len(gates.state["posts"]) == 1
+           and len([path for path in gates.state["routes"] if path.startswith("/issues/comments/")]) == 1,
+           "lost-ack lookup replay repeated POST/comment")
+    expect(feature.state["puts"] == 0 and provider.read_ref() == c.QA_CANDIDATE,
+           "QA sealing fixture silently performed lifecycle/Persist")
+    print("QA replacement provider failure/unknown/lost-ack boundaries passed")
+
+
+def qa_replacement_pre_effect_rejection_tests():
+    """Reject source/candidate and frozen-payload substitutions before a replacement POST."""
+    import json
+    from copy import deepcopy
+    from operator_store_model import canonical_json
+    import v03_dogfood_full_composition as c
+    import v03_dogfood_runtime_driver as d
+    errors=(c.VerticalInvariantError,d.V03DogfoodRuntimeDriverError,ValueError,
+            __import__("operator_store").StoreCommandError)
+    for label in ("candidate","installation","selected-source"):
+        pf,p,feature,gates,_=qa_replacement_runtime_fixture()
+        runtime=pf.composition.runtime
+        if label=="candidate":
+            p.state["head"]="9"*40
+        elif label=="installation":
+            p.state["controller_source"]="9"*40
+        else:
+            original=gates.transport.http
+            def changed_source(*,method,url,token,body=None):
+                status,headers,raw=original(method=method,url=url,token=token,body=body)
+                if method=="GET" and "/contents/.github/workflows/"+c.QA_OBSERVED_WORKFLOW+"?" in url:
+                    row=json.loads(raw)
+                    row["content"]=__import__("base64").b64encode(b"foreign source").decode()
+                    return status,headers,json.dumps(row).encode()
+                return status,headers,raw
+            gates.transport.http=changed_source
+        before=canonical_json(runtime.backend.read_snapshot().files)
+        try:d.recover_qa_replacement(pf)
+        except errors:pass
+        else:raise AssertionError("QA accepted preclaim "+label+" substitution")
+        expect(canonical_json(runtime.backend.read_snapshot().files)==before
+               and not gates.state["posts"] and feature.state["puts"]==0,
+               "QA rejected "+label+" after an effect")
+    for label in ("frozen-candidate","frozen-context","postclaim-candidate"):
+        pf,p,feature,gates,_=qa_replacement_runtime_fixture()
+        runtime=pf.composition.runtime
+        original_commit=runtime.backend.commit
+        injected=[False]
+        def commit_then_change(plan,receipt):
+            result=original_commit(plan,receipt)
+            if not injected[0] and c.QA_REPLACEMENT_CLAIM_PATH in runtime.backend.snapshot.files:
+                injected[0]=True
+                if label=="postclaim-candidate":
+                    p.state["head"]="9"*40
+                else:
+                    claim=runtime.backend.snapshot.files[c.QA_REPLACEMENT_CLAIM_PATH]
+                    if label=="frozen-candidate":
+                        claim["dispatch_inputs"]["candidate_head_sha"]="9"*40
+                    else:
+                        payload=json.loads(claim["dispatch_inputs"]["task_payload"])
+                        payload["feature_context"]["gate_context"]["candidate_head_sha"]="9"*40
+                        claim["dispatch_inputs"]["task_payload"]=canonical_json(payload)
+            return result
+        runtime.backend.commit=commit_then_change
+        try:d.recover_qa_replacement(pf)
+        except errors:pass
+        else:raise AssertionError("QA accepted "+label+" before POST")
+        expect(injected[0] and not gates.state["posts"] and feature.state["puts"]==0
+               and c.QA_REPLACEMENT_SEAL_PATH not in runtime.backend.read_snapshot().files,
+               "QA frozen-input/candidate fence ran after external effect")
+    print("- QA source, candidate and frozen-input substitutions reject before POST",flush=True)
 
 if __name__ == "__main__":
     main()
