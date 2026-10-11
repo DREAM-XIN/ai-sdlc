@@ -12212,6 +12212,21 @@ def qa_second_joined_factory_tests():
                     qa_second_snapshot=forged,qa_second_binding=c.recovery_execution_binding(pf.composition.policy_authority))
             except (c.VerticalInvariantError,finalizer.V03DogfoodPostRunFinalizerError):pass
             else:raise AssertionError("QA2 finalizer accepted an extra physical receipt")
+            out_of_order=deepcopy(proof_snapshot)
+            callback=next(row for row in proof_events[47:] if row["event_type"]=="worker.callback.recorded")
+            selected=[deepcopy(proof_events[46]),deepcopy(callback)]
+            for row in selected:
+                out_of_order.files.pop(event_path(c.RECOVERY_OPERATION_ID,row["sequence"],row["event_id"]))
+            selected[0]["sequence"],selected[1]["sequence"]=selected[1]["sequence"],selected[0]["sequence"]
+            for row in selected:
+                out_of_order.files[event_path(c.RECOVERY_OPERATION_ID,row["sequence"],row["event_id"])]=row
+            try:
+                finalizer._reconstruct_release_authority("happy_path",
+                    operation_events(out_of_order,c.RECOVERY_OPERATION_ID),
+                    vertical_projection(out_of_order,c.RECOVERY_OPERATION_ID),observation,
+                    qa_second_snapshot=out_of_order,qa_second_binding=c.recovery_execution_binding(pf.composition.policy_authority))
+            except (c.VerticalInvariantError,finalizer.V03DogfoodPostRunFinalizerError):pass
+            else:raise AssertionError("QA2 finalizer accepted callback before its PASS successor boundary")
             frozen=deepcopy(runtime.backend.read_snapshot())
             posts_before,puts_before=len(gates.state["posts"]),feature.state["puts"]
             altered=[False]

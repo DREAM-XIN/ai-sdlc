@@ -924,7 +924,14 @@ def _reconstruct_release_authority(
                     and (row.get("payload") or {}).get("external_dispatch_key") == key
                     and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"]
         next_callback = accepted_callbacks[index + 1]["callback_sequence"]
-        if (len(authorized) != 1 or len(observed) != 1
+        if qa_second_snapshot is not None and key==QA_OLD_KEY:
+            if (len(authorized)!=1 or int(authorized[0]["sequence"])!=44 or next_claim!=43
+                    or observed!=qa_lookups
+                    or events[45]["sequence"]!=46 or events[45]["event_type"]!="operation.needs-user"
+                    or not seq < next_claim < 44 < int(observed[0]["sequence"])
+                        < 46 < int(observed[1]["sequence"]) < next_callback):
+                raise V03DogfoodPostRunFinalizerError("QA2 successor lacks its exact stopped-then-PASS launch boundary")
+        elif (len(authorized) != 1 or len(observed) != 1
                 or not seq < next_claim < int(authorized[0]["sequence"])
                     < int(observed[0]["sequence"]) < next_callback
                 or not observed[0]["payload"].get("receipt_id")):
