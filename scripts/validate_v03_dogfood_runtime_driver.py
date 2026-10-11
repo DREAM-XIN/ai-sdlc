@@ -13894,6 +13894,7 @@ def validate_runtime_group_partition(groups,named_groups):
 
 
 
+
 def qa_fourth_preparation_tests():
     """Fixed historical pins and pure proof validators; live observer integration is separate."""
     import hashlib, json, subprocess
@@ -13910,6 +13911,16 @@ def qa_fourth_preparation_tests():
     pins={**c.QA_FOURTH_HISTORY_BLOBS,**c.QA_FOURTH_DOCUMENT_BLOBS}
     expect(len(c.QA_FOURTH_HISTORY_BLOBS)==48 and len(c.QA_FOURTH_DOCUMENT_BLOBS)==33,
            "QA4 preparation manifest count differs")
+    # The accepted Reviewer validator retains its earlier global authority chain.
+    # These four inherited documents are outside the direct QA48/33 manifest.
+    ancestry={**c.REVIEWER_DOCUMENT_BLOBS,**c.REVIEWER_POST_MODEL_DOCUMENT_BLOBS,
+              **c.REVIEWER_STRUCTURED_PRIOR_BLOBS,**c.REVIEWER_INLINE_PRIOR_BLOBS}
+    extra={path:sha for path,sha in ancestry.items() if path not in pins}
+    expect(len(extra)==4 and all(not path.startswith(
+        "state/operator/v1/operations/") for path in extra)
+        and all(pins[path]==sha for path,sha in ancestry.items() if path in pins),
+        "QA4 fixture inherited Reviewer document closure differs")
+    pins={**pins,**ancestry}
     files={}
     for path,sha in pins.items():
         raw=git_bytes(c.QA_FOURTH_STORE,path)
@@ -13988,7 +13999,7 @@ def qa_fourth_preparation_tests():
     missing["current_observation"]["current_artifacts"].pop()
     rejected(lambda:c.validate_qa4_failure_relation(proof,missing),"missing mandatory diagnostic")
     expect(canonical_json(snapshot.files)==original,"QA4 read-only checks changed predecessor bytes")
-    print("- QA4 preparation: history48/docs33 verified; fresh Reviewer reread=false; observer integration executed=false; execution_enabled=false; all effects=0")
+    print("- QA4 preparation: history48/directdocs33/inheritedReviewer4 verified; fresh Reviewer reread=false; observer integration executed=false; execution_enabled=false; all effects=0")
 
 
 if __name__ == "__main__":
