@@ -1,4 +1,4 @@
-name: Synthetic AWF preservation proof (no model)
+name: Synthetic AWF cancellation proof (no model)
 on:
   pull_request:
     paths:
@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 jobs:
-  synthetic-awf-preservation:
+  synthetic-awf-cancellation:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -53,8 +53,8 @@ jobs:
           mkdir -m 700 /tmp/gh-aw/awf-native-proof
           cp -a "$RUNNER_TEMP/v03-joined-copilot" /tmp/gh-aw/awf-native-proof/copilot
           cp scripts/validate_v03_detector_protocol_replay.mjs /tmp/gh-aw/awf-native-proof/replay.mjs
-      - name: Verify actual AWF native preservation with synthetic protocol
+      - name: Verify actual CLI cancellation and partial native evidence
         shell: bash
         run: |
           set -euo pipefail
-          node /tmp/gh-aw/awf-native-proof/replay.mjs awf-host "$RUNNER_TEMP/awf-bundle.js"
+          node /tmp/gh-aw/awf-native-proof/replay.mjs awf-cancel "$RUNNER_TEMP/awf-bundle.js"

@@ -34,15 +34,16 @@ function stop(child) {
  if (!child?.pid) return;
  try { process.kill(-child.pid, "SIGKILL"); } catch {}
 }
-function run(command, args, env, cwd, timeoutMs=90000) {
+function run(command, args, env, cwd, timeoutMs=90000, onSpawn=null) {
  return new Promise((resolve, reject) => {
   const child = spawn(command, args, {env,cwd,detached:true,stdio:["ignore","pipe","pipe"]});
+  if(onSpawn)onSpawn(child);
   let bytes=0, settled=false, captured="";
-  lastProcess={exit_code:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[],runtime_probe:null,child_failure:null};
+  lastProcess={exit_code:null,close_signal:null,error_classes:[],stdout_bytes:0,stderr_bytes:0,sanitized_startup_errors:[],runtime_probe:null,child_failure:null};
   const classify=()=>{const failures=[];let classifiedText=captured;
-   if(cli==="awf-host"){classifiedText=captured.split(/\r?\n/).filter(line=>{const at=line.indexOf('{"schema":"v03-native-cli-observability/v1"');if(at<0)return true;try{const x=JSON.parse(line.slice(at));if(Object.keys(x).sort().join(",")==="error,process,raw_exported,schema,stage,status"&&x.schema==="v03-native-cli-observability/v1"&&x.status==="FAIL"&&["ISOLATION","CLI_PROTOCOL","NATIVE_EVENTS","INCOMPLETE_NEGATIVES"].includes(x.stage)&&allowedErrors.has(x.error)&&x.process===null&&x.raw_exported===false){failures.push({stage:x.stage,error:x.error});return false;}}catch{}return true;}).join("\n");if(failures.length===1)lastProcess.child_failure=failures[0];}
+   if(["awf-host","awf-cancel"].includes(cli)){classifiedText=captured.split(/\r?\n/).filter(line=>{const at=line.indexOf('{"schema":"v03-native-cli-observability/v1"');if(at<0)return true;try{const x=JSON.parse(line.slice(at));if(Object.keys(x).sort().join(",")==="error,process,raw_exported,schema,stage,status"&&x.schema==="v03-native-cli-observability/v1"&&x.status==="FAIL"&&["ISOLATION","CLI_PROTOCOL","NATIVE_EVENTS","INCOMPLETE_NEGATIVES"].includes(x.stage)&&allowedErrors.has(x.error)&&x.process===null&&x.raw_exported===false){failures.push({stage:x.stage,error:x.error});return false;}}catch{}return true;}).join("\n");if(failures.length===1)lastProcess.child_failure=failures[0];}
    const checks={CONFIG_SCHEMA:/schema|additional propert|unrecognized propert|unknown propert|must NOT have/i,ARGUMENT:/unknown option|invalid option|invalid argument|no command specified/i,MISSING_MODULE:/cannot find module|module_not_found/i,DOCKER:/cannot connect to.*docker|docker daemon|docker.*not found/i,PERMISSION:/permission denied|eacces|operation not permitted/i,IMAGE:/manifest unknown|image.*not found|pull access denied/i,MOUNT:/invalid mount|mount.*denied|mount.*not exist/i,NETWORK_SETUP:/iptables.*failed|failed.*iptables|network.*conflict/i,AUTH_REQUIRED:/missing.*(?:token|key|credential)|(?:token|key|credential).*required/i};lastProcess.error_classes=Object.entries(checks).filter(([,r])=>r.test(classifiedText)).map(([k])=>k);
-   if(cli==="awf-host"){
+   if(["awf-host","awf-cancel"].includes(cli)){
     const probes=[];
     for(const l of captured.split(/\r?\n/)){const at=l.indexOf("AWF_NATIVE_RUNTIME_PROBE ");if(at<0)continue;try{const p=JSON.parse(l.slice(at+25));if(Object.keys(p).sort().join(",")==="path_node,usr_bin_node,usr_local_bin_node"&&Object.values(p).every(x=>typeof x==="boolean"))probes.push(p);}catch{}}
     if(probes.length===1)lastProcess.runtime_probe=probes[0];
@@ -68,7 +69,7 @@ function run(command, args, env, cwd, timeoutMs=90000) {
    bytes+=b.length; lastProcess[output===child.stdout?"stdout_bytes":"stderr_bytes"]+=b.length; if(captured.length<65536)captured+=b.toString("utf8").slice(0,65536-captured.length); if(bytes>4*1024*1024)fail("CLI_OUTPUT_BOUND");
   });
   child.once("error",()=>fail("CLI_START"));
-  child.once("close",code=>{if(!settled){settled=true;clearTimeout(timer);stop(child);lastProcess.exit_code=code;classify();resolve(code);}});
+  child.once("close",(code,signal)=>{if(!settled){settled=true;clearTimeout(timer);stop(child);lastProcess.exit_code=code;lastProcess.close_signal=signal;classify();resolve(code);}});
  });
 }
 function shellArguments(definition, command) {
@@ -130,7 +131,7 @@ function parseEvents(raw) {
   return event;
  });
 }
-function analyze(events) {
+function analyze(events,partial=false) {
  const starts=new Map(), completes=new Map(), categories={start:0,complete:0,assistant:0,session_end:0,other:0};
  for(const event of events){
   const d=event.data;
@@ -157,9 +158,9 @@ function analyze(events) {
    categories.session_end++;
   }else categories.other++;
  }
- ensure(starts.size===3&&completes.size===3,"TOOL_LINKAGE");
+ const count=partial?1:3;ensure(starts.size===count&&completes.size===count,"TOOL_LINKAGE");
  const commandHashes=[],resultHashes=[],nativeShellExits=[];
- for(let i=0;i<ids.length;i++){
+ for(let i=0;i<count;i++){
   ensure(starts.has(ids[i])&&completes.has(ids[i]),"TOOL_LINKAGE");
   const start=starts.get(ids[i]),complete=completes.get(ids[i]);
   ensure(start.command===commands[i],"COMMAND_IDENTITY");
@@ -171,6 +172,7 @@ function analyze(events) {
   commandHashes.push(fingerprint(Buffer.from(start.command,"utf8")));
   resultHashes.push(fingerprint(Buffer.from(complete.output,"utf8")));
  }
+ if(partial)return {coverage:"partial",categories,linked_calls:1,native_tool_success:1,native_tool_failure:0,native_shell_exit_codes:nativeShellExits,native_terminal_event_present:categories.session_end>0};
  ensure(commandHashes[0]===commandHashes[2]&&commandHashes[0]!==commandHashes[1],"COMMAND_IDENTITY");
  // Completion is additionally authenticated by actual CLI exit0 and the final
  // fake-provider assistant stop. Native end-event absence is reported, never inferred.
@@ -346,11 +348,11 @@ function metadataGuardNegatives(){
 }
 async function awfChild(label){
  metadataGuardNegatives();
- ensure(["zero","nonzero"].includes(label)&&process.getuid()!==0,"INPUT_PATH");const knownMetadata=noSecrets(process.env,true);
+ ensure(["zero","nonzero","cancel"].includes(label)&&process.getuid()!==0,"INPUT_PATH");const knownMetadata=noSecrets(process.env,true);
  const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
  ensure(process.env.TMPDIR===tmp&&path.isAbsolute(process.env.HOME||""),"INPUT_PATH");
  fixtureDirectory(tmp);fs.writeFileSync(path.join(tmp,"child-temp-check"),"synthetic",{flag:"wx"});fs.unlinkSync(path.join(tmp,"child-temp-check"));
- let server,providerError=null,requests=0,feedbacks=0;
+ let server,providerError=null,requests=0,feedbacks=0,cliProcess=null,cancelled=false;
  try{
    server=http.createServer((req,res)=>{
    let data=Buffer.alloc(0);
@@ -374,6 +376,7 @@ async function awfChild(label){
       ensure(matches.length===1&&JSON.stringify(matches[0].content).includes(markers[previous]),"TOOL_FEEDBACK");
       feedbacks++;
      }
+     if(label==="cancel"&&requests===2){ensure(cliProcess?.pid&&!cancelled,"CLI_START");cancelled=true;stop(cliProcess);return;}
      if(requests===4){done(res,request);return;}
      const shell=request.tools.map(x=>x.function||x).find(x=>x.name==="bash");
      ensure(shell,"SHELL_TOOL");
@@ -390,10 +393,10 @@ async function awfChild(label){
  const env={HOME:process.env.HOME,TMPDIR:tmp,PATH:"/usr/local/bin:/usr/bin:/bin",LANG:"C.UTF-8",
   COPILOT_MODEL:"deepseek-chat",COPILOT_PROVIDER_TYPE:"openai",COPILOT_PROVIDER_WIRE_API:"completions",
   COPILOT_PROVIDER_API_KEY:"offline-dummy",COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:"+server.address().port};
- const code=await run(proofCli,["--model","deepseek-chat","--disable-builtin-mcps","--no-ask-user","--allow-all-tools","--log-level","all","--prompt","Run the three prescribed synthetic read-only shell checks, then stop."],env,path.join(caseRoot,"work"));
- ensure(providerError===null,providerError||"PROVIDER_FAILURE");ensure(code===0,"CLI_EXIT");ensure(requests===4&&feedbacks===3,"TOOL_FEEDBACK");
- fs.writeFileSync(path.join(caseRoot,"child-proof.json"),JSON.stringify({cli_exit:code,requests,feedbacks,tmpdir_usable:true,known_awf_metadata_count:knownMetadata})+"\n",{flag:"wx",mode:0o600});
- return label==="zero"?0:7;
+ const code=await run(proofCli,["--model","deepseek-chat","--disable-builtin-mcps","--no-ask-user","--allow-all-tools","--log-level","all","--prompt","Run the three prescribed synthetic read-only shell checks, then stop."],env,path.join(caseRoot,"work"),90000,p=>{cliProcess=p;});
+ ensure(providerError===null,providerError||"PROVIDER_FAILURE");if(label==="cancel"){ensure(cancelled&&code===null&&lastProcess.close_signal==="SIGKILL","CLI_EXIT");ensure(requests===2&&feedbacks===1,"TOOL_FEEDBACK");}else{ensure(code===0,"CLI_EXIT");ensure(requests===4&&feedbacks===3,"TOOL_FEEDBACK");}
+ fs.writeFileSync(path.join(caseRoot,"child-proof.json"),JSON.stringify({cli_exit:code,cli_signal:lastProcess.close_signal,requests,feedbacks,tmpdir_usable:true,known_awf_metadata_count:knownMetadata})+"\n",{flag:"wx",mode:0o600});
+ return label==="cancel"?124:label==="zero"?0:7;
  }finally{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}}
 }
 function preservedEvents(tmp){
@@ -413,7 +416,7 @@ async function awfHost(bundle){
  ensure(path.isAbsolute(bundle)&&process.getuid()!==0,"INPUT_PATH");fixtureDirectory(proofRoot);
  ensure(crypto.createHash("sha256").update(readBounded(bundle,2*1024*1024)).digest("hex")==="cf611445d648fe8ec03eb7b1e6e47ae4870d375f88e449adce7176c256f7f3b8","INPUT_PATH");
  const reports=[];
- for(const label of ["zero","nonzero"]){
+ for(const label of (cli==="awf-cancel"?["cancel"]:["zero","nonzero"])){
   stage="AWF_"+label.toUpperCase();const caseRoot=path.join(proofRoot,label),tmp=path.join(caseRoot,"tmp");
   ensure(!fs.existsSync(caseRoot),"INPUT_PATH");fs.mkdirSync(caseRoot,{mode:0o700});fs.mkdirSync(tmp,{mode:0o700});fs.mkdirSync(path.join(caseRoot,"work"),{mode:0o700});
   const before=fixtureDirectory(tmp),config=path.join(caseRoot,"awf.json");
@@ -424,18 +427,19 @@ async function awfHost(bundle){
   try{
    const launch='a=false; b=false; c=false; [ -x /usr/bin/node ] && a=true; [ -x /usr/local/bin/node ] && b=true; command -v node >/dev/null 2>&1 && c=true; printf \'AWF_NATIVE_RUNTIME_PROBE {"usr_bin_node":%s,"usr_local_bin_node":%s,"path_node":%s}\\n\' "$a" "$b" "$c"; [ "$c" = true ] || exit 127; exec node "$1" awf-child "$2"';
    const code=await run(process.execPath,[bundle,"--config",config,"--container-workdir",path.join(caseRoot,"work"),"--mount","/tmp/gh-aw:/tmp/gh-aw:rw","--env-all","--log-level","error","--skip-pull","--","/bin/bash","-c",launch,"awf-native-proof",proofScript,label],env,caseRoot,240000);
-   ensure(code===(label==="zero"?0:7),"AWF_EXIT");
+   ensure(code===(label==="cancel"?124:label==="zero"?0:7),"AWF_EXIT");
    ensure(lastProcess.runtime_probe?.path_node===true,"INPUT_PATH");
    const child=JSON.parse(readBounded(path.join(caseRoot,"child-proof.json"),4096).toString("utf8"));
-   ensure(child.cli_exit===0&&child.requests===4&&child.feedbacks===3&&child.tmpdir_usable===true&&child.known_awf_metadata_count===1,"TOOL_FEEDBACK");
+   ensure(child.tmpdir_usable===true&&child.known_awf_metadata_count===1,"TOOL_FEEDBACK");
+   if(label==="cancel")ensure(child.cli_exit===null&&child.cli_signal==="SIGKILL"&&child.requests===2&&child.feedbacks===1,"TOOL_FEEDBACK");else ensure(child.cli_exit===0&&child.requests===4&&child.feedbacks===3,"TOOL_FEEDBACK");
    const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
    stage="AWF_NATIVE_"+label.toUpperCase();
-   const raw=readBounded(preservedEvents(tmp),8*1024*1024),events=parseEvents(raw),protocol=analyze(events);
+   const raw=readBounded(preservedEvents(tmp),8*1024*1024),events=parseEvents(raw),protocol=analyze(events,label==="cancel");
    let truncated=false,incomplete=false;
    try{parseEvents(raw.subarray(0,raw.length-1));}catch(e){truncated=e.message==="EVENT_TRUNCATED";}
-   try{analyze(events.filter(e=>!(e.type==="tool.execution_complete"&&e.data.toolCallId===ids[2])));}catch(e){incomplete=e.message==="TOOL_LINKAGE";}
+   try{analyze(events.filter(e=>!(e.type==="tool.execution_complete"&&e.data.toolCallId===ids[label==="cancel"?0:2])),label==="cancel");}catch(e){incomplete=e.message==="TOOL_LINKAGE";}
    ensure(truncated&&incomplete,"NEGATIVE_NOT_REJECTED");
-   report={case:label,awf_exit:code,runtime_probe:lastProcess.runtime_probe,cli_exit:0,provider_requests:child.requests,provider_feedbacks:child.feedbacks,known_awf_metadata_count:child.known_awf_metadata_count,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
+   report={case:label,awf_exit:code,runtime_probe:lastProcess.runtime_probe,cli_exit:child.cli_exit,cli_signal:child.cli_signal,cancellation_scope:label==="cancel"?"synthetic_cli_process_group":"none",provider_requests:child.requests,provider_feedbacks:child.feedbacks,known_awf_metadata_count:child.known_awf_metadata_count,tmpdir_usable:true,owned_directory_unchanged:true,native_preservation:true,protocol,truncated_rejected:true,incomplete_rejected:true,raw_exported:false};
   }finally{
    const after=fixtureDirectory(tmp);ensure(before.dev===after.dev&&before.ino===after.ino,"SESSION_DIRECTORY");
    fs.rmSync(caseRoot,{recursive:true,force:false});
@@ -447,5 +451,5 @@ async function awfHost(bundle){
 
 try{
  if(cli==="awf-child"){process.exitCode=await awfChild(root);}
- else{const report=cli==="awf-host"?await awfHost(root):await main();console.log(JSON.stringify(report));}
-}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:cli==="awf-host"?lastProcess:null,raw_exported:false}));process.exitCode=1;}
+ else{const report=["awf-host","awf-cancel"].includes(cli)?await awfHost(root):await main();console.log(JSON.stringify(report));}
+}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:["awf-host","awf-cancel"].includes(cli)?lastProcess:null,raw_exported:false}));process.exitCode=1;}
