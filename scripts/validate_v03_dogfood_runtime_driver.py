@@ -11301,8 +11301,13 @@ def qa_replacement_pre_effect_rejection_tests():
         def track_reader(original):
             def read(*,method,url,token,body=None):
                 status,headers,raw=original(method=method,url=url,token=token,body=body)
-                if injected[0] and method=="GET" and url.endswith("/pulls/552") and status==200:
-                    observed_heads.append(json.loads(raw)["head"]["sha"])
+                path=__import__("urllib.parse",fromlist=["urlparse"]).urlparse(url).path
+                if injected[0] and method=="GET" and status==200 and path.endswith(("/pulls/552","/pulls")):
+                    value=json.loads(raw)
+                    rows=value if isinstance(value,list) else [value]
+                    matches=[row for row in rows if row.get("number")==552]
+                    expect(len(matches)==1,"postclaim candidate reader did not return fixed PR")
+                    observed_heads.append(matches[0]["head"]["sha"])
                 return status,headers,raw
             return read
         p.http=track_reader(p.http)
@@ -11334,10 +11339,13 @@ def qa_replacement_pre_effect_rejection_tests():
                    "QA accepted "+label+" before POST")
             snapshot=runtime.backend.read_snapshot()
             tail=operation_events(snapshot,c.RECOVERY_OPERATION_ID)[45:]
-            expect("9"*40 in observed_heads and len(tail)==1
-                   and tail[0]["event_type"]=="operation.needs-user"
-                   and canonical_json(snapshot.get(c.QA_REPLACEMENT_CLAIM_PATH))==frozen_claim[0],
-                   "candidate stop lacks fresh consumed head or changed frozen claim")
+            checks={"fresh_changed_head":bool(observed_heads) and observed_heads[-1]=="9"*40,
+                    "all_postclaim_heads_changed":bool(observed_heads) and all(head=="9"*40 for head in observed_heads),
+                    "one_stop":len(tail)==1 and tail[0]["event_type"]=="operation.needs-user",
+                    "frozen_claim_unchanged":canonical_json(snapshot.get(c.QA_REPLACEMENT_CLAIM_PATH))==frozen_claim[0]}
+            print("qa_candidate_stop "+json.dumps(checks,sort_keys=True),flush=True)
+            for name,valid in checks.items():
+                expect(valid,"candidate stop failed "+name)
         expect(injected[0] and not gates.state["posts"] and feature.state["puts"]==0
                and c.QA_REPLACEMENT_SEAL_PATH not in runtime.backend.read_snapshot().files,
                "QA frozen-input/candidate fence ran after external effect")
