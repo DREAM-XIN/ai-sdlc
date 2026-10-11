@@ -199,7 +199,8 @@ def _sealed_recovery_receipt(preflight, snapshot):
 
 def _reviewer_route(preflight, snapshot):
     from v03_dogfood_full_composition import reviewer_replacement_route, recovery_execution_binding
-    return reviewer_replacement_route(snapshot, consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    from v03_dogfood_full_composition import qa_reviewer_binding
+    return reviewer_replacement_route(snapshot, consumer_binding=qa_reviewer_binding(snapshot,preflight.composition.policy_authority))
 
 
 def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...], str]:
@@ -221,6 +222,13 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
             if receipt != str(REVIEWER_FAILED_RUN):
                 raise V03DogfoodScenarioRunnerError("Reviewer historical receipt changed")
             receipt = _reviewer_route(preflight, preflight.composition.runtime.backend.read_snapshot())["receipt_id"]
+        from v03_dogfood_full_composition import QA_OLD_KEY,QA_FAILED_RUN,qa_replacement_present,qa_replacement_route
+        qa_snapshot=preflight.composition.runtime.backend.read_snapshot()
+        if operation_id==RECOVERY_OPERATION_ID and external_key==QA_OLD_KEY and qa_replacement_present(qa_snapshot):
+            if receipt!=str(QA_FAILED_RUN):
+                raise V03DogfoodScenarioRunnerError("QA historical receipt changed")
+            receipt=qa_replacement_route(qa_snapshot,consumer_binding=recovery_execution_binding(
+                preflight.composition.policy_authority))["receipt_id"]
         if not receipt.isdigit() or int(receipt) < 1:
             raise V03DogfoodScenarioRunnerError("LAUNCHED dispatch lacks exact Actions receipt")
         run_ids.append(int(receipt))
@@ -280,6 +288,10 @@ def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
         reviewer = _reviewer_route(preflight, snapshot)
         receipt, lookup_key = reviewer["receipt_id"], reviewer["physical_key"]
         workflow = reviewer["authorization"]["workflow_file"]
+    from v03_dogfood_full_composition import QA_OLD_KEY,qa_replacement_present,qa_replacement_route
+    if operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_replacement_present(snapshot):
+        qa=qa_replacement_route(snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        receipt,lookup_key,workflow=qa["receipt_id"],qa["physical_key"],qa["authorization"]["workflow_file"]
     if operation_id == RECOVERY_OPERATION_ID and external_dispatch_key == RECOVERY_EXTERNAL_KEY:
         sealed = _sealed_recovery_receipt(preflight, snapshot)
         if (
@@ -534,6 +546,10 @@ def run_scenario(
     from v03_dogfood_full_composition import REVIEWER_STRUCTURED_TERMINAL_PATH, reviewer_structured_terminal
     from v03_dogfood_full_composition import REVIEWER_INLINE_TERMINAL_PATH, reviewer_inline_terminal
     current = preflight.composition.runtime.backend.read_snapshot()
+    from v03_dogfood_full_composition import QA_REPLACEMENT_TERMINAL_PATH,qa_replacement_terminal
+    if scenario=="happy_path" and QA_REPLACEMENT_TERMINAL_PATH in current.files:
+        qa_replacement_terminal(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        raise V03DogfoodScenarioRunnerError("QA replacement is durably stopped")
     if scenario == "happy_path" and REVIEWER_INLINE_TERMINAL_PATH in current.files:
         reviewer_inline_terminal(current, consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         raise V03DogfoodScenarioRunnerError("inline Reviewer non-PASS is durably stopped")

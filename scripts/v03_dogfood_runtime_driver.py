@@ -2421,7 +2421,15 @@ def recover_reviewer_structured(preflight):
     if result["acquired"]:
         if receipt["lookup_state"]!="NOT_LAUNCHED":
             raise V03DogfoodRuntimeDriverError("corrected Reviewer CAS winner lost absence")
-        receipt=transport.dispatch(workflow=auth["workflow_file"],ref="main",inputs=claim["dispatch_inputs"])
+        try:
+            receipt=transport.dispatch(workflow=auth["workflow_file"],ref="main",inputs=claim["dispatch_inputs"])
+        except (OSError,ValueError,c.VerticalInvariantError,V03DogfoodRuntimeDriverError):
+            # The consumed CAS claim is never replenished, even if acknowledgement or
+            # a fresh pre-POST guard fails. Only a fresh lookup may identify a launch.
+            try:
+                receipt=c.qa_replacement_scan(transport,physical_key=auth["physical_key"])
+            except (OSError,ValueError,c.VerticalInvariantError,V03DogfoodRuntimeDriverError):
+                receipt={"lookup_state":"UNKNOWN","receipt_id":None}
     elif receipt["lookup_state"]!="LAUNCHED":
         raise V03DogfoodRuntimeDriverError("corrected Reviewer claim consumed without a known run; no retry")
     if receipt.get("lookup_state")!="LAUNCHED":
@@ -2846,7 +2854,10 @@ def _execute_live(*, mode: str, scenario: str) -> int:
         return 0
 
     from v03_dogfood_full_composition import REVIEWER_BOUNDED_WORKFLOW, STRUCTURED_GATE_WORKFLOWS, INLINE_GATE_WORKFLOWS
-    recovery = (recover_reviewer_inline if preflight.workflows.reviewer_workflow == INLINE_GATE_WORKFLOWS["reviewer"]
+    from v03_dogfood_full_composition import QA_HISTORY_BLOBS
+    qa_snapshot = preflight.composition.runtime.backend.read_snapshot()
+    qa_mode = scenario == "happy_path" and all(path in qa_snapshot.files for path in QA_HISTORY_BLOBS)
+    recovery = (recover_qa_replacement if qa_mode else recover_reviewer_inline if preflight.workflows.reviewer_workflow == INLINE_GATE_WORKFLOWS["reviewer"]
                 else recover_reviewer_structured if preflight.workflows.reviewer_workflow == STRUCTURED_GATE_WORKFLOWS["reviewer"]
                 else recover_reviewer_post_model if preflight.workflows.reviewer_workflow == REVIEWER_BOUNDED_WORKFLOW
                 else recover_reviewer_pre_model)
@@ -2854,9 +2865,9 @@ def _execute_live(*, mode: str, scenario: str) -> int:
     if isinstance(recovered_historical_attempt, dict) and "terminal" in recovered_historical_attempt:
         terminal = recovered_historical_attempt["terminal"]
         print(json.dumps({"status": "NEEDS_USER", "recommendation": terminal["outcome"],
-            "reviewer_run_id": terminal["run_id"], "release_eligible": False}, sort_keys=True))
+            "worker_run_id": terminal.get("run_id", (terminal.get("observation") or {}).get("run_id")), "release_eligible": False}, sort_keys=True))
         return 1
-    if recovered_historical_attempt is not None:
+    if recovered_historical_attempt is not None and not qa_mode:
         reconcile_post_handoff(preflight)
     if recovered_historical_attempt is None:
         prepare_previous_installation_operation(preflight)
@@ -3368,6 +3379,329 @@ def observe_reviewer_inline_failure_for_review(*, actions_read_token):
         "run_id": row["run_id"], "activation_state": row["activation_state"],
         "current_artifact_count": len(row["current_artifacts"]), "observed_at": row["observed_at"]}
 
+
+
+def observe_qa_replacement_predecessor(preflight):
+    import v03_dogfood_full_composition as c
+    runtime=preflight.composition.runtime
+    before=runtime.backend.read_snapshot()
+    binding=c.recovery_execution_binding(preflight.composition.policy_authority)
+    _require_recovery_execution_source(preflight,binding["execution_source_head_sha"])
+    for path,blob in c.QA_WORKER_BLOBS.items():
+        document=_github_json(preflight,"/contents/"+path+"?ref="+binding["execution_source_head_sha"])
+        if document.get("type")!="file" or document.get("encoding")!="base64" or document.get("sha")!=blob:
+            raise V03DogfoodRuntimeDriverError("QA selected source closure differs")
+        raw=base64.b64decode("".join(document["content"].split()),validate=True)
+        if hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()!=blob:
+            raise V03DogfoodRuntimeDriverError("QA selected source bytes differ")
+    route,_=c.validate_qa_replacement_predecessor(before)
+    _reviewer_existing_producer_check(preflight,before)
+    source=preflight.composition.result_source
+    source.bind_reviewer(runtime,preflight.composition.policy_authority)
+    auth,sealed=route["authorization"],route["sealed"]
+    resolved=source.resolve(external_dispatch_key=auth["physical_key"],
+        expected_receipt_identity=str(sealed["run_id"]),trusted_context=c.reviewer_trusted_context(auth))
+    material=source._reviewer_proofs[sealed["run_id"]]
+    if resolved.role_payload.get("verdict")!="PASS" or any(sealed.get(k)!=v for k,v in material.items()):
+        raise V03DogfoodRuntimeDriverError("accepted historical Reviewer proof changed")
+    failed=observe_qa_failure(preflight)
+    if runtime.backend.read_snapshot().ref_sha!=before.ref_sha:
+        raise V03DogfoodRuntimeDriverError("Store changed during QA predecessor observation")
+    return c.validate_qa_replacement_proof({"schema_version":"ai-sdlc.v03-qa-predecessor/v1",
+        "accepted_reviewer":sealed,"failed_qa":failed})
+
+def recover_qa_replacement(preflight):
+    """The fixed one-use QA replacement; no other role may be created."""
+    import v03_dogfood_full_composition as c
+    from dataclasses import replace
+    if preflight.slot.scenario!="happy_path":
+        return None
+    runtime=preflight.composition.runtime
+    binding=c.recovery_execution_binding(preflight.composition.policy_authority)
+    snapshot=runtime.backend.read_snapshot()
+    c.validate_qa_replacement_predecessor(snapshot)
+    source=preflight.composition.result_source
+    source.bind_reviewer(runtime,preflight.composition.policy_authority)
+    builder=preflight.composition.dispatch_gateway.delegate.context_builder
+    if c.QA_REPLACEMENT_TERMINAL_PATH in snapshot.files:
+        return {"terminal":c.qa_replacement_terminal(snapshot,consumer_binding=binding)}
+    def fresh():
+        return observe_qa_replacement_predecessor(preflight)
+    proof=fresh()
+    if c.qa_replacement_present(snapshot):
+        auth,claim=c.validate_qa_replacement_authorization(snapshot,consumer_binding=binding)
+        c.validate_qa_replacement_relation(auth["predecessor_proof"],proof)
+        result={"acquired":False,"authorization":auth,"claim":claim}
+    else:
+        def planner(current):
+            if c.qa_replacement_present(current):
+                return c.plan_qa_replacement(current,consumer_binding=binding,
+                    predecessor_proof=proof,dispatch_inputs=None)
+            c.validate_qa_replacement_predecessor(current,fresh=True)
+            _require_recovery_execution_source(preflight,binding["execution_source_head_sha"])
+            c.validate_qa_replacement_relation(proof,fresh())
+            auth=c.qa_replacement_authorization(current,consumer_binding=binding,predecessor_proof=proof)
+            dispatch=c.qa_replacement_dispatch(auth)
+            context=builder.build_prospective_qa(auth)
+            inputs=GhAwVerticalRoleDispatchGateway._inputs(preflight.composition.dispatch_gateway.delegate,dispatch)
+            payload=json.loads(inputs["task_payload"]);payload["feature_context"]["gate_context"]=context
+            inputs["task_payload"]=canonical_json(payload)
+            config=replace(preflight.composition.actions_transport.config,workflows=c.qa_replacement_workflows())
+            c.GitHubActionsVerticalGhAwTransport(config,http=preflight.composition.actions_transport.http)._validate_dispatch_inputs(
+                workflow=c.QA_OBSERVED_WORKFLOW,ref="main",inputs=inputs)
+            if runtime.backend.read_snapshot().ref_sha!=current.ref_sha:
+                raise V03DogfoodRuntimeDriverError("Store changed during QA frozen context preparation")
+            if c.qa_replacement_scan(preflight.composition.actions_transport,
+                    physical_key=auth["physical_key"])["lookup_state"]!="NOT_LAUNCHED":
+                raise V03DogfoodRuntimeDriverError("QA replacement exists before claim")
+            return c.plan_qa_replacement(current,consumer_binding=binding,predecessor_proof=proof,dispatch_inputs=inputs)
+        result=_commit_recovery_nonempty(runtime,planner)
+        auth,claim=result["authorization"],result["claim"]
+    c.validate_qa_replacement_relation(auth["predecessor_proof"],fresh())
+    transport=c.DogfoodQaReplacementTransport(
+        replace(preflight.composition.actions_transport.config,workflows=c.qa_replacement_workflows()),
+        snapshot=runtime.backend.read_snapshot(),consumer_binding=binding,allow_post=result["acquired"],
+        http=preflight.composition.actions_transport.http,sleeper=time.sleep)
+    def prepost():
+        c.validate_qa_replacement_relation(auth["predecessor_proof"],fresh())
+        current=builder(c.qa_replacement_dispatch(auth))
+        frozen=json.loads(claim["dispatch_inputs"]["task_payload"])["feature_context"]["gate_context"]
+        from copy import deepcopy
+        comparable=deepcopy(current)
+        comparable["provenance"]["store_commit_sha"]=frozen["provenance"]["store_commit_sha"]
+        comparable["context_sha256"]=frozen["context_sha256"]
+        if canonical_json(comparable)!=canonical_json(frozen):
+            raise V03DogfoodRuntimeDriverError("QA evidence changed after claim")
+        c.validate_qa_replacement_authorization(runtime.backend.read_snapshot(),consumer_binding=binding)
+    transport.prepost=prepost
+    def terminal(outcome,observation):
+        return _commit_recovery_nonempty(runtime,lambda current:c.plan_qa_replacement_terminal(
+            current,outcome=outcome,observation=observation,consumer_binding=binding,
+            occurred_at=runtime.clock(),trusted_context_digest=preflight.trusted_context_digest))
+    receipt=c.qa_replacement_scan(transport,physical_key=auth["physical_key"])
+    if result["acquired"]:
+        if receipt["lookup_state"]!="NOT_LAUNCHED":
+            raise V03DogfoodRuntimeDriverError("QA claim winner lost launch absence")
+        receipt=transport.dispatch(workflow=auth["workflow_file"],ref="main",inputs=claim["dispatch_inputs"])
+    if receipt.get("lookup_state")!="LAUNCHED":
+        return terminal("UNKNOWN",{"lookup_state":receipt.get("lookup_state","UNKNOWN"),"run_id":None,
+            "status":None,"conclusion":None,"reason":"launch_unresolved"})
+    run_id=int(receipt["receipt_id"])
+    from v03_dogfood_scenario_runner import wait_for_worker_run
+    try:
+        wait_for_worker_run(read_run=lambda n:_github_json(preflight,f"/actions/runs/{n}"),
+            receipt=str(run_id),workflow=auth["workflow_file"],installation_sha=binding["execution_source_head_sha"],
+            external_dispatch_key=auth["physical_key"])
+    except V03DogfoodScenarioRunnerError:
+        run=_github_json(preflight,f"/actions/runs/{run_id}")
+        if (run.get("id")!=run_id or type(run.get("run_attempt")) is not int or run["run_attempt"]!=1
+                or run.get("head_sha")!=binding["execution_source_head_sha"]
+                or str(run.get("path","")).removeprefix(".github/workflows/")!=auth["workflow_file"]
+                or run.get("display_title")!="AI-SDLC gh-aw "+auth["physical_key"]):
+            raise V03DogfoodRuntimeDriverError("QA failed run identity changed")
+        complete=run.get("status")=="completed"
+        return terminal("EXECUTION_FAILED" if complete else "UNKNOWN",
+            {"lookup_state":"LAUNCHED","run_id":run_id,"status":run.get("status"),
+             "conclusion":run.get("conclusion"),"reason":"worker_unsuccessful" if complete else "worker_unresolved"})
+    try:
+        resolved=source.resolve(external_dispatch_key=auth["physical_key"],
+            expected_receipt_identity=str(run_id),trusted_context=c.qa_replacement_trusted_context(auth))
+    except (c.VerticalInvariantError,ValueError):
+        return terminal("UNKNOWN",{"lookup_state":"LAUNCHED","run_id":run_id,
+            "status":"completed","conclusion":"success","reason":"result_unavailable"})
+    material=source._reviewer_proofs[run_id]
+    c._validate_qa_result_material(auth,run_id,resolved.role_payload,material)
+    verdict=resolved.role_payload.get("verdict")
+    if verdict in {"FAIL","BLOCKED"}:
+        return terminal(verdict,{"run_id":run_id,"run_attempt":1,"workflow_file":auth["workflow_file"],
+            "physical_key":auth["physical_key"],"source_head_sha":binding["execution_source_head_sha"],
+            "role_payload":resolved.role_payload,"proof":material})
+    if verdict!="PASS":
+        raise V03DogfoodRuntimeDriverError("QA replacement has no affirmative PASS")
+    def seal(current):
+        current_auth,current_claim=c.validate_qa_replacement_authorization(current,consumer_binding=binding)
+        if c.QA_REPLACEMENT_TERMINAL_PATH in current.files:
+            raise V03DogfoodRuntimeDriverError("QA replacement is durably stopped")
+        expected={"schema_version":c.QA_REPLACEMENT_SCHEMA,"ordinal":1,
+            "authorization_digest":"sha256:"+digest_json(current_auth),
+            "claim_digest":"sha256:"+digest_json(current_claim),"logical_key":c.QA_OLD_KEY,
+            "physical_key":auth["physical_key"],"run_id":run_id,"run_attempt":1,"conclusion":"success",
+            "workflow_file":auth["workflow_file"],"execution_binding":binding,"recommendation":"PASS",**material}
+        if c.QA_REPLACEMENT_SEAL_PATH in current.files:
+            existing=c.qa_replacement_route(current,consumer_binding=binding)["sealed"]
+            if canonical_json(existing)!=canonical_json(expected):
+                raise V03DogfoodRuntimeDriverError("QA PASS seal replay differs")
+            return StoreMutationPlan(current.ref_sha,(),{"sealed":existing})
+        from operator_store_model import apply_plan_to_snapshot
+        plan=StoreMutationPlan(current.ref_sha,(StoreMutation("create_immutable",c.QA_REPLACEMENT_SEAL_PATH,expected),),
+            {"sealed":expected})
+        c.qa_replacement_route(apply_plan_to_snapshot(current,plan),consumer_binding=binding)
+        return plan
+    return _commit_recovery_nonempty(runtime,seal)
+
+def observe_qa_failure(preflight):
+    """Authenticate the fixed failed QA run; no result adoption or creation API."""
+    import re
+    import yaml
+    from v03_dogfood_full_composition import (
+        QA_FAILURE_RUN, QA_FAILURE_JOBS, QA_FAILURE_ARTIFACTS,
+        QA_FAILURE_STATUS_LINES, QA_FAILURE_UPLOAD_LINES, QA_FAILURE_SOURCE_BLOBS,
+        qa_failure_historical_proof, validate_qa_failure_observation)
+    def project(row, expected, label):
+        if (not isinstance(row, dict)
+                or canonical_json({key: row.get(key) for key in expected}) != canonical_json(expected)):
+            raise V03DogfoodRuntimeDriverError("QA predecessor " + label + " differs")
+        return {key: row[key] for key in expected}
+    run_id = 38074618111
+    run_path = f"/actions/runs/{run_id}"
+    jobs_path = f"/actions/runs/{run_id}/attempts/1/jobs?per_page=100"
+    artifacts_path = f"/actions/runs/{run_id}/artifacts?per_page=100"
+    before = _github_json(preflight, run_path)
+    project(before, QA_FAILURE_RUN, "run")
+    jobs = _github_json(preflight, jobs_path)
+    rows = jobs.get("jobs")
+    if (not isinstance(rows, list) or type(jobs.get("total_count")) is not int
+            or jobs["total_count"] != 5 or len(rows) != 5):
+        raise V03DogfoodRuntimeDriverError("QA predecessor job inventory incomplete")
+    for expected in QA_FAILURE_JOBS:
+        matches = [row for row in rows if isinstance(row, dict) and row.get("id") == expected["id"]]
+        if len(matches) != 1:
+            raise V03DogfoodRuntimeDriverError("QA predecessor job duplicate or missing")
+        row = matches[0]
+        project(row, {key: value for key, value in expected.items() if key != "steps"}, "job")
+        steps = row.get("steps")
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise V03DogfoodRuntimeDriverError("QA predecessor steps malformed")
+        if expected["name"] == "safe_outputs" and steps:
+            raise V03DogfoodRuntimeDriverError("QA predecessor publication steps appeared")
+        for step in expected["steps"]:
+            selected = [item for item in steps if item.get("name") == step["name"]]
+            if len(selected) != 1:
+                raise V03DogfoodRuntimeDriverError("QA predecessor selected step ambiguous")
+            project(selected[0], step, "selected step")
+    sources = {}
+    for path, blob in QA_FAILURE_SOURCE_BLOBS.items():
+        suffix = "/contents/" + path + "?ref=" + QA_FAILURE_RUN["head_sha"]
+        doc = _github_json(preflight, suffix)
+        if doc.get("sha") != blob or doc.get("encoding") != "base64":
+            raise V03DogfoodRuntimeDriverError("QA predecessor source metadata differs")
+        raw = base64.b64decode("".join(doc["content"].split()), validate=True)
+        if len(raw) > 512 * 1024 or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != blob:
+            raise V03DogfoodRuntimeDriverError("QA predecessor source bytes differ")
+        sources[suffix] = doc
+        if path.endswith(".lock.yml"):
+            workflow = yaml.safe_load(raw)
+            uploads = [step for step in workflow["jobs"]["activation"]["steps"]
+                if isinstance(step, dict) and isinstance(step.get("with"), dict)
+                and step["with"].get("name") == "activation"]
+            if (len(uploads) != 1 or uploads[0].get("uses")
+                    != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+                    or type(uploads[0]["with"].get("retention-days")) is not int
+                    or uploads[0]["with"]["retention-days"] != 1):
+                raise V03DogfoodRuntimeDriverError("QA predecessor retention source differs")
+    transport = preflight.composition.actions_transport
+    def selected_logs():
+        selected = []
+        for job_id, expected, limit in (
+                (114279289961, QA_FAILURE_STATUS_LINES, 16 * 1024 * 1024),
+                (114278880275, QA_FAILURE_UPLOAD_LINES, 2 * 1024 * 1024)):
+            status, _, raw = transport.http(method="GET",
+                url=transport._api(f"/actions/jobs/{job_id}/logs"),
+                token=transport.config.token, body=None)
+            if status != 200 or type(raw) is not bytes or len(raw) > limit:
+                raise V03DogfoodRuntimeDriverError("QA predecessor selected log unavailable")
+            lines = raw.decode("utf-8", errors="strict").splitlines()
+            if any(lines.count(line) != 1 for line in expected):
+                raise V03DogfoodRuntimeDriverError("QA predecessor selected records changed")
+            positions = [lines.index(line) for line in expected]
+            if positions != sorted(positions):
+                raise V03DogfoodRuntimeDriverError("QA predecessor selected record ordering changed")
+            selected.append(list(expected))
+        return selected
+    selected = selected_logs()
+    issue = _github_json(preflight, "/issues/590")
+    issue_user = issue.get("user") or {}
+    if (type(issue.get("id")) is not int or issue["id"] != 5793984588
+            or type(issue.get("number")) is not int or issue["number"] != 590
+            or issue.get("html_url") != "https://github.com/DREAM-XIN/ai-sdlc/issues/590"
+            or issue_user.get("login") != "github-actions[bot]" or issue_user.get("type") != "Bot"
+            or type(issue_user.get("id")) is not int or issue_user["id"] != 41898282
+            or not isinstance(issue.get("body"), str)
+            or "**Run:** https://github.com/DREAM-XIN/ai-sdlc/actions/runs/38074618111" not in issue["body"]
+            or "<!-- gh-aw-failure-issue: true, workflow_id: ai-sdlc-gh-aw-qa-deepseek-v03-structured-inline-local, branch: main, failure_categories: missing_safe_outputs -->" not in issue["body"]):
+        raise V03DogfoodRuntimeDriverError("QA predecessor automatic failure issue differs")
+    artifacts = _github_json(preflight, artifacts_path)
+    rows = artifacts.get("artifacts")
+    if (not isinstance(rows, list) or type(artifacts.get("total_count")) is not int
+            or artifacts["total_count"] != len(rows) or len(rows) not in (5, 6)
+            or any(not isinstance(row, dict) for row in rows)):
+        raise V03DogfoodRuntimeDriverError("QA predecessor current artifact inventory incomplete")
+    keys = set(QA_FAILURE_ARTIFACTS[0]) | {"expired"}
+    current = [{key: row.get(key) for key in keys} for row in rows]
+    if any(type(row["id"]) is not int for row in current):
+        raise V03DogfoodRuntimeDriverError("QA predecessor artifact ID type differs")
+    current.sort(key=lambda row: row["id"])
+    activation = [row for row in current if row["id"] == 11678382354]
+    state = "absent" if not activation else "expired_listed" if activation[0]["expired"] is True else "present"
+    history = qa_failure_historical_proof()
+    observation = {"schema_version": "ai-sdlc.v03-qa-failure-observation/v1",
+        "run_id": run_id, "historical_digest": digest_json(history),
+        "observed_at": preflight.composition.runtime.clock(),
+        "activation_state": state, "current_artifacts": current}
+    validate_qa_failure_observation(observation)
+    if (_github_json(preflight, run_path) != before or _github_json(preflight, jobs_path) != jobs
+            or _github_json(preflight, artifacts_path) != artifacts or selected_logs() != selected
+            or any(_github_json(preflight, suffix) != doc for suffix, doc in sources.items())
+            or _github_json(preflight, "/issues/590") != issue):
+        raise V03DogfoodRuntimeDriverError("QA predecessor changed during observation")
+    return {"historical_proof": history, "current_observation": observation}
+
+def observe_qa_failure_for_review(*, actions_read_token):
+    """Read-only fixed failed QA evidence; no runtime creation/dispatch path."""
+    from types import SimpleNamespace
+    from operator_vertical_gh_aw_actions_transport import GitHubActionsWorkflowTransportConfig
+    from operator_vertical_gh_aw_github_source import GitHubActionsGhAwResultSourceConfig,TargetScopedGitHubActionsGhAwResultSource
+    from v03_dogfood_full_composition import (QA_REPLACEMENT_ADMISSION,QA_HISTORY_BLOBS,QA_DOCUMENT_BLOBS,
+        qa_replacement_workflows,DogfoodCandidateBoundActionsTransport,DogfoodGitHubCandidateProvider)
+    from v03_dogfood_fixture_pool import require_slot
+    if not isinstance(actions_read_token,str) or not actions_read_token:
+        raise V03DogfoodRuntimeDriverError("QA evidence review requires existing read token")
+    repository="dream-xin/ai-sdlc"
+    workflows=qa_replacement_workflows()
+    source=TargetScopedGitHubActionsGhAwResultSource(GitHubActionsGhAwResultSourceConfig(
+        control_repository=repository,control_token=actions_read_token,target_token=actions_read_token,
+        workflows=workflows,collector_identity="v03-qa-failure-read-only"),target_repository=repository)
+    transport=DogfoodCandidateBoundActionsTransport(GitHubActionsWorkflowTransportConfig(
+        control_repository=repository,token=actions_read_token,workflows=workflows),
+        candidate_provider=DogfoodGitHubCandidateProvider(slot=require_slot("happy_path"),
+            repository=repository,token=actions_read_token))
+    actual_http=transport.http
+    def read_only_http(*,method,url,token,body=None):
+        if method!="GET" or body is not None:
+            raise V03DogfoodRuntimeDriverError("QA evidence reader attempted an effect")
+        return actual_http(method=method,url=url,token=token,body=None)
+    transport.http=read_only_http
+    ref=source._json(repository,"/git/ref/heads/ai-sdlc-operator-state",actions_read_token)
+    sha=ref.get("object",{}).get("sha")
+    if not isinstance(sha,str) or not re.fullmatch(r"[0-9a-f]{40}",sha):
+        raise V03DogfoodRuntimeDriverError("QA evidence reader lacks existing Store")
+    tree=source._json(repository,"/git/trees/"+sha+"?recursive=1",actions_read_token)
+    rows=tree.get("tree")
+    if tree.get("truncated") is not False or not isinstance(rows,list):
+        raise V03DogfoodRuntimeDriverError("QA evidence historical tree is incomplete")
+    blobs={row.get("path"):row.get("sha") for row in rows if isinstance(row,dict) and row.get("type")=="blob"}
+    if any(blobs.get(path)!=blob for path,blob in {**QA_HISTORY_BLOBS,**QA_DOCUMENT_BLOBS}.items()):
+        raise V03DogfoodRuntimeDriverError("QA evidence historical Store pins changed")
+    preflight=SimpleNamespace(composition=SimpleNamespace(runtime=SimpleNamespace(clock=_clock),actions_transport=transport))
+    observed=observe_qa_failure(preflight)
+    if source._json(repository,"/git/ref/heads/ai-sdlc-operator-state",actions_read_token)!=ref:
+        raise V03DogfoodRuntimeDriverError("Store changed during QA evidence review")
+    row=observed["current_observation"]
+    return {"schema_version":"ai-sdlc.v03-qa-failure-read-only-result/v1",
+        "admission":dict(QA_REPLACEMENT_ADMISSION),"historical_proof_verified":True,"read_only":True,
+        "model_invoked":False,"current_claim_created":False,"run_id":row["run_id"],
+        "activation_state":row["activation_state"],"current_artifact_count":len(row["current_artifacts"]),
+        "observed_at":row["observed_at"]}
 
 if __name__ == "__main__":
     raise SystemExit(main())

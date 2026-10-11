@@ -155,8 +155,10 @@ def _durable_operation_facts(preflight: Any, observation: Mapping[str, Any]) -> 
 
 def _reviewer_route(preflight):
     from v03_dogfood_full_composition import reviewer_replacement_route
-    return reviewer_replacement_route(preflight.composition.runtime.backend.read_snapshot(),
-        consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    from v03_dogfood_full_composition import qa_reviewer_binding
+    snapshot=preflight.composition.runtime.backend.read_snapshot()
+    return reviewer_replacement_route(snapshot,
+        consumer_binding=qa_reviewer_binding(snapshot,preflight.composition.policy_authority))
 
 
 def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -179,6 +181,13 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
             if receipt != str(REVIEWER_FAILED_RUN):
                 raise V03DogfoodPostRunFinalizerError("Reviewer historical receipt changed")
             receipt = _reviewer_route(preflight)["receipt_id"]
+        from v03_dogfood_full_composition import QA_OLD_KEY,QA_FAILED_RUN,qa_replacement_present,qa_replacement_route
+        qa_snapshot=preflight.composition.runtime.backend.read_snapshot()
+        if operation_id==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_replacement_present(qa_snapshot):
+            if receipt!=str(QA_FAILED_RUN):
+                raise V03DogfoodPostRunFinalizerError("QA original receipt changed")
+            receipt=qa_replacement_route(qa_snapshot,consumer_binding=recovery_execution_binding(
+                preflight.composition.policy_authority))["receipt_id"]
         if not receipt.isdigit() or int(receipt) < 1:
             raise V03DogfoodPostRunFinalizerError("durable LAUNCHED lookup lacks exact Actions receipt")
         run_ids.append(int(receipt))
@@ -341,12 +350,19 @@ def _durable_run_bindings(preflight, observation, events):
         run_id = int(lookup["receipt_id"])
         recovery_sealed = None
         reviewer_route = None
+        qa_route = None
         from v03_dogfood_full_composition import REVIEWER_OLD_KEY, REVIEWER_FAILED_RUN, reviewer_trusted_context
         if observation["operation_id"] == RECOVERY_OPERATION_ID and key == REVIEWER_OLD_KEY:
             if run_id != REVIEWER_FAILED_RUN:
                 raise V03DogfoodPostRunFinalizerError("Reviewer historical execution changed")
             reviewer_route = _reviewer_route(preflight)
             run_id = int(reviewer_route["receipt_id"])
+        from v03_dogfood_full_composition import QA_OLD_KEY,QA_FAILED_RUN,qa_replacement_present,qa_replacement_route,qa_replacement_trusted_context
+        if observation["operation_id"]==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_replacement_present(snapshot):
+            if run_id!=QA_FAILED_RUN:
+                raise V03DogfoodPostRunFinalizerError("QA failed execution changed")
+            qa_route=qa_replacement_route(snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+            run_id=int(qa_route["receipt_id"])
         if observation["operation_id"] == RECOVERY_OPERATION_ID and key == RECOVERY_EXTERNAL_KEY:
             recovery_sealed = _validated_recovery_chain(snapshot, execution_binding=recovery_execution_binding(
                 preflight.composition.policy_authority,
@@ -391,6 +407,9 @@ def _durable_run_bindings(preflight, observation, events):
         if reviewer_route is not None:
             resolve_key = reviewer_route["physical_key"]
             resolve_trusted = reviewer_trusted_context(reviewer_route["authorization"])
+        if qa_route is not None:
+            resolve_key=qa_route["physical_key"]
+            resolve_trusted=qa_replacement_trusted_context(qa_route["authorization"])
         resolved = result_source.resolve(
             external_dispatch_key=resolve_key,
             expected_receipt_identity=str(run_id),
@@ -1042,6 +1061,11 @@ def _milestone_facts(
 
 
 def _archived_producer_source(preflight, run_id):
+    from v03_dogfood_full_composition import qa_replacement_present,validate_qa_replacement_predecessor
+    current=preflight.composition.runtime.backend.read_snapshot()
+    if qa_replacement_present(current) and run_id==38074007355:
+        reviewer,_=validate_qa_replacement_predecessor(current)
+        return reviewer["sealed"]["execution_binding"]["execution_source_head_sha"]
     if run_id != POST_HANDOFF_RUN:
         return preflight.execution.installation_commit_sha
     snapshot = preflight.composition.runtime.backend.read_snapshot()
@@ -1095,6 +1119,14 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
         milestone_resolver=lambda record: categories,
         archived_producer_source_resolver=lambda run_id: _archived_producer_source(preflight, run_id),
     )
+    from v03_dogfood_full_composition import qa_replacement_present,qa_replacement_route,validate_qa_replacement_relation,QA_REPLACEMENT_ADMISSION,QA_FAILED_RUN
+    qa_snapshot=preflight.composition.runtime.backend.read_snapshot()
+    if qa_replacement_present(qa_snapshot):
+        from v03_dogfood_runtime_driver import observe_qa_replacement_predecessor
+        qa=qa_replacement_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        validate_qa_replacement_relation(qa["authorization"]["predecessor_proof"],observe_qa_replacement_predecessor(preflight))
+        evidence_uris.extend([QA_REPLACEMENT_ADMISSION["uri"],_run_uri(repository,QA_FAILED_RUN),
+            "https://github.com/DREAM-XIN/ai-sdlc/issues/590"])
     human_interventions = 0
     if observation.get("operation_id") == RECOVERY_OPERATION_ID:
         route = recovery_route(preflight.composition.runtime.backend.read_snapshot())
