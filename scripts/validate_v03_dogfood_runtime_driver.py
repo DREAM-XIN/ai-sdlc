@@ -11082,6 +11082,48 @@ def qa_replacement_joined_factory_tests():
                 "runtime_receipt_identity":receipt,"repeated_continue_messages":0,
                 "release_eligible":False,"provenance_verified":False}
             final_pf=SimpleNamespace(**dict(vars(pf),candidate_head_sha=provider.read_ref()))
+            bindings=finalizer._durable_run_bindings(final_pf,observation,
+                operation_events(runtime.backend.read_snapshot(),c.RECOVERY_OPERATION_ID))
+            expect(bindings[run_ids[-1]]["workflow"]==c.QA_OBSERVED_WORKFLOW
+                   and bindings[run_ids[-1]]["external_dispatch_key"]==auth["physical_key"]
+                   and bindings[run_ids[-1]]["logical_external_dispatch_key"]==c.QA_OLD_KEY,
+                   "QA finalizer lost authenticated physical workflow/key mapping")
+            expected_bindings={
+                37905505035:("developer","dispatch-86e969e947932b9dd38c608ca80333714c3396d2",
+                    "dispatch-d774674fa60b1708668a28ff73c43fe4334eebe1",
+                    "ai-sdlc-gh-aw-developer-deepseek-v03-local.lock.yml",
+                    "6e75792b8e441167cfaadab2d13667a2d80721b8","70781c774ce0c4dda0b70ea5c19e6bf4b39bbb23"),
+                38074007355:("reviewer","dispatch-7c0902c21a50078536e74133a6fa370618b4ac8f",
+                    "dispatch-3d9202e579f855d0d36bdaaf1872dec1a2b84a28",
+                    "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml",
+                    c.QA_HISTORICAL_SOURCE,"41e0df7089c5907b00bbaeac5dd2be71d4f02d4b"),
+                run_ids[-1]:("qa",auth["physical_key"],c.QA_OLD_KEY,c.QA_OBSERVED_WORKFLOW,
+                    pf.execution.installation_commit_sha,c.QA_CANDIDATE)}
+            for checked_run in run_ids:
+                status,_,raw=gates.http(method="GET",
+                    url="https://api.github.com/repos/"+pf.execution.repository+"/actions/runs/"+str(checked_run),
+                    token="fixture")
+                expect(status==200,"provenance comparison lacks actual run")
+                actual_run=__import__("json").loads(raw)
+                binding=bindings[checked_run]
+                expected_source=finalizer._archived_producer_source(final_pf,checked_run)
+                expected=expected_bindings[checked_run]
+                checks={"source":actual_run["head_sha"]==expected_source==expected[4],
+                    "role":binding["role"]==expected[0],
+                    "selected_key":binding["external_dispatch_key"]==expected[1],
+                    "logical_key":binding["logical_external_dispatch_key"]==expected[2],
+                    "selected_workflow":binding["workflow"]==expected[3],
+                    "candidate_input":binding["candidate_input_head_sha"]==expected[5],
+                    "candidate_pr":binding["candidate_pr_number"]==552,
+                    "workflow":actual_run["path"].removeprefix(".github/workflows/")==binding["workflow"],
+                    "physical_key":actual_run["display_title"]=="AI-SDLC gh-aw "+binding["external_dispatch_key"],
+                    "run":actual_run["id"]==checked_run,"attempt":actual_run["run_attempt"]==1,
+                    "status":actual_run["status"]=="completed","conclusion":actual_run["conclusion"]=="success",
+                    "branch":actual_run["head_branch"]=="main","event":actual_run["event"]=="workflow_dispatch"}
+                print("qa_provenance_binding role="+binding["role"]+" "+
+                    __import__("json").dumps(checks,sort_keys=True),flush=True)
+                expect(all(checks.values()),"exact protected provenance mismatch for "+binding["role"]+": "+
+                       ",".join(key for key,valid in checks.items() if not valid))
             class Response:
                 status=200
                 def __init__(self,raw):self.raw=raw

@@ -510,6 +510,7 @@ def _durable_run_bindings(preflight, observation, events):
             "candidate_output_head_sha": output_head,
             "role": trusted["role"], "workflow": (
                 str(recovery_sealed["workflow_file"]) if recovery_sealed is not None
+                else str(qa_route["authorization"]["workflow_file"]) if qa_route is not None
                 else preflight.workflows.workflow_for(trusted["role"])
             ),
             "external_dispatch_key": resolve_key, "logical_external_dispatch_key": key,
