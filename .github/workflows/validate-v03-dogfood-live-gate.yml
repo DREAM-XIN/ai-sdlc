@@ -38,6 +38,8 @@ jobs:
           assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
           PY
           docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
+      - name: Setup pinned official detector harness
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
       - name: Prepare pinned actual AWF preservation fixture
         shell: bash
         run: |
@@ -53,14 +55,12 @@ jobs:
           mkdir -m 700 /tmp/gh-aw/awf-native-proof
           cp -a "$RUNNER_TEMP/v03-joined-copilot" /tmp/gh-aw/awf-native-proof/copilot
           cp scripts/validate_v03_detector_protocol_replay.mjs /tmp/gh-aw/awf-native-proof/replay.mjs
+          mkdir -m 700 /tmp/gh-aw/awf-native-proof/runner-temp
+          cp -a "$RUNNER_TEMP/gh-aw" /tmp/gh-aw/awf-native-proof/runner-temp/gh-aw
           curl --fail --location --silent --show-error --max-time 120 --max-filesize 3158178 https://github.com/github/gh-aw-threat-detection/releases/download/v0.5.2/threat-detect-linux-amd64 -o /tmp/gh-aw/awf-native-proof/threat-detect
           test "$(wc -c < /tmp/gh-aw/awf-native-proof/threat-detect)" = 3158178
           echo "b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9  /tmp/gh-aw/awf-native-proof/threat-detect" | sha256sum --check --status
           chmod 755 /tmp/gh-aw/awf-native-proof/threat-detect
-      - name: Setup pinned official detector harness
-        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
-        with:
-          destination: /tmp/gh-aw/awf-native-proof/runner-temp/gh-aw/actions
       - name: Verify actual detector input access and isolated observation
         shell: bash
         run: |
