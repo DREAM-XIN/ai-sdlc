@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import v03_dogfood_gate_output as subject
 PINS = {
+    "generate_safe_outputs_tools.cjs": "ae09ab0a9d637035d4442f72475abcafe5e50ea4",
+    "safe_outputs_mcp_server.cjs": "efb24c34fec875ffcd9d997d93f043c78fe16f8b",
+    "mcp_server_core.cjs": "21dda2c06354d7c100350fca89f6143d6bf4e0d6",
+    "safe_outputs_mcp_arguments.cjs": "cee914b8e9e009e00cfef7650deccb0feaf792ba",
+    "safe_outputs_tools.json": "11b7ee6b95b13f4f5eaa38999f0d66f762cd6baf",
     "safe_outputs_handlers.cjs": "ef2a42e3c1edc8c046219c47923b3d8fceb370a5",
     "safe_outputs_append.cjs": "4a6fc13e3435173218f499342cc1cdf7dcb2348a",
     "add_comment.cjs": "71d24f71eebf18af249c967dc0130a11bad9f0c1",
@@ -193,9 +198,12 @@ class Official:
         )
         check(completed.returncode == 0, "pinned official module execution failed")
         return json.loads(completed.stdout)
-    def mcp_add_comment(self, args):
-        return self.call({"mode": "mcp_add_comment", "args": args,
+    def mcp_rpc(self, args, meta):
+        return self.call({"mode": "mcp_rpc", "args": args, "meta": meta,
                           "config": self.config})["raw"].encode()
+    def mcp_add_comment(self, args, *, normalize=False):
+        return self.call({"mode": "mcp_add_comment", "args": args,
+                          "config": self.config, "normalize": normalize})["raw"].encode()
     def ingest(self, raw):
         return self.call({"mode": "ingest", "raw": raw.decode(),
                           "config": self.config, "validation": self.validation})["collected"].encode()
@@ -310,18 +318,61 @@ global.github = {
 global.getOctokit = () => { throw Error('FORBIDDEN_AUTH_CLIENT'); };
 global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
 (async () => {
-  if (request.mode === 'mcp_add_comment') {
+  if(request.mode==='mcp_rpc') {
+    const {spawn,spawnSync}=require('node:child_process');
+    const readline=require('node:readline');
+    const root=process.env.RUNNER_TEMP;
+    const env={...process.env,GH_AW_SAFE_OUTPUTS_TOOLS_PATH:path.join(root,'tools.json'),
+      GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:path.join(root,'tools-meta.json'),
+      GH_AW_SAFE_OUTPUTS_TOOLS_SOURCE_PATH:path.join(actions,'safe_outputs_tools.json'),
+      GH_AW_MCP_LOG_DIR:path.join(root,'mcp-private')};
+    fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(request.config));
+    fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH,JSON.stringify(request.meta));
+    fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS,'');
+    const generated=spawnSync(process.execPath,[path.join(actions,'generate_safe_outputs_tools.cjs')],
+      {env,timeout:10000,maxBuffer:1048576});
+    assert.equal(generated.status,0);
+    const child=spawn(process.execPath,[path.join(actions,'safe_outputs_mcp_server.cjs')],
+      {env,detached:true,stdio:['pipe','pipe','pipe']});
+    const lines=readline.createInterface({input:child.stdout}), pending=new Map();
+    let bytes=0;
+    child.stderr.on('data',b=>{bytes+=b.length;if(bytes>1048576)process.kill(-child.pid,'SIGKILL');});
+    lines.on('line',line=>{const value=JSON.parse(line),done=pending.get(value.id);if(done){pending.delete(value.id);done(value);}});
+    const rpc=(id,method,params)=>new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(Error('MCP_TIMEOUT')),10000);
+      pending.set(id,m=>{clearTimeout(timer);m.error?reject(Error('MCP_ERROR')):resolve(m.result);});
+      child.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');
+    });
+    try {
+      await rpc(1,'initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'v3-regression',version:'1'}});
+      child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})+'\n');
+      const listed=await rpc(2,'tools/list',{});
+      assert.equal(listed.tools.filter(t=>t.name==='add_comment').length,1);
+      const result=await rpc(3,'tools/call',{name:'add_comment',arguments:request.args});
+      assert.notEqual(result.isError,true);
+      const raw=fs.readFileSync(env.GH_AW_SAFE_OUTPUTS,'utf8');
+      assert.equal(raw.trim().split('\n').length,1);
+      process.stdout.write(JSON.stringify({raw}));
+    } finally {lines.close();try{process.kill(-child.pid,'SIGKILL');}catch{}}
+  } else if (request.mode === 'mcp_add_comment') {
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,'');
     const {createAppendFunction}=require(path.join(actions,'safe_outputs_append.cjs'));
     const {createHandlers}=require(path.join(actions,'safe_outputs_handlers.cjs'));
     const handlers=createHandlers({debug(){}},createAppendFunction(process.env.GH_AW_SAFE_OUTPUTS),request.config);
-    const result=await handlers.addCommentHandler(request.args);
+    let args=request.args;
+    if(request.normalize) {
+      const schema=JSON.parse(fs.readFileSync(path.join(actions,'safe_outputs_tools.json'),'utf8'))
+        .find(tool=>tool.name==='add_comment').inputSchema;
+      args=require(path.join(actions,'safe_outputs_mcp_arguments.cjs'))
+        .normalizeSafeOutputToolArguments('add_comment',args,{debug(){}},schema);
+    }
+    const result=await handlers.addCommentHandler(args);
     assert.notEqual(result?.isError,true);
     const raw=fs.readFileSync(process.env.GH_AW_SAFE_OUTPUTS,'utf8');
     const rows=raw.trim().split('\n'); assert.equal(rows.length,1);
     const item=JSON.parse(rows[0]);
-    assert.equal(item.item_number,request.args.item_number);
-    assert.equal(typeof item.item_number,typeof request.args.item_number);
+    assert.equal(item.item_number,args.item_number);
+    assert.equal(typeof item.item_number,typeof args.item_number);
     process.stdout.write(JSON.stringify({raw}));
   } else if (request.mode === 'ingest') {
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,request.raw,'utf8');
@@ -550,12 +601,15 @@ def gate_cli_environment(official, context):
     env.update({name: str(identity[key]) for name, key in mapping.items()})
     return env
 
-def cli_render(official, context, raw, collected, renderer):
+def cli_render(official, context, raw, collected, renderer, *, render_config=None):
     Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw)
     path = Path("/tmp/gh-aw/agent_output.json")
     path.write_bytes(collected)
+    command = [sys.executable, renderer.__file__, "render", "--actions-root", str(official.actions)]
+    if render_config is not None:
+        command += ["--config-path", official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]]
     result = subprocess.run(
-        [sys.executable, renderer.__file__, "render", "--actions-root", str(official.actions)],
+        command,
         env=gate_cli_environment(official, context), stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, timeout=30, check=False)
     check(result.returncode == 0, "actual v2 render CLI rejected official ledger")
@@ -599,7 +653,7 @@ def sanitizer_closure_tests(actions_root, temporary):
     core.write_bytes(core.read_bytes() + b"\n// synthetic transitive tamper\n")
     reject(lambda: subject._official_sanitizer(copied),
            "changed transitive sanitizer dependency")
-def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=subject, render_cli=False):
+def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=subject, render_cli=False, render_config=None):
     raw = raw_item(payload) if raw_ledger is None else raw_ledger
     collected = official.ingest(raw)
     ingested = json.loads(collected)
@@ -607,9 +661,10 @@ def _roundtrip(official, payload, context, role, *, raw_ledger=None, renderer=su
     check(ingested["items"][0]["data"] == payload, "official data semantic drift")
     output, proof = renderer.render_gate_output(
         raw, collected, context, role,
-        sanitize=lambda value: official.call({"mode": "sanitize", "body": value})["body"])
+        sanitize=lambda value: official.call({"mode": "sanitize", "body": value})["body"],
+        **({"config": render_config} if render_config is not None else {}))
     if render_cli:
-        actual = cli_render(official, context, raw, collected, renderer)
+        actual = cli_render(official, context, raw, collected, renderer, render_config=render_config)
         check(actual == output, "render CLI differs from exact canonical function bytes")
         output = actual
     cli_validation(official, context, output, True, helper_path=Path(renderer.__file__))
@@ -814,6 +869,170 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
+
+
+def v3_gate_contract_tests(role, actions_root, temporary):
+    """Official-function matrix plus one real MCP RPC; no model or external effects."""
+    import v03_dogfood_gate_output_v3 as current
+    from v03_dogfood_full_composition import DogfoodStructuredGateResultSource
+    from operator_vertical import VerticalInvariantError
+    lock, config, validation, metadata = selected_config(role, candidate=552, variant="structured-inline-local")
+    directory = temporary / (role + "-v3")
+    directory.mkdir()
+    official = Official(actions_root, directory, config, validation, metadata)
+    config_path = directory / "gh-aw/safeoutputs/config.json"
+    config_path.parent.mkdir(parents=True)
+    official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
+    payload = inline_payload(role, "PASS")
+    payload["candidate_pr_number"] = 552
+    payload["evidence"][0]["uri"] = "https://github.com/dream-xin/ai-sdlc/pull/552"
+    if role == "qa":
+        payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
+    context = fixture_context(payload)
+    sanitize = lambda value: official.call({"mode": "sanitize", "body": value})["body"]
+    def reject_v3(call, label):
+        try:
+            call()
+        except current.GateOutputContractError:
+            return
+        raise AssertionError("v3 accepted " + label)
+    def render(raw, collected, selected=config):
+        return current.render_gate_output(raw, collected, context, role, sanitize=sanitize, config=selected)
+    cases = [
+        ("absent", {}, {}),
+        ("integer", {"item_number": 552}, {"item_number": 552}),
+        ("string", {"item_number": "552"}, {"item_number": "552"}),
+        ("pr-number-int", {"pr_number": 552}, {"pr_number": 552}),
+        ("pr-number-string", {"pr_number": "552"}, {"pr_number": "552"}),
+        ("pr-int", {"pr": 552}, {"pr": 552}),
+        ("pr-string", {"pr": "552"}, {"pr": "552"}),
+        ("consistent", {"item_number": 552, "pr_number": "552", "pr": 552},
+                       {"item_number": 552, "pr_number": "552", "pr": 552}),
+        ("issue-synonym", {"issue_number": "552"}, {"item_number": "552"}),
+        ("item-synonym", {"itemNumber": 552}, {"item_number": 552}),
+        ("pr-synonym", {"prNumber": "552"}, {"pr_number": "552"}),
+        # Official precedence discards this pre-ledger synonym; no claim it is detectable later.
+        ("discarded-synonym", {"item_number": 552, "issue_number": 553}, {"item_number": 552}),
+        ("secrecy", {"secrecy": "public"}, {}),
+        ("integrity", {"integrity": "high"}, {}),
+        ("both-labels", {"secrecy": "public", "integrity": "high"}, {}),
+        ("label-boundary", {"secrecy": "x" * 256, "integrity": "界" * 85}, {}),
+        ("bare-id", {"temporary_id": "aw_v3fixed"}, {}),
+        ("hash-id", {"temporary_id": "#aw_v3fixed"}, {}),
+    ]
+    completed = 0
+    saved = None
+    for label, extra, targets in cases:
+        args = {"body": SENTINEL, "data": payload, **extra}
+        raw = official.mcp_add_comment(args, normalize=True)
+        row = json.loads(raw)
+        check({key: row[key] for key in current.TARGET_FIELDS if key in row} == targets,
+              "official normalized target matrix differs: " + label)
+        _, collected, output, proof, publication, _ = _roundtrip(
+            official, payload, context, role, raw_ledger=raw, renderer=current,
+            render_cli=True, render_config=config)
+        ingested = json.loads(collected)["items"][0]
+        check(all(key not in ingested for key in current.LABEL_FIELDS),
+              "official ingestion retained untrusted labels")
+        check(proof["raw_ndjson_sha256"] == hashlib.sha256(raw).hexdigest(),
+              "v3 lost complete genuine ledger digest")
+        check(type(json.loads(output)["items"][0]["item_number"]) is int and
+              json.loads(output)["items"][0]["item_number"] == 552,
+              "v3 canonical target differs")
+        parser = object.__new__(DogfoodStructuredGateResultSource)
+        parser._structured_parse = (context, role, publication["suffix"])
+        check(parser._gate_payload(publication["body"]) == payload,
+              "unchanged collector parser rejected v3 publication")
+        if label == "string":
+            saved = (raw, collected, output, proof)
+        completed += 1
+    if role == "qa":
+        args = {"body": SENTINEL, "data": payload, "secrecy": "public", "integrity": "high"}
+        raw = official.mcp_rpc(args, compiled_tools_metadata(lock, 552))
+        check(all(key not in json.loads(raw) for key in current.TARGET_FIELDS),
+              "actual MCP server injected an absent target")
+        _roundtrip(official, payload, context, role, raw_ledger=raw, renderer=current,
+                   render_cli=True, render_config=config)
+        completed += 1
+    raw, collected, output, proof = saved
+    base_raw, base_collected = json.loads(raw), json.loads(collected)
+    for key in sorted(current.TARGET_FIELDS):
+        for value in (True, False, 552.0, None, 0, -1, "", "+552", " 552", "552 ",
+                      "0552", "552.0", "５５２", "aw_target", "#aw_target", 553, "553"):
+            changed = copy.deepcopy(base_raw)
+            changed[key] = value
+            retained = copy.deepcopy(base_collected)
+            retained["items"][0][key] = value
+            reject_v3(lambda: render(packed(changed) + b"\n", packed(retained)), "retained alias")
+    for key in sorted(current.LABEL_FIELDS):
+        for value in (None, True, 1, [], {}, "x" * 257, "界" * 86):
+            changed = {**base_raw, key: value}
+            reject_v3(lambda: render(packed(changed) + b"\n", collected), "label bound/type")
+        labeled = {**base_raw, key: "untrusted"}
+        retained = copy.deepcopy(base_collected)
+        retained["items"][0][key] = "untrusted"
+        reject_v3(lambda: render(packed(labeled) + b"\n", packed(retained)), "retained label")
+    for key, value in (("target", "status"), ("reply_to_id", "synthetic"),
+                       ("comment_id", 1), ("repo", "foreign/repo"), ("unknown", "value")):
+        reject_v3(lambda: render(packed({**base_raw, key: value}) + b"\n", collected),
+                  "routing/update/unknown key")
+    changed = copy.deepcopy(base_collected)
+    changed["items"][0]["item_number"] = 552
+    reject_v3(lambda: render(raw, packed(changed)), "raw/ingested type substitution")
+    for field, value in (("target", "*"), ("target", "triggering"), ("target", None),
+                         ("target", "553"), ("target-repo", "foreign/repo"), ("max", 2),
+                         ("max", True), ("footer", True), ("data_enabled", False),
+                         ("data_schema", {})):
+        altered = copy.deepcopy(config)
+        altered["add_comment"][field] = value
+        reject_v3(lambda: render(raw, collected, altered), "fixed config")
+    altered = copy.deepcopy(config)
+    del altered["add_comment"]["target"]
+    reject_v3(lambda: render(raw, collected, altered), "missing fixed config target")
+    altered = copy.deepcopy(config)
+    altered["add_comment"]["target"] = 552
+    render(raw, collected, altered)
+    for mutation in ("body", "identity", "data"):
+        changed = copy.deepcopy(base_raw)
+        if mutation == "body":
+            changed["body"] += "forged"
+        elif mutation == "identity":
+            changed["data"]["candidate_pr_number"] = 553
+        else:
+            changed["data"]["unknown"] = "forged"
+        reject_v3(lambda: render(packed(changed) + b"\n", collected), "payload/body/identity")
+    changed = json.loads(output)
+    changed["items"][0]["item_number"] = "552"
+    encoded = canonical(changed)
+    reject_v3(lambda: current.validate_scanned_output(encoded, proof, context, role,
+        scanned_sha256=hashlib.sha256(encoded).hexdigest()), "noninteger scanned target")
+    # Exercise the actual render CLI config-path fence, duplicate JSON, and regular-file checks.
+    def cli_config_case(path, contents=None):
+        Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw)
+        Path("/tmp/gh-aw/agent_output.json").write_bytes(collected)
+        if contents is not None:
+            config_path.write_bytes(contents)
+        result = subprocess.run([sys.executable, current.__file__, "render", "--actions-root",
+            str(actions_root), "--config-path", str(path)], env=gate_cli_environment(official, context),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        check(result.returncode != 0, "v3 CLI accepted invalid config source")
+        check(Path("/tmp/gh-aw/agent_output.json").read_bytes() == collected,
+              "failed v3 render changed ingested bytes")
+    cli_config_case(directory / "foreign.json", packed(config))
+    cli_config_case(config_path, b'{"add_comment":{},"add_comment":{}}')
+    cli_config_case(config_path, b"x" * (current.MAX_OUTPUT_BYTES + 1))
+    config_path.unlink()
+    cli_config_case(config_path)
+    foreign = directory / "foreign.json"
+    foreign.write_bytes(packed(config))
+    config_path.symlink_to(foreign)
+    cli_config_case(config_path)
+    config_path.unlink()
+    os.mkfifo(config_path)
+    cli_config_case(config_path)
+    config_path.unlink()
+    config_path.write_bytes(packed(config))
+    print(role + ": v3 official normalization/config/labels pipeline cases=" + str(completed))
 
 
 def item_number_contract_tests(role, actions_root, temporary):
@@ -1819,6 +2038,7 @@ def main():
             inline_native_schema_tests(role, actions_root, Path(directory))
             temporary_id_contract_tests(role, actions_root, Path(directory))
             item_number_contract_tests(role, actions_root, Path(directory))
+            v3_gate_contract_tests(role, actions_root, Path(directory))
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-qa2-local")

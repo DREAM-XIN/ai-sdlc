@@ -9547,10 +9547,13 @@ def main():
         "QA-only non-PASS terminal","QA-only provider failure and lookup","QA-only pre-effect rejection"}
     historical_qa2_groups={"QA2 actual joined lifecycle","QA2 frozen CAS and replay",
         "QA2 non-PASS terminal","QA2 provider failure and lookup","QA2 pre-effect rejection"}
+    historical_qa3_groups={"QA3 actual joined lifecycle","QA3 frozen CAS and replay",
+        "QA3 non-PASS terminal","QA3 provider failure and lookup","QA3 pre-effect rejection"}
     for name, execute in groups:
         try:
-            if name in historical_qa_groups or name in historical_qa2_groups:
-                with historical_qa_worker_tree(qa_second=name in historical_qa2_groups):
+            if name in historical_qa_groups or name in historical_qa2_groups or name in historical_qa3_groups:
+                with historical_qa_worker_tree(qa_second=name in historical_qa2_groups,
+                                               qa_third=name in historical_qa3_groups):
                     execute()
             else:
                 execute()
@@ -11417,7 +11420,7 @@ def qa_replacement_pre_effect_rejection_tests():
     print("- QA source, candidate and frozen-input substitutions reject before POST",flush=True)
 
 
-def historical_qa_worker_tree(*, qa_second=False):
+def historical_qa_worker_tree(*, qa_second=False, qa_third=False):
     """Real immutable Worker files for the explicit synthetic spent-QA installation."""
     from contextlib import contextmanager
     @contextmanager
@@ -11427,10 +11430,12 @@ def historical_qa_worker_tree(*, qa_second=False):
         from unittest.mock import patch
         import v03_dogfood_full_composition as composition
         from v03_dogfood_live_gate import STRUCTURED_DOGFOOD_BLOBS, INLINE_DOGFOOD_BLOBS
-        from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes
+        from validate_v03_gate_output_contract import observed_historical_bytes, qa2_observed_bytes, qa3_observed_bytes
         root=Path(__file__).resolve().parents[1]
-        expect(type(qa_second) is bool, "historical QA source mode differs")
-        source=("461f465ffc6788c612c290c747d1190558a9a833" if qa_second
+        expect(type(qa_second) is bool and type(qa_third) is bool and not (qa_second and qa_third),
+               "historical QA source mode differs")
+        source=("37804095421feea6c478ff79fac2803afe1e738a" if qa_third else
+                "461f465ffc6788c612c290c747d1190558a9a833" if qa_second
                 else "7d7f0b8c92ae06b0091d3620ccb60c71114e6bad")
         module_path="scripts/v03_dogfood_full_composition.py"
         original_file=composition.__file__
@@ -11461,7 +11466,7 @@ def historical_qa_worker_tree(*, qa_second=False):
             relative=".github/workflows/"+composition.QA_OBSERVED_WORKFLOW
             path=tree/relative
             path.parent.mkdir(parents=True,exist_ok=True)
-            fixed_bytes = qa2_observed_bytes if qa_second else observed_historical_bytes
+            fixed_bytes = qa3_observed_bytes if qa_third else qa2_observed_bytes if qa_second else observed_historical_bytes
             path.write_bytes(fixed_bytes(relative))
             # The only composition __file__ consumer locates the metadata lock.
             # No verifier function, authority map or current checkout file is changed.

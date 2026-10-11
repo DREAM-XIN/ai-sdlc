@@ -25,6 +25,7 @@ DOGFOOD_CONTROL_BLOBS = {".github/workflows/v03-trusted-control-command.yml":"49
 SOURCE_CONTROL_MODES = {path: ("100755" if path == "scripts/validate_v03_dogfood_evidence.py" else "100644") for path in SOURCE_CONTROL_BLOBS}
 ADDED_PATHS = frozenset({
     "scripts/v03_dogfood_gate_output_v2.py",
+    "scripts/v03_dogfood_gate_output_v3.py",
     "scripts/v03_detector_observation.mjs",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml",

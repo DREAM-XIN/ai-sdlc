@@ -18,6 +18,7 @@ on:
       - 'scripts/validate_operator_store_runtime.py'
       - 'scripts/v03_dogfood_gate_output.py'
       - 'scripts/v03_dogfood_gate_output_v2.py'
+      - 'scripts/v03_dogfood_gate_output_v3.py'
       - 'scripts/validate_v03_gate_output_contract.py'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.md'
       - '.github/workflows/ai-sdlc-gh-aw-reviewer-deepseek-v03-bounded-local.lock.yml'
@@ -163,9 +164,28 @@ jobs:
               assert step.get("if") in (None, "success()", "$"+"{{ success() }}")
               assert "github.workflow_sha" in step["env"]["WORKFLOW_SHA"]
               assert "GATE_HELPER_MODE" in step["env"]
-              assert "/scripts/v03_dogfood_gate_output_v2.py" in step["run"]
-              assert "aff76251c232e5cdaeec21306c52d9da09d20e01" in step["run"]
+              assert "/scripts/v03_dogfood_gate_output_v3.py" in step["run"]
+              assert "74202b5c027414453acf5f3bb471a8310b91ac3c" in step["run"]
               assert "/scripts/v03_dogfood_gate_output.py" not in step["run"]
+              assert "/scripts/v03_dogfood_gate_output_v2.py" not in step["run"]
+              assert 'if mode == "render":\n' in step["run"]
+              assert '["--actions-root", str(root / "gh-aw" / "actions"), "--config-path", str(root / "gh-aw" / "safeoutputs" / "config.json")]' in step["run"]
+          config_index = step_index(agent_steps, name="Generate Safe Outputs Config")
+          assert config_index < model_index
+          config_env = agent_steps[config_index]["env"]
+          assert config_env["GH_AW_FILE_ROOT"] == "$"+"{{ runner.temp }}/gh-aw"
+          assert "create_files.cjs" in agent_steps[config_index]["with"]["script"]
+          assert '--mount "${RUNNER_TEMP}/gh-aw:${RUNNER_TEMP}/gh-aw:ro"' in agent_steps[model_index]["run"]
+          assert '--mount "${RUNNER_TEMP}/gh-aw:/host${RUNNER_TEMP}/gh-aw:ro"' in agent_steps[model_index]["run"]
+          config = json.loads(config_env["GH_AW_SAFE_OUTPUTS_CONFIG"], object_pairs_hook=unique)
+          policy = config["add_comment"]
+          assert policy["target"] == "$"+"{GH_AW_INPUT_CANDIDATE_PR_NUMBER}"
+          assert policy["target-repo"] == "dream-xin/ai-sdlc"
+          assert type(policy["max"]) is int and policy["max"] == 1
+          assert policy["footer"] is False and policy["data_enabled"] is True
+          assert config_env["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] == "$"+"{{ inputs.candidate_pr_number }}"
+          file_config = json.loads(config_env["GH_AW_FILE_CONFIG"], object_pairs_hook=unique)
+          assert file_config == {"files":[{"path":"safeoutputs/config.json","content_env":"GH_AW_SAFE_OUTPUTS_CONFIG"}]}
           renderer_policy = agent_steps[render_index]["env"]
           handler_policy = effect_steps[step_index(effect_steps, id="process_safe_outputs")]["env"]
           for key in ("GH_AW_ALLOWED_DOMAINS", "GH_AW_SAFE_OUTPUTS_URLS", "GITHUB_SERVER_URL", "GITHUB_API_URL"):
