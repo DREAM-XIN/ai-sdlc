@@ -10814,7 +10814,7 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
                 for relative, expected_blob in fixed_pins.items():
                     raw_source = ((root / relative).read_bytes()
                                   if relative == "scripts/v03_dogfood_gate_output.py"
-                                  else observed_historical_bytes(relative))
+                                  else fixed_bytes(relative))
                     expect(hashlib.sha1(b"blob " + str(len(raw_source)).encode() + b"\x00" + raw_source).hexdigest() == expected_blob,
                            "QA-only selected observed source/helper pin differs")
                 expect(source_sha == preflight.composition.policy_authority.installation_commit_sha,
