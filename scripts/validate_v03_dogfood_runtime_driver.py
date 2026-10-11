@@ -10427,7 +10427,13 @@ def attach_qa_replacement_provider(provider, root):
             pins = c.QA_WORKER_BLOBS if ref == provider.state["controller_source"] else (
                 c.QA_FAILURE_SOURCE_BLOBS if ref == c.QA_HISTORICAL_SOURCE else {})
             if name in pins:
-                raw = (root / name).read_bytes() if ref == provider.state["controller_source"] else git("show", ref + ":" + name)
+                if ref == provider.state["controller_source"]:
+                    expect(ref == "5" * 40, "historical QA tree requires the explicit synthetic installation")
+                    from validate_v03_gate_output_contract import observed_historical_bytes
+                    raw = ((root / name).read_bytes() if name == "scripts/v03_dogfood_gate_output.py"
+                           else observed_historical_bytes(name))
+                else:
+                    raw = git("show", ref + ":" + name)
                 expect(blob(raw) == pins[name], "QA provider source pin differs")
                 return response({"type": "file", "path": name, "sha": pins[name],
                                  "encoding": "base64", "content": base64.b64encode(raw).decode()})
@@ -10776,8 +10782,13 @@ def build_structured_dogfood_gate_fixture(preflight, *, read_ref, fallback_http,
             observed = role == "qa" and workflow == composition.QA_OBSERVED_WORKFLOW
             root = Path(__file__).resolve().parents[1]
             if observed:
+                expect(getattr(preflight, "qa_replacement_fixture", False) is True and source_sha == "5" * 40,
+                       "historical observed QA fixture escaped its synthetic installation")
+                from validate_v03_gate_output_contract import observed_historical_bytes
                 for relative, expected_blob in composition.QA_WORKER_BLOBS.items():
-                    raw_source = (root / relative).read_bytes()
+                    raw_source = ((root / relative).read_bytes()
+                                  if relative == "scripts/v03_dogfood_gate_output.py"
+                                  else observed_historical_bytes(relative))
                     expect(hashlib.sha1(b"blob " + str(len(raw_source)).encode() + b"\x00" + raw_source).hexdigest() == expected_blob,
                            "QA-only selected observed source/helper pin differs")
                 expect(source_sha == preflight.composition.policy_authority.installation_commit_sha,
