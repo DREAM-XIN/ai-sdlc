@@ -1,4 +1,4 @@
-name: Synthetic AWF cancellation proof (no model)
+name: Synthetic detector input and observation proof (no model)
 on:
   pull_request:
     paths:
@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 jobs:
-  synthetic-awf-cancellation:
+  synthetic-detector-input:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 581 && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -53,8 +53,16 @@ jobs:
           mkdir -m 700 /tmp/gh-aw/awf-native-proof
           cp -a "$RUNNER_TEMP/v03-joined-copilot" /tmp/gh-aw/awf-native-proof/copilot
           cp scripts/validate_v03_detector_protocol_replay.mjs /tmp/gh-aw/awf-native-proof/replay.mjs
-      - name: Verify actual CLI cancellation and partial native evidence
+          curl --fail --location --silent --show-error --max-time 120 --max-filesize 3158178 https://github.com/github/gh-aw-threat-detection/releases/download/v0.5.2/threat-detect-linux-amd64 -o /tmp/gh-aw/awf-native-proof/threat-detect
+          test "$(wc -c < /tmp/gh-aw/awf-native-proof/threat-detect)" = 3158178
+          echo "b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9  /tmp/gh-aw/awf-native-proof/threat-detect" | sha256sum --check --status
+          chmod 755 /tmp/gh-aw/awf-native-proof/threat-detect
+      - name: Setup pinned official detector harness
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: /tmp/gh-aw/awf-native-proof/runner-temp/gh-aw/actions
+      - name: Verify actual detector input access and isolated observation
         shell: bash
         run: |
           set -euo pipefail
-          node /tmp/gh-aw/awf-native-proof/replay.mjs awf-cancel "$RUNNER_TEMP/awf-bundle.js"
+          node /tmp/gh-aw/awf-native-proof/replay.mjs detector-host "$RUNNER_TEMP/awf-bundle.js"

@@ -457,7 +457,109 @@ async function awfHost(bundle){
  return {schema:"v03-awf-native-preservation-feasibility/v1",status:"PASS",scope:"synthetic_framework_only",cases:reports,raw_cleanup_complete:true,raw_exported:false};
 }
 
+const detectorInput="/tmp/gh-aw/threat-detection";
+const detectorBinary=proofRoot+"/threat-detect";
+const detectorRunner=proofRoot+"/runner-temp";
+const detectorCase=proofRoot+"/detector";
+const detectorHome=detectorCase+"/owned/copilot";
+const detectorIds=["offline-scan-read","offline-outside-read","offline-real-result"];
+function fixedHomeEvents(home){
+ const base=path.join(home,"session-state");fixtureDirectory(base);
+ const entries=fs.readdirSync(base,{withFileTypes:true});ensure(entries.length<=16&&!entries.some(e=>e.isSymbolicLink()),"SESSION_DIRECTORY");
+ const dirs=entries.filter(e=>e.isDirectory()&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(e.name));
+ ensure(dirs.length===1,"SESSION_DIRECTORY");
+ let found=null,count=0;
+ for(const e of entries){if(!e.isDirectory())continue;const name=path.join(base,e.name,"events.jsonl");try{const st=fs.lstatSync(name);ensure(st.isFile()&&!st.isSymbolicLink(),"EVENT_FILE");count++;if(e.name===dirs[0].name)found=name;}catch(error){if(error.code!=="ENOENT")throw error;}}
+ ensure(count<=1,"SESSION_DIRECTORY");
+ if(found===null)return {availability:"unavailable",reason:"missing_events",coverage:"partial",event_count:0};
+ const raw=readBounded(found,8*1024*1024);
+ let events;try{events=parseEvents(raw);}catch(e){if(e.message==="EVENT_TRUNCATED")return {availability:"unavailable",reason:"truncated_events",coverage:"partial",event_count:0};throw e;}
+ const starts=events.filter(e=>e.type==="tool.execution_start"),ends=events.filter(e=>e.type==="tool.execution_complete");
+ const startIds=starts.map(e=>e.data?.toolCallId),endIds=ends.map(e=>e.data?.toolCallId);
+ ensure(startIds.every(x=>typeof x==="string")&&endIds.every(x=>typeof x==="string")&&new Set(startIds).size===startIds.length&&new Set(endIds).size===endIds.length&&endIds.every(x=>startIds.includes(x)),"TOOL_LINKAGE");
+ return {availability:"available",reason:"parsed_native_events",coverage:"partial",event_count:events.length,tool_starts:starts.length,tool_completions:ends.length,unmatched_starts:starts.length-ends.length};
+}
+async function detectorChild(){
+ stage="DETECTOR_ISOLATION";
+ noSecrets(process.env,true);
+ ensure(process.env.TMPDIR==="/tmp"&&process.env.COPILOT_HOME===detectorHome,"INPUT_PATH");
+ fixtureDirectory(detectorHome);
+ const selected=fs.existsSync("/usr/local/bin/copilot")?"/usr/local/bin/copilot":proofCli;
+ await new Promise((resolve,reject)=>{const p=spawn(selected,["--version"],{env:{PATH:process.env.PATH,HOME:process.env.HOME,COPILOT_HOME:detectorHome},stdio:["ignore","pipe","pipe"]});let out="",size=0;const timer=setTimeout(()=>{p.kill("SIGKILL");reject(new Error("CLI_WATCHDOG"));},10000);for(const stream of [p.stdout,p.stderr])stream.on("data",b=>{size+=b.length;if(size>4096){p.kill("SIGKILL");return;}out+=b.toString("utf8");});p.on("error",()=>{clearTimeout(timer);reject(new Error("CLI_START"));});p.on("close",code=>{clearTimeout(timer);if(code===0&&size<=4096&&/\b1\.0\.90\b/.test(out))resolve();else reject(new Error("CLI_EXIT"));});});
+ let requests=0,scanRead=false,outsideDenied=false,resultRequested=false,providerError=null,server;
+ const scanMarker="SYNTHETIC_SCAN_INPUT_608b";
+ try{
+  server=http.createServer((req,res)=>{
+   let chunks=[],size=0;
+   req.on("data",b=>{size+=b.length;if(size>4*1024*1024){providerError="REQUEST_BOUND";req.destroy();}else chunks.push(b);});
+   req.on("end",()=>{
+    try{
+     if(req.method==="GET"&&/\/models(?:\/[^?]*)?$/.test(req.url)){res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify({object:"list",data:[{id:"deepseek-chat",object:"model",owned_by:"offline"}]}));return;}
+     ensure(req.method==="POST"&&/\/chat\/completions$/.test(req.url),"REQUEST_ROUTE");
+     const request=JSON.parse(Buffer.concat(chunks).toString("utf8"));chunks=[];
+     ensure(Array.isArray(request.messages)&&Array.isArray(request.tools),"REQUEST_SHAPE");
+     requests++;ensure(requests<=4,"REQUEST_COUNT");
+     const feedback=id=>{const rows=request.messages.filter(m=>m.role==="tool"&&m.tool_call_id===id);ensure(rows.length===1,"TOOL_FEEDBACK");return JSON.stringify(rows[0].content);};
+     if(requests===2){const value=feedback(detectorIds[0]);ensure(value.includes(scanMarker)&&!/permission denied|not allowed|outside.*allowed/i.test(value),"TOOL_FEEDBACK");scanRead=true;}
+     if(requests===3){const value=feedback(detectorIds[1]);ensure(/permission|not allowed|outside.*(?:directory|directories|path)|access.*denied/i.test(value)&&!value.includes("PRETTY_NAME="),"TOOL_FEEDBACK");outsideDenied=true;}
+     if(requests===4){ensure(feedback(detectorIds[2]).includes("THREAT_DETECTION_RESULT_RECORDED"),"TOOL_FEEDBACK");done(res,request);return;}
+     const tools=request.tools.map(t=>t.function||t);
+     if(requests<=2){
+      const tool=tools.find(t=>t.name==="view");ensure(tool,"SHELL_TOOL");
+      const schema=tool.parameters||tool.input_schema;ensure(schema?.properties?.path&&(schema.required||[]).every(k=>k==="path"),"SHELL_SCHEMA");
+      completion(res,request,detectorIds[requests-1],tool.name,{path:requests===1?detectorInput+"/agent_output.json":"/etc/os-release"});
+     }else{
+      ensure(scanRead&&outsideDenied,"TOOL_FEEDBACK");
+      const tool=tools.find(t=>t.name==="bash");ensure(tool,"SHELL_TOOL");resultRequested=true;
+      completion(res,request,detectorIds[2],tool.name,shellArguments(tool,"threat_detection_result --prompt-injection=false --secret-leak=false --malicious-patch=false"));
+     }
+    }catch(e){providerError=allowedErrors.has(e.message)?e.message:"PROVIDER_FAILURE";res.writeHead(400,{"Content-Type":"application/json"});res.end('{"error":{"message":"offline fixture rejected","type":"offline_protocol"}}');}
+   });
+  });
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  const env={PATH:path.dirname(proofCli)+":"+process.env.PATH,HOME:process.env.HOME,LANG:"C.UTF-8",TMPDIR:"/tmp",
+   COPILOT_HOME:detectorHome,RUNNER_TEMP:detectorRunner,GITHUB_WORKSPACE:detectorCase+"/work",
+   COPILOT_MODEL:"deepseek-chat",COPILOT_PROVIDER_TYPE:"openai",COPILOT_PROVIDER_WIRE_API:"completions",
+   COPILOT_PROVIDER_API_KEY:"offline-dummy",COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:"+server.address().port,
+   GH_AW_MAX_TURNS:"50",GH_AW_DETECTION_CONTINUE_ON_ERROR:"false"};
+  stage="DETECTOR_EXECUTION";
+  const code=await run(detectorBinary,["--engine","copilot","--retries","0","--output",detectorInput+"/detection_result.json",detectorInput],env,detectorCase+"/work",330000);
+  ensure(providerError===null,providerError||"PROVIDER_FAILURE");ensure(code===0,"CLI_EXIT");
+  ensure(scanRead&&outsideDenied&&resultRequested&&requests>=3&&requests<=4,"TOOL_FEEDBACK");
+  const result=JSON.parse(readBounded(detectorInput+"/detection_result.json",1024*1024).toString("utf8"));
+  ensure(result.prompt_injection===false&&result.secret_leak===false&&result.malicious_patch===false,"RESULT_VALUE");
+  const report={schema:"v03-detector-path-proof/v1",detector_exit:code,pinned_cli:true,scan_input_read:true,outside_baseline_read_denied:true,actual_result_program_requested:true,actual_verdict_file:true,provider_requests:requests,home_env_exact:true,tmpdir_original:true,coverage:"partial",raw_exported:false};
+  fs.writeFileSync(detectorCase+"/child-proof.json",JSON.stringify(report)+"\n",{flag:"wx",mode:0o600});
+  return code;
+ }finally{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}}
+}
+async function detectorHost(bundle){
+ stage="DETECTOR_PREPARE";
+ fixtureDirectory(proofRoot);
+ ensure(path.isAbsolute(bundle)&&crypto.createHash("sha256").update(readBounded(bundle,2*1024*1024)).digest("hex")==="cf611445d648fe8ec03eb7b1e6e47ae4870d375f88e449adce7176c256f7f3b8","INPUT_PATH");
+ ensure(crypto.createHash("sha256").update(readBounded(detectorBinary,4*1024*1024)).digest("hex")==="b4ecda6a8f1ee09913c40b58e5e9d3337d2173618d41b1bfdef9207e4e7959b9","INPUT_PATH");
+ ensure(!fs.existsSync(detectorCase)&&!fs.existsSync(detectorInput),"INPUT_PATH");
+ fs.mkdirSync(detectorCase,{mode:0o700});fs.mkdirSync(detectorCase+"/work",{mode:0o700});fs.mkdirSync(detectorCase+"/owned",{mode:0o700});fs.mkdirSync(detectorHome,{mode:0o700});
+ fs.mkdirSync(detectorInput,{mode:0o700});fs.mkdirSync(detectorInput+"/aw-prompts",{mode:0o700});
+ fs.writeFileSync(detectorInput+"/aw-prompts/prompt.txt","Check the harmless synthetic candidate.\n",{flag:"wx",mode:0o600});
+ fs.writeFileSync(detectorInput+"/agent_output.json",JSON.stringify({synthetic:"SYNTHETIC_SCAN_INPUT_608b"})+"\n",{flag:"wx",mode:0o600});
+ const identity=fixtureDirectory(detectorCase+"/owned"),config=detectorCase+"/awf.json";
+ fs.writeFileSync(config,JSON.stringify({network:{allowDomains:[]},container:{imageTag},logging:{auditDir:detectorCase+"/audit"}}),{flag:"wx",mode:0o600});
+ const env={PATH:process.env.PATH,HOME:process.env.HOME,USER:os.userInfo().username,LOGNAME:os.userInfo().username,LANG:"C.UTF-8",TMPDIR:"/tmp",COPILOT_HOME:detectorHome,GITHUB_WORKSPACE:detectorCase+"/work"};
+ noSecrets(env);
+ stage="DETECTOR_AWF";
+ const code=await run(process.execPath,[bundle,"--config",config,"--container-workdir",detectorCase+"/work","--mount","/tmp/gh-aw:/tmp/gh-aw:rw","--env-all","--log-level","error","--skip-pull","--","/bin/bash","-c",'exec node "$1" detector-child',"detector-offline-proof",proofScript],env,detectorCase,360000);
+ ensure(code===0,"AWF_EXIT");
+ const after=fixtureDirectory(detectorCase+"/owned");ensure(after.dev===identity.dev&&after.ino===identity.ino,"SESSION_DIRECTORY");
+ const child=JSON.parse(readBounded(detectorCase+"/child-proof.json",4096).toString("utf8"));
+ ensure(child.schema==="v03-detector-path-proof/v1"&&child.detector_exit===0&&child.scan_input_read===true&&child.outside_baseline_read_denied===true&&child.actual_verdict_file===true&&child.raw_exported===false,"TOOL_FEEDBACK");
+ stage="DETECTOR_NATIVE";const native=fixedHomeEvents(detectorHome);
+ return {schema:"v03-detector-path-proof/v1",status:"PASS",scope:"synthetic_actual_detector_awf_cli",awf_exit:code,child,native,owned_root_unchanged:true,cleanup:"deferred_to_ephemeral_runner",raw_exported:false};
+}
+
 try{
- if(cli==="awf-child"){process.exitCode=await awfChild(root);}
+ if(cli==="detector-child"){process.exitCode=await detectorChild();}
+ else if(cli==="detector-host"){console.log(JSON.stringify(await detectorHost(root)));}
+ else if(cli==="awf-child"){process.exitCode=await awfChild(root);}
  else{const report=["awf-host","awf-cancel"].includes(cli)?await awfHost(root):await main();console.log(JSON.stringify(report));}
-}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:["awf-host","awf-cancel"].includes(cli)?lastProcess:null,preservation:preservationDiagnostics,raw_exported:false}));process.exitCode=1;}
+}catch(error){console.log(JSON.stringify({schema:"v03-native-cli-observability/v1",status:"FAIL",stage,error:allowedErrors.has(error.message)?error.message:"UNCLASSIFIED_ERROR",process:["awf-host","awf-cancel","detector-host"].includes(cli)?lastProcess:null,preservation:preservationDiagnostics,raw_exported:false}));process.exitCode=1;}

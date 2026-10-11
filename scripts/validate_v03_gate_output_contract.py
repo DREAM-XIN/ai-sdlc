@@ -43,7 +43,8 @@ def reject(call, label):
     raise AssertionError("accepted " + label)
 
 def selected_config(role, candidate=577, *, variant="structured-local"):
-    check(variant in ("structured-local", "structured-inline-local"), "unsupported test workflow variant")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local"), "unsupported test workflow variant")
+    check(variant != "observed-inline-local" or role == "qa", "observed workflow is QA-only")
     stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
     lock = yaml.safe_load((ROOT / ".github/workflows" / (stem + ".lock.yml")).read_text())
     steps = lock["jobs"]["agent"]["steps"]
@@ -531,6 +532,29 @@ def _roundtrip(official, payload, context, role, *, raw_ledger=None):
 
     return raw, collected, output, proof, publication, body
 
+def roundtrip_source_contract(role, variant, lock, metadata):
+    stem = f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}"
+    check(metadata["GH_AW_WORKFLOW_ID"] == stem, "roundtrip used a different selected workflow")
+    check(metadata["GH_AW_CALLER_WORKFLOW_ID"] == "dream-xin/ai-sdlc/" + stem,
+          "roundtrip caller footer differs from selected workflow")
+    check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
+          "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
+          "roundtrip source footer differs")
+    if variant == "observed-inline-local":
+        check(role == "qa", "observed source is QA-only")
+        for relative, expected in (
+            (".github/workflows/" + stem + ".md", "158b4d78ad47f5ceeaf4e198968d0d225fb74f67"),
+            (".github/workflows/" + stem + ".lock.yml", "1f0928c78d98845d000388dce6eef3a347fbf082"),
+            ("scripts/v03_detector_observation.mjs", "0468fd225c9637a629adea8a94545f22f37e302f"),
+        ):
+            raw = (ROOT / relative).read_bytes()
+            actual = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            check(actual == expected, "frozen observed source/helper pin differs")
+        identifiers = [step.get("id") for step in lock["jobs"]["detection"]["steps"]]
+        for required in ("detector_observation_prepare", "detector_observation_observe", "detector_observation_report"):
+            check(identifiers.count(required) == 1, "observed detector step absent or ambiguous")
+
+
 def verify_context_roundtrip(role, context, *, root, actions_root,
                              verdict="PASS", run_id=9001, comment_id=9002,
                              workflow_sha="e" * 40, variant="structured-local"):
@@ -539,17 +563,19 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
-    check(variant in {"structured-local", "structured-inline-local"}, "roundtrip variant differs")
-    payload = (inline_payload(role, verdict) if variant == "structured-inline-local"
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local"}, "roundtrip variant differs")
+    check(variant != "observed-inline-local" or role == "qa", "observed roundtrip is QA-only")
+    payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
         payload[key] = context["identity"][key]
     payload["evidence"][0]["uri"] = (
         "https://github.com/dream-xin/ai-sdlc/pull/" + str(payload["candidate_pr_number"]))
-    if role == "qa" and variant == "structured-inline-local":
+    if role == "qa" and variant != "structured-local":
         payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
-    _, config, validation, metadata = selected_config(
+    lock, config, validation, metadata = selected_config(
         role, payload["candidate_pr_number"], variant=variant)
+    roundtrip_source_contract(role, variant, lock, metadata)
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
@@ -562,12 +588,14 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
 
 def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                                     verdict="PASS", run_id=9001, comment_id=9002,
-                                    workflow_sha="e" * 40):
+                                    workflow_sha="e" * 40, variant="structured-inline-local"):
     """Synthetic recommendation through actual CLI/MCP bytes and official publication.
 
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
+    check(variant in {"structured-inline-local", "observed-inline-local"}, "joined variant differs")
+    check(variant != "observed-inline-local" or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
@@ -582,7 +610,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         payload["coverage"][0]["evidence"] = uri
     subject.validate_payload(payload, context, role)
     lock, config, validation, metadata = selected_config(
-        role, payload["candidate_pr_number"], variant="structured-inline-local")
+        role, payload["candidate_pr_number"], variant=variant)
+    roundtrip_source_contract(role, variant, lock, metadata)
     compiled_contract(lock)
     actions = resolve_actions_root(actions_root).resolve(strict=True)
     cli_root = Path(os.environ["V03_SCHEMA_CLI_ROOT"]).resolve(strict=True)
@@ -644,7 +673,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
             "metadata_suffix": publication["suffix"],
-            "cli_evidence": {"provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
+            "cli_evidence": {"workflow_file": f"ai-sdlc-gh-aw-{role}-deepseek-v03-{variant}.lock.yml",
+                             "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
 
@@ -701,7 +731,8 @@ def temporary_id_contract_tests(role, actions_root, temporary):
 
 def exercise_role(role, actions_root, temporary, *, variant="structured-local"):
     lock, config, validation, metadata = selected_config(role, variant=variant)
-    make_payload = inline_payload if variant == "structured-inline-local" else role_payload
+    make_payload = inline_payload if variant != "structured-local" else role_payload
+    roundtrip_source_contract(role, variant, lock, metadata)
     compiled_contract(lock)
     fixture_dir = temporary / (role + "-" + variant)
     fixture_dir.mkdir()
@@ -1295,15 +1326,198 @@ def prepare_schema_capture(destination, actions_root):
     print("Prepared three actual compiled schema cases; no model or provider invoked.")
 
 
+
+OBSERVER_BOUNDARY_NODE = r'''
+import fs from "node:fs";
+import path from "node:path";
+import assert from "node:assert/strict";
+import {spawnSync} from "node:child_process";
+import {pathToFileURL} from "node:url";
+const helper=path.resolve(process.argv[2]);
+const subject=await import(pathToFileURL(helper).href);
+const reportScript=fs.readFileSync(0,"utf8");assert.ok(reportScript.length>0&&reportScript.length<16384);
+assert.equal(process.platform,"linux");
+fs.mkdirSync("/tmp/gh-aw",{recursive:true});
+const startFd=fs.readdirSync("/proc/self/fd").length;
+const reports=[];
+let currentCase="initialization";
+process.on("uncaughtException",error=>{console.log(JSON.stringify({schema:"v03-observer-boundary-tests/v1",status:"FAIL",case:currentCase,error_class:["AssertionError","TypeError","SyntaxError","Error"].includes(error.name)?error.name:"Other",raw_exported:false}));process.exitCode=1;});
+let serial=0;
+const original={openSync:fs.openSync,readSync:fs.readSync,opendirSync:fs.opendirSync};
+function reset(){Object.assign(fs,original);}
+const records=[
+ {type:"tool.execution_start",data:{toolCallId:"synthetic-private-1",toolName:"bash",arguments:{command:"printf SYNTHETIC_PRIVATE_BODY"}}},
+ {type:"tool.execution_complete",data:{toolCallId:"synthetic-private-1",success:true,result:{content:"SYNTHETIC_PRIVATE_RESULT"},shellExecution:{exitCode:7}}},
+ {type:"tool.execution_start",data:{toolCallId:"synthetic-private-2",toolName:"bash",arguments:{command:"printf SYNTHETIC_PRIVATE_BODY"}}},
+ {type:"tool.execution_complete",data:{toolCallId:"synthetic-private-2",success:true,result:{content:"SYNTHETIC_PRIVATE_RESULT"},shellExecution:{exitCode:0}}}
+];
+const encode=x=>Buffer.from(x.map(e=>JSON.stringify(e)).join("\n")+"\n");
+function fixture(){
+ const temp=fs.mkdtempSync("/tmp/observer-boundary-");
+ fs.mkdirSync(path.join(temp,"gh-aw"));
+ const id=String(910000000000+process.pid*100+(++serial));
+ const env={PATH:process.env.PATH,RUNNER_TEMP:temp,SOURCE_RUN_ID:id,RUN_ATTEMPT:"1",SOURCE_WORKFLOW_SHA:"a".repeat(40),OBSERVER_RUNNER_ENVIRONMENT:"github-hosted",OBSERVER_RUNNER_OS:"Linux",GITHUB_OUTPUT:path.join(temp,"output"),DETECTION_RESULT:"failure",ORIGINAL_EXIT_CODE:"124"};
+ const root=subject.prepare(env);
+ const session=path.join(root,"awf-agent-session-state-ABC123");
+ const dir=path.join(session,"00000000-0000-0000-0000-000000000001");
+ fs.mkdirSync(dir,{recursive:true});const events=path.join(dir,"events.jsonl");fs.writeFileSync(events,encode(records));
+ return {temp,env,root,session,dir,events,stamp:path.join(temp,"gh-aw/detector-observation-owner.json"),summary:path.join(temp,"gh-aw/detector-observation-summary.json")};
+}
+function safeSummary(s){
+ assert.equal(s.coverage,"partial");assert.equal(s.safety_authority,false);
+ const text=JSON.stringify(s);
+ for(const needle of ["SYNTHETIC_PRIVATE","synthetic-private-","events.jsonl","/tmp/"])assert.equal(text.includes(needle),false);
+ assert.deepEqual(Object.keys(s).sort(),["cleanup","counts","coverage","reason","run_attempt","run_id","safety_authority","schema_version","status","workflow_sha"].sort());
+}
+function unavailable(s,reason=null){
+ safeSummary(s);assert.equal(s.status,"unavailable");assert.equal(s.counts,null);
+ if(reason)assert.equal(s.reason,reason);
+}
+function test(name,action){
+ currentCase=name;const f=fixture();const before={...f.env};
+ try{action(f);assert.deepEqual(f.env,before);reports.push(name);}
+ finally{reset();fs.rmSync(f.root,{recursive:true,force:true});fs.rmSync(f.root+".moved",{recursive:true,force:true});fs.rmSync(f.temp,{recursive:true,force:true});}
+}
+test("observed_partial_readonly",f=>{
+ const bytes=fs.readFileSync(f.events);
+ const cli=spawnSync(process.execPath,[helper,"observe"],{env:f.env,encoding:"utf8",timeout:5000,maxBuffer:8192});assert.equal(cli.status,0);assert.equal(cli.signal,null);assert.equal(cli.stdout,"");assert.equal(cli.stderr,"");
+ const s=JSON.parse(fs.readFileSync(f.summary));safeSummary(s);
+ assert.equal(s.status,"observed");assert.equal(s.cleanup,"deferred_to_ephemeral_runner");
+ assert.equal(s.counts.linked_calls,2);assert.equal(s.counts.native_tool_success,2);
+ assert.equal(s.counts.shell_exit_zero,1);assert.equal(s.counts.shell_exit_nonzero,1);
+ assert.equal(s.counts.repeated_command_occurrences,1);assert.equal(s.counts.repeated_command_and_result_occurrences,1);
+ assert.deepEqual(fs.readFileSync(f.events),bytes);assert.ok(fs.existsSync(f.root));
+});
+test("missing_events_cancel_shape",f=>{
+ fs.unlinkSync(f.events);fs.mkdirSync(path.join(f.session,"synthetic-metadata"));
+ const p=spawnSync(process.execPath,[helper,"observe"],{env:f.env,encoding:"utf8",timeout:5000,maxBuffer:8192});
+ assert.equal(p.status,1);assert.equal(p.signal,null);assert.equal(p.stdout,"");assert.equal(p.stderr,"");
+ const s=JSON.parse(fs.readFileSync(f.summary));unavailable(s,"SESSION");assert.equal(s.cleanup,"deferred_to_ephemeral_runner");
+ assert.equal(f.env.ORIGINAL_EXIT_CODE,"124");assert.equal(f.env.DETECTION_RESULT,"failure");
+ assert.ok(fs.existsSync(f.dir));
+});
+test("unmatched_records_remain_partial",f=>{
+ fs.writeFileSync(f.events,encode([records[0]]));const s=subject.observe(f.env);
+ assert.equal(s.status,"observed");safeSummary(s);assert.equal(s.counts.linked_calls,0);assert.equal(s.counts.unmatched_starts,1);
+});
+for(const [name,raw,reason] of [
+ ["truncated",encode(records).subarray(0,-1),"EVENT_TRUNCATED"],
+ ["malformed",Buffer.from("{bad}\n"),"EVENT_JSON"],
+ ["duplicate_start",encode([records[0],records[0]]),"LINKAGE"],
+ ["untyped_status",encode([records[0],{...records[1],data:{...records[1].data,success:"true"}}]),"LINKAGE"],
+ ["invalid_utf8",Buffer.from([255,10]),"EVENT_JSON"]
+])test(name,f=>{fs.writeFileSync(f.events,raw);unavailable(subject.observe(f.env),reason);});
+test("file_growth_during_read",f=>{
+ let hit=false;fs.readSync=function(fd,...args){const n=original.readSync.call(fs,fd,...args);if(!hit&&fs.readlinkSync("/proc/self/fd/"+fd)===f.events){hit=true;fs.appendFileSync(f.events," \n");}return n;};
+ unavailable(subject.observe(f.env),"BOUND");assert.equal(hit,true);
+});
+test("file_max_plus_one",f=>{fs.truncateSync(f.events,8*1024*1024+1);unavailable(subject.observe(f.env),"BOUND");});
+test("directory_max_plus_one",f=>{
+ for(let i=0;i<129;i++)fs.writeFileSync(path.join(f.root,"synthetic-"+i),"x");
+ let reads=0;fs.opendirSync=function(...args){const d=original.opendirSync.apply(fs,args),read=d.readSync.bind(d);d.readSync=()=>{reads++;return read();};return d;};
+ unavailable(subject.observe(f.env),"BOUND");assert.equal(reads,129);
+});
+test("child_directory_max_plus_one",f=>{
+ for(let i=0;i<17;i++)fs.mkdirSync(path.join(f.session,"synthetic-"+i));
+ unavailable(subject.observe(f.env),"BOUND");
+});
+test("fifo_nonblocking",f=>{
+ fs.unlinkSync(f.events);const p=spawnSync("mkfifo",[f.events],{env:{PATH:process.env.PATH},timeout:3000});assert.equal(p.status,0);
+ const began=Date.now(),s=subject.observe(f.env);unavailable(s,"PATH");assert.ok(Date.now()-began<2000);
+});
+test("stamp_fifo_nonblocking",f=>{
+ fs.unlinkSync(f.stamp);const p=spawnSync("mkfifo",[f.stamp],{env:{PATH:process.env.PATH},timeout:3000});assert.equal(p.status,0);
+ const began=Date.now(),s=subject.observe(f.env);unavailable(s,"BOUND");assert.equal(s.cleanup,"not_attempted");assert.ok(Date.now()-began<2000);
+});
+test("record_count_bound",f=>{fs.writeFileSync(f.events,encode(Array.from({length:4097},()=>({type:"synthetic",data:{}}))));unavailable(subject.observe(f.env),"BOUND");});
+test("regular_file_hardlink",f=>{fs.linkSync(f.events,path.join(f.temp,"extra-link"));unavailable(subject.observe(f.env),"PATH");});
+test("event_symlink",f=>{fs.unlinkSync(f.events);fs.symlinkSync(path.join(f.temp,"missing"),f.events);unavailable(subject.observe(f.env),"PATH");});
+test("ancestor_symlink",f=>{
+ const foreign=path.join(f.temp,"foreign");fs.renameSync(f.session,foreign);fs.symlinkSync(foreign,f.session);
+ unavailable(subject.observe(f.env),"PATH");assert.ok(fs.existsSync(path.join(foreign,path.basename(f.dir),"events.jsonl")));
+});
+test("ambiguous_preserved_directories",f=>{fs.mkdirSync(path.join(f.root,"awf-agent-session-state-DEF456"));unavailable(subject.observe(f.env),"SESSION");});
+test("ambiguous_uuid_directories",f=>{fs.mkdirSync(path.join(f.session,"00000000-0000-0000-0000-000000000002"));unavailable(subject.observe(f.env),"SESSION");});
+test("surviving_work_directory",f=>{fs.mkdirSync(path.join(f.root,"awf-ABC123"));unavailable(subject.observe(f.env),"SESSION");});
+test("wrong_workflow_identity",f=>{
+ const stamp=JSON.parse(fs.readFileSync(f.stamp));stamp.workflow_sha="b".repeat(40);fs.writeFileSync(f.stamp,JSON.stringify(stamp));
+ const s=subject.observe(f.env);unavailable(s,"OWNERSHIP");assert.equal(s.cleanup,"not_attempted");
+});
+function replaceRoot(f){fs.renameSync(f.root,f.root+".moved");fs.mkdirSync(f.root,{mode:0o700});fs.writeFileSync(path.join(f.root,"foreign-marker"),"KEEP");}
+test("root_replaced_after_event_read",f=>{
+ let hit=false;fs.readSync=function(fd,...args){const n=original.readSync.call(fs,fd,...args);if(!hit&&fs.readlinkSync("/proc/self/fd/"+fd)===f.events){hit=true;replaceRoot(f);}return n;};
+ const s=subject.observe(f.env);unavailable(s,"OWNERSHIP");assert.equal(s.cleanup,"refused_ownership_changed");assert.equal(hit,true);assert.equal(fs.readFileSync(path.join(f.root,"foreign-marker"),"utf8"),"KEEP");
+});
+test("root_replaced_at_final_ownership",f=>{
+ let stamps=0;fs.openSync=function(file,...args){if(String(file).endsWith("/detector-observation-owner.json")&&++stamps===3)replaceRoot(f);return original.openSync.call(fs,file,...args);};
+ const s=subject.observe(f.env);unavailable(s,"OWNERSHIP");assert.equal(stamps,3);assert.equal(s.cleanup,"refused_ownership_changed");assert.equal(fs.readFileSync(path.join(f.root,"foreign-marker"),"utf8"),"KEEP");
+});
+test("summary_symlink_destination",f=>{
+ const target=path.join(f.temp,"foreign");fs.writeFileSync(target,"KEEP");fs.symlinkSync(target,f.summary);
+ assert.throws(()=>subject.observe(f.env));assert.equal(fs.readFileSync(target,"utf8"),"KEEP");
+});
+test("untrusted_runner_identity",f=>{assert.throws(()=>subject.observe({...f.env,OBSERVER_RUNNER_ENVIRONMENT:"self-hosted"}),/IDENTITY/);assert.equal(fs.existsSync(f.summary),false);});
+
+function deliver(f){
+ const p=spawnSync("bash",["-c",reportScript],{env:f.env,encoding:"utf8",timeout:5000,maxBuffer:32768});
+ assert.equal(p.status,0);assert.equal(p.stderr,"");
+ for(const secret of ["SYNTHETIC_PRIVATE","synthetic-private-","/tmp/"])assert.equal(p.stdout.includes(secret),false);
+ return JSON.parse(p.stdout);
+}
+const unavailableDelivery={schema_version:"ai-sdlc.detector-observation.delivery/v1",status:"unavailable",coverage:"partial",safety_authority:false};
+test("actual_report_observed",f=>{const s=subject.observe(f.env);assert.equal(s.status,"observed");assert.deepEqual(deliver(f),s);});
+test("actual_report_unavailable",f=>{fs.unlinkSync(f.events);const s=subject.observe(f.env);unavailable(s,"SESSION");assert.deepEqual(deliver(f),s);});
+test("actual_report_rejects_raw_extra",f=>{const s=subject.observe(f.env);s.raw="SYNTHETIC_PRIVATE_BODY";fs.writeFileSync(f.summary,JSON.stringify(s));assert.deepEqual(deliver(f),unavailableDelivery);});
+test("actual_report_rejects_malformed",f=>{fs.writeFileSync(f.summary,"{broken SYNTHETIC_PRIVATE_BODY");assert.deepEqual(deliver(f),unavailableDelivery);});
+
+reset();assert.ok(fs.readdirSync("/proc/self/fd").length<=startFd+1);
+console.log(JSON.stringify({schema:"v03-observer-boundary-tests/v1",status:"PASS",cases:reports,case_count:reports.length,scope:"synthetic helper boundaries; cancellation record unavailable, original status unchanged",raw_exported:false}));
+'''
+
+def observer_boundary_tests():
+    source_path = ROOT / ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md"
+    source = yaml.safe_load(source_path.read_text().split("---", 2)[1])
+    detector = source["safe-outputs"]["threat-detection"]
+    rows = [step for step in detector["post-steps"] if step.get("id") == "detector_observation_report"]
+    check(len(rows) == 1, "missing actual observer report step")
+    report_step = rows[0]
+    check(report_step.get("continue-on-error") is True and report_step.get("if") == "${{ always() }}",
+          "observer report must not replace original detector outcome")
+    report_script = report_step["run"]
+    lock_path = source_path.with_suffix(".lock.yml")
+    if lock_path.exists():
+        compiled = yaml.safe_load(lock_path.read_text())
+        compiled_rows = [step for step in compiled["jobs"]["detection"]["steps"]
+                         if step.get("id") == "detector_observation_report"]
+        check(len(compiled_rows) == 1 and compiled_rows[0]["run"] == report_script,
+              "compiled observer delivery changed actual source script")
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", OBSERVER_BOUNDARY_NODE,
+         "observer-boundary-fixture", str(ROOT / "scripts/v03_detector_observation.mjs")],
+        input=report_script.encode(), env={"PATH": os.environ["PATH"]}, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=60, check=False,
+    )
+    report = json.loads(completed.stdout)
+    print(json.dumps(report, sort_keys=True))
+    check(completed.returncode == 0, "observer boundary suite failed: " + report.get("case", "unknown"))
+    check(report["status"] == "PASS" and report["case_count"] == 30,
+          "observer finite case matrix drift")
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--actions-root", type=Path, required=True)
+    parser.add_argument("--actions-root", type=Path)
+    parser.add_argument("--observer-only", action="store_true")
     parser.add_argument("--prepare-schema-capture", type=Path)
     args = parser.parse_args()
+    if args.observer_only:
+        observer_boundary_tests()
+        return
+    check(args.actions_root is not None, "--actions-root is required for official handler tests")
     actions_root = resolve_actions_root(args.actions_root)
     if args.prepare_schema_capture is not None:
         prepare_schema_capture(args.prepare_schema_capture, actions_root)
         return
+    observer_boundary_tests()
     scanned_receipt_tests()
     with tempfile.TemporaryDirectory(prefix="v03-gate-output-") as directory:
         sanitizer_closure_tests(actions_root, Path(directory))
@@ -1312,6 +1526,20 @@ def main():
             inline_native_schema_tests(role, actions_root, Path(directory))
             temporary_id_contract_tests(role, actions_root, Path(directory))
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
+        exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
+    old_lock, _, _, old_metadata = selected_config("qa", variant="structured-inline-local")
+    try:
+        roundtrip_source_contract("qa", "observed-inline-local", old_lock, old_metadata)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("old QA source silently substituted for observed source")
+    try:
+        selected_config("reviewer", variant="observed-inline-local")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("observed QA source accepted Reviewer role")
     print("Structured Gate output contract passed with fake provider boundaries only.")
 
 if __name__ == "__main__":

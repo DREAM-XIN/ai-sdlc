@@ -191,6 +191,15 @@ class ProductionDogfoodProvenanceVerifier:
                 if archived != "6e75792b8e441167cfaadab2d13667a2d80721b8":
                     raise DogfoodProvenanceVerificationError("archived producer resolver escaped fixed successful run")
                 expected_source = archived
+            if (run_id == 38074007355 and role == "reviewer"
+                    and self.config.installation_commit_sha != "868d3dc25e5331392063b674496eb16b01208b42"):
+                if (key != "dispatch-7c0902c21a50078536e74133a6fa370618b4ac8f"
+                        or workflow != "ai-sdlc-gh-aw-reviewer-deepseek-v03-structured-inline-local.lock.yml"
+                        or not callable(self._archived_producer_source_resolver)
+                        or self._archived_producer_source_resolver(run_id) !=
+                            "868d3dc25e5331392063b674496eb16b01208b42"):
+                    raise DogfoodProvenanceVerificationError("accepted Reviewer lacks fixed protected historical source")
+                expected_source = "868d3dc25e5331392063b674496eb16b01208b42"
             if (head_sha != expected_source
                 or payload.get("id") != run_id or payload.get("status") != "completed"
                 or payload.get("head_branch") != "main" or payload.get("run_attempt") != 1
