@@ -76,18 +76,36 @@ def qa2_observed_bytes(relative):
           == QA2_OBSERVED_BLOBS[relative], "QA2 observed source blob differs")
     return raw
 
+QA3_OBSERVED_SOURCE = "37804095421feea6c478ff79fac2803afe1e738a"
+QA3_OBSERVED_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md": "62d56d3a053eb372104f463430dccf8459511ce0",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml": "8600ce893d0f71d06e33939abe05add672d449e7",
+    "scripts/v03_detector_observation.mjs": "85d792241d3d20b0f1051d01e1054c608bfcabdc",
+    "scripts/v03_dogfood_gate_output_v2.py": "aff76251c232e5cdaeec21306c52d9da09d20e01",
+}
+
+def qa3_observed_bytes(relative):
+    check(relative in QA3_OBSERVED_BLOBS, "QA3 read escaped fixed source closure")
+    raw = subprocess.run(["git", "show", QA3_OBSERVED_SOURCE + ":" + relative],
+                         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         timeout=30, check=True).stdout
+    check(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+          == QA3_OBSERVED_BLOBS[relative], "QA3 observed source blob differs")
+    return raw
+
 def roundtrip_workflow_stem(role, variant):
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local"},
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local"},
           "unsupported roundtrip source variant")
     check(not variant.startswith("observed-") or role == "qa", "observed source is QA-only")
-    actual = "observed-inline-local" if variant == "observed-qa2-local" else variant
+    actual = "observed-inline-local" if variant in {"observed-qa2-local", "observed-qa3-local"} else variant
     return f"ai-sdlc-gh-aw-{role}-deepseek-v03-{actual}"
 
 def selected_config(role, candidate=577, *, variant="structured-local"):
-    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local"), "unsupported test workflow variant")
-    check(variant not in {"observed-inline-local", "observed-qa2-local"} or role == "qa", "observed workflow is QA-only")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local"), "unsupported test workflow variant")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local"} or role == "qa", "observed workflow is QA-only")
     stem = roundtrip_workflow_stem(role, variant)
-    lock = yaml.safe_load(qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml")
+    lock = yaml.safe_load(qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")
+                          if variant == "observed-qa3-local" else qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa2-local" else observed_historical_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-inline-local" else
                           (ROOT / ".github/workflows" / (stem + ".lock.yml")).read_bytes())
@@ -620,6 +638,19 @@ def roundtrip_source_contract(role, variant, lock, metadata):
     check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
           "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
           "roundtrip source footer differs")
+    if variant == "observed-qa3-local":
+        check(role == "qa", "QA3 source is QA-only")
+        for relative in QA3_OBSERVED_BLOBS:
+            qa3_observed_bytes(relative)
+        check(lock == yaml.safe_load(qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")),
+              "QA3 actual lock differs from frozen v2 producer")
+        import v03_dogfood_gate_output_v2 as current
+        check(Path(current.__file__).read_bytes() == qa3_observed_bytes("scripts/v03_dogfood_gate_output_v2.py"),
+              "QA3 executed renderer differs from selected v2 source")
+        for job, identifier in (("agent", "gate_render"), ("safe_outputs", "gate_validate")):
+            steps = [step for step in lock["jobs"][job]["steps"] if step.get("id") == identifier]
+            check(len(steps) == 1 and "v03_dogfood_gate_output_v2.py" in steps[0]["run"],
+                  "QA3 selected workflow does not execute v2 boundary")
     if variant == "observed-qa2-local":
         for relative in QA2_OBSERVED_BLOBS:
             qa2_observed_bytes(relative)
@@ -652,8 +683,11 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local"}, "roundtrip variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local"} or role == "qa", "observed roundtrip is QA-only")
+    renderer = subject
+    if variant == "observed-qa3-local":
+        import v03_dogfood_gate_output_v2 as renderer
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local"}, "roundtrip variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local"} or role == "qa", "observed roundtrip is QA-only")
     payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
@@ -669,7 +703,8 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
         raw, collected, artifact, proof, publication, body = _roundtrip(
-            official, payload, context, role)
+            official, payload, context, role, renderer=renderer,
+            render_cli=variant == "observed-qa3-local")
     check(canonical(context) == original, "roundtrip mutated producer context")
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
@@ -683,13 +718,16 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
-    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local"}, "joined variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local"} or role == "qa", "observed joined workflow is QA-only")
+    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local"}, "joined variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local"} or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "joined context role differs")
     original = canonical(context)
+    renderer = subject
+    if variant == "observed-qa3-local":
+        import v03_dogfood_gate_output_v2 as renderer
     payload = inline_payload(role, verdict)
     for key in subject.PAYLOAD_IDENTITY_KEYS:
         payload[key] = context["identity"][key]
@@ -715,7 +753,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         (temporary / "capture.mjs").write_text(SCHEMA_CAPTURE_NODE)
         row = {"label": role + "-joined", "legacy": False, "joined": True,
                "config": config, "meta": compiled_tools_metadata(lock, payload["candidate_pr_number"]),
-               "observed_projection": OBSERVED_CLI_PROJECTION[role], "payload": payload}
+               "observed_projection": OBSERVED_CLI_PROJECTION[role], "payload": payload,
+               "string_target": variant == "observed-qa3-local"}
         (temporary / "cases.json").write_bytes(canonical([row]))
         container = "v03-joined-" + temporary.name
         env = {"PATH": os.environ["PATH"], "HOME": str(temporary / "home")}
@@ -750,12 +789,17 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         rows = [line for line in raw.splitlines() if line.strip()]
         check(len(rows) == 1 and subject.strict_json(rows[0])["data"] == payload,
               "joined MCP result differs from dispatched identity/recommendation")
+        if variant == "observed-qa3-local":
+            check(type(subject.strict_json(rows[0])["item_number"]) is str and
+                  subject.strict_json(rows[0])["item_number"] == str(payload["candidate_pr_number"]),
+                  "QA3 actual CLI ledger did not preserve canonical string target")
         official_dir = temporary / "official"
         official_dir.mkdir()
         official = Official(actions, official_dir, config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
         returned_raw, collected, artifact, proof, publication, body = _roundtrip(
-            official, payload, context, role, raw_ledger=raw)
+            official, payload, context, role, raw_ledger=raw, renderer=renderer,
+            render_cli=variant == "observed-qa3-local")
         check(returned_raw == raw and proof["raw_ndjson_sha256"] == result["raw_ndjson_sha256"],
               "official boundary substituted genuine MCP ledger")
     check(canonical(context) == original, "joined test mutated authenticated context")
@@ -764,7 +808,9 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             "metadata_suffix": publication["suffix"],
             "cli_evidence": {"workflow_file": roundtrip_workflow_stem(role, variant) + ".lock.yml",
                              "source_variant": variant,
-                             "fixed_source_sha": QA2_OBSERVED_SOURCE if variant == "observed-qa2-local" else None,
+                             "fixed_source_sha": (QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
+                                                  QA2_OBSERVED_SOURCE if variant == "observed-qa2-local" else None),
+                             "renderer_version": "v2" if variant == "observed-qa3-local" else "v1",
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
@@ -1304,7 +1350,7 @@ async function capture(row,index) {
      check(row.payload && row.payload.candidate_pr_number===Number(row.config.add_comment.target),
        "JOINED_DISPATCH_TARGET");
      toolCallResponse(res,request,matches[0].name,{body:"AI-SDLC structured Gate recommendation.",
-       item_number:row.payload.candidate_pr_number,data:row.payload});
+       item_number:row.string_target?String(row.payload.candidate_pr_number):row.payload.candidate_pr_number,data:row.payload});
      return;
     }
     if(row.joined) {
@@ -1313,7 +1359,7 @@ async function capture(row,index) {
      check(lines.length===1,"JOINED_LEDGER_COUNT");
      const entry=JSON.parse(lines[0]);
      check(entry.type==="add_comment"&&entry.body==="AI-SDLC structured Gate recommendation."&&
-       entry.item_number===row.payload.candidate_pr_number&&canonical(entry.data)===canonical(row.payload),
+       entry.item_number===(row.string_target?String(row.payload.candidate_pr_number):row.payload.candidate_pr_number)&&canonical(entry.data)===canonical(row.payload),
        "JOINED_LEDGER_DRIFT");
      const feedback=(request.messages||[]).filter(m=>m.role==="tool"&&m.tool_call_id==="offline-gate-call-1");
      check(feedback.length===1&&successfulFeedback(feedback[0].content,entry.temporary_id),
@@ -1776,6 +1822,22 @@ def main():
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-qa2-local")
+    qa3_lock, _, _, qa3_metadata = selected_config("qa", variant="observed-qa3-local")
+    roundtrip_source_contract("qa", "observed-qa3-local", qa3_lock, qa3_metadata)
+    qa2_lock, _, _, qa2_metadata = selected_config("qa", variant="observed-qa2-local")
+    try:
+        roundtrip_source_contract("qa", "observed-qa3-local", qa2_lock, qa2_metadata)
+    except AssertionError as exc:
+        check(str(exc) == "QA3 actual lock differs from frozen v2 producer",
+              "QA3 prior-lock negative failed at an unexpected boundary")
+    else:
+        raise AssertionError("QA3 accepted prior same-filename producer")
+    try:
+        selected_config("reviewer", variant="observed-qa3-local")
+    except AssertionError as exc:
+        check(str(exc) == "observed workflow is QA-only", "QA3 role rejection differs")
+    else:
+        raise AssertionError("QA3 accepted Reviewer role")
     qa1_lock, _, _, qa1_metadata = selected_config("qa", variant="observed-inline-local")
     try:
         roundtrip_source_contract("qa", "observed-qa2-local", qa1_lock, qa1_metadata)
