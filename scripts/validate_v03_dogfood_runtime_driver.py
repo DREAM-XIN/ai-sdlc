@@ -12536,7 +12536,8 @@ def qa_replacement_joined_factory_tests():
     def phase(stage):
         expect(stage in stages,"QA joined diagnostic stage differs")
         print("qa_joined_stage="+stage+" elapsed_seconds="+str(round(time.monotonic()-started,3)),flush=True)
-    faulthandler.dump_traceback_later(120,repeat=True)
+    fatal_diagnostics_enabled = faulthandler.is_enabled()
+    faulthandler.enable()
     try:
         phase("seed_start")
         seed=qa_replacement_runtime_fixture()
@@ -12704,7 +12705,8 @@ def qa_replacement_joined_factory_tests():
                    "QA replay/finalization renewed an external effect")
         print("- actual fixed45 QA-only factory, observed CLI ledger, collector, Persist and finalizer passed",flush=True)
     finally:
-        faulthandler.cancel_dump_traceback_later()
+        if not fatal_diagnostics_enabled:
+            faulthandler.disable()
 
 def qa_replacement_provider_failure_tests():
     """Memory-CAS fixture; real recovery/source/transport, no synthetic failed publication."""
