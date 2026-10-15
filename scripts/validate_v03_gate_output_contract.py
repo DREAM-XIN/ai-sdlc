@@ -2473,6 +2473,12 @@ async function githubMcp() {
  for await(const line of readline.createInterface({input:process.stdin})) {
   const m=JSON.parse(line);if(!Object.hasOwn(m,"id"))continue;
   let result;
+  if(m.method==="server/discover"){
+   const p=root+"/github-discover-count",n=fs.existsSync(p)?Number(fs.readFileSync(p,"utf8")):0;
+   check(Number.isSafeInteger(n)&&n>=0&&n<8,"GITHUB_DISCOVERY_BOUND");fs.writeFileSync(p,String(n+1));
+   process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,error:{code:-32601,message:"Method not found: server/discover"}})+"\n");
+   continue;
+  }
   if(m.method==="initialize"||m.method==="tools/list"){
    const p=root+"/github-"+(m.method==="initialize"?"initialize":"list")+"-count";
    const n=fs.existsSync(p)?Number(fs.readFileSync(p,"utf8")):0;
@@ -2663,10 +2669,15 @@ async function denialMain() {
     }
    }
   }else{check(code===0&&signal===null&&posts===4&&denied===1&&githubFeedback&&safeFeedback,"RECOVERY_COMPLETION");
-   check(counters[0].invocation_count===4,"RECOVERY_COUNTER");raw=fs.readFileSync(output);}
+   check(counters[0].invocation_count===4,"RECOVERY_COUNTER");
+   for(const field of ["discover","initialize","list"]){const p=root+"/github-"+field+"-count";
+    check(fs.existsSync(p)&&Number(fs.readFileSync(p,"utf8"))>=1,"GITHUB_HANDSHAKE");}
+   raw=fs.readFileSync(output);}
   console.log(JSON.stringify({schema:"v03-denial-protocol/v1",case:row.case,status:"PASS",upstream_requests:posts,
    denied_feedback:denied,native_invocations:counters[0].invocation_count,native_max_runs:50,cli_exit:code,
-   diagnostic_types:diagnosticTypes,unauthorized_execution:false,github_boundary:"synthetic MCP",safeoutput_count:raw.length?1:0,
+   diagnostic_types:diagnosticTypes,unauthorized_execution:false,github_boundary:"synthetic MCP",
+   github_discovery_rejections:fs.existsSync(root+"/github-discover-count")?Number(fs.readFileSync(root+"/github-discover-count","utf8")):0,
+   safeoutput_count:raw.length?1:0,
    raw_ndjson_base64:raw.toString("base64"),generated_config_sha256:crypto.createHash("sha256").update(fs.readFileSync(configPath)).digest("hex")}));
  }finally{upstream.closeAllConnections();await new Promise(r=>upstream.close(r));}
 }
