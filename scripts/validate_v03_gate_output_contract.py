@@ -2490,8 +2490,10 @@ async function githubMcp() {
     {error:"evidence_unavailable",commit_sha:row.payload.candidate_head_sha})}],isError:row.case!=="PASS"};
   } else if(m.method==="ping")result={};
   else {
-   fs.writeFileSync(root+"/github-method",["notifications/initialized","notifications/cancelled","resources/list",
-    "prompts/list","resources/templates/list"].includes(m.method)?m.method:"UNKNOWN");
+   fs.writeFileSync(root+"/github-method",m.method===undefined?"MISSING":
+    typeof m.method==="string"&&/^[A-Za-z0-9_$/.-]{1,128}$/.test(m.method)?m.method:"INVALID");
+   fs.writeFileSync(root+"/github-message-kind",typeof m.method==="string"?"request":
+    Object.hasOwn(m,"result")||Object.hasOwn(m,"error")?"response":"invalid");
    throw Error("GITHUB_METHOD");
   }
   process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\n");
@@ -2631,7 +2633,8 @@ async function denialMain() {
     cli_exit:code,cli_signal:signal,log_files:logFiles,startup_errors:messages,
     github_error:fs.existsSync(root+"/github-error")?fs.readFileSync(root+"/github-error","utf8"):"NONE",
     github_error_code:fs.existsSync(root+"/github-error-code")?fs.readFileSync(root+"/github-error-code","utf8"):"NONE",
-    github_unknown_method:fs.existsSync(root+"/github-method")?fs.readFileSync(root+"/github-method","utf8"):"NONE"};
+    github_unknown_method:fs.existsSync(root+"/github-method")?fs.readFileSync(root+"/github-method","utf8"):"NONE",
+    github_message_kind:fs.existsSync(root+"/github-message-kind")?fs.readFileSync(root+"/github-message-kind","utf8"):"NONE"};
   }
   check(!fault,fault||"PROVIDER_FAILURE");check(!fs.existsSync(root+"/executed"),"UNAUTHORIZED_EXECUTION");
   check(fs.readFileSync(configPath).equals(Buffer.from(row.generated_config.content)),"CONFIG_MUTATION");
