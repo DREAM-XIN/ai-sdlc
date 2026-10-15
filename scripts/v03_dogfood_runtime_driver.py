@@ -5096,5 +5096,22 @@ def observe_qa5_failure(preflight):
     return {"historical_proof": history, "current_observation": observation}
 
 
+def create_worker_observation_deadline(*, clock=time.monotonic):
+    """Unselected 40-minute observation contract; create once at a future caller's entry.
+
+    Covers elapsed queue/setup/agent/scan/publication time, not a promise that
+    every provider job's maximum fits. No current recovery route selects it.
+    A future authorized caller must pass this same absolute value throughout.
+    """
+    import math
+    now = clock()
+    if type(now) not in (int, float) or not math.isfinite(now):
+        raise V03DogfoodRuntimeDriverError("invalid Worker observation start clock")
+    deadline = now + 2400.0
+    if not math.isfinite(deadline) or deadline <= now:
+        raise V03DogfoodRuntimeDriverError("invalid Worker observation deadline")
+    return deadline
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -278,11 +278,40 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
 
 
 def wait_for_worker_run(*, read_run, receipt, workflow, installation_sha, external_dispatch_key,
-                        max_attempts=180, poll_seconds=5.0, sleeper=time.sleep):
+                        max_attempts=180, poll_seconds=5.0, sleeper=time.sleep,
+                        deadline_monotonic=None, clock=time.monotonic):
     if not str(receipt).isdigit() or int(receipt) < 1 or not 1 <= max_attempts <= 240:
         raise V03DogfoodScenarioRunnerError("invalid bounded Worker receipt/wait")
-    for attempt in range(max_attempts):
+    # Explicit opt-in only. Existing callers retain the historical attempts contract.
+    previous_clock = None
+    def remaining():
+        nonlocal previous_clock
+        import math
+        now = clock()
+        if (type(now) not in (int, float) or not math.isfinite(now)
+                or (previous_clock is not None and now < previous_clock)):
+            raise V03DogfoodScenarioRunnerError("invalid monotonic Worker clock")
+        previous_clock = now
+        left = deadline_monotonic - now
+        if left <= 0:
+            raise V03DogfoodScenarioRunnerError("exact Worker observation deadline exhausted")
+        return left
+    if deadline_monotonic is not None:
+        import math
+        if (type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+                or type(poll_seconds) not in (int, float) or not math.isfinite(poll_seconds)
+                or poll_seconds <= 0):
+            raise V03DogfoodScenarioRunnerError("invalid bounded Worker observation deadline")
+        remaining()
+    attempt = 0
+    while deadline_monotonic is not None or attempt < max_attempts:
+        if deadline_monotonic is not None:
+            remaining()
         run = read_run(int(receipt))
+        # Account for provider time too. A synchronous GET is not preempted here;
+        # the existing HTTP timeout bounds the single in-flight overrun.
+        if deadline_monotonic is not None:
+            remaining()
         if not isinstance(run, dict) or (
             run.get("id"), run.get("event"), run.get("head_branch"), run.get("head_sha"),
             str(run.get("path") or "").removeprefix(".github/workflows/"), run.get("display_title")
@@ -295,7 +324,10 @@ def wait_for_worker_run(*, read_run, receipt, workflow, installation_sha, extern
             return run
         if run.get("status") not in {"queued", "in_progress", "waiting", "requested", "pending"}:
             raise V03DogfoodScenarioRunnerError("Worker entered unsupported pending state")
-        if attempt + 1 < max_attempts:
+        attempt += 1
+        if deadline_monotonic is not None:
+            sleeper(min(poll_seconds, remaining()))
+        elif attempt < max_attempts:
             sleeper(poll_seconds)
     raise V03DogfoodScenarioRunnerError("exact Worker completion wait exhausted")
 

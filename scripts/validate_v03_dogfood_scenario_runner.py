@@ -142,6 +142,132 @@ def run_case(scenario, statuses, roles, *, recovery=True, store_files=None):
     return result
 
 
+
+def worker_observation_deadline_tests():
+    """Pure fake-clock/read-only boundary tests; no model, dispatch or Store writes."""
+    import v03_dogfood_runtime_driver as driver
+    good = dict(id=1001, event="workflow_dispatch", head_branch="main", head_sha="a"*40,
+                path=".github/workflows/worker.yml", display_title="AI-SDLC gh-aw key",
+                run_attempt=1, status="completed", conclusion="success")
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+            self.reads = 0
+            self.sleeps = []
+        def __call__(self):
+            return self.now
+        def sleep(self, seconds):
+            self.sleeps.append(seconds)
+            self.now += seconds
+    def wait(clock, read, deadline, **kwargs):
+        return runner.wait_for_worker_run(read_run=read, receipt="1001", workflow="worker.yml",
+            installation_sha="a"*40, external_dispatch_key="key", deadline_monotonic=deadline,
+            clock=clock, sleeper=clock.sleep, **kwargs)
+    def rejects(call):
+        try:
+            call()
+        except (runner.V03DogfoodScenarioRunnerError, driver.V03DogfoodRuntimeDriverError):
+            return
+        raise AssertionError("invalid/expired Worker deadline was accepted")
+
+    clock = Clock()
+    deadline = driver.create_worker_observation_deadline(clock=clock)
+    expect(deadline == 2400.0, "observation contract is not exactly forty minutes")
+    # One fixed deadline spans simulated queue, setup, agent, scan and publication.
+    durations = [300.0, 180.0, 1201.0, 299.0, 30.0]
+    def staged_read(receipt):
+        expect(receipt == 1001, "deadline reader changed receipt")
+        clock.reads += 1
+        clock.now += durations.pop(0)
+        return good if not durations else {**good, "status": "in_progress", "conclusion": None}
+    expect(wait(clock, staged_read, deadline, max_attempts=1) == good
+           and clock.reads == 5 and clock.now == 2030.0 and deadline == 2400.0,
+           "one deadline did not include all provider stages or retained attempt cutoff")
+    # More than the old 180 attempts is allowed, without refreshing the deadline.
+    clock = Clock()
+    def late_success(receipt):
+        clock.reads += 1
+        return good if clock.now >= 1205.0 else {**good, "status": "queued", "conclusion": None}
+    expect(wait(clock, late_success, driver.create_worker_observation_deadline(clock=clock)) == good
+           and clock.reads == 242, "deadline mode stopped before twenty-minute Worker completion")
+
+    for duration, accepted in ((9.999, True), (10.0, False), (10.001, False)):
+        clock = Clock()
+        def boundary_read(receipt):
+            clock.reads += 1
+            clock.now += duration
+            return good
+        if accepted:
+            expect(wait(clock, boundary_read, 10.0) == good, "pre-deadline terminal rejected")
+        else:
+            rejects(lambda: wait(clock, boundary_read, 10.0))
+        expect(clock.reads == 1 and not clock.sleeps, "terminal boundary retried provider read")
+    clock = Clock()
+    def pending(receipt):
+        clock.reads += 1
+        return {**good, "status": "pending", "conclusion": None}
+    rejects(lambda: wait(clock, pending, 12.0))
+    expect(clock.now == 12.0 and clock.sleeps == [5.0, 5.0, 2.0] and clock.reads == 3,
+           "sleep exceeded deadline or pending was read after expiry")
+    reads = clock.reads
+    rejects(lambda: wait(clock, pending, 12.0))
+    expect(clock.reads == reads, "expired repeated wait restarted a budget")
+
+    clock = Clock()
+    def slow_read(receipt):
+        clock.reads += 1
+        clock.now += 30.0
+        return {**good, "status": "in_progress", "conclusion": None}
+    rejects(lambda: wait(clock, slow_read, 10.0))
+    expect(clock.reads == 1 and not clock.sleeps and clock.now == 30.0,
+           "in-flight bounded GET overrun renewed wait")
+
+    clock = Clock()
+    def provider_error(receipt):
+        clock.reads += 1
+        raise OSError("bounded fixture read failure")
+    try:
+        wait(clock, provider_error, 20.0)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("provider failure was swallowed")
+    expect(clock.reads == 1 and not clock.sleeps, "provider error was automatically retried")
+
+    for changed in ({"id": 1002}, {"run_attempt": 2}, {"head_sha": "b"*40},
+                    {"conclusion": "failure"}, {"status": "foreign"}):
+        clock = Clock()
+        def invalid_read(receipt):
+            clock.reads += 1
+            return {**good, **changed}
+        rejects(lambda: wait(clock, invalid_read, 20.0))
+        expect(clock.reads == 1 and not clock.sleeps, "invalid identity/failure kept waiting")
+    for invalid in (True, False, float("nan"), float("inf"), "40"):
+        rejects(lambda: driver.create_worker_observation_deadline(clock=lambda: invalid))
+        clock = Clock()
+        rejects(lambda: wait(clock, pending, invalid))
+        expect(clock.reads == 0, "invalid deadline reached provider")
+    for invalid in (0, -1, True, float("nan"), float("inf")):
+        clock = Clock()
+        rejects(lambda: wait(clock, pending, 20.0, poll_seconds=invalid))
+        expect(clock.reads == 0, "invalid polling reached provider")
+    for invalid in (True, float("nan"), float("inf")):
+        clock = Clock()
+        clock.now = invalid
+        rejects(lambda: wait(clock, pending, 20.0))
+        expect(clock.reads == 0, "invalid clock reached provider")
+    clock = Clock()
+    clock.now = 10.0
+    def backwards_read(receipt):
+        clock.reads += 1
+        clock.now = 9.0
+        return good
+    rejects(lambda: wait(clock, backwards_read, 20.0))
+    expect(clock.reads == 1 and not clock.sleeps, "backward clock accepted completion")
+    # Only a read callable is supplied. No dispatch/Store API is reachable in this test.
+    print("- explicit deadline: staged/HTTP elapsed time, exact boundaries, no budget reset; zero model/POST")
+
+
 def main():
     happy = run_case(
         "happy_path",
@@ -319,6 +445,7 @@ def main():
     else:
         raise AssertionError("unbounded pending Worker accepted")
 
+    worker_observation_deadline_tests()
     print("v0.3 dogfood scenario runner validation passed")
     print("- roles derive from durable selected-step sequence, not dispatch-claim fields")
     print("- frozen happy/remediation dispatch sequences are exact")
