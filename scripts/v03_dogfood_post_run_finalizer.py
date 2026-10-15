@@ -185,7 +185,14 @@ def _durable_receipt(preflight: Any, events: list[dict[str, Any]], observation: 
         qa_snapshot=preflight.composition.runtime.backend.read_snapshot()
         from v03_dogfood_full_composition import qa_second_present,qa_second_route
         from v03_dogfood_full_composition import qa_third_present,qa_third_route
-        if operation_id==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_third_present(qa_snapshot):
+        from v03_dogfood_full_composition import qa_fourth_present,qa_fourth_route
+        if operation_id==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_fourth_present(qa_snapshot):
+            fourth=qa_fourth_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+            if receipt==str(QA_FAILED_RUN):
+                continue
+            if receipt!=fourth["receipt_id"]:
+                raise V03DogfoodPostRunFinalizerError("QA4 successor receipt changed")
+        elif operation_id==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_third_present(qa_snapshot):
             third=qa_third_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
             if receipt==str(QA_FAILED_RUN):
                 continue
@@ -374,7 +381,14 @@ def _durable_run_bindings(preflight, observation, events):
         from v03_dogfood_full_composition import QA_OLD_KEY,QA_FAILED_RUN,qa_replacement_present,qa_replacement_route,qa_replacement_trusted_context
         from v03_dogfood_full_composition import qa_second_present,qa_second_route
         from v03_dogfood_full_composition import qa_third_present,qa_third_route
-        if observation["operation_id"]==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_third_present(snapshot):
+        from v03_dogfood_full_composition import qa_fourth_present,qa_fourth_route
+        if observation["operation_id"]==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_fourth_present(snapshot):
+            qa_route=qa_fourth_route(snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+            if run_id==QA_FAILED_RUN:
+                continue
+            if run_id!=int(qa_route["receipt_id"]):
+                raise V03DogfoodPostRunFinalizerError("QA4 physical receipt differs from exact logical lookup")
+        elif observation["operation_id"]==RECOVERY_OPERATION_ID and key==QA_OLD_KEY and qa_third_present(snapshot):
             qa_route=qa_third_route(snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
             if run_id==QA_FAILED_RUN:
                 continue
@@ -439,7 +453,9 @@ def _durable_run_bindings(preflight, observation, events):
             resolve_key=qa_route["physical_key"]
             from v03_dogfood_full_composition import QA_SECOND_SCHEMA,qa_second_trusted_context
             from v03_dogfood_full_composition import QA_THIRD_SCHEMA,qa_third_trusted_context
-            resolve_trusted=(qa_third_trusted_context if qa_route["authorization"]["schema_version"]==QA_THIRD_SCHEMA
+            from v03_dogfood_full_composition import QA_FOURTH_SCHEMA,qa_fourth_trusted_context
+            resolve_trusted=(qa_fourth_trusted_context if qa_route["authorization"]["schema_version"]==QA_FOURTH_SCHEMA
+                else qa_third_trusted_context if qa_route["authorization"]["schema_version"]==QA_THIRD_SCHEMA
                 else qa_second_trusted_context if qa_route["authorization"]["schema_version"]==QA_SECOND_SCHEMA
                 else qa_replacement_trusted_context)(qa_route["authorization"])
         resolved = result_source.resolve(
@@ -835,6 +851,7 @@ def _reconstruct_release_authority(
     projection: Mapping[str, Any],
     observation: Mapping[str, Any],
     *, qa_second_snapshot=None, qa_second_binding=None, qa_third_snapshot=None, qa_third_binding=None,
+    qa_fourth_snapshot=None, qa_fourth_binding=None,
 ) -> tuple[Mapping[str, set[str]], Mapping[str, bool]]:
     profile = SCENARIO_PROFILES.get(scenario)
     expected_roles = SCENARIO_ROLE_SEQUENCES.get(scenario)
@@ -875,7 +892,26 @@ def _reconstruct_release_authority(
     ]
     expected_validated = 0 if scenario == "session_recovery" else len(expected_roles)
     expected_launched=len(expected_roles)
-    if qa_third_snapshot is not None:
+    if qa_fourth_snapshot is not None:
+        from operator_store_model import canonical_json
+        if (qa_second_snapshot is not None or qa_second_binding is not None
+                or qa_third_snapshot is not None or qa_third_binding is not None or not isinstance(qa_fourth_binding,dict)):
+            raise V03DogfoodPostRunFinalizerError("QA4 launch accounting lacks authenticated consumer")
+        from v03_dogfood_full_composition import qa_fourth_route,RECOVERY_OPERATION_ID,QA_OLD_KEY,QA_FAILED_RUN
+        route=qa_fourth_route(qa_fourth_snapshot,consumer_binding=qa_fourth_binding)
+        if (scenario!="happy_path" or observation.get("operation_id")!=RECOVERY_OPERATION_ID
+                or canonical_json(events)!=canonical_json(operation_events(qa_fourth_snapshot,RECOVERY_OPERATION_ID))
+                or canonical_json(projection)!=canonical_json(vertical_projection(qa_fourth_snapshot,RECOVERY_OPERATION_ID))):
+            raise V03DogfoodPostRunFinalizerError("QA4 launch accounting is not the exact protected history")
+        qa_lookups=[row for row in events if row["event_type"]=="dispatch.launch.lookup-recorded"
+            and row["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+        if (len(qa_lookups)!=2 or [row["sequence"] for row in qa_lookups]!=[45,49]
+                or [row["payload"] for row in qa_lookups]!=[
+                    {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":str(QA_FAILED_RUN)},
+                    {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":route["receipt_id"]}]):
+            raise V03DogfoodPostRunFinalizerError("QA4 physical lookup accounting differs from failed predecessor and accepted successor")
+        expected_launched=4
+    elif qa_third_snapshot is not None:
         from operator_store_model import canonical_json
         if qa_second_snapshot is not None or qa_second_binding is not None or not isinstance(qa_third_binding,dict):
             raise V03DogfoodPostRunFinalizerError("QA3 launch accounting lacks authenticated consumer")
@@ -959,7 +995,16 @@ def _reconstruct_release_authority(
                     and (row.get("payload") or {}).get("external_dispatch_key") == key
                     and (row.get("payload") or {}).get("lookup_state") == "LAUNCHED"]
         next_callback = accepted_callbacks[index + 1]["callback_sequence"]
-        if qa_third_snapshot is not None and key==QA_OLD_KEY:
+        if qa_fourth_snapshot is not None and key==QA_OLD_KEY:
+            if (len(authorized)!=1 or int(authorized[0]["sequence"])!=44 or next_claim!=43
+                    or observed!=qa_lookups
+                    or events[45]["sequence"]!=46 or events[45]["event_type"]!="operation.needs-user"
+                    or events[46]["sequence"]!=47 or events[46]["event_type"]!="operation.needs-user"
+                    or events[47]["sequence"]!=48 or events[47]["event_type"]!="operation.needs-user"
+                    or not seq < next_claim < 44 < int(observed[0]["sequence"])
+                        < 46 < 47 < 48 < int(observed[1]["sequence"]) < next_callback):
+                raise V03DogfoodPostRunFinalizerError("QA4 successor lacks its exact stopped-then-PASS launch boundary")
+        elif qa_third_snapshot is not None and key==QA_OLD_KEY:
             if (len(authorized)!=1 or int(authorized[0]["sequence"])!=44 or next_claim!=43
                     or observed!=qa_lookups
                     or events[45]["sequence"]!=46 or events[45]["event_type"]!="operation.needs-user"
@@ -1151,7 +1196,11 @@ def _archived_producer_source(preflight, run_id):
     current=preflight.composition.runtime.backend.read_snapshot()
     from v03_dogfood_full_composition import qa_second_present,qa_second_route,validate_qa_second_predecessor
     from v03_dogfood_full_composition import qa_third_present,qa_third_route,qa_third_historical_reviewer_binding
-    if qa_third_present(current) and run_id==38074007355:
+    from v03_dogfood_full_composition import qa_fourth_present,qa_fourth_route,qa_fourth_historical_reviewer_binding
+    if qa_fourth_present(current) and run_id==38074007355:
+        qa_fourth_route(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        return qa_fourth_historical_reviewer_binding(current)["execution_source_head_sha"]
+    elif qa_third_present(current) and run_id==38074007355:
         qa_third_route(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         return qa_third_historical_reviewer_binding(current)["execution_source_head_sha"]
     if qa_second_present(current) and run_id==38074007355:
@@ -1190,13 +1239,17 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     from v03_dogfood_full_composition import qa_second_present
     accounting_snapshot=preflight.composition.runtime.backend.read_snapshot()
     from v03_dogfood_full_composition import qa_third_present
-    third_accounting=qa_third_present(accounting_snapshot)
-    second_accounting=not third_accounting and qa_second_present(accounting_snapshot)
+    from v03_dogfood_full_composition import qa_fourth_present
+    fourth_accounting=qa_fourth_present(accounting_snapshot)
+    third_accounting=not fourth_accounting and qa_third_present(accounting_snapshot)
+    second_accounting=not fourth_accounting and not third_accounting and qa_second_present(accounting_snapshot)
     categories, assertions = _reconstruct_release_authority(scenario, events, projection, observation,
         qa_second_snapshot=accounting_snapshot if second_accounting else None,
         qa_second_binding=recovery_execution_binding(preflight.composition.policy_authority) if second_accounting else None,
         qa_third_snapshot=accounting_snapshot if third_accounting else None,
-        qa_third_binding=recovery_execution_binding(preflight.composition.policy_authority) if third_accounting else None)
+        qa_third_binding=recovery_execution_binding(preflight.composition.policy_authority) if third_accounting else None,
+        qa_fourth_snapshot=accounting_snapshot if fourth_accounting else None,
+        qa_fourth_binding=recovery_execution_binding(preflight.composition.policy_authority) if fourth_accounting else None)
     generation = projection.get("generation")
     if type(generation) is not int or generation < 0:
         raise V03DogfoodPostRunFinalizerError("protected Store lacks a valid Operation generation")
@@ -1229,7 +1282,17 @@ def finalize(*, observation: Mapping[str, Any], preflight: Any, source_run_id: i
     qa_snapshot=preflight.composition.runtime.backend.read_snapshot()
     from v03_dogfood_full_composition import qa_second_present,qa_second_route,validate_qa_second_relation,QA_SECOND_ADMISSION,QA_SECOND_FAILED_RUN
     from v03_dogfood_full_composition import qa_third_present,qa_third_route,validate_qa_third_relation,QA_THIRD_ADMISSION,QA_THIRD_FAILED_RUN
-    if qa_third_present(qa_snapshot):
+    from v03_dogfood_full_composition import qa_fourth_present,qa_fourth_route,validate_qa_fourth_relation,QA_FOURTH_ADMISSION,QA_FOURTH_FAILED_RUN
+    if qa_fourth_present(qa_snapshot):
+        from v03_dogfood_runtime_driver import observe_qa_fourth_predecessor
+        qa=qa_fourth_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        validate_qa_fourth_relation(qa["authorization"]["predecessor_proof"],observe_qa_fourth_predecessor(preflight))
+        evidence_uris.extend([QA_FOURTH_ADMISSION["uri"],QA_THIRD_ADMISSION["uri"],QA_SECOND_ADMISSION["uri"],QA_REPLACEMENT_ADMISSION["uri"],
+            _run_uri(repository,QA_FAILED_RUN),"https://github.com/DREAM-XIN/ai-sdlc/issues/590",
+            _run_uri(repository,QA_SECOND_FAILED_RUN),"https://github.com/DREAM-XIN/ai-sdlc/issues/593",
+            _run_uri(repository,QA_THIRD_FAILED_RUN),"https://github.com/DREAM-XIN/ai-sdlc/issues/596",
+            _run_uri(repository,QA_FOURTH_FAILED_RUN),"https://github.com/DREAM-XIN/ai-sdlc/issues/596#issuecomment-6109717878"])
+    elif qa_third_present(qa_snapshot):
         from v03_dogfood_runtime_driver import observe_qa_third_predecessor
         qa=qa_third_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         validate_qa_third_relation(qa["authorization"]["predecessor_proof"],observe_qa_third_predecessor(preflight))

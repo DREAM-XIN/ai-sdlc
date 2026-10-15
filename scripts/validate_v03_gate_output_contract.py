@@ -116,18 +116,18 @@ def current_v3_bytes(relative):
     return raw
 
 def roundtrip_workflow_stem(role, variant):
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"},
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"},
           "unsupported roundtrip source variant")
     check(not variant.startswith("observed-") or role == "qa", "observed source is QA-only")
-    actual = "observed-inline-local" if variant in {"observed-qa2-local", "observed-qa3-local", "observed-v3-local"} else variant
+    actual = "observed-inline-local" if variant in {"observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} else variant
     return f"ai-sdlc-gh-aw-{role}-deepseek-v03-{actual}"
 
 def selected_config(role, candidate=577, *, variant="structured-local"):
-    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"), "unsupported test workflow variant")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"} or role == "qa", "observed workflow is QA-only")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"), "unsupported test workflow variant")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} or role == "qa", "observed workflow is QA-only")
     stem = roundtrip_workflow_stem(role, variant)
     lock = yaml.safe_load(current_v3_bytes(".github/workflows/" + stem + ".lock.yml")
-                          if variant == "observed-v3-local" else qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")
+                          if variant in {"observed-v3-local", "observed-qa4-local"} else qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa3-local" else qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa2-local" else observed_historical_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-inline-local" else
@@ -711,7 +711,7 @@ def roundtrip_source_contract(role, variant, lock, metadata):
     check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
           "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
           "roundtrip source footer differs")
-    if variant == "observed-v3-local":
+    if variant in {"observed-v3-local", "observed-qa4-local"}:
         check(role == "qa", "current v3 source is QA-only")
         for relative in CURRENT_V3_BLOBS:
             current_v3_bytes(relative)
@@ -775,10 +775,10 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     renderer = subject
     if variant == "observed-qa3-local":
         import v03_dogfood_gate_output_v2 as renderer
-    elif variant == "observed-v3-local":
+    elif variant in {"observed-v3-local", "observed-qa4-local"}:
         import v03_dogfood_gate_output_v3 as renderer
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"}, "roundtrip variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"} or role == "qa", "observed roundtrip is QA-only")
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"}, "roundtrip variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} or role == "qa", "observed roundtrip is QA-only")
     payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
@@ -793,14 +793,14 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
-        if variant == "observed-v3-local":
+        if variant in {"observed-v3-local", "observed-qa4-local"}:
             config_path = Path(directory) / "gh-aw/safeoutputs/config.json"
             config_path.parent.mkdir(parents=True)
             official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
         raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role, renderer=renderer,
-            render_cli=variant in {"observed-qa3-local", "observed-v3-local"},
-            render_config=config if variant == "observed-v3-local" else None)
+            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local"},
+            render_config=config if variant in {"observed-v3-local", "observed-qa4-local"} else None)
     check(canonical(context) == original, "roundtrip mutated producer context")
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
@@ -814,8 +814,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
-    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"}, "joined variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local"} or role == "qa", "observed joined workflow is QA-only")
+    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"}, "joined variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
@@ -824,7 +824,7 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     renderer = subject
     if variant == "observed-qa3-local":
         import v03_dogfood_gate_output_v2 as renderer
-    elif variant == "observed-v3-local":
+    elif variant in {"observed-v3-local", "observed-qa4-local"}:
         import v03_dogfood_gate_output_v3 as renderer
     payload = inline_payload(role, verdict)
     for key in subject.PAYLOAD_IDENTITY_KEYS:
@@ -853,7 +853,7 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                "config": config, "meta": compiled_tools_metadata(lock, payload["candidate_pr_number"]),
                "observed_projection": OBSERVED_CLI_PROJECTION[role], "payload": payload,
                "string_target": variant == "observed-qa3-local",
-               "omit_target_labels": variant == "observed-v3-local"}
+               "omit_target_labels": variant in {"observed-v3-local", "observed-qa4-local"}}
         (temporary / "cases.json").write_bytes(canonical([row]))
         container = "v03-joined-" + temporary.name
         env = {"PATH": os.environ["PATH"], "HOME": str(temporary / "home")}
@@ -892,7 +892,7 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             check(type(subject.strict_json(rows[0])["item_number"]) is str and
                   subject.strict_json(rows[0])["item_number"] == str(payload["candidate_pr_number"]),
                   "QA3 actual CLI ledger did not preserve canonical string target")
-        if variant == "observed-v3-local":
+        if variant in {"observed-v3-local", "observed-qa4-local"}:
             entry = subject.strict_json(rows[0])
             check(not any(key in entry for key in ("item_number", "pr_number", "pr")) and
                   entry.get("secrecy") == "public" and entry.get("integrity") == "high",
@@ -901,14 +901,14 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         official_dir.mkdir()
         official = Official(actions, official_dir, config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
-        if variant == "observed-v3-local":
+        if variant in {"observed-v3-local", "observed-qa4-local"}:
             config_path = official_dir / "gh-aw/safeoutputs/config.json"
             config_path.parent.mkdir(parents=True)
             official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
         returned_raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role, raw_ledger=raw, renderer=renderer,
-            render_cli=variant in {"observed-qa3-local", "observed-v3-local"},
-            render_config=config if variant == "observed-v3-local" else None)
+            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local"},
+            render_config=config if variant in {"observed-v3-local", "observed-qa4-local"} else None)
         check(returned_raw == raw and proof["raw_ndjson_sha256"] == result["raw_ndjson_sha256"],
               "official boundary substituted genuine MCP ledger")
     check(canonical(context) == original, "joined test mutated authenticated context")
@@ -917,9 +917,9 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             "metadata_suffix": publication["suffix"],
             "cli_evidence": {"workflow_file": roundtrip_workflow_stem(role, variant) + ".lock.yml",
                              "source_variant": variant,
-                             "fixed_source_sha": (CURRENT_V3_SOURCE if variant == "observed-v3-local" else QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
+                             "fixed_source_sha": (CURRENT_V3_SOURCE if variant in {"observed-v3-local", "observed-qa4-local"} else QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
                                                   QA2_OBSERVED_SOURCE if variant == "observed-qa2-local" else None),
-                             "renderer_version": "v3" if variant == "observed-v3-local" else "v2" if variant == "observed-qa3-local" else "v1",
+                             "renderer_version": "v3" if variant in {"observed-v3-local", "observed-qa4-local"} else "v2" if variant == "observed-qa3-local" else "v1",
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
@@ -2100,6 +2100,16 @@ def main():
             exercise_role(role, actions_root, Path(directory), variant="structured-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-inline-local")
         exercise_role("qa", actions_root, Path(directory), variant="observed-qa2-local")
+    qa4_lock, qa4_config, _, qa4_metadata = selected_config("qa", variant="observed-qa4-local")
+    roundtrip_source_contract("qa", "observed-qa4-local", qa4_lock, qa4_metadata)
+    check(qa4_config == selected_config("qa", variant="observed-v3-local")[1],
+          "QA4 selected config differs from the fixed current v3 producer")
+    try:
+        selected_config("reviewer", variant="observed-qa4-local")
+    except AssertionError as error:
+        check(str(error) == "observed workflow is QA-only", "QA4 role rejection differs")
+    else:
+        raise AssertionError("QA4 incorrectly accepted a Reviewer producer")
     current_lock, _, _, current_metadata = selected_config("qa", variant="observed-v3-local")
     roundtrip_source_contract("qa", "observed-v3-local", current_lock, current_metadata)
     previous_lock, _, _, previous_metadata = selected_config("qa", variant="observed-qa3-local")
