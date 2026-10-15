@@ -10838,8 +10838,7 @@ def qa_spent50_preparation_tests():
     changed = deepcopy(snapshot)
     changed.files[c.QA_FIFTH_PROJECTION_PATH]["status"] = "WAITING_EXTERNAL"
     rejected(changed, "unlocked projection")
-    changed = deepcopy(snapshot)
-    changed.ref_sha = "not-a-sha"
+    changed = StoreSnapshot("not-a-sha", deepcopy(snapshot.files))
     rejected(changed, "invalid Store identity")
     expect(c.validate_qa_spent50_preparation(snapshot) == expected_summary
            and canonical_json(snapshot.files) == original,
