@@ -2510,6 +2510,7 @@ async function denialMain() {
  fs.writeFileSync(workspace+"/candidate.txt",row.evidence);
  const output=root+"/outputs.jsonl",configPath=root+"/gh-aw/safeoutputs/config.json";
  const env={PATH:path.dirname(cli)+":/usr/local/bin:/usr/bin:/bin",HOME:home,LANG:"C.UTF-8",
+  XDG_CONFIG_HOME:home,GH_AW_MCP_CONFIG:home+"/.copilot/mcp-config.json",
   RUNNER_TEMP:root,GITHUB_WORKSPACE:workspace,GITHUB_REPOSITORY:"dream-xin/ai-sdlc",GITHUB_SERVER_URL:"https://github.com",
   GH_AW_SAFE_OUTPUTS:output,GH_AW_SAFE_OUTPUTS_CONFIG_PATH:configPath,
   GH_AW_SAFE_OUTPUTS_TOOLS_PATH:root+"/tools.json",GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:root+"/tools_meta.json",
@@ -2637,6 +2638,9 @@ def denial_protocol_tests(actions_root):
     check(execution["timeout-minutes"] == 10 and
           str(execution.get("env", {}).get("GH_AW_HARNESS_MAX_RETRIES")) == "0", "production deadline/retry differs")
     script = execution["run"]
+    check('export XDG_CONFIG_HOME="$HOME"' in script and
+          'export GH_AW_MCP_CONFIG="$HOME/.copilot/mcp-config.json"' in script,
+          "production MCP discovery environment differs")
     prefix = '"${RUNNER_TEMP}/gh-aw/actions/copilot_harness.cjs" "${RUNNER_TEMP}/gh-aw/bin/copilot" '
     check(script.count(prefix) == 1, "production harness differs")
     tail = script.split(prefix, 1)[1].split("\n", 1)[0]
