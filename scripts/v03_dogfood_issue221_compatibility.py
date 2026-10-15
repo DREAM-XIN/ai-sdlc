@@ -26,6 +26,9 @@ SOURCE_CONTROL_MODES = {path: ("100755" if path == "scripts/validate_v03_dogfood
 ADDED_PATHS = frozenset({
     "scripts/v03_dogfood_gate_output_v2.py",
     "scripts/v03_dogfood_gate_output_v3.py",
+    "scripts/v03_dogfood_gate_output_v4.py",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.md",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.lock.yml",
     "scripts/v03_detector_observation.mjs",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.md",
     ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-inline-local.lock.yml",
