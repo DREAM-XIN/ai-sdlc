@@ -2490,6 +2490,7 @@ async function githubMcp() {
 async function jsonGet(url) {
  const r=await fetch(url,{signal:AbortSignal.timeout(2000)});check(r.ok,"PROXY_HTTP");return await r.json();
 }
+let denialSchemaDiagnostic=null;
 async function denialMain() {
  check(process.getuid()!==0,"NONROOT_REQUIRED");
  check(Object.values(os.networkInterfaces()).flat().every(n=>n.internal),"NO_EGRESS");
@@ -2532,7 +2533,12 @@ async function denialMain() {
    check(req.method==="POST"&&/\/chat\/completions$/.test(req.url),"MODEL_ROUTE");
    const request=JSON.parse(raw);check(request.model==="deepseek-chat","MODEL_ID");++posts;check(posts<=51,"UPSTREAM_OVERFLOW");
    const tools=(request.tools||[]).map(t=>t.function||t);
-   const named=p=>{const a=tools.filter(t=>p.test(t.name));check(a.length===1,"TOOL_SCHEMA");return a[0].name;};
+   const named=(p,category)=>{const a=tools.filter(t=>p.test(t.name));
+    if(a.length!==1)denialSchemaDiagnostic={posts,previous_kind:previous?.kind||"none",category,
+     matches:a.length,tool_count:tools.length,names:tools.map(t=>["bash","shell","github_get_file_contents",
+      "github__get_file_contents","github-get_file_contents","safeoutputs_add_comment",
+      "safeoutputs__add_comment","safeoutputs-add_comment","add_comment"].includes(t.name)?t.name:"unknown")};
+    check(a.length===1,"TOOL_SCHEMA");return a[0].name;};
    if(previous?.kind==="denied"){const value=feedback(request,previous.id);
     check(typeof value==="string"&&/permission[^\n]{0,100}denied|denied[^\n]{0,100}permission|not allowed/i.test(value),"REAL_DENIAL_FEEDBACK");++denied;}
    if(previous?.kind==="github"){const value=feedback(request,previous.id),text=typeof value==="string"?value:JSON.stringify(value);
@@ -2543,10 +2549,10 @@ async function denialMain() {
     check(successfulFeedback(feedback(request,previous.id),entry.temporary_id),"SAFE_OUTPUT_FEEDBACK");
     safeFeedback=true;stopResponse(res,request);return;}
    let kind,name,args;
-   if(posts===1||row.case==="EXHAUSTED"){kind="denied";name=named(/^bash$/);
+   if(posts===1||row.case==="EXHAUSTED"){kind="denied";name=named(/^bash$/,"shell");
     args={command:"sha256sum "+workspace+"/candidate.txt > "+root+"/executed",description:"Synthetic hash probe"};}
-   else if(posts===2){kind="github";name=named(/^github[_-]+get_file_contents$/);args=row.github_args;}
-   else{check(posts===3&&githubFeedback,"RECOVERY_ORDER");kind="safe";name=named(/^(?:safeoutputs[_-]+)?add_comment$/);
+   else if(posts===2){kind="github";name=named(/^github[_-]+get_file_contents$/,"github");args=row.github_args;}
+   else{check(posts===3&&githubFeedback,"RECOVERY_ORDER");kind="safe";name=named(/^(?:safeoutputs[_-]+)?add_comment$/,"safeoutputs");
     args={body:"AI-SDLC structured Gate recommendation.",data:row.payload,secrecy:"public",integrity:"high"};}
    previous={kind,id:"denial-proof-"+posts};reply(res,request,previous.id,name,args);
   }catch(e){fault=/^[A-Z_]+$/.test(e.message)?e.message:"PROVIDER_PARSE";res.writeHead(400,{"Content-Type":"application/json"});
@@ -2603,7 +2609,7 @@ async function denialMain() {
 }
 if(process.argv[5]==="github-mcp")githubMcp().catch(()=>process.exit(1));
 else denialMain().catch(e=>{console.log(JSON.stringify({schema:"v03-denial-protocol/v1",status:"FAIL",
- stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE"}));process.exitCode=1;});
+ stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",tool_schema:denialSchemaDiagnostic}));process.exitCode=1;});
 
 """
 
@@ -2700,6 +2706,8 @@ def denial_protocol_tests(actions_root):
                 lines = logs.stdout.splitlines()
                 check(len(lines) == 1, "denial closed result count differs")
                 result = json.loads(lines[0])
+                if result.get("status") == "FAIL":
+                    print(json.dumps(result, sort_keys=True), flush=True)
                 check(waited.returncode == 0 and waited.stdout.strip() == b"0" and result.get("status") == "PASS",
                       "denial protocol failed: " + str(result.get("stage", "CONTAINER_EXIT")))
                 check(result["case"] == case and result["native_max_runs"] == 50 and
