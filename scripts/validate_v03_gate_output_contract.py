@@ -118,18 +118,91 @@ def current_v3_bytes(relative):
           == CURRENT_V3_BLOBS[relative], "current v3 source blob differs")
     return raw
 
+
+QA5_OBSERVED_SOURCE = "b37c382d690e557907649dd1bcddb8f8f62c9473"
+QA5_OBSERVED_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.md": "6927cce8c0e38c6545a35591ac9542217cac43dc",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.lock.yml": "156bfb31c912817799df6eb5157b18c76463a1ac",
+    "scripts/v03_dogfood_gate_output_v4.py": "39c0a171bed758651fdbea69b3d46ffb9a5b1b3d",
+    "scripts/v03_detector_observation.mjs": "85d792241d3d20b0f1051d01e1054c608bfcabdc",
+}
+
+def qa5_observed_bytes(relative):
+    check(relative in QA5_OBSERVED_BLOBS, "QA5 read escaped fixed source closure")
+    raw = subprocess.run(["git", "show", QA5_OBSERVED_SOURCE + ":" + relative],
+                         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         timeout=30, check=True).stdout
+    check(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+          == QA5_OBSERVED_BLOBS[relative], "QA5 observed source blob differs")
+    return raw
+
+def generated_gate_config_inputs(lock, candidate):
+    rows = [step for step in lock["jobs"]["agent"]["steps"]
+            if "GH_AW_FILE_CONFIG" in step.get("env", {})
+            and "GH_AW_SAFE_OUTPUTS_CONFIG" in step.get("env", {})]
+    check(len(rows) == 1, "ambiguous actual Gate config generator")
+    row = rows[0]
+    check("create_files.cjs" in row["with"]["script"] and "await main()" in row["with"]["script"],
+          "actual official config generator missing")
+    env = row["env"]
+    check(env["GH_AW_FILE_ROOT"] == "$" + "{{ runner.temp }}/gh-aw" and
+          env["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] == "$" + "{{ inputs.candidate_pr_number }}",
+          "actual config generator input binding differs")
+    check(json.loads(env["GH_AW_FILE_CONFIG"]) == {
+        "files": [{"path": "safeoutputs/config.json", "content_env": "GH_AW_SAFE_OUTPUTS_CONFIG"}]},
+        "actual config generator destination differs")
+    check(json.loads(env["GH_AW_SAFE_OUTPUTS_CONFIG"])["add_comment"]["target"] ==
+          "$" + "{GH_AW_INPUT_CANDIDATE_PR_NUMBER}", "joined config was pre-expanded")
+    return {"writer_config": env["GH_AW_FILE_CONFIG"],
+            "content": env["GH_AW_SAFE_OUTPUTS_CONFIG"], "candidate": candidate}
+
+def prepare_generated_gate_config(official, lock, candidate):
+    inputs = generated_gate_config_inputs(lock, candidate)
+    root = Path(official.env["RUNNER_TEMP"])
+    official.generated_candidate = candidate
+    official.env["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] = str(candidate)
+    official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(root / "gh-aw/safeoutputs/config.json")
+    check(official.call({"mode": "generate_config", "config": official.config, "generation_env": {
+        "GH_AW_FILE_ROOT": str(root / "gh-aw"),
+        "GH_AW_FILE_CONFIG": inputs["writer_config"],
+        "GH_AW_SAFE_OUTPUTS_CONFIG": inputs["content"],
+        "GH_AW_INPUT_CANDIDATE_PR_NUMBER": str(candidate)}}) == {"generated": True},
+        "joined official config generation failed")
+    raw = Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]).read_bytes()
+    check(raw == inputs["content"].encode() and json.loads(raw) == official.config,
+          "joined official generated config differs")
+    official.preserve_generated_config = True
+    handlers = [step for step in lock["jobs"]["safe_outputs"]["steps"]
+                if step.get("id") == "process_safe_outputs"]
+    check(len(handlers) == 1 and "process_safe_outputs.cjs" in handlers[0]["with"]["script"],
+          "joined official publication entry differs")
+    text = handlers[0]["env"]["GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG"]
+    expression = "$" + "{{ inputs.candidate_pr_number }}"
+    check(json.loads(text)["add_comment"]["target"] == expression,
+          "joined publication target source differs")
+    config = json.loads(text.replace(expression, str(candidate)))
+    check("$" + "{" not in json.dumps(config) and config["add_comment"] == {
+        "footer": False, "max": 1, "target": str(candidate), "target-repo": "dream-xin/ai-sdlc"},
+        "joined publication config differs")
+    official.publication_config = config
+    return raw
+
+
 def roundtrip_workflow_stem(role, variant):
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local"},
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local"},
           "unsupported roundtrip source variant")
     check(not variant.startswith("observed-") or role == "qa", "observed source is QA-only")
     actual = "observed-inline-local" if variant in {"observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} else variant
+    if variant == "observed-qa5-local":
+        actual = "observed-v4-local"
     return f"ai-sdlc-gh-aw-{role}-deepseek-v03-{actual}"
 
 def selected_config(role, candidate=577, *, variant="structured-local", generated_config=False):
-    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local"), "unsupported test workflow variant")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local"} or role == "qa", "observed workflow is QA-only")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local"), "unsupported test workflow variant")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local"} or role == "qa", "observed workflow is QA-only")
     stem = roundtrip_workflow_stem(role, variant)
-    lock = yaml.safe_load(current_v3_bytes(".github/workflows/" + stem + ".lock.yml")
+    lock = yaml.safe_load(qa5_observed_bytes(".github/workflows/" + stem + ".lock.yml")
+                          if variant == "observed-qa5-local" else current_v3_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant in {"observed-v3-local", "observed-qa4-local"} else qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa3-local" else qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa2-local" else observed_historical_bytes(".github/workflows/" + stem + ".lock.yml")
@@ -141,7 +214,7 @@ def selected_config(role, candidate=577, *, variant="structured-local", generate
         check(len(values) == 1, "ambiguous compiled " + name)
         return values[0]
     config_text = unique_env("GH_AW_SAFE_OUTPUTS_CONFIG")
-    if not generated_config:
+    if not generated_config and variant != "observed-qa5-local":
         # Historical fixtures retain their prior pre-expanded approximation.
         config_text = config_text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", str(candidate))
         check("${" not in config_text, "unresolved Safe Outputs config")
@@ -729,6 +802,20 @@ def roundtrip_source_contract(role, variant, lock, metadata):
     check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
           "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
           "roundtrip source footer differs")
+    if variant == "observed-qa5-local":
+        check(role == "qa", "QA5 source is QA-only")
+        for relative in QA5_OBSERVED_BLOBS:
+            qa5_observed_bytes(relative)
+        check(lock == yaml.safe_load(qa5_observed_bytes(".github/workflows/" + stem + ".lock.yml")),
+              "QA5 lock differs from selected v4 producer")
+        import v03_dogfood_gate_output_v4 as current
+        check(Path(current.__file__).read_bytes() == qa5_observed_bytes("scripts/v03_dogfood_gate_output_v4.py"),
+              "QA5 executed renderer differs from selected v4 source")
+        for job, identifier in (("agent", "gate_render"), ("safe_outputs", "gate_validate")):
+            rows = [step for step in lock["jobs"][job]["steps"] if step.get("id") == identifier]
+            check(len(rows) == 1 and "v03_dogfood_gate_output_v4.py" in rows[0]["run"],
+                  "QA5 selected workflow lost v4 boundary")
+        generated_gate_config_inputs(lock, 552)
     if variant in {"observed-v3-local", "observed-qa4-local"}:
         check(role == "qa", "current v3 source is QA-only")
         for relative in CURRENT_V3_BLOBS:
@@ -793,10 +880,12 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     renderer = subject
     if variant == "observed-qa3-local":
         import v03_dogfood_gate_output_v2 as renderer
+    elif variant == "observed-qa5-local":
+        import v03_dogfood_gate_output_v4 as renderer
     elif variant in {"observed-v3-local", "observed-qa4-local"}:
         import v03_dogfood_gate_output_v3 as renderer
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"}, "roundtrip variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} or role == "qa", "observed roundtrip is QA-only")
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"}, "roundtrip variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"} or role == "qa", "observed roundtrip is QA-only")
     payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
@@ -811,14 +900,23 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
     with tempfile.TemporaryDirectory(prefix="v03-produced-gate-") as directory:
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
-        if variant in {"observed-v3-local", "observed-qa4-local"}:
+        raw_ledger = None
+        if variant == "observed-qa5-local":
+            generated_bytes = prepare_generated_gate_config(official, lock, payload["candidate_pr_number"])
+            raw_ledger = official.mcp_rpc({"body": SENTINEL, "data": payload,
+                "secrecy": "public", "integrity": "high"},
+                compiled_tools_metadata(lock, payload["candidate_pr_number"]))
+        elif variant in {"observed-v3-local", "observed-qa4-local"}:
             config_path = Path(directory) / "gh-aw/safeoutputs/config.json"
             config_path.parent.mkdir(parents=True)
             official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
         raw, collected, artifact, proof, publication, body = _roundtrip(
-            official, payload, context, role, renderer=renderer,
-            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local"},
-            render_config=config if variant in {"observed-v3-local", "observed-qa4-local"} else None)
+            official, payload, context, role, renderer=renderer, raw_ledger=raw_ledger,
+            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"},
+            render_config=config if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"} else None)
+        if variant == "observed-qa5-local":
+            check(Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]).read_bytes() == generated_bytes,
+                  "QA5 nonjoined pipeline rewrote generated config")
     check(canonical(context) == original, "roundtrip mutated producer context")
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
@@ -832,8 +930,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
-    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"}, "joined variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} or role == "qa", "observed joined workflow is QA-only")
+    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"}, "joined variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"} or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
@@ -842,6 +940,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
     renderer = subject
     if variant == "observed-qa3-local":
         import v03_dogfood_gate_output_v2 as renderer
+    elif variant == "observed-qa5-local":
+        import v03_dogfood_gate_output_v4 as renderer
     elif variant in {"observed-v3-local", "observed-qa4-local"}:
         import v03_dogfood_gate_output_v3 as renderer
     payload = inline_payload(role, verdict)
@@ -871,7 +971,9 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                "config": config, "meta": compiled_tools_metadata(lock, payload["candidate_pr_number"]),
                "observed_projection": OBSERVED_CLI_PROJECTION[role], "payload": payload,
                "string_target": variant == "observed-qa3-local",
-               "omit_target_labels": variant in {"observed-v3-local", "observed-qa4-local"}}
+               "omit_target_labels": variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"}}
+        if variant == "observed-qa5-local":
+            row["generated_config"] = generated_gate_config_inputs(lock, payload["candidate_pr_number"])
         (temporary / "cases.json").write_bytes(canonical([row]))
         container = "v03-joined-" + temporary.name
         env = {"PATH": os.environ["PATH"], "HOME": str(temporary / "home")}
@@ -910,7 +1012,7 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             check(type(subject.strict_json(rows[0])["item_number"]) is str and
                   subject.strict_json(rows[0])["item_number"] == str(payload["candidate_pr_number"]),
                   "QA3 actual CLI ledger did not preserve canonical string target")
-        if variant in {"observed-v3-local", "observed-qa4-local"}:
+        if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"}:
             entry = subject.strict_json(rows[0])
             check(not any(key in entry for key in ("item_number", "pr_number", "pr")) and
                   entry.get("secrecy") == "public" and entry.get("integrity") == "high",
@@ -919,25 +1021,33 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         official_dir.mkdir()
         official = Official(actions, official_dir, config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
-        if variant in {"observed-v3-local", "observed-qa4-local"}:
+        if variant == "observed-qa5-local":
+            generated_bytes = prepare_generated_gate_config(official, lock, payload["candidate_pr_number"])
+            check(result.get("generated_config_sha256") == hashlib.sha256(generated_bytes).hexdigest(),
+                  "QA5 actual CLI/host generated config bytes differ")
+        elif variant in {"observed-v3-local", "observed-qa4-local"}:
             config_path = official_dir / "gh-aw/safeoutputs/config.json"
             config_path.parent.mkdir(parents=True)
             official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
         returned_raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role, raw_ledger=raw, renderer=renderer,
-            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local"},
-            render_config=config if variant in {"observed-v3-local", "observed-qa4-local"} else None)
+            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"},
+            render_config=config if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"} else None)
         check(returned_raw == raw and proof["raw_ndjson_sha256"] == result["raw_ndjson_sha256"],
               "official boundary substituted genuine MCP ledger")
+        if variant == "observed-qa5-local":
+            check(Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]).read_bytes() == generated_bytes,
+                  "QA5 pipeline rewrote original generated config")
     check(canonical(context) == original, "joined test mutated authenticated context")
     return {"payload": payload, "raw_ndjson": raw, "collected": collected,
             "artifact": artifact, "proof": proof, "published_body": publication["body"],
             "metadata_suffix": publication["suffix"],
             "cli_evidence": {"workflow_file": roundtrip_workflow_stem(role, variant) + ".lock.yml",
                              "source_variant": variant,
-                             "fixed_source_sha": (CURRENT_V3_SOURCE if variant in {"observed-v3-local", "observed-qa4-local"} else QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
+                             "fixed_source_sha": (QA5_OBSERVED_SOURCE if variant == "observed-qa5-local" else CURRENT_V3_SOURCE if variant in {"observed-v3-local", "observed-qa4-local"} else QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
                                                   QA2_OBSERVED_SOURCE if variant == "observed-qa2-local" else None),
-                             "renderer_version": "v3" if variant in {"observed-v3-local", "observed-qa4-local"} else "v2" if variant == "observed-qa3-local" else "v1",
+                             "generated_config_sha256": result.get("generated_config_sha256"),
+                             "renderer_version": "v4" if variant == "observed-qa5-local" else "v3" if variant in {"observed-v3-local", "observed-qa4-local"} else "v2" if variant == "observed-qa3-local" else "v1",
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
@@ -1271,6 +1381,65 @@ def v4_generated_config_tests(actions_root, temporary):
           + " old-v3-cli=rejected config-bytes=unchanged collector-parser=passed")
 
 
+
+def qa5_generated_boundary_tests(actions_root, temporary):
+    import v03_dogfood_gate_output_v4 as current
+    lock, config, validation, metadata = selected_config("qa", 552, variant="observed-qa5-local")
+    roundtrip_source_contract("qa", "observed-qa5-local", lock, metadata)
+    check(config["add_comment"]["target"] == "$" + "{GH_AW_INPUT_CANDIDATE_PR_NUMBER}",
+          "QA5 config convenience expansion returned")
+    directory = temporary / "qa5-generated-negative"
+    directory.mkdir()
+    official = Official(actions_root, directory, config, validation, metadata)
+    original = prepare_generated_gate_config(official, lock, 552)
+    path = Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"])
+    payload = inline_payload("qa", "PASS")
+    payload["candidate_pr_number"] = 552
+    payload["evidence"][0]["uri"] = "https://github.com/dream-xin/ai-sdlc/pull/552"
+    payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
+    context = fixture_context(payload)
+    raw = official.mcp_rpc({"body": SENTINEL, "data": payload, "secrecy": "public", "integrity": "high"},
+                           compiled_tools_metadata(lock, 552))
+    collected = official.ingest(raw)
+    def denied(raw_bytes, config_bytes):
+        if path.exists():
+            path.unlink()
+        if config_bytes is not None:
+            path.write_bytes(config_bytes)
+        Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw_bytes)
+        output = Path("/tmp/gh-aw/agent_output.json")
+        output.write_bytes(collected)
+        result = subprocess.run([sys.executable, current.__file__, "render", "--actions-root",
+            str(actions_root), "--config-path", str(path)], env=gate_cli_environment(official, context),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
+        check(result.returncode != 0 and output.read_bytes() == collected,
+              "QA5 invalid actual renderer boundary accepted or changed output")
+    denied(raw, None)
+    denied(raw + raw, original)
+    entry = json.loads(raw)
+    entry["item_number"] = "$" + "{GH_AW_INPUT_CANDIDATE_PR_NUMBER}"
+    denied(packed(entry) + b"\n", original)
+    wrong = json.loads(original)
+    wrong["add_comment"]["target"] = "$" + "{OTHER}"
+    denied(raw, packed(wrong))
+    changed = copy.deepcopy(lock)
+    handler = next(step for step in changed["jobs"]["safe_outputs"]["steps"]
+                   if step.get("id") == "process_safe_outputs")
+    value = json.loads(handler["env"]["GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG"])
+    value["add_comment"]["target"] = "553"
+    handler["env"]["GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG"] = json.dumps(value)
+    try:
+        prepare_generated_gate_config(official, changed, 552)
+    except AssertionError as error:
+        check(str(error) == "joined publication target source differs",
+              "QA5 handler rejection occurred at wrong boundary")
+    else:
+        raise AssertionError("QA5 accepted foreign compiled handler target")
+    prepare_generated_gate_config(official, lock, 552)
+    check(path.read_bytes() == original, "QA5 generated config restore differs")
+    print("qa5: official-generated actual renderer negatives=5; no publication on invalid inputs")
+
+
 def item_number_contract_tests(role, actions_root, temporary):
     """Official ingestion preserves target types; rendering emits only the bound integer."""
     import v03_dogfood_gate_output_v2 as current
@@ -1591,6 +1760,9 @@ const digest = value => crypto.createHash("sha256").update(canonical(value)).dig
 const blob = file => { const b=fs.readFileSync(file); return crypto.createHash("sha1")
   .update(Buffer.from("blob "+b.length+"\0")).update(b).digest("hex"); };
 const pins = {
+ "create_files.cjs":"b9e492f4fd14d701cd673d62c6a4e0d3d1610bc6",
+ "error_helpers.cjs":"b96f7dc7e4aa2f02bd3d081825fc9ebb6710c82a",
+ "error_codes.cjs":"65f8e5e80f87130c26e59f09156721686cc61a60",
  "safe_outputs_tools.json":"11b7ee6b95b13f4f5eaa38999f0d66f762cd6baf",
  "generate_safe_outputs_tools.cjs":"ae09ab0a9d637035d4442f72475abcafe5e50ea4",
  "safe_outputs_mcp_server.cjs":"efb24c34fec875ffcd9d997d93f043c78fe16f8b",
@@ -1754,7 +1926,25 @@ async function capture(row,index) {
   GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:path.join(root,"tools_meta.json"),
   GITHUB_REPOSITORY:"dream-xin/ai-sdlc",GITHUB_SERVER_URL:"https://github.com",
   GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST:"false"};
- fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(row.config));
+ let generatedConfigHash=null;
+ if(row.generated_config) {
+  const input=row.generated_config;
+  check(input.candidate===row.payload.candidate_pr_number &&
+    canonical(JSON.parse(input.content))===canonical(row.config),"GENERATED_CONFIG_INPUT");
+  check(canonical(JSON.parse(input.writer_config))===canonical({files:[
+    {path:"safeoutputs/config.json",content_env:"GH_AW_SAFE_OUTPUTS_CONFIG"}]}),"GENERATED_CONFIG_DESTINATION");
+  env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH=path.join(root,"gh-aw/safeoutputs/config.json");
+  env.GH_AW_INPUT_CANDIDATE_PR_NUMBER=String(input.candidate);
+  const writerEnv={...env,GH_AW_FILE_ROOT:path.join(root,"gh-aw"),
+    GH_AW_FILE_CONFIG:input.writer_config,GH_AW_SAFE_OUTPUTS_CONFIG:input.content};
+  const writer=spawnSync(process.execPath,["-e",
+    "require(process.argv[1]).main({info(){},setFailed(){process.exitCode=1}})",
+    path.join(actions,"create_files.cjs")],{env:writerEnv,cwd:root,timeout:15000,maxBuffer:1048576});
+  check(writer.status===0,"OFFICIAL_CONFIG_GENERATION");
+  const bytes=fs.readFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH);
+  check(bytes.equals(Buffer.from(input.content)),"GENERATED_CONFIG_BYTES");
+  generatedConfigHash=crypto.createHash("sha256").update(bytes).digest("hex");
+ } else fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(row.config));
  fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH,JSON.stringify(row.meta));
  const generated=spawnSync(process.execPath,[path.join(actions,"generate_safe_outputs_tools.cjs")],
    {env,cwd:root,timeout:15000,maxBuffer:2*1024*1024});
@@ -1802,7 +1992,7 @@ async function capture(row,index) {
     if(captured)check(canonical(captured)===canonical(current),"CLI_SCHEMA_CHANGED");
     captured=current;
     if(row.joined && posts===1) {
-     check(row.payload && row.payload.candidate_pr_number===Number(row.config.add_comment.target),
+     check(row.payload && row.payload.candidate_pr_number===(row.generated_config ? row.generated_config.candidate : Number(row.config.add_comment.target)),
        "JOINED_DISPATCH_TARGET");
      const args={body:"AI-SDLC structured Gate recommendation.",data:row.payload};
      if(row.omit_target_labels) {args.secrecy="public";args.integrity="high";}
@@ -1848,7 +2038,10 @@ async function capture(row,index) {
   if(row.joined) {
    check(posts===2&&linkedFeedback,"JOINED_COMPLETION");
    const raw=fs.readFileSync(output);
-   return {case:row.label,status:"PASS",scope:"synthetic recommendation; genuine CLI/MCP ledger",
+   if(row.generated_config)check(crypto.createHash("sha256")
+      .update(fs.readFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH)).digest("hex")===generatedConfigHash,
+      "GENERATED_CONFIG_CHANGED");
+   return {generated_config_sha256:generatedConfigHash,case:row.label,status:"PASS",scope:"synthetic recommendation; genuine CLI/MCP ledger",
     provider_requests:posts,tool_calls:1,linked_feedback:true,cli_exit:code,
     raw_ndjson_base64:raw.toString("base64"),
     raw_ndjson_sha256:crypto.createHash("sha256").update(raw).digest("hex"),...captured};
@@ -2274,6 +2467,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="v03-gate-output-") as directory:
         sanitizer_closure_tests(actions_root, Path(directory))
         v4_generated_config_tests(actions_root, Path(directory))
+        qa5_generated_boundary_tests(actions_root, Path(directory))
         for role in ("reviewer", "qa"):
             exercise_role(role, actions_root, Path(directory))
             inline_native_schema_tests(role, actions_root, Path(directory))
