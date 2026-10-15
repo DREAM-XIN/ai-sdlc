@@ -2489,7 +2489,11 @@ async function githubMcp() {
     {path:"candidate.txt",commit_sha:row.payload.candidate_head_sha,sha:row.evidence_blob,encoding:"base64",content:Buffer.from(row.evidence).toString("base64")}:
     {error:"evidence_unavailable",commit_sha:row.payload.candidate_head_sha})}],isError:row.case!=="PASS"};
   } else if(m.method==="ping")result={};
-  else throw Error("GITHUB_METHOD");
+  else {
+   fs.writeFileSync(root+"/github-method",["notifications/initialized","notifications/cancelled","resources/list",
+    "prompts/list","resources/templates/list"].includes(m.method)?m.method:"UNKNOWN");
+   throw Error("GITHUB_METHOD");
+  }
   process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\n");
  }
 }
@@ -2516,6 +2520,7 @@ async function denialMain() {
   GH_AW_SAFE_OUTPUTS:output,GH_AW_SAFE_OUTPUTS_CONFIG_PATH:configPath,
   GH_AW_SAFE_OUTPUTS_TOOLS_PATH:root+"/tools.json",GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:root+"/tools_meta.json",
   GH_AW_SAFE_OUTPUTS_TOOLS_SOURCE_PATH:path.join(actions,"safe_outputs_tools.json"),
+  GH_AW_INPUT_CANDIDATE_PR_NUMBER:String(row.payload.candidate_pr_number),
   GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST:"false",GH_AW_HARNESS_MAX_RETRIES:"0",
   COPILOT_MODEL:"deepseek-chat",COPILOT_PROVIDER_TYPE:"openai",COPILOT_PROVIDER_WIRE_API:"completions",
   COPILOT_PROVIDER_API_KEY:"offline-denial-fixture-key",COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:10002"};
@@ -2527,6 +2532,11 @@ async function denialMain() {
  fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH,JSON.stringify(row.meta));
  check(spawnSync(process.execPath,[path.join(actions,"generate_safe_outputs_tools.cjs")],
   {env,cwd:workspace,timeout:15000,maxBuffer:1048576}).status===0,"TOOLS_GENERATION");
+ const bootstrap=spawnSync(process.execPath,["-e",
+  "const x=require(process.argv[1]).bootstrapSafeOutputsServer({debug(){},debugError(){}});console.log(JSON.stringify({config_has_add_comment:Object.hasOwn(x.config,'add_comment'),tools_count:x.tools.length,tools_has_add_comment:x.tools.some(t=>t.name==='add_comment')}))",
+  path.join(actions,"safe_outputs_bootstrap.cjs")],{env,cwd:workspace,encoding:"utf8",timeout:15000,maxBuffer:65536});
+ check(bootstrap.status===0,"MCP_BOOTSTRAP");const bs=JSON.parse(bootstrap.stdout);
+ check(bs.config_has_add_comment===true&&bs.tools_has_add_comment===true&&Number.isInteger(bs.tools_count)&&bs.tools_count>0&&bs.tools_count<=64,"MCP_BOOTSTRAP_TOOLS");
  fs.writeFileSync(home+"/.copilot/mcp-config.json",JSON.stringify({mcpServers:{
   safeoutputs:{type:"local",command:process.execPath,args:[path.join(actions,"safe_outputs_mcp_server.cjs")],tools:["*"],env},
   github:{type:"local",command:process.execPath,args:["/inputs/denial.mjs",actions,cli,casesFile,"github-mcp"],tools:["get_file_contents"],env}}}));
@@ -2619,7 +2629,9 @@ async function denialMain() {
    }
    denialStartupDiagnostic={...denialStartupDiagnostic,github_started:fs.existsSync(root+"/github-started"),
     cli_exit:code,cli_signal:signal,log_files:logFiles,startup_errors:messages,
-    github_error:fs.existsSync(root+"/github-error")?fs.readFileSync(root+"/github-error","utf8"):"NONE"};
+    github_error:fs.existsSync(root+"/github-error")?fs.readFileSync(root+"/github-error","utf8"):"NONE",
+    github_error_code:fs.existsSync(root+"/github-error-code")?fs.readFileSync(root+"/github-error-code","utf8"):"NONE",
+    github_unknown_method:fs.existsSync(root+"/github-method")?fs.readFileSync(root+"/github-method","utf8"):"NONE"};
   }
   check(!fault,fault||"PROVIDER_FAILURE");check(!fs.existsSync(root+"/executed"),"UNAUTHORIZED_EXECUTION");
   check(fs.readFileSync(configPath).equals(Buffer.from(row.generated_config.content)),"CONFIG_MUTATION");
@@ -2657,7 +2669,8 @@ async function denialMain() {
 }
 if(process.argv[5]==="github-mcp")githubMcp().catch(e=>{
  const kind=["SyntaxError","ReferenceError","TypeError","Error"].includes(e?.name)?e.name:"UNKNOWN";
- fs.writeFileSync(root+"/github-error",kind);process.exit(1);
+ const code=["GITHUB_METHOD","GITHUB_DISCOVERY_BOUND","GITHUB_EXACT_SOURCE","DUPLICATE_GITHUB_CALL"].includes(e?.message)?e.message:"UNKNOWN";
+ fs.writeFileSync(root+"/github-error",kind);fs.writeFileSync(root+"/github-error-code",code);process.exit(1);
 });
 else denialMain().catch(e=>{console.log(JSON.stringify({schema:"v03-denial-protocol/v1",status:"FAIL",
  stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",tool_schema:denialSchemaDiagnostic,startup:denialStartupDiagnostic}));process.exitCode=1;});
@@ -2676,6 +2689,8 @@ def denial_protocol_tests(actions_root):
     execution = rows[0]
     check(execution["timeout-minutes"] == 10 and
           str(execution.get("env", {}).get("GH_AW_HARNESS_MAX_RETRIES")) == "0", "production deadline/retry differs")
+    check(execution["env"]["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] == "${{ inputs.candidate_pr_number }}",
+          "production candidate input environment differs")
     script = execution["run"]
     check('export XDG_CONFIG_HOME="$HOME"' in script and
           'export GH_AW_MCP_CONFIG="$HOME/.copilot/mcp-config.json"' in script,
