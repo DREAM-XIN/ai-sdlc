@@ -189,7 +189,7 @@ def prepare_generated_gate_config(official, lock, candidate):
 
 
 def roundtrip_workflow_stem(role, variant):
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local"},
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local", "observed-v5-local"},
           "unsupported roundtrip source variant")
     check(not variant.startswith("observed-") or role == "qa", "observed source is QA-only")
     actual = "observed-inline-local" if variant in {"observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} else variant
@@ -198,8 +198,8 @@ def roundtrip_workflow_stem(role, variant):
     return f"ai-sdlc-gh-aw-{role}-deepseek-v03-{actual}"
 
 def selected_config(role, candidate=577, *, variant="structured-local", generated_config=False):
-    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local"), "unsupported test workflow variant")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local"} or role == "qa", "observed workflow is QA-only")
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local", "observed-v5-local"), "unsupported test workflow variant")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local", "observed-v5-local"} or role == "qa", "observed workflow is QA-only")
     stem = roundtrip_workflow_stem(role, variant)
     lock = yaml.safe_load(qa5_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa5-local" else current_v3_bytes(".github/workflows/" + stem + ".lock.yml")
@@ -2448,10 +2448,384 @@ def observer_boundary_tests():
     check(report["status"] == "PASS" and report["case_count"] == 31,
           "observer finite case matrix drift")
 
+DENIAL_PROTOCOL_NODE = r"""
+
+const row=JSON.parse(fs.readFileSync(casesFile,"utf8")),root="/tmp/denial",home=root+"/home",workspace=root+"/workspace";
+const literalWorkspace="$"+"{GITHUB_WORKSPACE}";
+function feedback(request,id) {
+ const a=(request.messages||[]).filter(m=>m.role==="tool"&&m.tool_call_id===id);
+ check(a.length===1,"FEEDBACK_LINK");return a[0].content;
+}
+function reply(res,request,id,name,args) {
+ const tool={id,type:"function",function:{name,arguments:JSON.stringify(args)}};
+ const base={id:"offline-denial",object:"chat.completion",created:1,model:"deepseek-chat"};
+ if(request.stream) {
+  res.writeHead(200,{"Content-Type":"text/event-stream"});
+  for(const choice of [{index:0,delta:{role:"assistant",tool_calls:[{index:0,...tool}]},finish_reason:null},
+                       {index:0,delta:{},finish_reason:"tool_calls"}])
+   res.write("data: "+JSON.stringify({...base,object:"chat.completion.chunk",choices:[choice]})+"\n\n");
+  res.end("data: [DONE]\n\n");
+ } else {res.writeHead(200,{"Content-Type":"application/json"});
+  res.end(JSON.stringify({...base,choices:[{index:0,message:{role:"assistant",content:null,tool_calls:[tool]},finish_reason:"tool_calls"}]}));}
+}
+async function githubMcp() {
+ fs.writeFileSync(root+"/github-started","1");
+ for await(const line of readline.createInterface({input:process.stdin})) {
+  const m=JSON.parse(line);if(!Object.hasOwn(m,"id"))continue;
+  let result;
+  if(m.method==="server/discover"){
+   const p=root+"/github-discover-count",n=fs.existsSync(p)?Number(fs.readFileSync(p,"utf8")):0;
+   check(Number.isSafeInteger(n)&&n>=0&&n<8,"GITHUB_DISCOVERY_BOUND");fs.writeFileSync(p,String(n+1));
+   process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,error:{code:-32601,message:"Method not found: server/discover"}})+"\n");
+   continue;
+  }
+  if(m.method==="initialize"||m.method==="tools/list"){
+   const p=root+"/github-"+(m.method==="initialize"?"initialize":"list")+"-count";
+   const n=fs.existsSync(p)?Number(fs.readFileSync(p,"utf8")):0;
+   check(Number.isSafeInteger(n)&&n>=0&&n<64,"GITHUB_DISCOVERY_BOUND");fs.writeFileSync(p,String(n+1));
+  }
+  if(m.method==="initialize")result={protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"offline-github-boundary",version:"1"}};
+  else if(m.method==="tools/list")result={tools:[{name:"get_file_contents",description:"Read fixed synthetic candidate evidence at an exact commit.",
+   inputSchema:{type:"object",properties:{owner:{type:"string"},repo:{type:"string"},path:{type:"string"},ref:{type:"string"}},
+    required:["owner","repo","path","ref"],additionalProperties:false}}]};
+  else if(m.method==="tools/call") {
+   check(m.params.name==="get_file_contents"&&canonical(m.params.arguments)===canonical(row.github_args),"GITHUB_EXACT_SOURCE");
+   check(!fs.existsSync(root+"/github-call"),"DUPLICATE_GITHUB_CALL");fs.writeFileSync(root+"/github-call","1");
+   result={content:[{type:"text",text:JSON.stringify(row.case==="PASS"?
+    {path:"candidate.txt",commit_sha:row.payload.candidate_head_sha,sha:row.evidence_blob,encoding:"base64",content:Buffer.from(row.evidence).toString("base64")}:
+    {error:"evidence_unavailable",commit_sha:row.payload.candidate_head_sha})}],isError:row.case!=="PASS"};
+  } else if(m.method==="ping")result={};
+  else {
+   fs.writeFileSync(root+"/github-method",m.method===undefined?"MISSING":
+    typeof m.method==="string"&&/^[A-Za-z0-9_$/.-]{1,128}$/.test(m.method)?m.method:"INVALID");
+   fs.writeFileSync(root+"/github-message-kind",typeof m.method==="string"?"request":
+    Object.hasOwn(m,"result")||Object.hasOwn(m,"error")?"response":"invalid");
+   throw Error("GITHUB_METHOD");
+  }
+  process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\n");
+ }
+}
+async function jsonGet(url) {
+ const r=await fetch(url,{signal:AbortSignal.timeout(2000)});check(r.ok,"PROXY_HTTP");return await r.json();
+}
+let denialSchemaDiagnostic=null,denialStartupDiagnostic=null;
+async function denialMain() {
+ check(process.getuid()!==0,"NONROOT_REQUIRED");
+ check(Object.values(os.networkInterfaces()).flat().every(n=>n.internal),"NO_EGRESS");
+ check(!Object.keys(process.env).some(k=>/TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CREDENTIAL/i.test(k)),"INHERITED_AUTHORITY");
+ for(const [f,sha]of Object.entries(pins))check(blob(path.join(actions,f))===sha,"OFFICIAL_PIN");
+ const version=spawnSync(cli,["--version"],{env:{PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/tmp"},encoding:"utf8",timeout:15000});
+ check(version.status===0&&/\b1\.0\.90\b/.test(version.stdout),"CLI_VERSION");
+ check(!fs.existsSync(root),"STALE_WORKSPACE");
+ fs.mkdirSync(workspace,{recursive:true});fs.mkdirSync(home+"/.copilot",{recursive:true});
+ fs.mkdirSync("/tmp/gh-aw/aw-prompts",{recursive:true});fs.mkdirSync("/tmp/gh-aw/sandbox/agent/logs",{recursive:true});
+ fs.writeFileSync("/tmp/gh-aw/aw-prompts/prompt.txt","Synthetic verification. Use exact-commit evidence. Do not request extra permissions. Publish at most one recommendation.");
+ fs.writeFileSync(workspace+"/candidate.txt",row.evidence);
+ const output=root+"/outputs.jsonl",configPath=root+"/gh-aw/safeoutputs/config.json";
+ const env={PATH:path.dirname(cli)+":/usr/local/bin:/usr/bin:/bin",HOME:home,LANG:"C.UTF-8",
+  XDG_CONFIG_HOME:home,GH_AW_MCP_CONFIG:home+"/.copilot/mcp-config.json",
+  RUNNER_TEMP:root,GITHUB_WORKSPACE:workspace,GITHUB_REPOSITORY:"dream-xin/ai-sdlc",GITHUB_SERVER_URL:"https://github.com",
+  GH_AW_SAFE_OUTPUTS:output,GH_AW_SAFE_OUTPUTS_CONFIG_PATH:configPath,
+  GH_AW_SAFE_OUTPUTS_TOOLS_PATH:root+"/tools.json",GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:root+"/tools_meta.json",
+  GH_AW_SAFE_OUTPUTS_TOOLS_SOURCE_PATH:path.join(actions,"safe_outputs_tools.json"),
+  GH_AW_INPUT_CANDIDATE_PR_NUMBER:String(row.payload.candidate_pr_number),
+  GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST:"false",GH_AW_HARNESS_MAX_RETRIES:"0",
+  COPILOT_MODEL:"deepseek-chat",COPILOT_PROVIDER_TYPE:"openai",COPILOT_PROVIDER_WIRE_API:"completions",
+  COPILOT_PROVIDER_API_KEY:"offline-denial-fixture-key",COPILOT_PROVIDER_BASE_URL:"http://127.0.0.1:10002"};
+ const gen=spawnSync(process.execPath,["-e","require(process.argv[1]).main({info(){},setFailed(){process.exitCode=1}})",path.join(actions,"create_files.cjs")],
+  {cwd:workspace,env:{...env,GH_AW_FILE_ROOT:root+"/gh-aw",GH_AW_FILE_CONFIG:row.generated_config.writer_config,
+   GH_AW_SAFE_OUTPUTS_CONFIG:row.generated_config.content,GH_AW_INPUT_CANDIDATE_PR_NUMBER:String(row.payload.candidate_pr_number)},
+   timeout:15000,maxBuffer:1048576});
+ check(gen.status===0&&fs.readFileSync(configPath).equals(Buffer.from(row.generated_config.content)),"GENERATED_CONFIG");
+ fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH,JSON.stringify(row.meta));
+ check(spawnSync(process.execPath,[path.join(actions,"generate_safe_outputs_tools.cjs")],
+  {env,cwd:workspace,timeout:15000,maxBuffer:1048576}).status===0,"TOOLS_GENERATION");
+ const bootstrap=spawnSync(process.execPath,["-e",
+  "const x=require(process.argv[1]).bootstrapSafeOutputsServer({debug(){},debugError(){}});console.log(JSON.stringify({config_has_add_comment:Object.hasOwn(x.config,'add_comment'),tools_count:x.tools.length,tools_has_add_comment:x.tools.some(t=>t.name==='add_comment')}))",
+  path.join(actions,"safe_outputs_bootstrap.cjs")],{env,cwd:workspace,encoding:"utf8",timeout:15000,maxBuffer:65536});
+ check(bootstrap.status===0,"MCP_BOOTSTRAP");const bs=JSON.parse(bootstrap.stdout);
+ check(bs.config_has_add_comment===true&&bs.tools_has_add_comment===true&&Number.isInteger(bs.tools_count)&&bs.tools_count>0&&bs.tools_count<=64,"MCP_BOOTSTRAP_TOOLS");
+ fs.writeFileSync(home+"/.copilot/mcp-config.json",JSON.stringify({mcpServers:{
+  safeoutputs:{type:"local",command:process.execPath,args:[path.join(actions,"safe_outputs_mcp_server.cjs")],tools:["*"],env},
+  github:{type:"local",command:process.execPath,args:["/inputs/denial.mjs",actions,cli,casesFile,"github-mcp"],tools:["get_file_contents"],env}}}));
+ const configuredPath=home+"/.copilot/mcp-config.json";
+ const configuredStat=fs.lstatSync(configuredPath),configured=JSON.parse(fs.readFileSync(configuredPath,"utf8"));
+ check(configuredStat.isFile()&&!configuredStat.isSymbolicLink()&&configuredStat.uid===process.getuid()&&
+  fs.realpathSync(configuredPath)===configuredPath&&canonical(Object.keys(configured.mcpServers).sort())===canonical(["github","safeoutputs"]),"MCP_CONFIG_FILE");
+ for(const s of Object.values(configured.mcpServers)){
+  check(s.type==="local"&&s.command===process.execPath&&fs.statSync(s.command).isFile(),"MCP_CONFIG_COMMAND");
+  fs.accessSync(s.command,fs.constants.X_OK);check(fs.statSync(s.args[0]).isFile(),"MCP_CONFIG_SCRIPT");
+ }
+ denialStartupDiagnostic={config_regular:true,config_owned:true,config_realpath:true,server_count:2,
+  command_executable:true,scripts_present:true,config_mode:configuredStat.mode&0o777};
+ let posts=0,denied=0,fault=null,previous=null,githubFeedback=false,safeFeedback=false;
+ const upstream=http.createServer((req,res)=>{
+  if(req.method==="GET"&&/\/models$/.test(req.url)){res.writeHead(200,{"Content-Type":"application/json"});
+   res.end(JSON.stringify({object:"list",data:[{id:"deepseek-chat",object:"model",owned_by:"offline"}]}));return;}
+  let raw="",size=0;
+  req.on("data",b=>{size+=b.length;if(size>4194304){fault="REQUEST_BOUND";req.destroy();}else raw+=b;});
+  req.on("end",()=>{try {
+   check(req.method==="POST"&&/\/chat\/completions$/.test(req.url),"MODEL_ROUTE");
+   const request=JSON.parse(raw);check(request.model==="deepseek-chat","MODEL_ID");++posts;check(posts<=51,"UPSTREAM_OVERFLOW");
+   const tools=(request.tools||[]).map(t=>t.function||t);
+   const named=(p,category)=>{const a=tools.filter(t=>p.test(t.name));
+    if(a.length!==1)denialSchemaDiagnostic={posts,previous_kind:previous?.kind||"none",category,
+     matches:a.length,tool_count:tools.length,tool_search_fields:tools.filter(t=>t.name==="tool_search").slice(0,1).map(t=>
+      Object.entries(t.parameters?.properties||{}).slice(0,16).map(([k,v])=>({
+       name:/^[A-Za-z0-9_-]{1,64}$/.test(k)?k:"UNKNOWN",
+       type:["string","integer","number","boolean","array","object"].includes(v?.type)?v.type:"UNKNOWN",
+       required:Array.isArray(t.parameters?.required)&&t.parameters.required.includes(k)}))),
+     names:tools.length<=64?tools.map(t=>
+      typeof t.name==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(t.name)?t.name:"UNKNOWN"):["BOUND_EXCEEDED"],
+     github_initialize:fs.existsSync(root+"/github-initialize-count")?Number(fs.readFileSync(root+"/github-initialize-count","utf8")):0,
+     github_tools_list:fs.existsSync(root+"/github-list-count")?Number(fs.readFileSync(root+"/github-list-count","utf8")):0};
+    check(a.length===1,"TOOL_SCHEMA");return a[0].name;};
+   if(previous?.kind==="denied"){const value=feedback(request,previous.id);
+    check(typeof value==="string"&&/permission[^\n]{0,100}denied|denied[^\n]{0,100}permission|not allowed/i.test(value),"REAL_DENIAL_FEEDBACK");++denied;}
+   if(previous?.kind==="github"){const value=feedback(request,previous.id),text=typeof value==="string"?value:JSON.stringify(value);
+    check(text.includes(row.payload.candidate_head_sha),"GITHUB_COMMIT_FEEDBACK");
+    check(row.case==="PASS"?text.includes(row.evidence_blob):text.includes("evidence_unavailable"),"GITHUB_EVIDENCE_FEEDBACK");githubFeedback=true;}
+   if(previous?.kind==="safe"){const a=fs.readFileSync(output,"utf8").trim().split("\n");check(a.length===1,"SAFE_OUTPUT_COUNT");
+    const entry=JSON.parse(a[0]);check(entry.type==="add_comment"&&canonical(entry.data)===canonical(row.payload),"SAFE_OUTPUT_PAYLOAD");
+    check(successfulFeedback(feedback(request,previous.id),entry.temporary_id),"SAFE_OUTPUT_FEEDBACK");
+    safeFeedback=true;stopResponse(res,request);return;}
+   let kind,name,args;
+   if(posts===1||row.case==="EXHAUSTED"){kind="denied";name=named(/^bash$/,"shell");
+    args={command:"sha256sum "+workspace+"/candidate.txt > "+root+"/executed",description:"Synthetic hash probe"};}
+   else if(posts===2){kind="github";name=named(/^github[_-]+get_file_contents$/,"github");args=row.github_args;}
+   else{check(posts===3&&githubFeedback,"RECOVERY_ORDER");kind="safe";name=named(/^(?:safeoutputs[_-]+)?add_comment$/,"safeoutputs");
+    args={body:"AI-SDLC structured Gate recommendation.",data:row.payload,secrecy:"public",integrity:"high"};}
+   previous={kind,id:"denial-proof-"+posts};reply(res,request,previous.id,name,args);
+  }catch(e){fault=/^[A-Z_]+$/.test(e.message)?e.message:"PROVIDER_PARSE";res.writeHead(400,{"Content-Type":"application/json"});
+   res.end(JSON.stringify({error:{type:"synthetic_fixture_failure"}}));}});
+ });
+ await new Promise((resolve,reject)=>{upstream.once("error",reject);upstream.listen(80,"127.0.0.1",resolve);});
+ try {
+  let healthy=false;for(let n=0;n<120;n++){try{await jsonGet("http://127.0.0.1:10002/health");healthy=true;break;}catch{await new Promise(r=>setTimeout(r,250));}}
+  check(healthy,"PROXY_START");
+  const args=row.argv.map(v=>v===literalWorkspace?workspace:v);
+  let captured="",code=null,signal=null;
+  await new Promise((resolve,reject)=>{
+   const child=spawn(process.execPath,[path.join(actions,"copilot_harness.cjs"),cli,...args],
+    {cwd:workspace,env,detached:true,stdio:["ignore","pipe","pipe"]});
+   const timer=setTimeout(()=>{stopGroup(child);reject(Error("HARNESS_WATCHDOG"));},180000);
+   for(const st of[child.stdout,child.stderr])st.on("data",b=>{captured+=b.toString();if(Buffer.byteLength(captured)>4194304){
+    stopGroup(child);clearTimeout(timer);reject(Error("OUTPUT_BOUND"));}});
+   child.once("error",()=>{clearTimeout(timer);stopGroup(child);reject(Error("HARNESS_START"));});
+   child.once("close",(c,s)=>{code=c;signal=s;clearTimeout(timer);stopGroup(child);resolve();});
+  });
+  if(fault){
+   const logdir="/tmp/gh-aw/sandbox/agent/logs";
+   let diagnosticText=captured,logFiles=0;
+   if(fs.existsSync(logdir)){
+    const entries=fs.readdirSync(logdir,{withFileTypes:true});check(entries.length<=16,"STARTUP_LOG_BOUND");
+    for(const entry of entries){if(!entry.isFile()||entry.isSymbolicLink())continue;
+     const p=path.join(logdir,entry.name),st=fs.lstatSync(p);
+     check(st.isFile()&&!st.isSymbolicLink()&&st.size<=1048576,"STARTUP_LOG_BOUND");
+     diagnosticText+="\n"+fs.readFileSync(p,"utf8");++logFiles;
+    }
+   }
+   const messages=[];
+   for(let line of diagnosticText.split(/\r?\n/)){
+    line=line.replace(/\x1b\[[0-9;]*m/g,"");
+    if(/\bINFO\b/i.test(line)||!/mcp|config/i.test(line)||
+      !/\bERROR\b|process exited|last stderr|failed to|invalid|unable|cannot|not found/i.test(line))continue;
+    const stderr=line.match(/last stderr\s*:\s*(.*)/i);if(stderr&&stderr[1])line="MCP child stderr: "+stderr[1];
+    if(/token|api.key|password|secret|credential|arguments|messages|body|payload|\{.*\}/i.test(line))continue;
+    line=line.replace(/https?:\/\/\S+/g,"[URL]").replace(/(?:\/[^\s"'<>]+)+/g,"[PATH]").replace(/[^\x20-\x7e]/g,"?").slice(0,200);
+    if(line&&!messages.includes(line))messages.push(line);if(messages.length===4)break;
+   }
+   denialStartupDiagnostic={...denialStartupDiagnostic,github_started:fs.existsSync(root+"/github-started"),
+    cli_exit:code,cli_signal:signal,log_files:logFiles,startup_errors:messages,
+    github_error:fs.existsSync(root+"/github-error")?fs.readFileSync(root+"/github-error","utf8"):"NONE",
+    github_error_code:fs.existsSync(root+"/github-error-code")?fs.readFileSync(root+"/github-error-code","utf8"):"NONE",
+    github_unknown_method:fs.existsSync(root+"/github-method")?fs.readFileSync(root+"/github-method","utf8"):"NONE",
+    github_message_kind:fs.existsSync(root+"/github-message-kind")?fs.readFileSync(root+"/github-message-kind","utf8"):"NONE"};
+  }
+  check(!fault,fault||"PROVIDER_FAILURE");check(!fs.existsSync(root+"/executed"),"UNAUTHORIZED_EXECUTION");
+  check(fs.readFileSync(configPath).equals(Buffer.from(row.generated_config.content)),"CONFIG_MUTATION");
+  const reflect=await jsonGet("http://127.0.0.1:10000/reflect");
+  function states(v,a=[]){if(v&&typeof v==="object"){if(Object.hasOwn(v,"invocation_count")&&Object.hasOwn(v,"max_runs"))a.push(v);
+   for(const x of Object.values(v))states(x,a);}return a;}
+  const counters=states(reflect);check(counters.length===1&&counters[0].enabled===true&&counters[0].max_runs===50,"NATIVE_COUNTER_CONFIG");
+  let raw=Buffer.alloc(0),diagnosticTypes=[];
+  if(row.case==="EXHAUSTED"){
+   check(posts===50&&denied===49,"NATIVE_FORWARD_BOUND");
+   check(counters[0].invocation_count===50&&counters[0].remaining_runs===0,"NATIVE_COUNTER_BOUND");
+   check(code!==0&&code!==null&&signal===null&&/max_runs_exceeded|Maximum LLM invocations exceeded/i.test(captured),"NATIVE_TERMINAL");
+   if(fs.existsSync(output)) {
+    check(fs.statSync(output).size<=131072,"DIAGNOSTIC_BOUND");
+    const entries=fs.readFileSync(output,"utf8").split("\n").filter(Boolean).map(JSON.parse);
+    check(entries.length<=2,"DIAGNOSTIC_COUNT");
+    for(const e of entries) {
+     const keys=e.type==="missing_tool"?["type","tool","reason","alternatives","temporary_id"]:
+       e.type==="report_incomplete"?["type","reason","details","temporary_id"]:[];
+     check(keys.length>0&&Object.keys(e).every(k=>keys.includes(k)),"DIAGNOSTIC_SHAPE");
+     if(e.type==="missing_tool")check(e.tool==="tool/permission"&&e.reason==="missing tool/permission issue: numerous permission denied errors detected"&&
+      typeof e.alternatives==="string"&&e.alternatives.length<=512,"DIAGNOSTIC_CONTENT");
+     else check(e.reason==="infrastructure_error"&&typeof e.details==="string"&&e.details.length<=8192,"DIAGNOSTIC_CONTENT");
+     if(e.temporary_id!==undefined)check(typeof e.temporary_id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(e.temporary_id),"DIAGNOSTIC_TEMP_ID");
+     diagnosticTypes.push(e.type);
+    }
+   }
+  }else{check(code===0&&signal===null&&posts===4&&denied===1&&githubFeedback&&safeFeedback,"RECOVERY_COMPLETION");
+   check(counters[0].invocation_count===4,"RECOVERY_COUNTER");
+   for(const field of ["discover","initialize","list"]){const p=root+"/github-"+field+"-count";
+    check(fs.existsSync(p)&&Number(fs.readFileSync(p,"utf8"))>=1,"GITHUB_HANDSHAKE");}
+   raw=fs.readFileSync(output);}
+  console.log(JSON.stringify({schema:"v03-denial-protocol/v1",case:row.case,status:"PASS",upstream_requests:posts,
+   denied_feedback:denied,native_invocations:counters[0].invocation_count,native_max_runs:50,cli_exit:code,
+   diagnostic_types:diagnosticTypes,unauthorized_execution:false,github_boundary:"synthetic MCP",
+   github_discovery_rejections:fs.existsSync(root+"/github-discover-count")?Number(fs.readFileSync(root+"/github-discover-count","utf8")):0,
+   safeoutput_count:raw.length?1:0,
+   raw_ndjson_base64:raw.toString("base64"),generated_config_sha256:crypto.createHash("sha256").update(fs.readFileSync(configPath)).digest("hex")}));
+ }finally{upstream.closeAllConnections();await new Promise(r=>upstream.close(r));}
+}
+if(process.argv[5]==="github-mcp")githubMcp().catch(e=>{
+ const kind=["SyntaxError","ReferenceError","TypeError","Error"].includes(e?.name)?e.name:"UNKNOWN";
+ const code=["GITHUB_METHOD","GITHUB_DISCOVERY_BOUND","GITHUB_EXACT_SOURCE","DUPLICATE_GITHUB_CALL"].includes(e?.message)?e.message:"UNKNOWN";
+ fs.writeFileSync(root+"/github-error",kind);fs.writeFileSync(root+"/github-error-code",code);process.exit(1);
+});
+else denialMain().catch(e=>{console.log(JSON.stringify({schema:"v03-denial-protocol/v1",status:"FAIL",
+ stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",tool_schema:denialSchemaDiagnostic,startup:denialStartupDiagnostic}));process.exitCode=1;});
+
+"""
+
+def denial_protocol_tests(actions_root):
+    """Real CLI/harness/native proxy; scripted model and GitHub MCP boundary."""
+    import base64, shlex
+    import v03_dogfood_gate_output_v4 as renderer
+    lock, config, validation, metadata = selected_config(
+        "qa", 577, variant="observed-v5-local", generated_config=True)
+    compiled_contract(lock)
+    rows = [s for s in lock["jobs"]["agent"]["steps"] if s.get("id") == "agentic_execution"]
+    check(len(rows) == 1, "ambiguous production CLI")
+    execution = rows[0]
+    check(execution["timeout-minutes"] == 10 and
+          str(execution.get("env", {}).get("GH_AW_HARNESS_MAX_RETRIES")) == "0", "production deadline/retry differs")
+    check(execution["env"]["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] == "${{ inputs.candidate_pr_number }}",
+          "production candidate input environment differs")
+    script = execution["run"]
+    check('export XDG_CONFIG_HOME="$HOME"' in script and
+          'export GH_AW_MCP_CONFIG="$HOME/.copilot/mcp-config.json"' in script,
+          "production MCP discovery environment differs")
+    prefix = '"${RUNNER_TEMP}/gh-aw/actions/copilot_harness.cjs" "${RUNNER_TEMP}/gh-aw/bin/copilot" '
+    check(script.count(prefix) == 1, "production harness differs")
+    tail = script.split(prefix, 1)[1].split("\n", 1)[0]
+    check(tail.endswith("'"), "production shell closure differs")
+    argv = shlex.split(tail[:-1])
+    check(argv == ["--add-dir", "/tmp/gh-aw/", "--log-level", "all", "--log-dir",
+          "/tmp/gh-aw/sandbox/agent/logs/", "--disable-builtin-mcps", "--no-ask-user",
+          "--allow-tool", "github", "--allow-tool", "safeoutputs", "--allow-tool", "write",
+          "--allow-all-paths", "--add-dir", "${GITHUB_WORKSPACE}",
+          "--prompt-file", "/tmp/gh-aw/aw-prompts/prompt.txt"], "production permission argv differs")
+    rows = [line for line in script.splitlines() if '"apiProxy"' in line.replace('\\"', '"')
+            and line.lstrip().startswith("printf ")]
+    check(len(rows) == 1, "ambiguous production AWF config")
+    raw_awf = shlex.split(rows[0])[2].replace(r"\$schema", "$schema").replace("${GH_AW_MAX_AI_CREDITS}", "1000")
+    awf = json.loads(raw_awf)
+    check(type(awf["apiProxy"]["maxRuns"]) is int and awf["apiProxy"]["maxRuns"] == 50, "production native cap differs")
+    for job, identifier in (("agent", "gate_render"), ("safe_outputs", "gate_validate")):
+        rows = [s for s in lock["jobs"][job]["steps"] if s.get("id") == identifier]
+        check(len(rows) == 1 and "v03_dogfood_gate_output_v4.py" in rows[0]["run"], "renderer path differs")
+    helper = Path(renderer.__file__).read_bytes()
+    check(hashlib.sha1(b"blob " + str(len(helper)).encode() + b"\0" + helper).hexdigest() ==
+          "39c0a171bed758651fdbea69b3d46ffb9a5b1b3d", "renderer pin differs")
+    actions = resolve_actions_root(actions_root).resolve(strict=True)
+    cli_root = Path(os.environ["V03_SCHEMA_CLI_ROOT"]).resolve(strict=True)
+    check((cli_root / "copilot").is_file(), "pinned CLI missing")
+    agent_image = "ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2"
+    proxy_image = "ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64"
+    inspected = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Config.User}}", proxy_image],
+        capture_output=True, text=True, timeout=30)
+    check(inspected.returncode == 0 and inspected.stdout.strip() == "apiproxy",
+          "official proxy non-root image user differs")
+    for case in ("PASS", "BLOCKED", "EXHAUSTED"):
+        payload = inline_payload("qa", "BLOCKED" if case == "EXHAUSTED" else case)
+        context = fixture_context(payload)
+        evidence = "Fixed synthetic candidate evidence.\n"
+        b = evidence.encode()
+        row = {"case": case, "payload": payload, "evidence": evidence,
+               "evidence_blob": hashlib.sha1(b"blob " + str(len(b)).encode() + b"\0" + b).hexdigest(),
+               "github_args": {"owner": "dream-xin", "repo": "ai-sdlc", "path": "candidate.txt",
+                               "ref": payload["candidate_head_sha"]},
+               "generated_config": generated_gate_config_inputs(lock, payload["candidate_pr_number"]),
+               "meta": compiled_tools_metadata(lock, payload["candidate_pr_number"]), "argv": argv}
+        with tempfile.TemporaryDirectory(prefix="v03-denial-") as name:
+            temporary = Path(name)
+            for child in ("home", "actions", "copilot"):
+                (temporary / child).mkdir()
+            prefix_node = SCHEMA_CAPTURE_NODE.split("async function capture(row,index) {", 1)[0]
+            check("async function capture" not in prefix_node, "capture source boundary differs")
+            (temporary / "denial.mjs").write_text(prefix_node + DENIAL_PROTOCOL_NODE)
+            (temporary / "case.json").write_bytes(canonical(row))
+            agent, proxy = "v03-denial-agent-" + temporary.name, "v03-denial-proxy-" + temporary.name
+            env = {"PATH": os.environ["PATH"], "HOME": str(temporary / "home")}
+            def docker(args, timeout=30):
+                return subprocess.run(["docker", *args], env=env, cwd=temporary,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+            try:
+                started = docker(["run", "-d", "--init", "--pull=never", "--name", agent,
+                    "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--workdir", "/tmp",
+                    "--tmpfs", f"/tmp:rw,nosuid,nodev,exec,uid={os.getuid()},gid={os.getgid()},mode=700",
+                    "--mount", f"type=bind,src={temporary},dst=/inputs,readonly",
+                    "--mount", f"type=bind,src={actions},dst=/inputs/actions,readonly",
+                    "--mount", f"type=bind,src={cli_root},dst=/inputs/copilot,readonly",
+                    "--entrypoint", "node", agent_image, "/inputs/denial.mjs",
+                    "/inputs/actions", "/inputs/copilot/copilot", "/inputs/case.json"])
+                check(started.returncode == 0, "denial container start failed")
+                started_proxy = docker(["run", "-d", "--init", "--pull=never", "--name", proxy,
+                    "--network", "container:" + agent, "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                    "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=1777",
+                    "-e", "COPILOT_API_TARGET=http://127.0.0.1",
+                    "-e", "COPILOT_PROVIDER_API_KEY=offline-denial-fixture-key",
+                    "-e", "AWF_MAX_RUNS=" + str(awf["apiProxy"]["maxRuns"]), proxy_image])
+                check(started_proxy.returncode == 0, "official proxy start failed")
+                waited = docker(["wait", agent], timeout=220)
+                logs = docker(["logs", agent])
+                check(len(logs.stdout) <= 262144 and len(logs.stderr) <= 1048576, "denial diagnostic bound")
+                lines = logs.stdout.splitlines()
+                check(len(lines) == 1, "denial closed result count differs")
+                result = json.loads(lines[0])
+                if result.get("status") == "FAIL":
+                    print(json.dumps(result, sort_keys=True), flush=True)
+                check(waited.returncode == 0 and waited.stdout.strip() == b"0" and result.get("status") == "PASS",
+                      "denial protocol failed: " + str(result.get("stage", "CONTAINER_EXIT")))
+                check(result["case"] == case and result["native_max_runs"] == 50 and
+                      result["unauthorized_execution"] is False, "denial identity differs")
+                raw = base64.b64decode(result.pop("raw_ndjson_base64"), validate=True)
+                check(len(raw) <= subject.MAX_OUTPUT_BYTES, "denial ledger bound")
+                if case == "EXHAUSTED":
+                    check(not raw and result["safeoutput_count"] == 0 and result["cli_exit"] != 0 and
+                          result["native_invocations"] == result["upstream_requests"] == 50, "native exhaustion differs")
+                else:
+                    destination = temporary / "official"
+                    destination.mkdir()
+                    official = Official(actions, destination, config, validation, metadata)
+                    generated = prepare_generated_gate_config(official, lock, payload["candidate_pr_number"])
+                    check(hashlib.sha256(generated).hexdigest() == result["generated_config_sha256"], "generated config differs")
+                    returned, collected, artifact, proof, publication, body = _roundtrip(
+                        official, payload, context, "qa", raw_ledger=raw, renderer=renderer,
+                        render_cli=True, render_config=config)
+                    check(returned == raw and subject.parse_published_gate(
+                        publication["body"], context, "qa", publication["suffix"]) == payload, "collector parser differs")
+                    check(Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]).read_bytes() == generated, "config mutated")
+                result.update(publication_count=0 if case == "EXHAUSTED" else 1,
+                              provider="scripted offline", raw_exported=False,
+                              scope="protocol and native cost bound; no real-model recovery guarantee")
+                print(json.dumps(result, sort_keys=True))
+            finally:
+                docker(["rm", "-f", proxy, agent], timeout=30)
+
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--actions-root", type=Path)
     parser.add_argument("--observer-only", action="store_true")
+    parser.add_argument("--denial-protocol", action="store_true")
     parser.add_argument("--prepare-schema-capture", type=Path)
     args = parser.parse_args()
     if args.observer_only:
@@ -2459,6 +2833,9 @@ def main():
         return
     check(args.actions_root is not None, "--actions-root is required for official handler tests")
     actions_root = resolve_actions_root(args.actions_root)
+    if args.denial_protocol:
+        denial_protocol_tests(actions_root)
+        return
     if args.prepare_schema_capture is not None:
         prepare_schema_capture(args.prepare_schema_capture, actions_root)
         return
