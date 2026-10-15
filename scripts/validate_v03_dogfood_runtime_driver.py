@@ -10760,8 +10760,6 @@ def qa_fifth_pre_effect_rejection_tests():
 
 
 
-if __name__ == "__main__":
-    main()
 
 
 def main():
