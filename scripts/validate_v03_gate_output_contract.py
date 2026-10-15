@@ -2610,13 +2610,16 @@ async function denialMain() {
    const messages=[];
    for(let line of diagnosticText.split(/\r?\n/)){
     line=line.replace(/\x1b\[[0-9;]*m/g,"");
-    if(!/mcp|config/i.test(line)||!/error|failed|invalid|unable|cannot|not found|denied/i.test(line))continue;
+    if(/\bINFO\b/i.test(line)||!/mcp|config/i.test(line)||
+      !/\bERROR\b|process exited|last stderr|failed to|invalid|unable|cannot|not found/i.test(line))continue;
+    const stderr=line.match(/last stderr\s*:\s*(.*)/i);if(stderr&&stderr[1])line="MCP child stderr: "+stderr[1];
     if(/token|api.key|password|secret|credential|arguments|messages|body|payload|\{.*\}/i.test(line))continue;
     line=line.replace(/https?:\/\/\S+/g,"[URL]").replace(/(?:\/[^\s"'<>]+)+/g,"[PATH]").replace(/[^\x20-\x7e]/g,"?").slice(0,200);
     if(line&&!messages.includes(line))messages.push(line);if(messages.length===4)break;
    }
    denialStartupDiagnostic={...denialStartupDiagnostic,github_started:fs.existsSync(root+"/github-started"),
-    cli_exit:code,cli_signal:signal,log_files:logFiles,startup_errors:messages};
+    cli_exit:code,cli_signal:signal,log_files:logFiles,startup_errors:messages,
+    github_error:fs.existsSync(root+"/github-error")?fs.readFileSync(root+"/github-error","utf8"):"NONE"};
   }
   check(!fault,fault||"PROVIDER_FAILURE");check(!fs.existsSync(root+"/executed"),"UNAUTHORIZED_EXECUTION");
   check(fs.readFileSync(configPath).equals(Buffer.from(row.generated_config.content)),"CONFIG_MUTATION");
@@ -2652,7 +2655,10 @@ async function denialMain() {
    raw_ndjson_base64:raw.toString("base64"),generated_config_sha256:crypto.createHash("sha256").update(fs.readFileSync(configPath)).digest("hex")}));
  }finally{upstream.closeAllConnections();await new Promise(r=>upstream.close(r));}
 }
-if(process.argv[5]==="github-mcp")githubMcp().catch(()=>process.exit(1));
+if(process.argv[5]==="github-mcp")githubMcp().catch(e=>{
+ const kind=["SyntaxError","ReferenceError","TypeError","Error"].includes(e?.name)?e.name:"UNKNOWN";
+ fs.writeFileSync(root+"/github-error",kind);process.exit(1);
+});
 else denialMain().catch(e=>{console.log(JSON.stringify({schema:"v03-denial-protocol/v1",status:"FAIL",
  stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",tool_schema:denialSchemaDiagnostic,startup:denialStartupDiagnostic}));process.exitCode=1;});
 
