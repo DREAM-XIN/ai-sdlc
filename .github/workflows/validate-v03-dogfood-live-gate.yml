@@ -826,8 +826,9 @@ jobs:
               return json.loads(decoded, object_pairs_hook=unique)
           agent = agent_steps[model_index]
           assert str(agent["timeout-minutes"]) == "10"
-          for key in ("GH_AW_TIMEOUT_MINUTES", "GH_AW_ENGINE_STEP_TIMEOUT_MINUTES"):
-              assert str(agent["env"][key]) == "10"
+          assert str(agent["env"]["GH_AW_TIMEOUT_MINUTES"]) == "10"
+          error_step = agent_steps[step_index(agent_steps, id="detect-agent-errors")]
+          assert str(error_step["env"]["GH_AW_ENGINE_STEP_TIMEOUT_MINUTES"]) == "10"
           assert str(agent["env"]["GH_AW_HARNESS_MAX_RETRIES"]) == "0"
           agent_configs = [line for line in agent["run"].splitlines() if line.startswith("printf ") and shlex.split(line)[-2:] == [">", "$"+"{RUNNER_TEMP}/gh-aw/awf-config.json"]]
           assert len(agent_configs) == 1
