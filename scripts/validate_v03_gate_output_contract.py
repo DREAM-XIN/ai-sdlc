@@ -2469,6 +2469,7 @@ function reply(res,request,id,name,args) {
   res.end(JSON.stringify({...base,choices:[{index:0,message:{role:"assistant",content:null,tool_calls:[tool]},finish_reason:"tool_calls"}]}));}
 }
 async function githubMcp() {
+ fs.writeFileSync(root+"/github-started","1");
  for await(const line of readline.createInterface({input:process.stdin})) {
   const m=JSON.parse(line);if(!Object.hasOwn(m,"id"))continue;
   let result;
@@ -2495,7 +2496,7 @@ async function githubMcp() {
 async function jsonGet(url) {
  const r=await fetch(url,{signal:AbortSignal.timeout(2000)});check(r.ok,"PROXY_HTTP");return await r.json();
 }
-let denialSchemaDiagnostic=null;
+let denialSchemaDiagnostic=null,denialStartupDiagnostic=null;
 async function denialMain() {
  check(process.getuid()!==0,"NONROOT_REQUIRED");
  check(Object.values(os.networkInterfaces()).flat().every(n=>n.internal),"NO_EGRESS");
@@ -2529,6 +2530,16 @@ async function denialMain() {
  fs.writeFileSync(home+"/.copilot/mcp-config.json",JSON.stringify({mcpServers:{
   safeoutputs:{type:"local",command:process.execPath,args:[path.join(actions,"safe_outputs_mcp_server.cjs")],tools:["*"],env},
   github:{type:"local",command:process.execPath,args:["/inputs/denial.mjs",actions,cli,casesFile,"github-mcp"],tools:["get_file_contents"],env}}}));
+ const configuredPath=home+"/.copilot/mcp-config.json";
+ const configuredStat=fs.lstatSync(configuredPath),configured=JSON.parse(fs.readFileSync(configuredPath,"utf8"));
+ check(configuredStat.isFile()&&!configuredStat.isSymbolicLink()&&configuredStat.uid===process.getuid()&&
+  fs.realpathSync(configuredPath)===configuredPath&&canonical(Object.keys(configured.mcpServers).sort())===canonical(["github","safeoutputs"]),"MCP_CONFIG_FILE");
+ for(const s of Object.values(configured.mcpServers)){
+  check(s.type==="local"&&s.command===process.execPath&&fs.statSync(s.command).isFile(),"MCP_CONFIG_COMMAND");
+  fs.accessSync(s.command,fs.constants.X_OK);check(fs.statSync(s.args[0]).isFile(),"MCP_CONFIG_SCRIPT");
+ }
+ denialStartupDiagnostic={config_regular:true,config_owned:true,config_realpath:true,server_count:2,
+  command_executable:true,scripts_present:true,config_mode:configuredStat.mode&0o777};
  let posts=0,denied=0,fault=null,previous=null,githubFeedback=false,safeFeedback=false;
  const upstream=http.createServer((req,res)=>{
   if(req.method==="GET"&&/\/models$/.test(req.url)){res.writeHead(200,{"Content-Type":"application/json"});
@@ -2585,6 +2596,28 @@ async function denialMain() {
    child.once("error",()=>{clearTimeout(timer);stopGroup(child);reject(Error("HARNESS_START"));});
    child.once("close",(c,s)=>{code=c;signal=s;clearTimeout(timer);stopGroup(child);resolve();});
   });
+  if(fault){
+   const logdir="/tmp/gh-aw/sandbox/agent/logs";
+   let diagnosticText=captured,logFiles=0;
+   if(fs.existsSync(logdir)){
+    const entries=fs.readdirSync(logdir,{withFileTypes:true});check(entries.length<=16,"STARTUP_LOG_BOUND");
+    for(const entry of entries){if(!entry.isFile()||entry.isSymbolicLink())continue;
+     const p=path.join(logdir,entry.name),st=fs.lstatSync(p);
+     check(st.isFile()&&!st.isSymbolicLink()&&st.size<=1048576,"STARTUP_LOG_BOUND");
+     diagnosticText+="\n"+fs.readFileSync(p,"utf8");++logFiles;
+    }
+   }
+   const messages=[];
+   for(let line of diagnosticText.split(/\r?\n/)){
+    line=line.replace(/\x1b\[[0-9;]*m/g,"");
+    if(!/mcp|config/i.test(line)||!/error|failed|invalid|unable|cannot|not found|denied/i.test(line))continue;
+    if(/token|api.key|password|secret|credential|arguments|messages|body|payload|\{.*\}/i.test(line))continue;
+    line=line.replace(/https?:\/\/\S+/g,"[URL]").replace(/(?:\/[^\s"'<>]+)+/g,"[PATH]").replace(/[^\x20-\x7e]/g,"?").slice(0,200);
+    if(line&&!messages.includes(line))messages.push(line);if(messages.length===4)break;
+   }
+   denialStartupDiagnostic={...denialStartupDiagnostic,github_started:fs.existsSync(root+"/github-started"),
+    cli_exit:code,cli_signal:signal,log_files:logFiles,startup_errors:messages};
+  }
   check(!fault,fault||"PROVIDER_FAILURE");check(!fs.existsSync(root+"/executed"),"UNAUTHORIZED_EXECUTION");
   check(fs.readFileSync(configPath).equals(Buffer.from(row.generated_config.content)),"CONFIG_MUTATION");
   const reflect=await jsonGet("http://127.0.0.1:10000/reflect");
@@ -2621,7 +2654,7 @@ async function denialMain() {
 }
 if(process.argv[5]==="github-mcp")githubMcp().catch(()=>process.exit(1));
 else denialMain().catch(e=>{console.log(JSON.stringify({schema:"v03-denial-protocol/v1",status:"FAIL",
- stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",tool_schema:denialSchemaDiagnostic}));process.exitCode=1;});
+ stage:/^[A-Z_]+$/.test(e.message)?e.message:"INFRASTRUCTURE",tool_schema:denialSchemaDiagnostic,startup:denialStartupDiagnostic}));process.exitCode=1;});
 
 """
 
