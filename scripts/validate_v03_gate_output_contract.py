@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import v03_dogfood_gate_output as subject
 PINS = {
+    "error_helpers.cjs": "b96f7dc7e4aa2f02bd3d081825fc9ebb6710c82a",
+    "error_codes.cjs": "65f8e5e80f87130c26e59f09156721686cc61a60",
+    "create_files.cjs": "b9e492f4fd14d701cd673d62c6a4e0d3d1610bc6",
     "generate_safe_outputs_tools.cjs": "ae09ab0a9d637035d4442f72475abcafe5e50ea4",
     "safe_outputs_mcp_server.cjs": "efb24c34fec875ffcd9d997d93f043c78fe16f8b",
     "mcp_server_core.cjs": "21dda2c06354d7c100350fca89f6143d6bf4e0d6",
@@ -116,15 +119,15 @@ def current_v3_bytes(relative):
     return raw
 
 def roundtrip_workflow_stem(role, variant):
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"},
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local"},
           "unsupported roundtrip source variant")
     check(not variant.startswith("observed-") or role == "qa", "observed source is QA-only")
     actual = "observed-inline-local" if variant in {"observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} else variant
     return f"ai-sdlc-gh-aw-{role}-deepseek-v03-{actual}"
 
-def selected_config(role, candidate=577, *, variant="structured-local"):
-    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"), "unsupported test workflow variant")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local"} or role == "qa", "observed workflow is QA-only")
+def selected_config(role, candidate=577, *, variant="structured-local", generated_config=False):
+    check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local"), "unsupported test workflow variant")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local"} or role == "qa", "observed workflow is QA-only")
     stem = roundtrip_workflow_stem(role, variant)
     lock = yaml.safe_load(current_v3_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant in {"observed-v3-local", "observed-qa4-local"} else qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")
@@ -138,8 +141,10 @@ def selected_config(role, candidate=577, *, variant="structured-local"):
         check(len(values) == 1, "ambiguous compiled " + name)
         return values[0]
     config_text = unique_env("GH_AW_SAFE_OUTPUTS_CONFIG")
-    config_text = config_text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", str(candidate))
-    check("${" not in config_text, "unresolved Safe Outputs config")
+    if not generated_config:
+        # Historical fixtures retain their prior pre-expanded approximation.
+        config_text = config_text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", str(candidate))
+        check("${" not in config_text, "unresolved Safe Outputs config")
     config = json.loads(config_text)
     validation = json.loads(unique_env("GH_AW_VALIDATION_JSON"))
     safe = lock["jobs"]["safe_outputs"]
@@ -210,7 +215,9 @@ class Official:
         completed = subprocess.run(
             ["node", "-e", NODE_HARNESS, str(self.actions)],
             input=packed({**request, "fixture_run_id": self.run_id,
-                          "fixture_comment_id": self.comment_id}),
+                          "fixture_comment_id": self.comment_id,
+                          "fixture_candidate": getattr(self, "generated_candidate", None),
+                          "preserve_generated_config": getattr(self, "preserve_generated_config", False)}),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=self.env, timeout=30, check=False,
         )
@@ -227,7 +234,7 @@ class Official:
                           "config": self.config, "validation": self.validation})["collected"].encode()
     def publish(self, output):
         return self.call({"mode": "publish", "item": json.loads(output)["items"][0],
-                          "config": self.config})
+                          "config": getattr(self, "publication_config", self.config)})
 
 def role_payload(role, verdict):
     value = {
@@ -295,7 +302,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const actions = process.argv[1];
-const candidate = Number(request.config?.add_comment?.target || 577);
+const candidate = Number(request.fixture_candidate ?? request.config?.add_comment?.target ?? 577);
 assert.ok(Number.isSafeInteger(candidate) && candidate > 0);
 const runId = request.fixture_run_id;
 const commentId = request.fixture_comment_id;
@@ -335,8 +342,19 @@ global.github = {
 };
 global.getOctokit = () => { throw Error('FORBIDDEN_AUTH_CLIENT'); };
 global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
+const writeConfig = () => {
+  if(request.preserve_generated_config) {
+    assert.deepEqual(JSON.parse(fs.readFileSync(process.env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,'utf8')),request.config);
+  } else fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(request.config));
+};
 (async () => {
-  if(request.mode==='mcp_rpc') {
+  if(request.mode==='generate_config') {
+    for(const key of Object.keys(request.generation_env))
+      assert.ok(['GH_AW_FILE_ROOT','GH_AW_FILE_CONFIG','GH_AW_SAFE_OUTPUTS_CONFIG','GH_AW_INPUT_CANDIDATE_PR_NUMBER'].includes(key));
+    Object.assign(process.env,request.generation_env);
+    await require(path.join(actions,'create_files.cjs')).main(global.core);
+    process.stdout.write(JSON.stringify({generated:true}));
+  } else if(request.mode==='mcp_rpc') {
     const {spawn,spawnSync}=require('node:child_process');
     const readline=require('node:readline');
     const root=process.env.RUNNER_TEMP;
@@ -344,7 +362,7 @@ global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
       GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH:path.join(root,'tools-meta.json'),
       GH_AW_SAFE_OUTPUTS_TOOLS_SOURCE_PATH:path.join(actions,'safe_outputs_tools.json'),
       GH_AW_MCP_LOG_DIR:path.join(root,'mcp-private')};
-    fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(request.config));
+    writeConfig();
     fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS_TOOLS_META_PATH,JSON.stringify(request.meta));
     fs.writeFileSync(env.GH_AW_SAFE_OUTPUTS,'');
     const generated=spawnSync(process.execPath,[path.join(actions,'generate_safe_outputs_tools.cjs')],
@@ -394,7 +412,7 @@ global.fetch = () => { throw Error('FORBIDDEN_NETWORK'); };
     process.stdout.write(JSON.stringify({raw}));
   } else if (request.mode === 'ingest') {
     fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS,request.raw,'utf8');
-    fs.writeFileSync(process.env.GH_AW_SAFE_OUTPUTS_CONFIG_PATH,JSON.stringify(request.config));
+    writeConfig();
     fs.writeFileSync(process.env.GH_AW_VALIDATION_CONFIG_PATH,JSON.stringify(request.validation));
     await require(path.join(actions,'collect_ndjson_output.cjs')).main();
     const actual = fs.readFileSync('/tmp/gh-aw/agent_output.json','utf8');
@@ -1087,6 +1105,170 @@ def v3_gate_contract_tests(role, actions_root, temporary):
     config_path.unlink()
     config_path.write_bytes(packed(config))
     print(role + ": v3 official normalization/config/labels pipeline cases=" + str(completed))
+
+
+
+def v4_generated_config_tests(actions_root, temporary):
+    """Exact compiler file writer -> real MCP RPC -> ingestion -> renderer CLI."""
+    import v03_dogfood_gate_output_v3 as previous
+    import v03_dogfood_gate_output_v4 as current
+    from v03_dogfood_full_composition import DogfoodStructuredGateResultSource
+    role, candidate = "qa", 552
+    lock, config, validation, metadata = selected_config(
+        role, candidate, variant="observed-v4-local", generated_config=True)
+    helper_bytes = Path(current.__file__).read_bytes()
+    check(hashlib.sha1(b"blob " + str(len(helper_bytes)).encode() + b"\0" + helper_bytes).hexdigest()
+          == "39c0a171bed758651fdbea69b3d46ffb9a5b1b3d", "v4 helper pin differs")
+    _, old_config, _, _ = selected_config(
+        role, candidate, variant="observed-v3-local", generated_config=True)
+    check(config == old_config, "new producer silently changed official generated config contract")
+    steps = lock["jobs"]["agent"]["steps"]
+    generated = [step for step in steps if "GH_AW_FILE_CONFIG" in step.get("env", {})
+                 and "GH_AW_SAFE_OUTPUTS_CONFIG" in step.get("env", {})]
+    check(len(generated) == 1, "ambiguous actual config generation step")
+    step = generated[0]
+    check("create_files.cjs" in step["with"]["script"] and
+          "await main()" in step["with"]["script"], "official config generation entry changed")
+    expected_writer_config = {"files": [{"path": "safeoutputs/config.json",
+                                        "content_env": "GH_AW_SAFE_OUTPUTS_CONFIG"}]}
+    check(json.loads(step["env"]["GH_AW_FILE_CONFIG"]) == expected_writer_config,
+          "actual compiled config destination differs")
+    check(step["env"]["GH_AW_FILE_ROOT"] == "$" + "{{ runner.temp }}/gh-aw" and
+          step["env"]["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] == "$" + "{{ inputs.candidate_pr_number }}",
+          "actual generator input binding differs")
+    token = "$" + "{GH_AW_INPUT_CANDIDATE_PR_NUMBER}"
+    check(config["add_comment"]["target"] == token, "config was pre-expanded by fixture")
+    directory = temporary / "qa-v4-generated"
+    directory.mkdir()
+    official = Official(actions_root, directory, config, validation, metadata)
+    handlers = [row for row in lock["jobs"]["safe_outputs"]["steps"]
+                if row.get("id") == "process_safe_outputs"]
+    check(len(handlers) == 1 and "process_safe_outputs.cjs" in handlers[0]["with"]["script"],
+          "actual publication handler missing")
+    handler_text = handlers[0]["env"]["GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG"]
+    expression = "$" + "{{ inputs.candidate_pr_number }}"
+    check(json.loads(handler_text)["add_comment"]["target"] == expression,
+          "compiled publication target binding differs")
+    handler_config = json.loads(handler_text.replace(expression, str(candidate)))
+    check("$" + "{" not in json.dumps(handler_config),
+          "unresolved compiled publication config")
+    check(handler_config["add_comment"] == {
+        "footer": False, "max": 1, "target": str(candidate), "target-repo": "dream-xin/ai-sdlc"},
+        "compiled publication policy differs")
+    official.publication_config = handler_config
+    official.generated_candidate = candidate
+    official.env["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] = str(candidate)
+    config_path = directory / "gh-aw/safeoutputs/config.json"
+    official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
+    generation_env = {
+        "GH_AW_FILE_ROOT": str(directory / "gh-aw"),
+        "GH_AW_FILE_CONFIG": step["env"]["GH_AW_FILE_CONFIG"],
+        "GH_AW_SAFE_OUTPUTS_CONFIG": step["env"]["GH_AW_SAFE_OUTPUTS_CONFIG"],
+        "GH_AW_INPUT_CANDIDATE_PR_NUMBER": str(candidate),
+    }
+    check(official.call({"mode": "generate_config", "generation_env": generation_env,
+                         "config": config}) == {"generated": True},
+          "official file writer failed")
+    original = config_path.read_bytes()
+    check(original == step["env"]["GH_AW_SAFE_OUTPUTS_CONFIG"].encode() and
+          json.loads(original) == config, "official generated config bytes differ")
+    official.preserve_generated_config = True
+    payload = inline_payload(role, "PASS")
+    payload["candidate_pr_number"] = candidate
+    payload["evidence"][0]["uri"] = "https://github.com/dream-xin/ai-sdlc/pull/552"
+    payload["coverage"][0]["evidence"] = payload["evidence"][0]["uri"]
+    context = fixture_context(payload)
+    sanitize = lambda value: official.call({"mode": "sanitize", "body": value})["body"]
+    def rejected(call, expected):
+        try:
+            call()
+        except current.GateOutputContractError as error:
+            check(str(error) == expected, "v4 rejected at unexpected boundary")
+            return
+        raise AssertionError("v4 accepted " + expected)
+    saved = None
+    for label, extra in (("integer", {"item_number": candidate}),
+                         ("string", {"item_number": str(candidate)}),
+                         ("omitted-labels", {"secrecy": "public", "integrity": "high"})):
+        raw = official.mcp_rpc({"body": SENTINEL, "data": payload, **extra},
+                               compiled_tools_metadata(lock, candidate))
+        collected = official.ingest(raw)
+        if saved is None:
+            try:
+                previous.render_gate_output(raw, collected, context, role,
+                    sanitize=sanitize, config=json.loads(original))
+            except previous.GateOutputContractError as error:
+                check(str(error) == "fixed Gate config differs",
+                      "historical v3 actual config failed at unexpected branch")
+            else:
+                raise AssertionError("historical v3 unexpectedly accepted generated placeholder")
+            Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw)
+            Path("/tmp/gh-aw/agent_output.json").write_bytes(collected)
+            old = subprocess.run([sys.executable, previous.__file__, "render", "--actions-root",
+                str(actions_root), "--config-path", str(config_path)],
+                env=gate_cli_environment(official, context), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=30, check=False)
+            check(old.returncode != 0 and
+                  Path("/tmp/gh-aw/agent_output.json").read_bytes() == collected,
+                  "historical v3 CLI failure did not preserve ingested bytes")
+            saved = (raw, collected)
+        _, ingested, output, proof, publication, _ = _roundtrip(
+            official, payload, context, role, raw_ledger=raw, renderer=current,
+            render_cli=True, render_config=json.loads(config_path.read_bytes()))
+        check(config_path.read_bytes() == original, "pipeline rewrote generated config")
+        check(proof["raw_ndjson_sha256"] == hashlib.sha256(raw).hexdigest(),
+              "v4 lost official ledger byte identity")
+        check(all(key not in json.loads(ingested)["items"][0] for key in current.LABEL_FIELDS),
+              "official ingestion retained labels")
+        parser = object.__new__(DogfoodStructuredGateResultSource)
+        parser._structured_parse = (context, role, publication["suffix"])
+        check(parser._gate_payload(publication["body"]) == payload,
+              "collector parser rejected actual generated-config publication")
+    raw, collected = saved
+    for target in (candidate, str(candidate)):
+        numeric = copy.deepcopy(config)
+        numeric["add_comment"]["target"] = target
+        numeric_env = {**generation_env, "GH_AW_SAFE_OUTPUTS_CONFIG": packed(numeric).decode()}
+        official.call({"mode": "generate_config", "generation_env": numeric_env, "config": numeric})
+        official.config = numeric
+        numeric_bytes = config_path.read_bytes()
+        _roundtrip(official, payload, context, role, raw_ledger=raw, renderer=current,
+                   render_cli=True, render_config=json.loads(numeric_bytes))
+        check(config_path.read_bytes() == numeric_bytes, "numeric generated config changed")
+    official.config = config
+    official.call({"mode": "generate_config", "generation_env": generation_env, "config": config})
+    check(config_path.read_bytes() == original, "official regenerated original config differs")
+    negative_count = 0
+    for target in ("$" + "{OTHER}", "$GH_AW_INPUT_CANDIDATE_PR_NUMBER",
+                   "$" + "{GH_AW_INPUT_CANDIDATE_PR_NUMBER:-552}",
+                   token + " ", " " + token, "$" + "{{ inputs.candidate_pr_number }}",
+                   553, "553", True, 552.0, None, "0552", "*", "triggering"):
+        altered = copy.deepcopy(config)
+        altered["add_comment"]["target"] = target
+        rejected(lambda: current.render_gate_output(raw, collected, context, role,
+                 sanitize=sanitize, config=altered), "fixed Gate config differs")
+        negative_count += 1
+    for key in sorted(current.TARGET_FIELDS):
+        changed, retained = json.loads(raw), json.loads(collected)
+        changed[key] = token
+        retained["items"][0][key] = token
+        rejected(lambda: current.render_gate_output(packed(changed) + b"\n", packed(retained),
+                 context, role, sanitize=sanitize, config=config), "raw Gate target differs")
+        negative_count += 1
+    hostile_env = gate_cli_environment(official, context)
+    hostile_env["GH_AW_INPUT_CANDIDATE_PR_NUMBER"] = "553"
+    Path("/tmp/gh-aw/safeoutputs.jsonl").write_bytes(raw)
+    Path("/tmp/gh-aw/agent_output.json").write_bytes(collected)
+    result = subprocess.run([sys.executable, current.__file__, "render", "--actions-root",
+        str(actions_root), "--config-path", str(config_path)], env=hostile_env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False)
+    check(result.returncode == 0 and
+          json.loads(Path("/tmp/gh-aw/agent_output.json").read_bytes())["items"][0]["item_number"] == candidate,
+          "v4 token used arbitrary process environment rather than authenticated context")
+    check(config_path.read_bytes() == original, "final generated config changed")
+    print("qa: v4 official create_files generated-config RPC/render/publication cases=3"
+          + " numeric-config=2 negatives=" + str(negative_count)
+          + " old-v3-cli=rejected config-bytes=unchanged collector-parser=passed")
 
 
 def item_number_contract_tests(role, actions_root, temporary):
@@ -2091,6 +2273,7 @@ def main():
     scanned_receipt_tests()
     with tempfile.TemporaryDirectory(prefix="v03-gate-output-") as directory:
         sanitizer_closure_tests(actions_root, Path(directory))
+        v4_generated_config_tests(actions_root, Path(directory))
         for role in ("reviewer", "qa"):
             exercise_role(role, actions_root, Path(directory))
             inline_native_schema_tests(role, actions_root, Path(directory))
