@@ -2472,6 +2472,11 @@ async function githubMcp() {
  for await(const line of readline.createInterface({input:process.stdin})) {
   const m=JSON.parse(line);if(!Object.hasOwn(m,"id"))continue;
   let result;
+  if(m.method==="initialize"||m.method==="tools/list"){
+   const p=root+"/github-"+(m.method==="initialize"?"initialize":"list")+"-count";
+   const n=fs.existsSync(p)?Number(fs.readFileSync(p,"utf8")):0;
+   check(Number.isSafeInteger(n)&&n>=0&&n<64,"GITHUB_DISCOVERY_BOUND");fs.writeFileSync(p,String(n+1));
+  }
   if(m.method==="initialize")result={protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"offline-github-boundary",version:"1"}};
   else if(m.method==="tools/list")result={tools:[{name:"get_file_contents",description:"Read fixed synthetic candidate evidence at an exact commit.",
    inputSchema:{type:"object",properties:{owner:{type:"string"},repo:{type:"string"},path:{type:"string"},ref:{type:"string"}},
@@ -2535,9 +2540,15 @@ async function denialMain() {
    const tools=(request.tools||[]).map(t=>t.function||t);
    const named=(p,category)=>{const a=tools.filter(t=>p.test(t.name));
     if(a.length!==1)denialSchemaDiagnostic={posts,previous_kind:previous?.kind||"none",category,
-     matches:a.length,tool_count:tools.length,names:tools.map(t=>["bash","shell","github_get_file_contents",
-      "github__get_file_contents","github-get_file_contents","safeoutputs_add_comment",
-      "safeoutputs__add_comment","safeoutputs-add_comment","add_comment"].includes(t.name)?t.name:"unknown")};
+     matches:a.length,tool_count:tools.length,tool_search_fields:tools.filter(t=>t.name==="tool_search").slice(0,1).map(t=>
+      Object.entries(t.parameters?.properties||{}).slice(0,16).map(([k,v])=>({
+       name:/^[A-Za-z0-9_-]{1,64}$/.test(k)?k:"UNKNOWN",
+       type:["string","integer","number","boolean","array","object"].includes(v?.type)?v.type:"UNKNOWN",
+       required:Array.isArray(t.parameters?.required)&&t.parameters.required.includes(k)}))),
+     names:tools.length<=64?tools.map(t=>
+      typeof t.name==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(t.name)?t.name:"UNKNOWN"):["BOUND_EXCEEDED"],
+     github_initialize:fs.existsSync(root+"/github-initialize-count")?Number(fs.readFileSync(root+"/github-initialize-count","utf8")):0,
+     github_tools_list:fs.existsSync(root+"/github-list-count")?Number(fs.readFileSync(root+"/github-list-count","utf8")):0};
     check(a.length===1,"TOOL_SCHEMA");return a[0].name;};
    if(previous?.kind==="denied"){const value=feedback(request,previous.id);
     check(typeof value==="string"&&/permission[^\n]{0,100}denied|denied[^\n]{0,100}permission|not allowed/i.test(value),"REAL_DENIAL_FEEDBACK");++denied;}
