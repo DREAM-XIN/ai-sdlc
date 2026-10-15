@@ -1093,7 +1093,14 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
 
 def validate_reviewer_controller_bridge(snapshot, consumer_binding, *, inspection_only=False):
     old, _ = validate_reviewer_predecessor(snapshot, fresh=not reviewer_replacement_present(snapshot))
-    if qa_third_present(snapshot) or qa_third_inspection(snapshot,consumer_binding):
+    if qa_fourth_present(snapshot) or qa_fourth_inspection(snapshot,consumer_binding):
+        validate_qa_fourth_predecessor(snapshot,fresh=not qa_fourth_present(snapshot))
+        if (set(consumer_binding)!=set(recovery_execution_binding_fields())
+                or consumer_binding["execution_source_head_sha"] in {QA_HISTORICAL_SOURCE,QA_FOURTH_PRIOR_SOURCE}):
+            raise VerticalInvariantError("POLICY_DENIED","QA4 inspection requires exact new consumer")
+        if not inspection_only:
+            validate_qa_fourth_authorization(snapshot,consumer_binding=consumer_binding)
+    elif qa_third_present(snapshot) or qa_third_inspection(snapshot,consumer_binding):
         validate_qa_third_predecessor(snapshot,fresh=not qa_third_present(snapshot))
         if (set(consumer_binding)!=set(recovery_execution_binding_fields())
                 or consumer_binding["execution_source_head_sha"] in {QA_HISTORICAL_SOURCE,QA_THIRD_PRIOR_SOURCE}):
@@ -3300,11 +3307,13 @@ class DogfoodRecoveryBoundContentLoader:
             raise VerticalInvariantError("POLICY_DENIED", "historical inspection lacks protected runtime")
         self.runtime.protected_receipt()
         snapshot = self.runtime.backend.read_snapshot()
+        fourth=qa_fourth_present(snapshot) or qa_fourth_inspection(snapshot,recovery_execution_binding(self.policy_authority))
         third=qa_third_present(snapshot) or qa_third_inspection(snapshot,recovery_execution_binding(self.policy_authority))
         second=qa_second_present(snapshot) or qa_second_inspection(snapshot,recovery_execution_binding(self.policy_authority))
-        qa_inspection=third or second or all(path in snapshot.files for path in QA_HISTORY_BLOBS)
+        qa_inspection=fourth or third or second or all(path in snapshot.files for path in QA_HISTORY_BLOBS)
         if qa_inspection:
-            reviewer,_=(validate_qa_third_predecessor(snapshot,fresh=not qa_third_present(snapshot)) if third else
+            reviewer,_=(validate_qa_fourth_predecessor(snapshot,fresh=not qa_fourth_present(snapshot)) if fourth else
+                validate_qa_third_predecessor(snapshot,fresh=not qa_third_present(snapshot)) if third else
                 validate_qa_second_predecessor(snapshot,fresh=not qa_second_present(snapshot)) if second else
                 validate_qa_replacement_predecessor(snapshot,fresh=not qa_replacement_present(snapshot)))
             validate_reviewer_controller_bridge(snapshot,recovery_execution_binding(self.policy_authority),inspection_only=True)
@@ -3690,7 +3699,7 @@ def build_v03_dogfood_full_composition(
     structured = producer_descriptor is not None or any(workflows.reviewer_workflow == mapping["reviewer"]
                      and workflows.qa_workflow == mapping["qa"]
                      for mapping in (STRUCTURED_GATE_WORKFLOWS, INLINE_GATE_WORKFLOWS))
-    result_source = (DogfoodQaThirdResultSource if structured else DogfoodReviewerReplacementSource)(
+    result_source = (DogfoodQaFourthResultSource if structured else DogfoodReviewerReplacementSource)(
         source_config,
         target_repository=config.target_repository,
     )
@@ -3821,7 +3830,7 @@ def build_v03_dogfood_full_composition(
         bundle.executor.remediation_rereview_authority = authority
         callback_coordinator.remediation_rereview_authority = authority
         dispatch_gateway.delegate.remediation_rereview_authority = authority
-    collector = DogfoodQaThirdCollector(
+    collector = DogfoodQaFourthCollector(
         policy_authority=policy_authority,
         callback_coordinator=callback_coordinator,
         result_source=result_source,
@@ -3892,6 +3901,9 @@ class DogfoodStructuredGateContextBuilder:
                (feature_gateway, persist_gateway, content_loader, candidate_provider)):
             raise V03DogfoodCompositionError("structured context must retain one protected runtime")
 
+    def build_prospective_qa_fourth(self, authorization):
+        return self(qa_fourth_dispatch(authorization), prospective_authorization=authorization)
+
     def build_prospective_qa_third(self, authorization):
         return self(qa_third_dispatch(authorization), prospective_authorization=authorization)
 
@@ -3946,6 +3958,21 @@ class DogfoodStructuredGateContextBuilder:
                 raise VerticalInvariantError("POLICY_DENIED", "unknown structured context physical mapping")
             logical_key, logical_dispatch_id = auth["logical_key"], auth["logical_dispatch_id"]
         if (operation_id == RECOVERY_OPERATION_ID and role == "qa" and logical_key != QA_OLD_KEY
+                and ((isinstance(prospective_authorization,dict) and prospective_authorization.get("schema_version")==QA_FOURTH_SCHEMA) or qa_fourth_present(snapshot))):
+            if prospective_authorization is not None:
+                validate_qa_fourth_predecessor(snapshot,fresh=True)
+                auth=qa_fourth_authorization(snapshot,
+                    consumer_binding=recovery_execution_binding(self.policy_authority),
+                    predecessor_proof=prospective_authorization.get("predecessor_proof"))
+                if canonical_json(auth)!=canonical_json(prospective_authorization):
+                    raise VerticalInvariantError("POLICY_DENIED","prospective QA authority differs")
+            else:
+                auth,_=validate_qa_fourth_authorization(snapshot,
+                    consumer_binding=recovery_execution_binding(self.policy_authority))
+            if logical_key!=auth["physical_key"] or logical_dispatch_id!=auth["physical_dispatch_id"]:
+                raise VerticalInvariantError("POLICY_DENIED","QA physical context mapping differs")
+            logical_key,logical_dispatch_id=QA_OLD_KEY,QA_LOGICAL_DISPATCH
+        elif (operation_id == RECOVERY_OPERATION_ID and role == "qa" and logical_key != QA_OLD_KEY
                 and ((isinstance(prospective_authorization,dict) and prospective_authorization.get("schema_version")==QA_THIRD_SCHEMA) or qa_third_present(snapshot))):
             if prospective_authorization is not None:
                 validate_qa_third_predecessor(snapshot,fresh=True)
@@ -4643,7 +4670,7 @@ class DogfoodCurrentStructuredDispatchGateway(DogfoodStructuredGateDispatchGatew
             _commit_recovery_nonempty(runtime,freeze)
         return super().launch(dispatch=dispatch)
 
-def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_third_authority=None,
+def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_third_authority=None, qa_fourth_authority=None,
                                 producer_descriptor=None, producer_record=None):
     """Exact pinned official metadata, derived from the reviewed compiled environment."""
     from pathlib import Path
@@ -4652,7 +4679,16 @@ def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_t
     source_blobs = ({QA_OBSERVED_WORKFLOW: QA_WORKER_BLOBS[".github/workflows/" + QA_OBSERVED_WORKFLOW]}
         if workflow == QA_OBSERVED_WORKFLOW else
         INLINE_DOGFOOD_BLOBS if workflow in INLINE_GATE_WORKFLOWS.values() else STRUCTURED_DOGFOOD_BLOBS)
-    if qa_third_authority is not None:
+    if qa_fourth_authority is not None:
+        auth=qa_fourth_authority
+        if (not isinstance(auth,dict) or auth.get("schema_version")!=QA_FOURTH_SCHEMA
+                or auth.get("worker_blobs")!=QA_FOURTH_WORKER_BLOBS
+                or workflow!=QA_OBSERVED_WORKFLOW or auth.get("workflow_file")!=workflow
+                or run.get("head_sha")!=auth["consumer_execution_binding"]["execution_source_head_sha"]
+                or run.get("display_title")!="AI-SDLC gh-aw "+auth["physical_key"]):
+            raise VerticalInvariantError("POLICY_DENIED","QA4 metadata source authority differs")
+        source_blobs={workflow:QA_FOURTH_WORKER_BLOBS[".github/workflows/"+workflow]}
+    elif qa_third_authority is not None:
         auth=qa_third_authority
         if (not isinstance(auth,dict) or auth.get("schema_version")!=QA_THIRD_SCHEMA
                 or auth.get("worker_blobs")!=QA_THIRD_WORKER_BLOBS
@@ -4672,7 +4708,7 @@ def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_t
         source_blobs={workflow:QA_SECOND_WORKER_BLOBS[".github/workflows/"+workflow]}
     if producer_descriptor is not None:
         mapping,blobs,value=_current_v3_source_contract(producer_descriptor)
-        if (qa_second_authority is not None or qa_third_authority is not None
+        if (qa_second_authority is not None or qa_third_authority is not None or qa_fourth_authority is not None
                 or not isinstance(producer_record,dict)
                 or producer_record.get("producer_descriptor")!=value
                 or producer_record.get("schema_version")!="ai-sdlc.v03-structured-producer-inputs/v1"
@@ -4710,9 +4746,17 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
         snapshot = self.reviewer_runtime.backend.read_snapshot()
         binding = recovery_execution_binding(self.reviewer_policy_authority)
         self._current_v3_metadata_record=None
+        self._qa_fourth_metadata_auth=None
         self._qa_third_metadata_auth=None
         self._qa_second_metadata_auth=None
-        if operation_id==RECOVERY_OPERATION_ID and qa_third_present(snapshot):
+        if operation_id==RECOVERY_OPERATION_ID and qa_fourth_present(snapshot):
+            qa_auth,qa_claim=validate_qa_fourth_authorization(snapshot,consumer_binding=binding)
+            if key==qa_auth["physical_key"]:
+                if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
+                    raise VerticalInvariantError("POLICY_DENIED","QA4 observed input view differs")
+                self._qa_fourth_metadata_auth=qa_auth
+                return qa_claim["dispatch_inputs"]
+        if operation_id==RECOVERY_OPERATION_ID and qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot):
             qa_auth,qa_claim=validate_qa_third_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
                 if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4720,7 +4764,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 self._qa_third_metadata_auth=qa_auth
                 return qa_claim["dispatch_inputs"]
         self._qa_second_metadata_auth=None
-        if operation_id==RECOVERY_OPERATION_ID and qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot):
+        if operation_id==RECOVERY_OPERATION_ID and qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot):
             qa_auth,qa_claim=validate_qa_second_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
                 if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4729,7 +4773,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 return qa_claim["dispatch_inputs"]
         if (operation_id == RECOVERY_OPERATION_ID and qa_replacement_present(snapshot)
                 and not qa_second_inspection(snapshot,binding)
-                and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot)):
+                and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot)):
 
             qa_auth,qa_claim=validate_qa_replacement_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
@@ -4772,7 +4816,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
             if canonical_json(identity[field]) != canonical_json(trusted[key]):
                 raise VerticalInvariantError("POLICY_DENIED", "structured Gate context differs from callback task")
         run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
-        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None),
+        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None), qa_fourth_authority=getattr(self,"_qa_fourth_metadata_auth",None),
                     producer_descriptor=getattr(self,"producer_descriptor",None), producer_record=getattr(self,"_current_v3_metadata_record",None)))
         return observed
 
@@ -4820,10 +4864,18 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 key = match.group("key")
                 candidates = []
                 self._current_v3_metadata_record=None
+                self._qa_fourth_metadata_auth=None
                 self._qa_third_metadata_auth=None
                 self._qa_second_metadata_auth=None
                 binding=recovery_execution_binding(self.reviewer_policy_authority)
-                if qa_third_present(snapshot):
+                if qa_fourth_present(snapshot):
+                    qa_auth,qa_claim=validate_qa_fourth_authorization(snapshot,consumer_binding=binding)
+                    if key==qa_auth["physical_key"]:
+                        if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
+                            raise VerticalInvariantError("POLICY_DENIED","QA4 observed lease view differs")
+                        candidates.append(qa_claim["dispatch_inputs"])
+                        self._qa_fourth_metadata_auth=qa_auth
+                if qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot):
                     qa_auth,qa_claim=validate_qa_third_authorization(snapshot,consumer_binding=binding)
                     if key==qa_auth["physical_key"]:
                         if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4831,7 +4883,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                         candidates.append(qa_claim["dispatch_inputs"])
                         self._qa_third_metadata_auth=qa_auth
                 self._qa_second_metadata_auth=None
-                if qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot):
+                if qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot):
                     qa_auth,qa_claim=validate_qa_second_authorization(snapshot,consumer_binding=binding)
                     if key==qa_auth["physical_key"]:
                         if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4839,7 +4891,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                         candidates.append(qa_claim["dispatch_inputs"])
                         self._qa_second_metadata_auth=qa_auth
                 if (qa_replacement_present(snapshot) and not qa_second_inspection(snapshot,binding)
-                        and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot)):
+                        and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot)):
                     qa_auth,qa_claim=validate_qa_replacement_authorization(snapshot,
                         consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
                     if key==qa_auth["physical_key"]:
@@ -4872,7 +4924,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 if len(candidates) != 1:
                     raise VerticalInvariantError("POLICY_DENIED", "structured content lacks unique protected inputs")
                 context = json.loads(candidates[0]["task_payload"])["feature_context"]["gate_context"]
-                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None),
+                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None), qa_fourth_authority=getattr(self,"_qa_fourth_metadata_auth",None),
                     producer_descriptor=getattr(self,"producer_descriptor",None), producer_record=getattr(self,"_current_v3_metadata_record",None)))
         try:
             if not str(uri).startswith("docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/"):
@@ -6314,6 +6366,8 @@ def qa_replacement_trusted_context(auth):
 
 def qa_reviewer_binding(snapshot, policy_authority):
     current = recovery_execution_binding(policy_authority)
+    if qa_fourth_present(snapshot) or qa_fourth_inspection(snapshot,current):
+        return qa_fourth_reviewer_binding(snapshot,policy_authority)
     if qa_third_present(snapshot) or qa_third_inspection(snapshot,current):
         return qa_third_reviewer_binding(snapshot,policy_authority)
     if qa_second_present(snapshot) or qa_second_inspection(snapshot,current):
@@ -8097,7 +8151,7 @@ def _verify_current_v3_installation(source, descriptor, binding):
 
 # Read-only fixed predecessor preparation. No execution admission or write entrypoint.
 QA_FOURTH_STORE = "243516b3731054480ca14486957d724ae35785c1"
-QA_FOURTH_ADMISSION = None
+QA_FOURTH_ADMISSION = {"uri":"https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6182269954","body_digest":"sha256:eb7c5e6fc1f8b2b91d688f809069eaf7a8b8bd4d03b8966ec505001118b32601"}
 QA_FOURTH_PROJECTION_PATH = "state/operator/v1/projections/"+RECOVERY_OPERATION_ID+".json"
 QA_FOURTH_PROJECTION_BLOB = "ad352baa2a4e0a96debcc8c47aa4aa6b10fc2afe"
 QA_FOURTH_HISTORY_BLOBS = {
@@ -8187,10 +8241,13 @@ QA_FOURTH_DOCUMENT_BLOBS = {
 }
 
 def require_qa_fourth_admission():
-    # Changing a data constant cannot turn preparation into a launch capability.
-    raise VerticalInvariantError("POLICY_DENIED","QA4 execution has no admitted implementation")
+    expected={"uri":"https://github.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-6182269954",
+        "body_digest":"sha256:eb7c5e6fc1f8b2b91d688f809069eaf7a8b8bd4d03b8966ec505001118b32601"}
+    if QA_FOURTH_ADMISSION != expected:
+        raise VerticalInvariantError("POLICY_DENIED","QA4 admission differs from exact reviewed one-use scope")
+    return expected
 
-def validate_qa_fourth_predecessor(snapshot):
+def validate_qa_fourth_preparation(snapshot):
     """Authenticate only the existing 48-event predecessor; never create authority."""
     if not _SHA40.fullmatch(str(snapshot.ref_sha or "")):
         raise VerticalInvariantError("POLICY_DENIED","QA4 preparation lacks existing protected Store")
@@ -8317,3 +8374,622 @@ def validate_qa4_failure_relation(frozen, fresh):
             or rank[new["activation_state"]] < rank[old["activation_state"]]):
         raise V03DogfoodCompositionError("QA4 predecessor observation rolled back")
     return fresh
+
+
+QA_FOURTH_SCHEMA = "ai-sdlc.v03-qa-fourth/v1"
+QA_FOURTH_BASE = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-qa-replacement-4"
+QA_FOURTH_AUTH_PATH = QA_FOURTH_BASE + "/authorization.json"
+QA_FOURTH_CLAIM_PATH = QA_FOURTH_BASE + "/create-claim.json"
+QA_FOURTH_SEAL_PATH = QA_FOURTH_BASE + "/sealed-result.json"
+QA_FOURTH_TERMINAL_PATH = QA_FOURTH_BASE + "/terminal-observation.json"
+QA_FOURTH_PATHS = (QA_FOURTH_AUTH_PATH, QA_FOURTH_CLAIM_PATH, QA_FOURTH_SEAL_PATH, QA_FOURTH_TERMINAL_PATH)
+QA_FOURTH_FAILED_RUN = 38144537577
+QA_FOURTH_PRIOR_KEY = "dispatch-ed15cc06d43530b754825cd71fb86c790008a651"
+QA_FOURTH_PRIOR_SOURCE = "b3c9538602ffa3e3a9b5ebaab7e87e42e6af6423"
+QA_FOURTH_WORKER_BLOBS = dict(CURRENT_V3_WORKER_BLOBS)
+
+def qa_fourth_inspection(snapshot, consumer_binding):
+    old=snapshot.get(QA_THIRD_AUTH_PATH)
+    return (QA_THIRD_TERMINAL_PATH in snapshot.files
+        and isinstance(old,dict) and old.get("consumer_execution_binding")!=consumer_binding)
+
+def qa_fourth_present(snapshot):
+    return any(path.startswith(QA_FOURTH_BASE + "/") for path in snapshot.files)
+
+def qa_fourth_workflows():
+    from v03_dogfood_live_gate import INLINE_DOGFOOD_WORKFLOWS
+    return GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow=INLINE_DOGFOOD_WORKFLOWS["developer"],
+        reviewer_workflow=INLINE_DOGFOOD_WORKFLOWS["reviewer"], qa_workflow=QA_OBSERVED_WORKFLOW)
+
+def qa_fourth_dispatch(auth, *, physical=True):
+    return {"operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+        "operation_profile": VERTICAL_PROFILE, "semantic_effect_key": QA_SEMANTIC_KEY,
+        "external_dispatch_key": auth["physical_key"] if physical else QA_OLD_KEY,
+        "dispatch_id": auth["physical_dispatch_id"] if physical else QA_LOGICAL_DISPATCH,
+        "target_repository": "dream-xin/ai-sdlc", "target_ref": "dogfood/v0.3-happy-path-0001",
+        "feature_id": "F-OPERATOR-V03-DOGFOOD-HAPPY-0001", "expected_revision": 5,
+        "feature_stage": "verification", "task_id": QA_TASK, "task_identity": QA_TASK,
+        "role": "qa", "candidate_pr_number": 552, "candidate_head_sha": QA_CANDIDATE}
+
+def validate_qa_fourth_predecessor(snapshot, *, fresh=False):
+    if not _SHA40.fullmatch(str(snapshot.ref_sha or "")):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement lacks existing protected Store")
+    if any(path not in snapshot.files or _recovery_document_blob(snapshot.get(path)) != blob
+           for path, blob in {**QA_FOURTH_HISTORY_BLOBS, **QA_FOURTH_DOCUMENT_BLOBS}.items()):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement historical bytes differ")
+    prefix = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/"
+    if any(path.startswith(prefix) and "/events/" not in path and path not in QA_FOURTH_DOCUMENT_BLOBS
+           and path not in QA_FOURTH_PATHS for path in snapshot.files):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement has foreign operation sidecars")
+    events = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    if len(events) < 48 or [e["sequence"] for e in events[:48]] != list(range(1, 49)):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement journal prefix differs")
+    reviewer = reviewer_replacement_route(snapshot)
+    if (reviewer["ordinal"] != 4 or reviewer["sealed"]["run_id"] != 38074007355
+            or reviewer["sealed"]["execution_binding"]["execution_source_head_sha"] != QA_HISTORICAL_SOURCE):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement lacks immutable accepted Reviewer")
+    # Accepted Reviewer/Persist and all three spent replacement stops remain immutable.
+    from operator_vertical_store import vertical_projection
+    projection = vertical_projection(snapshot, RECOVERY_OPERATION_ID)
+    if (projection["generation"] != 1 or
+            (fresh and (len(events) != 48 or projection["status"] != "NEEDS_USER"))):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement stage already progressed")
+    if any(path in snapshot.files for path in (QA_REPLACEMENT_SEAL_PATH, QA_SECOND_SEAL_PATH, QA_THIRD_SEAL_PATH)):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 predecessor unexpectedly has a prior QA PASS seal")
+    if fresh and (_recovery_document_blob(snapshot.get(QA_FOURTH_PROJECTION_PATH))!=QA_FOURTH_PROJECTION_BLOB
+            or canonical_json(snapshot.get(QA_FOURTH_PROJECTION_PATH))!=canonical_json(rebuild_projection(snapshot,RECOVERY_OPERATION_ID))
+            or [row["event_type"] for row in events[45:48]]!=["operation.needs-user"]*3):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 fresh stopped projection differs")
+    return reviewer, events
+
+def qa_fourth_historical_reviewer_binding(snapshot):
+    reviewer, _ = validate_qa_fourth_predecessor(snapshot)
+    return reviewer["authorization"]["consumer_execution_binding"]
+
+def qa_fourth_authorization(snapshot, *, consumer_binding, predecessor_proof):
+    require_qa_fourth_admission()
+    reviewer, events = validate_qa_fourth_predecessor(snapshot)
+    validate_qa_fourth_proof(predecessor_proof)
+    identity = {
+        "schema_version": QA_FOURTH_SCHEMA, "ordinal": 4, "admission": QA_FOURTH_ADMISSION,
+        "operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+        "predecessor_store_commit": QA_FOURTH_STORE,
+        "predecessor_event_blobs": QA_FOURTH_HISTORY_BLOBS, "predecessor_document_blobs": QA_FOURTH_DOCUMENT_BLOBS,
+        "predecessor_event_digest": "sha256:" + digest_json(events[:48]),
+        "logical_key": QA_OLD_KEY, "logical_dispatch_id": QA_LOGICAL_DISPATCH,
+        "semantic_effect_key": QA_SEMANTIC_KEY, "task_id": QA_TASK, "candidate_head_sha": QA_CANDIDATE,
+        "candidate_pr_number": 552, "expected_revision": 5, "role": "qa", "stage": "verification",
+        "workflow_file": QA_OBSERVED_WORKFLOW, "failed_run_id": QA_FOURTH_FAILED_RUN,
+        "historical_reviewer_execution_binding": reviewer["authorization"]["consumer_execution_binding"],
+        "consumer_execution_binding": consumer_binding, "worker_blobs": QA_FOURTH_WORKER_BLOBS,
+        "predecessor_proof": predecessor_proof,
+    }
+    auth = dict(identity)
+    auth["physical_key"] = "dispatch-" + digest_json(identity)[:40]
+    auth["physical_dispatch_id"] = "vertical-" + digest_json({
+        "operation_id": RECOVERY_OPERATION_ID, "generation": 1, "role": "qa",
+        "external_dispatch_key": auth["physical_key"]})[:32]
+    auth["payload_digest"] = "sha256:" + digest_json(
+        json.loads(GhAwVerticalRoleDispatchGateway._task_payload(qa_fourth_dispatch(auth))))
+    return auth
+def validate_qa_fourth_authorization(snapshot, *, consumer_binding=None):
+    _, events = validate_qa_fourth_predecessor(snapshot)
+    auth, claim = snapshot.get(QA_FOURTH_AUTH_PATH), snapshot.get(QA_FOURTH_CLAIM_PATH)
+    if not isinstance(auth, dict) or not isinstance(claim, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA authorization/claim incomplete")
+    binding = auth.get("consumer_execution_binding")
+    expected = qa_fourth_authorization(snapshot, consumer_binding=binding,
+                                                  predecessor_proof=auth.get("predecessor_proof"))
+    if (canonical_json(auth) != canonical_json(expected) or not isinstance(binding, dict)
+            or set(binding) != set(recovery_execution_binding_fields())
+            or any(not _SHA40.fullmatch(str(binding.get(k) or "")) for k in
+                   ("execution_source_head_sha", "execution_materialization_commit_sha"))
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(binding.get(k) or "")) for k in
+                   ("execution_policy_bundle_digest", "execution_policy_receipt_digest"))
+            or binding["execution_source_head_sha"] in {QA_HISTORICAL_SOURCE, QA_FOURTH_PRIOR_SOURCE}
+            or (consumer_binding is not None and canonical_json(binding) != canonical_json(consumer_binding))):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA authority/source differs")
+    validate_qa_fourth_proof(auth["predecessor_proof"])
+    if (set(claim) != {"schema_version", "ordinal", "authorization_digest", "physical_key",
+                       "create_consumed", "preclaim_store_commit", "dispatch_inputs", "dispatch_inputs_digest",
+                       "context_digest"}
+            or claim["schema_version"] != auth["schema_version"] or type(claim["ordinal"]) is not int
+            or claim["ordinal"] != 4 or claim["create_consumed"] is not True
+            or claim["physical_key"] != auth["physical_key"]
+            or claim["authorization_digest"] != "sha256:" + digest_json(auth)
+            or not _SHA40.fullmatch(str(claim["preclaim_store_commit"]))
+            or claim["dispatch_inputs_digest"] != "sha256:" + digest_json(claim["dispatch_inputs"])):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA frozen claim differs")
+    workflows = qa_fourth_workflows()
+    context = _validate_structured_inputs(claim["dispatch_inputs"], qa_fourth_dispatch(auth), workflows)
+    if (context["context_sha256"] != claim["context_digest"]
+            or context["provenance"]["store_commit_sha"] != claim["preclaim_store_commit"]
+            or context["provenance"]["producer_source_sha"] != binding["execution_source_head_sha"]
+            or context["provenance"]["producer_policy_digest"] != binding["execution_policy_bundle_digest"]):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA context provenance differs")
+    tail = events[48:]
+    lookups=[e for e in tail if e["event_type"]=="dispatch.launch.lookup-recorded"]
+    sealed=snapshot.get(QA_FOURTH_SEAL_PATH)
+    if QA_FOURTH_SEAL_PATH in snapshot.files:
+        if (not isinstance(sealed,dict) or len(lookups)!=1 or not tail or tail[0]!=lookups[0]
+                or lookups[0]["payload"]!={"external_dispatch_key":QA_OLD_KEY,
+                    "lookup_state":"LAUNCHED","receipt_id":str(sealed.get("run_id"))}
+                or lookups[0]["operation_generation"]!=1):
+            raise VerticalInvariantError("POLICY_DENIED","QA4 PASS seal lacks exact atomic successor lookup")
+    elif lookups or any(e["event_type"]!="operation.needs-user" for e in tail):
+        raise VerticalInvariantError("POLICY_DENIED","QA4 unlocked before full PASS")
+    if any(e["event_type"] == "dispatch.claimed" or (
+            e["event_type"] == "worker.callback.recorded" and
+            e["payload"].get("external_dispatch_key") != QA_OLD_KEY) for e in tail):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement escaped its only logical callback")
+    if QA_FOURTH_TERMINAL_PATH in snapshot.files:
+        if (QA_FOURTH_SEAL_PATH in snapshot.files or any(e["event_type"] in {
+                "dispatch.launch.lookup-recorded","worker.callback.recorded", "feature.event.translated", "persist.requested"} for e in tail)):
+            raise VerticalInvariantError("POLICY_DENIED", "terminal QA has forbidden lifecycle effects")
+    else:
+        _validate_qa_fourth_callback(snapshot, auth, events)
+    return auth, claim
+
+def plan_qa_fourth(snapshot, *, consumer_binding, predecessor_proof, dispatch_inputs):
+    if qa_fourth_present(snapshot):
+        auth, claim = validate_qa_fourth_authorization(snapshot, consumer_binding=consumer_binding)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"acquired": False, "authorization": auth, "claim": claim})
+    validate_qa_fourth_predecessor(snapshot, fresh=True)
+    auth = qa_fourth_authorization(snapshot, consumer_binding=consumer_binding,
+                                              predecessor_proof=predecessor_proof)
+    context = json.loads(dispatch_inputs["task_payload"])["feature_context"]["gate_context"]
+    claim = {"schema_version": auth["schema_version"], "ordinal": 4,
+        "authorization_digest": "sha256:" + digest_json(auth), "physical_key": auth["physical_key"],
+        "create_consumed": True, "preclaim_store_commit": snapshot.ref_sha,
+        "dispatch_inputs": dispatch_inputs, "dispatch_inputs_digest": "sha256:" + digest_json(dispatch_inputs),
+        "context_digest": context["context_sha256"]}
+    from operator_store_model import apply_plan_to_snapshot
+    plan = StoreMutationPlan(snapshot.ref_sha, (
+        StoreMutation("create_immutable", QA_FOURTH_AUTH_PATH, auth),
+        StoreMutation("create_immutable", QA_FOURTH_CLAIM_PATH, claim)),
+        {"acquired": True, "authorization": auth, "claim": claim})
+    validate_qa_fourth_authorization(apply_plan_to_snapshot(snapshot, plan), consumer_binding=consumer_binding)
+    return plan
+
+
+def validate_qa_fourth_proof(proof):
+    if (not isinstance(proof, dict) or set(proof) != {"schema_version", "accepted_reviewer", "failed_qa"}
+            or proof["schema_version"] != "ai-sdlc.v03-qa-fourth-predecessor/v1"
+            or _recovery_document_blob(proof["accepted_reviewer"]) !=
+                "cf0438fee6e9cbbcd68cb74f113bed03b2da573c"):
+        raise VerticalInvariantError("POLICY_DENIED", "QA predecessor proof differs from accepted Reviewer")
+    failure = proof["failed_qa"]
+    if (not isinstance(failure, dict) or set(failure) != {"historical_proof", "current_observation"}
+            or canonical_json(failure["historical_proof"]) != canonical_json(qa4_failure_historical_proof())):
+        raise VerticalInvariantError("POLICY_DENIED", "QA original failed execution proof differs")
+    validate_qa4_failure_observation(failure["current_observation"])
+    return proof
+
+def validate_qa_fourth_relation(frozen, fresh):
+    validate_qa_fourth_proof(frozen)
+    validate_qa_fourth_proof(fresh)
+    if frozen["accepted_reviewer"] != fresh["accepted_reviewer"]:
+        raise VerticalInvariantError("POLICY_DENIED", "QA accepted Reviewer proof changed")
+    validate_qa4_failure_relation(frozen["failed_qa"], fresh["failed_qa"])
+    return fresh
+
+def _validate_qa_fourth_callback(snapshot, auth, events):
+    callbacks = [e for e in events[48:] if e["event_type"] == "worker.callback.recorded"]
+    if len(callbacks) > 1:
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement has conflicting callbacks")
+    if not callbacks:
+        return
+    sealed = snapshot.get(QA_FOURTH_SEAL_PATH)
+    payload = callbacks[0]["payload"]
+    envelope = payload.get("trusted_callback_envelope")
+    context = envelope.get("trusted_context") if isinstance(envelope, dict) else None
+    if not isinstance(sealed, dict) or not isinstance(context, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "QA callback predates its PASS seal")
+    callback_id = "gh-aw-callback-" + digest_json({"operation_id": RECOVERY_OPERATION_ID,
+        "generation": 1, "external_dispatch_key": QA_OLD_KEY,
+        "runtime_receipt_identity": str(sealed["run_id"]), "run_id": sealed["run_id"]})[:24]
+    expected = qa_fourth_dispatch(auth, physical=False)
+    expected.update(runtime_receipt_identity=str(sealed["run_id"]),
+        worker_identity=f"gh-aw:{auth['workflow_file']}@{auth['consumer_execution_binding']['execution_source_head_sha']}")
+    fields = ("operation_id", "operation_generation", "operation_profile", "semantic_effect_key",
+        "external_dispatch_key", "dispatch_id", "target_repository", "target_ref", "feature_id",
+        "expected_revision", "feature_stage", "task_id", "role", "candidate_pr_number",
+        "candidate_head_sha", "runtime_receipt_identity", "worker_identity")
+    if (payload.get("callback_id") != callback_id
+            or any(context.get(k) != expected[k] for k in fields)
+            or payload.get("external_dispatch_key") != QA_OLD_KEY
+            or digest_json(envelope) != payload.get("trusted_callback_envelope_digest")
+            or envelope.get("worker_payload", {}).get("verdict") != "PASS"
+            or "sha256:" + digest_json(envelope.get("worker_payload")) != sealed.get("role_payload_digest")
+            or len(envelope.get("collected_outputs") or []) != 1
+            or any(envelope["collected_outputs"][0].get(k) != v for k,v in {
+                "trusted_uri":sealed.get("trusted_uri"),"sha256":sealed.get("content_sha256"),
+                "size_bytes":sealed.get("content_size")}.items())):
+        raise VerticalInvariantError("POLICY_DENIED", "QA callback differs from sealed physical result")
+
+def qa_fourth_route(snapshot, *, consumer_binding=None, require_seal=True):
+    auth, claim = validate_qa_fourth_authorization(snapshot, consumer_binding=consumer_binding)
+    if QA_FOURTH_TERMINAL_PATH in snapshot.files:
+        qa_fourth_terminal(snapshot, consumer_binding=consumer_binding)
+        raise VerticalInvariantError("NEEDS_USER", "QA replacement stopped without accepted PASS")
+    sealed = snapshot.get(QA_FOURTH_SEAL_PATH)
+    if require_seal or QA_FOURTH_SEAL_PATH in snapshot.files:
+        fields = {"schema_version","ordinal","authorization_digest","claim_digest","logical_key",
+            "physical_key","run_id","run_attempt","conclusion","workflow_file","execution_binding",
+            "recommendation","resolved_digest","role_payload_digest","safe_output_proof","trusted_uri",
+            "content_sha256","content_size"}
+        if (not isinstance(sealed,dict) or set(sealed)!=fields
+                or sealed["schema_version"]!=QA_FOURTH_SCHEMA
+                or type(sealed["ordinal"]) is not int or sealed["ordinal"]!=4
+                or sealed["authorization_digest"]!="sha256:"+digest_json(auth)
+                or sealed["claim_digest"]!="sha256:"+digest_json(claim)
+                or sealed["logical_key"]!=QA_OLD_KEY or sealed["physical_key"]!=auth["physical_key"]
+                or type(sealed["run_id"]) is not int or sealed["run_id"]<=0
+                or sealed["run_id"] in {QA_FAILED_RUN,QA_SECOND_FAILED_RUN,QA_THIRD_FAILED_RUN,QA_FOURTH_FAILED_RUN,38074007355}
+                or type(sealed["run_attempt"]) is not int or sealed["run_attempt"]!=1
+                or sealed["conclusion"]!="success" or sealed["recommendation"]!="PASS"
+                or sealed["workflow_file"]!=QA_OBSERVED_WORKFLOW
+                or sealed["execution_binding"]!=auth["consumer_execution_binding"]
+                or not isinstance(sealed["safe_output_proof"],dict)
+                or sealed["safe_output_proof"].get("run_id")!=sealed["run_id"]
+                or sealed["safe_output_proof"].get("source_head_sha")!=auth["consumer_execution_binding"]["execution_source_head_sha"]
+                or sealed["safe_output_proof"].get("candidate_pr_number")!=552
+                or type(sealed["content_size"]) is not int or sealed["content_size"]<=0
+                or not re.fullmatch(r"[0-9a-f]{64}",str(sealed["content_sha256"]))
+                or any(not re.fullmatch(r"sha256:[0-9a-f]{64}",str(sealed[k]))
+                       for k in ("resolved_digest","role_payload_digest"))):
+            raise VerticalInvariantError("POLICY_DENIED", "QA replacement PASS seal differs")
+    return {"authorization":auth,"claim":claim,"sealed":sealed,
+        "physical_key":auth["physical_key"],"receipt_id":str(sealed["run_id"]) if sealed else None}
+
+def qa_fourth_terminal(snapshot, *, consumer_binding=None):
+    auth,claim=validate_qa_fourth_authorization(snapshot,consumer_binding=consumer_binding)
+    row=snapshot.get(QA_FOURTH_TERMINAL_PATH)
+    fields={"schema_version","ordinal","authorization_digest","claim_digest","physical_key",
+            "outcome","observation","execution_binding"}
+    if (not isinstance(row,dict) or set(row)!=fields or row["schema_version"]!=QA_FOURTH_SCHEMA
+            or type(row["ordinal"]) is not int or row["ordinal"]!=4
+            or row["authorization_digest"]!="sha256:"+digest_json(auth)
+            or row["claim_digest"]!="sha256:"+digest_json(claim)
+            or row["physical_key"]!=auth["physical_key"]
+            or row["execution_binding"]!=auth["consumer_execution_binding"]
+            or row["outcome"] not in {"FAIL","BLOCKED","EXECUTION_FAILED","UNKNOWN"}
+            or not isinstance(row["observation"],dict)):
+        raise VerticalInvariantError("POLICY_DENIED","QA terminal observation differs")
+    observation=row["observation"]
+    if row["outcome"] in {"FAIL","BLOCKED"}:
+        if (set(observation)!={"run_id","run_attempt","workflow_file","physical_key","source_head_sha","role_payload","proof"}
+                or type(observation["run_attempt"]) is not int or observation["run_attempt"]!=1
+                or observation["workflow_file"]!=QA_OBSERVED_WORKFLOW
+                or observation["physical_key"]!=auth["physical_key"]
+                or observation["source_head_sha"]!=auth["consumer_execution_binding"]["execution_source_head_sha"]
+                or not isinstance(observation["role_payload"],dict)
+                or observation["role_payload"].get("verdict")!=row["outcome"]):
+            raise VerticalInvariantError("POLICY_DENIED","QA non-PASS observation lacks authentic identity")
+        _validate_qa_fourth_result_material(auth,observation["run_id"],observation["role_payload"],observation["proof"])
+    else:
+        if set(observation)!={"lookup_state","run_id","status","conclusion","reason"}:
+            raise VerticalInvariantError("POLICY_DENIED","QA unsuccessful observation shape differs")
+        run_id=observation["run_id"]
+        launched=(observation["lookup_state"]=="LAUNCHED" and type(run_id) is int
+                  and run_id>0 and run_id not in {QA_FAILED_RUN,QA_SECOND_FAILED_RUN,QA_THIRD_FAILED_RUN,QA_FOURTH_FAILED_RUN,38074007355})
+        absent=(observation["lookup_state"] in {"UNKNOWN","NOT_LAUNCHED"} and run_id is None
+                and observation["status"] is None and observation["conclusion"] is None
+                and observation["reason"]=="launch_unresolved")
+        failed=(launched and observation["status"]=="completed"
+                and observation["conclusion"] in {"failure","cancelled","timed_out","action_required","stale","startup_failure"}
+                and observation["reason"]=="worker_unsuccessful")
+        unavailable=(launched and observation["status"]=="completed" and observation["conclusion"]=="success"
+                     and observation["reason"]=="result_unavailable")
+        pending=(launched and observation["status"] in {"queued","in_progress","waiting","requested","pending"}
+                 and observation["conclusion"] is None and observation["reason"]=="worker_unresolved")
+        if not ((row["outcome"]=="EXECUTION_FAILED" and failed) or
+                (row["outcome"]=="UNKNOWN" and (absent or unavailable or pending))):
+            raise VerticalInvariantError("POLICY_DENIED","QA unsuccessful observation facts conflict")
+    tail=operation_events(snapshot,RECOVERY_OPERATION_ID)[48:]
+    summary="Replacement QA "+row["outcome"]+"; observation sha256:"+digest_json(row)
+    if (len(tail)!=1 or tail[0]["event_type"]!="operation.needs-user"
+            or tail[0]["operation_generation"]!=1
+            or tail[0]["payload"]!={"reason_code":"VERTICAL_NEEDS_USER","summary":summary[:512]}):
+        raise VerticalInvariantError("POLICY_DENIED","QA terminal stop differs")
+    return row
+
+def plan_qa_fourth_terminal(snapshot, *, outcome, observation, consumer_binding,
+                                 occurred_at, trusted_context_digest):
+    auth,claim=validate_qa_fourth_authorization(snapshot,consumer_binding=consumer_binding)
+    row={"schema_version":QA_FOURTH_SCHEMA,"ordinal":4,
+        "authorization_digest":"sha256:"+digest_json(auth),"claim_digest":"sha256:"+digest_json(claim),
+        "physical_key":auth["physical_key"],"outcome":outcome,"observation":observation,
+        "execution_binding":consumer_binding}
+    if QA_FOURTH_TERMINAL_PATH in snapshot.files:
+        existing=qa_fourth_terminal(snapshot,consumer_binding=consumer_binding)
+        if canonical_json(existing)!=canonical_json(row):
+            raise VerticalInvariantError("POLICY_DENIED","QA terminal replay differs")
+        return StoreMutationPlan(snapshot.ref_sha,(),{"terminal":existing})
+    validate_qa_fourth_predecessor(snapshot,fresh=True)
+    if QA_FOURTH_SEAL_PATH in snapshot.files:
+        raise VerticalInvariantError("POLICY_DENIED","QA already has accepted PASS")
+    from operator_store import plan_needs_user
+    from operator_store_model import apply_plan_to_snapshot
+    mutation=StoreMutation("create_immutable",QA_FOURTH_TERMINAL_PATH,row)
+    provisional=apply_plan_to_snapshot(snapshot,StoreMutationPlan(snapshot.ref_sha,(mutation,),{}))
+    stop=plan_needs_user(provisional,operation_id=RECOVERY_OPERATION_ID,generation=1,
+        reason_code="VERTICAL_NEEDS_USER",
+        summary="Replacement QA "+outcome+"; observation sha256:"+digest_json(row),
+        occurred_at=occurred_at,trusted_context_digest=trusted_context_digest)
+    plan=StoreMutationPlan(snapshot.ref_sha,(mutation,*stop.mutations),{"terminal":row})
+    qa_fourth_terminal(apply_plan_to_snapshot(snapshot,plan),consumer_binding=consumer_binding)
+    return plan
+
+def qa_fourth_trusted_context(auth):
+    trusted = qa_fourth_dispatch(auth, physical=False)
+    trusted.update(external_dispatch_key=auth["physical_key"], launch_candidate_head_sha=QA_CANDIDATE,
+        source_head_sha=auth["consumer_execution_binding"]["execution_source_head_sha"])
+    return trusted
+
+def qa_fourth_reviewer_binding(snapshot, policy_authority):
+    current = recovery_execution_binding(policy_authority)
+    old = snapshot.get(REVIEWER_INLINE_AUTH_PATH)
+    if (not isinstance(old,dict) or old.get("consumer_execution_binding")==current
+            or not all(path in snapshot.files for path in QA_FOURTH_HISTORY_BLOBS)):
+        return current
+    reviewer, _ = validate_qa_fourth_predecessor(snapshot)
+    # This exact accepted historical producer is a read lease, never a dispatch grant.
+    if qa_fourth_present(snapshot):
+        validate_qa_fourth_authorization(snapshot,consumer_binding=current)
+    elif len(operation_events(snapshot,RECOVERY_OPERATION_ID))!=48:
+        raise VerticalInvariantError("POLICY_DENIED","historical QA inspection escaped frozen prefix")
+    return reviewer["authorization"]["consumer_execution_binding"]
+
+class DogfoodQaFourthResultSource(DogfoodQaThirdResultSource):
+    """Exact QA physical view; ordinary selectors and historical producer maps stay fixed."""
+    def _qa_fourth_view(self, key):
+        from copy import copy
+        from dataclasses import replace
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        auth,claim=validate_qa_fourth_authorization(snapshot,
+            consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+        if key!=auth["physical_key"]:
+            raise VerticalInvariantError("POLICY_DENIED","QA source view escaped frozen physical key")
+        view=copy(self)
+        view.config=replace(self.config,workflows=qa_fourth_workflows())
+        view._qa_view_key=key
+        return view,auth,claim
+
+    def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        if qa_fourth_present(snapshot):
+            auth,_=validate_qa_fourth_authorization(snapshot,
+                consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+            if external_dispatch_key==QA_OLD_KEY:
+                raise VerticalInvariantError("POLICY_DENIED","failed QA is not an adoptable result")
+            if external_dispatch_key==auth["physical_key"]:
+                view,auth,_=self._qa_fourth_view(external_dispatch_key)
+                expected=qa_fourth_trusted_context(auth)
+                for key in ("operation_id","operation_generation","semantic_effect_key","dispatch_id",
+                    "target_repository","target_ref","feature_id","expected_revision","feature_stage",
+                    "role","task_id","candidate_pr_number","launch_candidate_head_sha"):
+                    if trusted_context.get(key)!=expected[key]:
+                        raise VerticalInvariantError("POLICY_DENIED","QA physical/logical context differs")
+                resolved=DogfoodStructuredGateResultSource.resolve(view,
+                    external_dispatch_key=external_dispatch_key,
+                    expected_receipt_identity=expected_receipt_identity,trusted_context=trusted_context)
+                if (resolved.run.task_id!=QA_TASK or resolved.run.candidate_head_sha!=QA_CANDIDATE
+                        or resolved.run.candidate_pr_number!=552 or len(resolved.outputs)!=1):
+                    raise VerticalInvariantError("POLICY_DENIED","QA replacement result identity differs")
+                material=view._reviewer_proofs[resolved.run.run_id]
+                _validate_qa_fourth_result_material(auth,resolved.run.run_id,resolved.role_payload,material)
+                if QA_FOURTH_SEAL_PATH in snapshot.files:
+                    sealed=qa_fourth_route(snapshot)["sealed"]
+                    if sealed["run_id"]!=resolved.run.run_id or any(sealed.get(k)!=v for k,v in material.items()):
+                        raise VerticalInvariantError("POLICY_DENIED","QA current resolution differs from immutable PASS seal")
+                self._reviewer_proofs=getattr(self,"_reviewer_proofs",{})
+                self._reviewer_proofs[resolved.run.run_id]=material
+                return resolved
+        if qa_fourth_inspection(snapshot,recovery_execution_binding(self.reviewer_policy_authority)):
+            return DogfoodStructuredGateResultSource.resolve(self,external_dispatch_key=external_dispatch_key,
+                expected_receipt_identity=expected_receipt_identity,trusted_context=trusted_context)
+        return super().resolve(external_dispatch_key=external_dispatch_key,
+            expected_receipt_identity=expected_receipt_identity,trusted_context=trusted_context)
+
+    def load_content(self, uri):
+        match=_FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        if match and qa_fourth_present(snapshot):
+            auth,_=validate_qa_fourth_authorization(snapshot,
+                consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+            if match.group("key")==auth["physical_key"]:
+                view,_,_=self._qa_fourth_view(match.group("key"))
+                route=qa_fourth_route(snapshot)
+                if uri!=route["sealed"]["trusted_uri"]:
+                    raise VerticalInvariantError("POLICY_DENIED","QA content is not exact sealed result")
+                content=DogfoodStructuredGateResultSource.load_content(view,uri)
+                sealed=route["sealed"]
+                comment=view._json(view.target_repository,
+                    "/issues/comments/"+str(sealed["safe_output_proof"]["comment_id"]),view.config.target_token)
+                proof=view._run_owned_gate_comment(run_id=sealed["run_id"],
+                    source_head_sha=auth["consumer_execution_binding"]["execution_source_head_sha"],
+                    comment=comment,candidate_pr_number=552)
+                if (proof!=sealed["safe_output_proof"] or len(content)!=sealed["content_size"]
+                        or hashlib.sha256(content).hexdigest()!=sealed["content_sha256"]):
+                    raise VerticalInvariantError("POLICY_DENIED","QA leased content differs from immutable PASS seal")
+                return content
+        if qa_fourth_inspection(snapshot,recovery_execution_binding(self.reviewer_policy_authority)):
+            return DogfoodStructuredGateResultSource.load_content(self,uri)
+        return super().load_content(uri)
+
+class DogfoodQaFourthCollector(DogfoodQaThirdCollector):
+    def handle(self, *, operation_id, external_dispatch_key):
+        if operation_id!=RECOVERY_OPERATION_ID or external_dispatch_key!=QA_OLD_KEY:
+            return super().handle(operation_id=operation_id,external_dispatch_key=external_dispatch_key)
+        snapshot=self.callback_coordinator.executor.runtime.backend.read_snapshot()
+        if not qa_fourth_present(snapshot):
+            return super().handle(operation_id=operation_id,external_dispatch_key=external_dispatch_key)
+        route=qa_fourth_route(snapshot,consumer_binding=recovery_execution_binding(self.policy_authority))
+        auth,sealed=route["authorization"],route["sealed"]
+        projection,launch,receipt=qa_fourth_launch_binding(snapshot,
+            operation_id=operation_id,external_dispatch_key=external_dispatch_key,
+            consumer_binding=recovery_execution_binding(self.policy_authority))
+        if receipt!=str(sealed["run_id"]):
+            raise VerticalInvariantError("POLICY_DENIED","QA original launch receipt changed")
+        resolved=self.result_source.resolve(external_dispatch_key=auth["physical_key"],
+            expected_receipt_identity=str(sealed["run_id"]),trusted_context=qa_fourth_trusted_context(auth))
+        reservation=snapshot.get(reservation_path(QA_SEMANTIC_KEY))
+        _validate_run(resolved.run,control_repository=self.control_repository,workflows=qa_fourth_workflows(),
+            launch=dict(launch,external_dispatch_key=auth["physical_key"]),
+            expected_receipt_identity=str(sealed["run_id"]),external_dispatch_key=auth["physical_key"],
+            reservation=dict(reservation,external_dispatch_key=auth["physical_key"]))
+        dispatch=qa_fourth_dispatch(auth,physical=False)
+        context=TrustedDispatchContext(**{key:dispatch[key] for key in (
+            "operation_id","operation_generation","operation_profile","semantic_effect_key",
+            "external_dispatch_key","dispatch_id","target_repository","target_ref","feature_id",
+            "expected_revision","feature_stage","task_id","role","candidate_pr_number","candidate_head_sha")},
+            runtime_receipt_identity=str(sealed["run_id"]),worker_identity=resolved.run.worker_identity,
+            collector_identity=resolved.run.collector_identity)
+        payload=validate_worker_result("qa",resolved.role_payload)
+        if payload["verdict"]!="PASS":
+            raise VerticalInvariantError("NEEDS_USER","QA replacement non-PASS cannot enter lifecycle")
+        declared={row["label"]:row["kind"] for row in payload["outputs"]}
+        receipts=_build_receipts(coordinator=self.callback_coordinator,context=context,
+            outputs=resolved.outputs,declared_outputs=declared,collected_at=str(self.clock()))
+        callback_id="gh-aw-callback-"+digest_json({"operation_id":operation_id,"generation":1,
+            "external_dispatch_key":QA_OLD_KEY,"runtime_receipt_identity":str(sealed["run_id"]),
+            "run_id":sealed["run_id"]})[:24]
+        return self.callback_coordinator.handle(context=context,callback_id=callback_id,
+            worker_payload=payload,receipts=receipts)
+
+def _validate_qa_fourth_result_material(auth, run_id, payload, material):
+    fields={"resolved_digest","role_payload_digest","safe_output_proof","trusted_uri",
+            "content_sha256","content_size"}
+    if (type(run_id) is not int or run_id<=0 or run_id in {QA_FAILED_RUN,QA_SECOND_FAILED_RUN,QA_THIRD_FAILED_RUN,QA_FOURTH_FAILED_RUN,38074007355}
+            or not isinstance(payload,dict) or not isinstance(material,dict) or set(material)!=fields):
+        raise VerticalInvariantError("POLICY_DENIED","QA result material shape differs")
+    validate_worker_result("qa",payload)
+    proof=material["safe_output_proof"]
+    source=auth["consumer_execution_binding"]["execution_source_head_sha"]
+    match=_FIRST_ATTEMPT_URI_RE.fullmatch(str(material["trusted_uri"]))
+    proof_fields={"artifact_id","archive_digest","manifest_entry_digest","run_id","source_head_sha",
+                  "candidate_pr_number","comment_id","comment_url"}
+    if (not isinstance(proof,dict) or set(proof)!=proof_fields
+            or proof["run_id"]!=run_id or proof["source_head_sha"]!=source or proof["candidate_pr_number"]!=552
+            or type(proof["artifact_id"]) is not int or proof["artifact_id"]<=0
+            or type(proof["comment_id"]) is not int or proof["comment_id"]<=0
+            or not isinstance(proof["comment_url"],str)
+            or proof["comment_url"].lower()!=f"https://github.com/dream-xin/ai-sdlc/pull/552#issuecomment-{proof['comment_id']}"
+            or any(not re.fullmatch(r"sha256:[0-9a-f]{64}",str(proof[k])) for k in ("archive_digest","manifest_entry_digest"))
+            or not match or match.group("key")!=auth["physical_key"] or match.group("run")!=str(run_id)
+            or match.group("head")!=source or f"/qa-comment-{proof['comment_id']}-" not in material["trusted_uri"]
+            or material["role_payload_digest"]!="sha256:"+digest_json(payload)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}",str(material["resolved_digest"]))
+            or not re.fullmatch(r"[0-9a-f]{64}",str(material["content_sha256"]))
+            or type(material["content_size"]) is not int or material["content_size"]<=0):
+        raise VerticalInvariantError("POLICY_DENIED","QA result material producer binding differs")
+    return material
+class DogfoodQaFourthTransport(GitHubActionsVerticalGhAwTransport):
+    def __init__(self, config, *, snapshot, consumer_binding, allow_post, http=None, sleeper=None):
+        super().__init__(config, http=http, sleeper=sleeper or __import__('time').sleep)
+        self.authorization, self.claim = validate_qa_fourth_authorization(snapshot, consumer_binding=consumer_binding)
+        self.scan = qa_fourth_scan
+        self._allow_post = allow_post is True
+        self._original_http = self.http
+        self.http = self._reviewer_http
+
+    def _reviewer_http(self, *, method, url, token, body=None):
+        if method == "POST":
+            auth = self.authorization
+            if (not self._allow_post or url != self._api(f"/actions/workflows/{auth['workflow_file']}/dispatches")):
+                raise VerticalInvariantError("POLICY_DENIED", "QA replacement create slot already consumed")
+            self._allow_post = False
+            if self.scan(self, physical_key=auth["physical_key"])["lookup_state"] != "NOT_LAUNCHED":
+                raise VerticalInvariantError("BLOCKED", "QA replacement appeared before POST")
+            self.prepost()
+            status, _, raw = self._original_http(method="GET", url=self._api("/git/ref/heads/main"), token=token, body=None)
+            if status != 200 or json.loads(raw).get("object", {}).get("sha") != auth["consumer_execution_binding"]["execution_source_head_sha"]:
+                raise VerticalInvariantError("POLICY_DENIED", "QA replacement main changed before POST")
+            status, _, raw = self._original_http(method="GET", url=self._api("/pulls/552"), token=token, body=None)
+            pr = json.loads(raw) if status == 200 else {}
+            if (pr.get("state") != "open" or pr.get("draft") is not False
+                    or pr.get("head", {}).get("sha") != QA_CANDIDATE
+                    or pr.get("head", {}).get("ref") != "dogfood/v0.3-happy-path-0001"
+                    or str(pr.get("head", {}).get("repo", {}).get("full_name") or "").lower() != "dream-xin/ai-sdlc"):
+                raise VerticalInvariantError("POLICY_DENIED", "QA replacement candidate changed before POST")
+        return self._original_http(method=method, url=url, token=token, body=body)
+
+    def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
+        auth = self.authorization
+        if workflow != auth["workflow_file"] or ref != "main" or canonical_json(inputs) != canonical_json(self.claim["dispatch_inputs"]):
+            raise VerticalInvariantError("POLICY_DENIED", "QA replacement differs from exact frozen payload")
+        return super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
+
+
+def qa_fourth_scan(transport, *, physical_key):
+    from dataclasses import replace
+    workflows=tuple(dict.fromkeys((transport.config.workflows.developer_workflow,
+        *INLINE_GATE_WORKFLOWS.values(),*STRUCTURED_GATE_WORKFLOWS.values(),QA_OBSERVED_WORKFLOW,
+        REVIEWER_OLD_WORKFLOW,REVIEWER_NEW_WORKFLOW,REVIEWER_BOUNDED_WORKFLOW,
+        "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+        "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml")))
+    results={}
+    for key in (QA_OLD_KEY,QA_SECOND_PRIOR_KEY,QA_THIRD_PRIOR_KEY,QA_FOURTH_PRIOR_KEY,physical_key):
+        matches=[]
+        for workflow in workflows:
+            role="qa" if "-qa-" in workflow else "reviewer" if "-reviewer-" in workflow else "developer"
+            mapping=replace(transport.config.workflows,**{role+"_workflow":workflow})
+            reader=GitHubActionsVerticalGhAwTransport(replace(transport.config,workflows=mapping),
+                http=transport.http,sleeper=lambda _:None)
+            receipt=reader.lookup(workflow=workflow,ref="main",dispatch_key=key)
+            if receipt.get("lookup_state")=="LAUNCHED":
+                matches.append((workflow,str(receipt.get("receipt_id"))))
+            elif receipt.get("lookup_state")!="NOT_LAUNCHED":
+                raise VerticalInvariantError("BLOCKED","QA replacement inventory is incomplete")
+        results[key]=matches
+    if results[QA_OLD_KEY]!=[(INLINE_GATE_WORKFLOWS["qa"],str(QA_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","failed original QA lookup changed")
+    if results[QA_SECOND_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_SECOND_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA1 lookup changed")
+    if results[QA_THIRD_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_THIRD_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA2 lookup changed")
+    if results[QA_FOURTH_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_FOURTH_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA3 lookup changed")
+    matches=results[physical_key]
+    if len(matches)>1 or matches and matches[0][0]!=QA_OBSERVED_WORKFLOW:
+        raise VerticalInvariantError("POLICY_DENIED","QA replacement physical key is ambiguous")
+    return {"lookup_state":"LAUNCHED","receipt_id":matches[0][1]} if matches else {"lookup_state":"NOT_LAUNCHED","receipt_id":None}
+
+
+
+
+
+def qa_fourth_launch_binding(snapshot, *, operation_id, external_dispatch_key, consumer_binding):
+    """Resolve only the authenticated QA4 successor without hiding its failed predecessor."""
+    if operation_id!=RECOVERY_OPERATION_ID or external_dispatch_key!=QA_OLD_KEY:
+        raise VerticalInvariantError("POLICY_DENIED","QA4 launch resolver escaped fixed logical identity")
+    route=qa_fourth_route(snapshot,consumer_binding=consumer_binding)
+    from operator_vertical_store import vertical_projection
+    projection=vertical_projection(snapshot,operation_id)
+    if projection.get("operation_profile")!=VERTICAL_PROFILE or projection["generation"]!=1:
+        raise VerticalInvariantError("POLICY_DENIED","QA4 launch projection differs")
+    if projection["status"] in {"CANCELLED","BLOCKED","NEEDS_USER"}:
+        raise VerticalInvariantError("POLICY_DENIED","QA4 callback is stopped by current canonical state")
+    events=operation_events(snapshot,operation_id)
+    launches=[e["payload"] for e in events if e["operation_generation"]==1
+        and e["event_type"]=="dispatch.launch.authorized"
+        and e["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+    lookups=[e["payload"] for e in events if e["operation_generation"]==1
+        and e["event_type"]=="dispatch.launch.lookup-recorded"
+        and e["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+    expected=[{"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":str(QA_FAILED_RUN)},
+        {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":route["receipt_id"]}]
+    if len(launches)!=1 or lookups!=expected:
+        raise VerticalInvariantError("POLICY_DENIED","QA4 launch receipt chain differs from exact predecessor and seal")
+    launch=launches[0]
+    if launch.get("semantic_effect_key")!=QA_SEMANTIC_KEY:
+        raise VerticalInvariantError("POLICY_DENIED","QA4 semantic launch differs")
+    reservation=snapshot.get(reservation_path(QA_SEMANTIC_KEY))
+    expected={"external_dispatch_key":QA_OLD_KEY,"feature_id":projection["feature_id"],
+        "expected_revision":projection["expected_feature_revision"],"current_stage":launch.get("stage"),
+        "role":launch.get("role")}
+    if not isinstance(reservation,dict) or any(reservation.get(k)!=v for k,v in expected.items()):
+        raise VerticalInvariantError("STALE_REVISION","QA4 launch/reservation projection differs")
+    return projection,launch,route["receipt_id"]
