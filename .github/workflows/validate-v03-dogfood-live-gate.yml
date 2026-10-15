@@ -5325,6 +5325,55 @@ jobs:
           path: evidence/structured-inline-${{ matrix.role }}*
           if-no-files-found: error
 
+  validate-denial-protocol:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.0.0
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Setup pinned detector conclusion scripts
+        uses: github/gh-aw-actions/setup@924af5fdc64061cfbf66fb584c8b07e2ac230c60
+        with:
+          destination: ${{ runner.temp }}/v03-detector-test-actions
+      - name: Install pinned CLI for joined offline Gate regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 120 https://github.com/github/copilot-cli/releases/download/v1.0.90/copilot-linux-x64.tar.gz -o "$RUNNER_TEMP/v03-joined-copilot.tar.gz"
+          echo "7ebcce0f8a76b826e34c76f214361916b130ca9cf1571adf267fbda38f92b4b6  $RUNNER_TEMP/v03-joined-copilot.tar.gz" | sha256sum --check --status
+          python3 - <<'PY'
+          import os, tarfile
+          from pathlib import Path, PurePosixPath
+          dest = Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot"
+          dest.mkdir(mode=0o700)
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "v03-joined-copilot.tar.gz", "r:gz") as archive:
+              entries = archive.getmembers()
+              assert 0 < len(entries) <= 64 and sum(e.size for e in entries) <= 524288000
+              for entry in entries:
+                  path = PurePosixPath(entry.name)
+                  assert not path.is_absolute() and ".." not in path.parts and "\\" not in entry.name
+                  assert entry.isdir() or entry.isfile()
+                  assert 0 <= entry.size <= 314572800
+              archive.extractall(dest, filter="data")
+          assert (dest / "copilot").is_file() and not (dest / "copilot").is_symlink()
+          PY
+          docker pull ghcr.io/github/gh-aw-firewall/agent:0.28.23@sha256:2c78aaba1c108e130e2d6d01e4f2cca334ea04c53e6f258913ac34173fe7e3b2
+          docker pull ghcr.io/github/gh-aw-firewall/api-proxy:0.28.23@sha256:c15c3d1208df10c5b588a3657be53742aa982ae0909d1eb1812525268794ca64
+      - name: Validate actual CLI denial fallback and native proxy budget
+        env:
+          GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
+          V03_SCHEMA_CLI_ROOT: ${{ runner.temp }}/v03-joined-copilot
+        if: ${{ !cancelled() }}
+        run: python -u scripts/validate_v03_gate_output_contract.py --denial-protocol --actions-root "$RUNNER_TEMP/v03-detector-test-actions"
+
   validate-structured-output:
     runs-on: ubuntu-latest
     permissions:
