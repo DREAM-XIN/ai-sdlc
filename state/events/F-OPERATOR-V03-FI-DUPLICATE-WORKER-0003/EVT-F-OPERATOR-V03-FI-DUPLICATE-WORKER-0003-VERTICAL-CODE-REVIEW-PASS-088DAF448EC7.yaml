@@ -1,0 +1,28 @@
+changes:
+- kind: evidence
+  record:
+    id: vertical-evidence-ae27319ba4d776e0cd06
+    status: pass
+    type: review
+    uri: docs/features/F-OPERATOR-V03-FI-DUPLICATE-WORKER-0003/worker-runs/vertical-00c081bb63fabc92246bd38b4310731e/reviewer-comment-5956037556-binding-a9116a8a47fd459f0679469aaba227eaa5312264b083e749238af48e07d57fc4--first-attempt--key-dispatch-3eb269b072f14a0c69456532c13d240f3cefad6b--run-37029326753--head-85b73b76c6fdb96e66a5b70a92b9be30a37e8c68--lease-2184443ae998ae02700b51faed7fb358c95710b9a7cffff640aec87a54aeed9c.json
+- evidence:
+  - vertical-evidence-ae27319ba4d776e0cd06
+  id: implementation-v1
+  kind: artifact
+  status: approved
+- evidence:
+  - vertical-evidence-ae27319ba4d776e0cd06
+  id: code-gate
+  kind: gate
+  status: PASS
+- id: code-review
+  kind: stage
+  status: DONE
+- id: verification
+  kind: stage
+  status: READY
+expected_revision: 1
+feature_id: F-OPERATOR-V03-FI-DUPLICATE-WORKER-0003
+id: EVT-F-OPERATOR-V03-FI-DUPLICATE-WORKER-0003-VERTICAL-CODE-REVIEW-PASS-088DAF448EC7
+occurred_at: '2026-10-02T15:50:40Z'
+version: 0.1.0
