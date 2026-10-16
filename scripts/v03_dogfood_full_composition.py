@@ -1093,7 +1093,14 @@ def reviewer_replacement_route(snapshot, *, consumer_binding=None, require_seal=
 
 def validate_reviewer_controller_bridge(snapshot, consumer_binding, *, inspection_only=False):
     old, _ = validate_reviewer_predecessor(snapshot, fresh=not reviewer_replacement_present(snapshot))
-    if qa_fifth_present(snapshot) or qa_fifth_inspection(snapshot,consumer_binding):
+    if spent50_recovery_present(snapshot) or spent50_recovery_inspection(snapshot,consumer_binding):
+        validate_spent50_recovery_predecessor(snapshot,fresh=not spent50_recovery_present(snapshot))
+        if (set(consumer_binding)!=set(recovery_execution_binding_fields())
+                or consumer_binding["execution_source_head_sha"] in {QA_HISTORICAL_SOURCE,SPENT50_RECOVERY_PRIOR_SOURCE}):
+            raise VerticalInvariantError("POLICY_DENIED","QA5 inspection requires exact new consumer")
+        if not inspection_only:
+            validate_spent50_recovery_authorization(snapshot,consumer_binding=consumer_binding)
+    elif qa_fifth_present(snapshot) or qa_fifth_inspection(snapshot,consumer_binding):
         validate_qa_fifth_predecessor(snapshot,fresh=not qa_fifth_present(snapshot))
         if (set(consumer_binding)!=set(recovery_execution_binding_fields())
                 or consumer_binding["execution_source_head_sha"] in {QA_HISTORICAL_SOURCE,QA_FIFTH_PRIOR_SOURCE}):
@@ -3126,13 +3133,19 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
             return super().resolve(external_dispatch_key=external_dispatch_key,
                 expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
         selected = self.config.workflows.workflow_for(trusted_context["role"])
+        if selected == SPENT50_RECOVERY_WORKFLOW:
+            spent_auth,_=validate_spent50_recovery_authorization(self.reviewer_runtime.backend.read_snapshot(),
+                consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+            if (external_dispatch_key!=spent_auth["physical_key"]
+                    or getattr(self,"_qa_view_key",None)!=external_dispatch_key):
+                raise VerticalInvariantError("POLICY_DENIED","spent50 local Gate lacks exact protected source view")
         if selected == QA_FIFTH_WORKFLOW:
             qa_auth,_=validate_qa_fifth_authorization(self.reviewer_runtime.backend.read_snapshot(),
                 consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
             if (external_dispatch_key!=qa_auth["physical_key"]
                     or getattr(self,"_qa_view_key",None)!=external_dispatch_key):
                 raise VerticalInvariantError("POLICY_DENIED","QA5 local resolution lacks exact protected source view")
-        if selected not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW}:
+        if selected not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW, SPENT50_RECOVERY_WORKFLOW}:
             return super().resolve(external_dispatch_key=external_dispatch_key,
                 expected_receipt_identity=expected_receipt_identity, trusted_context=trusted_context)
         before = self._first_attempt_run_snapshot(run_id=int(expected_receipt_identity), external_dispatch_key=external_dispatch_key)
@@ -3168,13 +3181,19 @@ class DogfoodReviewerReplacementSource(DogfoodHandoffAwareResultSource):
         if not match or not comment_match:
             return super().load_content(uri)
         before = self._first_attempt_run_snapshot(run_id=int(match.group("run")), external_dispatch_key=match.group("key"))
+        if before["workflow_file"] == SPENT50_RECOVERY_WORKFLOW:
+            spent_auth,_=validate_spent50_recovery_authorization(self.reviewer_runtime.backend.read_snapshot(),
+                consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+            if (match.group("key")!=spent_auth["physical_key"]
+                    or getattr(self,"_qa_view_key",None)!=match.group("key")):
+                raise VerticalInvariantError("POLICY_DENIED","spent50 local Gate lacks exact protected source view")
         if before["workflow_file"] == QA_FIFTH_WORKFLOW:
             qa_auth,_=validate_qa_fifth_authorization(self.reviewer_runtime.backend.read_snapshot(),
                 consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
             if (match.group("key")!=qa_auth["physical_key"]
                     or getattr(self,"_qa_view_key",None)!=match.group("key")):
                 raise VerticalInvariantError("POLICY_DENIED","QA5 local reread lacks exact protected source view")
-        if before["workflow_file"] not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW}:
+        if before["workflow_file"] not in {REVIEWER_NEW_WORKFLOW, REVIEWER_BOUNDED_WORKFLOW, "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml", "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml", *STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW, SPENT50_RECOVERY_WORKFLOW}:
             return super().load_content(uri)
         if before["head_sha"] != recovery_execution_binding(self.reviewer_policy_authority)["execution_source_head_sha"]:
             raise VerticalInvariantError("POLICY_DENIED", "local Gate content belongs to another source")
@@ -3326,13 +3345,15 @@ class DogfoodRecoveryBoundContentLoader:
             raise VerticalInvariantError("POLICY_DENIED", "historical inspection lacks protected runtime")
         self.runtime.protected_receipt()
         snapshot = self.runtime.backend.read_snapshot()
+        spent50=spent50_recovery_present(snapshot) or spent50_recovery_inspection(snapshot,recovery_execution_binding(self.policy_authority))
         fifth=qa_fifth_present(snapshot) or qa_fifth_inspection(snapshot,recovery_execution_binding(self.policy_authority))
         fourth=qa_fourth_present(snapshot) or qa_fourth_inspection(snapshot,recovery_execution_binding(self.policy_authority))
         third=qa_third_present(snapshot) or qa_third_inspection(snapshot,recovery_execution_binding(self.policy_authority))
         second=qa_second_present(snapshot) or qa_second_inspection(snapshot,recovery_execution_binding(self.policy_authority))
-        qa_inspection=fifth or fourth or third or second or all(path in snapshot.files for path in QA_HISTORY_BLOBS)
+        qa_inspection=spent50 or fifth or fourth or third or second or all(path in snapshot.files for path in QA_HISTORY_BLOBS)
         if qa_inspection:
-            reviewer,_=(validate_qa_fifth_predecessor(snapshot,fresh=not qa_fifth_present(snapshot)) if fifth else
+            reviewer,_=(validate_spent50_recovery_predecessor(snapshot,fresh=not spent50_recovery_present(snapshot)) if spent50 else
+                validate_qa_fifth_predecessor(snapshot,fresh=not qa_fifth_present(snapshot)) if fifth else
                 validate_qa_fourth_predecessor(snapshot,fresh=not qa_fourth_present(snapshot)) if fourth else
                 validate_qa_third_predecessor(snapshot,fresh=not qa_third_present(snapshot)) if third else
                 validate_qa_second_predecessor(snapshot,fresh=not qa_second_present(snapshot)) if second else
@@ -3720,7 +3741,7 @@ def build_v03_dogfood_full_composition(
     structured = producer_descriptor is not None or any(workflows.reviewer_workflow == mapping["reviewer"]
                      and workflows.qa_workflow == mapping["qa"]
                      for mapping in (STRUCTURED_GATE_WORKFLOWS, INLINE_GATE_WORKFLOWS))
-    result_source = (DogfoodQaFifthResultSource if structured else DogfoodReviewerReplacementSource)(
+    result_source = (DogfoodSpent50RecoveryResultSource if structured else DogfoodReviewerReplacementSource)(
         source_config,
         target_repository=config.target_repository,
     )
@@ -3851,7 +3872,7 @@ def build_v03_dogfood_full_composition(
         bundle.executor.remediation_rereview_authority = authority
         callback_coordinator.remediation_rereview_authority = authority
         dispatch_gateway.delegate.remediation_rereview_authority = authority
-    collector = DogfoodQaFifthCollector(
+    collector = DogfoodSpent50RecoveryCollector(
         policy_authority=policy_authority,
         callback_coordinator=callback_coordinator,
         result_source=result_source,
@@ -3922,6 +3943,9 @@ class DogfoodStructuredGateContextBuilder:
                (feature_gateway, persist_gateway, content_loader, candidate_provider)):
             raise V03DogfoodCompositionError("structured context must retain one protected runtime")
 
+    def build_prospective_spent50_recovery(self, authorization):
+        return self(spent50_recovery_dispatch(authorization), prospective_authorization=authorization)
+
     def build_prospective_qa_fifth(self, authorization):
         return self(qa_fifth_dispatch(authorization), prospective_authorization=authorization)
 
@@ -3982,6 +4006,24 @@ class DogfoodStructuredGateContextBuilder:
                 raise VerticalInvariantError("POLICY_DENIED", "unknown structured context physical mapping")
             logical_key, logical_dispatch_id = auth["logical_key"], auth["logical_dispatch_id"]
         if (operation_id == RECOVERY_OPERATION_ID and role == "qa" and logical_key != QA_OLD_KEY
+                and ((isinstance(prospective_authorization,dict) and prospective_authorization.get("schema_version")==SPENT50_RECOVERY_SCHEMA) or spent50_recovery_present(snapshot))):
+            if prospective_authorization is not None:
+                validate_spent50_recovery_predecessor(snapshot,fresh=True)
+                auth=spent50_recovery_authorization(snapshot,
+                    consumer_binding=recovery_execution_binding(self.policy_authority),
+                    predecessor_proof=prospective_authorization.get("predecessor_proof"),
+                    source_config=prospective_authorization.get("source_config"),
+                    admission_proof=prospective_authorization.get("admission_proof"),
+                    observation_anchor=prospective_authorization.get("observation_anchor"))
+                if canonical_json(auth)!=canonical_json(prospective_authorization):
+                    raise VerticalInvariantError("POLICY_DENIED","prospective QA authority differs")
+            else:
+                auth,_=validate_spent50_recovery_authorization(snapshot,
+                    consumer_binding=recovery_execution_binding(self.policy_authority))
+            if logical_key!=auth["physical_key"] or logical_dispatch_id!=auth["physical_dispatch_id"]:
+                raise VerticalInvariantError("POLICY_DENIED","QA physical context mapping differs")
+            logical_key,logical_dispatch_id=QA_OLD_KEY,QA_LOGICAL_DISPATCH
+        elif (operation_id == RECOVERY_OPERATION_ID and role == "qa" and logical_key != QA_OLD_KEY
                 and ((isinstance(prospective_authorization,dict) and prospective_authorization.get("schema_version")==QA_FIFTH_SCHEMA) or qa_fifth_present(snapshot))):
             if prospective_authorization is not None:
                 validate_qa_fifth_predecessor(snapshot,fresh=True)
@@ -4709,7 +4751,7 @@ class DogfoodCurrentStructuredDispatchGateway(DogfoodStructuredGateDispatchGatew
             _commit_recovery_nonempty(runtime,freeze)
         return super().launch(dispatch=dispatch)
 
-def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_third_authority=None, qa_fourth_authority=None, qa_fifth_authority=None,
+def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_third_authority=None, qa_fourth_authority=None, qa_fifth_authority=None, spent50_authority=None,
                                 producer_descriptor=None, producer_record=None):
     """Exact pinned official metadata, derived from the reviewed compiled environment."""
     from pathlib import Path
@@ -4718,7 +4760,16 @@ def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_t
     source_blobs = ({QA_OBSERVED_WORKFLOW: QA_WORKER_BLOBS[".github/workflows/" + QA_OBSERVED_WORKFLOW]}
         if workflow == QA_OBSERVED_WORKFLOW else
         INLINE_DOGFOOD_BLOBS if workflow in INLINE_GATE_WORKFLOWS.values() else STRUCTURED_DOGFOOD_BLOBS)
-    if qa_fifth_authority is not None:
+    if spent50_authority is not None:
+        auth=spent50_authority
+        if (not isinstance(auth,dict) or auth.get("schema_version")!=SPENT50_RECOVERY_SCHEMA
+                or auth.get("worker_blobs")!=SPENT50_RECOVERY_WORKER_BLOBS
+                or workflow!=SPENT50_RECOVERY_WORKFLOW or auth.get("workflow_file")!=workflow
+                or run.get("head_sha")!=auth["consumer_execution_binding"]["execution_source_head_sha"]
+                or run.get("display_title")!="AI-SDLC gh-aw "+auth["physical_key"]):
+            raise VerticalInvariantError("POLICY_DENIED","spent50 metadata source authority differs")
+        source_blobs={workflow:SPENT50_RECOVERY_WORKER_BLOBS[".github/workflows/"+workflow]}
+    elif qa_fifth_authority is not None:
         auth=qa_fifth_authority
         if (not isinstance(auth,dict) or auth.get("schema_version")!=QA_FIFTH_SCHEMA
                 or auth.get("worker_blobs")!=QA_FIFTH_WORKER_BLOBS
@@ -4756,7 +4807,7 @@ def _structured_metadata_suffix(workflow, run, *, qa_second_authority=None, qa_t
         source_blobs={workflow:QA_SECOND_WORKER_BLOBS[".github/workflows/"+workflow]}
     if producer_descriptor is not None:
         mapping,blobs,value=_current_v3_source_contract(producer_descriptor)
-        if (qa_second_authority is not None or qa_third_authority is not None or qa_fourth_authority is not None or qa_fifth_authority is not None
+        if (spent50_authority is not None or qa_second_authority is not None or qa_third_authority is not None or qa_fourth_authority is not None or qa_fifth_authority is not None
                 or not isinstance(producer_record,dict)
                 or producer_record.get("producer_descriptor")!=value
                 or producer_record.get("schema_version")!="ai-sdlc.v03-structured-producer-inputs/v1"
@@ -4798,21 +4849,28 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
         self._qa_fourth_metadata_auth=None
         self._qa_third_metadata_auth=None
         self._qa_second_metadata_auth=None
-        if operation_id==RECOVERY_OPERATION_ID and qa_fifth_present(snapshot):
+        if operation_id==RECOVERY_OPERATION_ID and spent50_recovery_present(snapshot):
+            auth,claim=validate_spent50_recovery_authorization(snapshot,consumer_binding=binding)
+            if key==auth["physical_key"]:
+                if workflow!=SPENT50_RECOVERY_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
+                    raise VerticalInvariantError("POLICY_DENIED","spent50 observed input view differs")
+                self._spent50_metadata_auth=auth
+                return claim["dispatch_inputs"]
+        if operation_id==RECOVERY_OPERATION_ID and qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
             qa_auth,qa_claim=validate_qa_fifth_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
                 if workflow!=QA_FIFTH_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
                     raise VerticalInvariantError("POLICY_DENIED","QA5 observed input view differs")
                 self._qa_fifth_metadata_auth=qa_auth
                 return qa_claim["dispatch_inputs"]
-        if operation_id==RECOVERY_OPERATION_ID and qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot):
+        if operation_id==RECOVERY_OPERATION_ID and qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
             qa_auth,qa_claim=validate_qa_fourth_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
                 if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
                     raise VerticalInvariantError("POLICY_DENIED","QA4 observed input view differs")
                 self._qa_fourth_metadata_auth=qa_auth
                 return qa_claim["dispatch_inputs"]
-        if operation_id==RECOVERY_OPERATION_ID and qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot):
+        if operation_id==RECOVERY_OPERATION_ID and qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
             qa_auth,qa_claim=validate_qa_third_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
                 if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4820,7 +4878,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 self._qa_third_metadata_auth=qa_auth
                 return qa_claim["dispatch_inputs"]
         self._qa_second_metadata_auth=None
-        if operation_id==RECOVERY_OPERATION_ID and qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot):
+        if operation_id==RECOVERY_OPERATION_ID and qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
             qa_auth,qa_claim=validate_qa_second_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
                 if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4829,7 +4887,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 return qa_claim["dispatch_inputs"]
         if (operation_id == RECOVERY_OPERATION_ID and qa_replacement_present(snapshot)
                 and not qa_second_inspection(snapshot,binding)
-                and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot)):
+                and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot)):
 
             qa_auth,qa_claim=validate_qa_replacement_authorization(snapshot,consumer_binding=binding)
             if key==qa_auth["physical_key"]:
@@ -4853,8 +4911,19 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
             raise VerticalInvariantError("POLICY_DENIED", "structured input record belongs to another source family")
         return document["dispatch_inputs"]
 
+    def _spent50_selected_workflow(self, workflow):
+        if workflow != SPENT50_RECOVERY_WORKFLOW:
+            return False
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        auth,_=validate_spent50_recovery_authorization(snapshot,
+            consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+        if getattr(self,"_qa_view_key",None)!=auth["physical_key"]:
+            raise VerticalInvariantError("POLICY_DENIED","spent50 source has no exact physical view")
+        self._spent50_metadata_auth=auth
+        return True
+
     def _gate_observation(self, *, values, run_id, workflow, trusted):
-        if workflow not in (*STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW):
+        if workflow not in (*STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW) and not self._spent50_selected_workflow(workflow):
             return super()._gate_observation(values=values, run_id=run_id, workflow=workflow, trusted=trusted)
         from operator_vertical_gh_aw_github_source import TargetScopedGitHubActionsGhAwResultSource
         observed = TargetScopedGitHubActionsGhAwResultSource._gate_observation(
@@ -4872,7 +4941,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
             if canonical_json(identity[field]) != canonical_json(trusted[key]):
                 raise VerticalInvariantError("POLICY_DENIED", "structured Gate context differs from callback task")
         run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
-        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None), qa_fourth_authority=getattr(self,"_qa_fourth_metadata_auth",None), qa_fifth_authority=getattr(self,"_qa_fifth_metadata_auth",None),
+        self._structured_parse = (context, identity["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None), qa_fourth_authority=getattr(self,"_qa_fourth_metadata_auth",None), qa_fifth_authority=getattr(self,"_qa_fifth_metadata_auth",None), spent50_authority=getattr(self,"_spent50_metadata_auth",None),
                     producer_descriptor=getattr(self,"producer_descriptor",None), producer_record=getattr(self,"_current_v3_metadata_record",None)))
         return observed
 
@@ -4914,7 +4983,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
         if match:
             run = self._json(self.config.control_repository, f"/actions/runs/{match.group('run')}", self.config.control_token)
             workflow = self._workflow_file(run)
-            if workflow in (*STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW):
+            if workflow in (*STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW) or self._spent50_selected_workflow(workflow):
                 snapshot = self.reviewer_runtime.backend.read_snapshot()
                 # Identify exactly one protected context by key, never by model-supplied text.
                 key = match.group("key")
@@ -4925,21 +4994,28 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 self._qa_third_metadata_auth=None
                 self._qa_second_metadata_auth=None
                 binding=recovery_execution_binding(self.reviewer_policy_authority)
-                if qa_fifth_present(snapshot):
+                if spent50_recovery_present(snapshot):
+                    auth,claim=validate_spent50_recovery_authorization(snapshot,consumer_binding=binding)
+                    if key==auth["physical_key"]:
+                        if workflow!=SPENT50_RECOVERY_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
+                            raise VerticalInvariantError("POLICY_DENIED","spent50 observed lease view differs")
+                        candidates.append(claim["dispatch_inputs"])
+                        self._spent50_metadata_auth=auth
+                if qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
                     qa_auth,qa_claim=validate_qa_fifth_authorization(snapshot,consumer_binding=binding)
                     if key==qa_auth["physical_key"]:
                         if workflow!=QA_FIFTH_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
                             raise VerticalInvariantError("POLICY_DENIED","QA5 observed lease view differs")
                         candidates.append(qa_claim["dispatch_inputs"])
                         self._qa_fifth_metadata_auth=qa_auth
-                if qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot):
+                if qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
                     qa_auth,qa_claim=validate_qa_fourth_authorization(snapshot,consumer_binding=binding)
                     if key==qa_auth["physical_key"]:
                         if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
                             raise VerticalInvariantError("POLICY_DENIED","QA4 observed lease view differs")
                         candidates.append(qa_claim["dispatch_inputs"])
                         self._qa_fourth_metadata_auth=qa_auth
-                if qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot):
+                if qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
                     qa_auth,qa_claim=validate_qa_third_authorization(snapshot,consumer_binding=binding)
                     if key==qa_auth["physical_key"]:
                         if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4947,7 +5023,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                         candidates.append(qa_claim["dispatch_inputs"])
                         self._qa_third_metadata_auth=qa_auth
                 self._qa_second_metadata_auth=None
-                if qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot):
+                if qa_second_present(snapshot) and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot):
                     qa_auth,qa_claim=validate_qa_second_authorization(snapshot,consumer_binding=binding)
                     if key==qa_auth["physical_key"]:
                         if workflow!=QA_OBSERVED_WORKFLOW or getattr(self,"_qa_view_key",None)!=key:
@@ -4955,7 +5031,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                         candidates.append(qa_claim["dispatch_inputs"])
                         self._qa_second_metadata_auth=qa_auth
                 if (qa_replacement_present(snapshot) and not qa_second_inspection(snapshot,binding)
-                        and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot)):
+                        and not qa_third_inspection(snapshot,binding) and not qa_third_present(snapshot) and not qa_fourth_inspection(snapshot,binding) and not qa_fourth_present(snapshot) and not qa_fifth_inspection(snapshot,binding) and not qa_fifth_present(snapshot) and not spent50_recovery_inspection(snapshot,binding) and not spent50_recovery_present(snapshot)):
                     qa_auth,qa_claim=validate_qa_replacement_authorization(snapshot,
                         consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
                     if key==qa_auth["physical_key"]:
@@ -4988,7 +5064,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
                 if len(candidates) != 1:
                     raise VerticalInvariantError("POLICY_DENIED", "structured content lacks unique protected inputs")
                 context = json.loads(candidates[0]["task_payload"])["feature_context"]["gate_context"]
-                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None), qa_fourth_authority=getattr(self,"_qa_fourth_metadata_auth",None), qa_fifth_authority=getattr(self,"_qa_fifth_metadata_auth",None),
+                self._structured_parse = (context, context["identity"]["role"], _structured_metadata_suffix(workflow, run, qa_second_authority=getattr(self,"_qa_second_metadata_auth",None), qa_third_authority=getattr(self,"_qa_third_metadata_auth",None), qa_fourth_authority=getattr(self,"_qa_fourth_metadata_auth",None), qa_fifth_authority=getattr(self,"_qa_fifth_metadata_auth",None), spent50_authority=getattr(self,"_spent50_metadata_auth",None),
                     producer_descriptor=getattr(self,"producer_descriptor",None), producer_record=getattr(self,"_current_v3_metadata_record",None)))
         try:
             if not str(uri).startswith("docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/"):
@@ -5000,7 +5076,7 @@ class DogfoodStructuredGateResultSource(DogfoodReviewerReplacementSource):
     def _reviewer_jobs(self, run_id, source_sha):
         doc = super()._reviewer_jobs(run_id, source_sha)
         run = self._json(self.config.control_repository, f"/actions/runs/{run_id}", self.config.control_token)
-        if self._workflow_file(run) in (*STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW):
+        if self._workflow_file(run) in (*STRUCTURED_GATE_WORKFLOWS.values(), *INLINE_GATE_WORKFLOWS.values(), QA_OBSERVED_WORKFLOW, QA_FIFTH_WORKFLOW) or self._spent50_selected_workflow(self._workflow_file(run)):
             required = {"agent": ("Prepare authenticated Gate context before model",
                                   "Render validated structured Gate output before detection"),
                 "detection": ("Verify Gate detector input bytes before scanning",
@@ -6430,6 +6506,8 @@ def qa_replacement_trusted_context(auth):
 
 def qa_reviewer_binding(snapshot, policy_authority):
     current = recovery_execution_binding(policy_authority)
+    if spent50_recovery_present(snapshot) or spent50_recovery_inspection(snapshot,current):
+        return spent50_recovery_reviewer_binding(snapshot,policy_authority)
     if qa_fifth_present(snapshot) or qa_fifth_inspection(snapshot,current):
         return qa_fifth_reviewer_binding(snapshot,policy_authority)
     if qa_fourth_present(snapshot) or qa_fourth_inspection(snapshot,current):
@@ -9945,4 +10023,938 @@ def validate_qa_spent50_preparation(snapshot):
             "preserved_qa_outcome": terminal["outcome"], "history_pin_verified": True,
             "fresh_reviewer_reread_performed": False, "fresh_worker_observation_performed": False,
             "execution_enabled": False}
+
+
+
+# Fixed spent-50 recovery capability. The committed source configuration is disabled.
+SPENT50_RECOVERY_CONFIG_PATH = "config/v03-fixed-spent50-recovery.json"
+SPENT50_RECOVERY_CONFIG_SCHEMA = "ai-sdlc.v03-fixed-spent50-recovery-config/v1"
+SPENT50_RECOVERY_CONFIG_DEFAULT = {"schema_version":"ai-sdlc.v03-fixed-spent50-recovery-config/v1","operation_id":"op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4","predecessor_store_commit":"af509c2e151d1193faab7e6e0864806bee4a6e84","predecessor_event_count":50,"candidate":{"pr_number":552,"head_sha":"8ffd22d2bcd857d05200eba93cb1931a3b953c9f","revision":5},"producer":{"source_commit":"fb510b588b12637399e45557c1bd60e46a62d595","workflow_file":"ai-sdlc-gh-aw-qa-deepseek-v03-observed-v5-local.lock.yml","worker_blobs":{".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v5-local.md":"d2f6ff9fc8a11795ceecc0810dd28b808551c8cc",".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v5-local.lock.yml":"8d5aece059aac59789d3cc23924ac22d9d8f374c","scripts/v03_dogfood_gate_output_v4.py":"39c0a171bed758651fdbea69b3d46ffb9a5b1b3d","scripts/v03_detector_observation.mjs":"85d792241d3d20b0f1051d01e1054c608bfcabdc"}},"limits":{"worker_dispatches":1,"result_comments":1,"scan_tool_calls":50,"scan_seconds":300,"observation_seconds":2400},"admission":None}
+SPENT50_RECOVERY_STORE = QA_SPENT50_STORE
+SPENT50_RECOVERY_HISTORY_BLOBS = dict(QA_SPENT50_HISTORY_BLOBS)
+SPENT50_RECOVERY_DOCUMENT_BLOBS = dict(QA_SPENT50_DOCUMENT_BLOBS)
+SPENT50_RECOVERY_WORKER_BLOBS = dict(SPENT50_RECOVERY_CONFIG_DEFAULT["producer"]["worker_blobs"])
+SPENT50_RECOVERY_WORKFLOW = SPENT50_RECOVERY_CONFIG_DEFAULT["producer"]["workflow_file"]
+SPENT50_RECOVERY_AUTHOR = {"id": 33620907, "login": "DREAM-XIN", "type": "User"}
+
+@dataclass(frozen=True)
+class SourceBoundSpent50RecoveryConfig:
+    installation_commit_sha: str
+    source_blob_sha: str
+    canonical_document: str
+
+    @property
+    def document(self):
+        return json.loads(self.canonical_document)
+
+def _spent50_utc(value):
+    from datetime import datetime, timezone
+    if type(value) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value) is None:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery UTC format differs")
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery UTC calendar differs") from exc
+
+def validate_spent50_recovery_config(document):
+    """Validate the closed document; source authentication is performed by its loader."""
+    from copy import deepcopy
+    if type(document) is not dict or set(document) != set(SPENT50_RECOVERY_CONFIG_DEFAULT):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery configuration fields differ")
+    expected = deepcopy(SPENT50_RECOVERY_CONFIG_DEFAULT)
+    expected["admission"] = document["admission"]
+    # Canonical JSON equality also distinguishes bool from integer and extra nested keys.
+    if canonical_json(document) != canonical_json(expected):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery configuration scope differs")
+    admission = document["admission"]
+    if admission is not None:
+        if (type(admission) is not dict or set(admission) != {"uri", "body_digest", "not_before", "expires_at"}
+                or type(admission["uri"]) is not str
+                or re.fullmatch(r"https://github\.com/DREAM-XIN/ai-sdlc/issues/239#issuecomment-[1-9][0-9]*", admission["uri"]) is None
+                or type(admission["body_digest"]) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", admission["body_digest"]) is None
+                or admission["uri"] == QA_FIFTH_ADMISSION["uri"]):
+            raise VerticalInvariantError("POLICY_DENIED", "fixed recovery admission pointer differs")
+        if _spent50_utc(admission["not_before"]) >= _spent50_utc(admission["expires_at"]):
+            raise VerticalInvariantError("POLICY_DENIED", "fixed recovery admission interval differs")
+    return document
+
+def bind_spent50_recovery_config(contents, *, installation_commit_sha):
+    """Consume exact GitHub Contents bytes at the caller's authenticated installation."""
+    import base64
+    if type(installation_commit_sha) is not str or _SHA40.fullmatch(installation_commit_sha) is None:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery installation identity differs")
+    if (type(contents) is not dict or contents.get("type") != "file"
+            or contents.get("path") != SPENT50_RECOVERY_CONFIG_PATH
+            or contents.get("encoding") != "base64"
+            or type(contents.get("sha")) is not str or _SHA40.fullmatch(contents["sha"]) is None
+            or type(contents.get("content")) is not str):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery configuration source differs")
+    try:
+        raw = base64.b64decode("".join(contents["content"].split()), validate=True)
+        def unique_object(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate configuration key")
+                value[key] = item
+            return value
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+    except (ValueError, UnicodeError, TypeError) as exc:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery configuration bytes unavailable") from exc
+    if hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest() != contents["sha"]:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery configuration blob differs")
+    validate_spent50_recovery_config(document)
+    return SourceBoundSpent50RecoveryConfig(installation_commit_sha, contents["sha"], canonical_json(document))
+
+def spent50_recovery_admission_scope(config):
+    if type(config) is not SourceBoundSpent50RecoveryConfig:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery requires source-bound configuration")
+    document = validate_spent50_recovery_config(config.document)
+    admission = document["admission"]
+    if admission is None:
+        raise VerticalInvariantError("NEEDS_USER", "fixed recovery is disabled without a genuine admission")
+    return {"schema_version": "ai-sdlc.v03-fixed-spent50-recovery-admission/v1",
+        "scope": {k: v for k, v in document.items() if k != "admission"},
+        "not_before": admission["not_before"], "expires_at": admission["expires_at"]}
+
+def validate_spent50_recovery_admission(config, comment, *, observed_at):
+    """Validate an exact provider record, never infer permission from discovery or prose."""
+    scope = spent50_recovery_admission_scope(config)
+    admission = config.document["admission"]
+    now = _spent50_utc(observed_at)
+    if not (_spent50_utc(admission["not_before"]) <= now < _spent50_utc(admission["expires_at"])):
+        raise VerticalInvariantError("NEEDS_USER", "fixed recovery admission is not currently valid")
+    identifier = int(admission["uri"].rsplit("-", 1)[1])
+    body = canonical_json(scope)
+    digest = "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+    if (type(comment) is not dict or type(comment.get("id")) is not int or comment["id"] != identifier
+            or comment.get("html_url") != admission["uri"]
+            or comment.get("issue_url") != "https://api.github.com/repos/DREAM-XIN/ai-sdlc/issues/239"
+            or type(comment.get("user")) is not dict
+            or any(comment["user"].get(k) != v for k, v in SPENT50_RECOVERY_AUTHOR.items())
+            or type(comment["user"].get("id")) is not int
+            or comment.get("body") != body or admission["body_digest"] != digest
+            or comment.get("updated_at") != comment.get("created_at")):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery admission provider evidence differs")
+    created = _spent50_utc(comment["created_at"])
+    if created > now:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery admission was created in the future")
+    return {"uri": admission["uri"], "body_digest": digest,
+        "author": dict(SPENT50_RECOVERY_AUTHOR), "created_at": comment["created_at"],
+        "updated_at": comment["updated_at"], "scope_digest": "sha256:" + digest_json(scope), "observed_at": observed_at}
+
+def spent50_recovery_config_record(config):
+    if type(config) is not SourceBoundSpent50RecoveryConfig:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery source configuration type differs")
+    return {"installation_commit_sha": config.installation_commit_sha,
+        "source_blob_sha": config.source_blob_sha, "canonical_document": config.canonical_document}
+
+def spent50_recovery_config_from_record(record, *, consumer_binding):
+    if (type(record) is not dict or set(record) != {"installation_commit_sha", "source_blob_sha", "canonical_document"}
+            or type(record["installation_commit_sha"]) is not str or _SHA40.fullmatch(record["installation_commit_sha"]) is None
+            or type(record["source_blob_sha"]) is not str or _SHA40.fullmatch(record["source_blob_sha"]) is None
+            or type(record["canonical_document"]) is not str
+            or type(consumer_binding) is not dict
+            or record["installation_commit_sha"] != consumer_binding.get("execution_source_head_sha")):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery frozen source configuration differs")
+    try:
+        document = json.loads(record["canonical_document"])
+    except (ValueError, TypeError) as exc:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery frozen configuration is malformed") from exc
+    validate_spent50_recovery_config(document)
+    if canonical_json(document) != record["canonical_document"]:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery frozen configuration is not canonical")
+    config = SourceBoundSpent50RecoveryConfig(**record)
+    spent50_recovery_admission_scope(config)
+    return config
+
+def validate_spent50_recovery_admission_proof(config, proof):
+    if type(proof) is not dict or set(proof) != {"uri", "body_digest", "author", "created_at", "updated_at", "scope_digest", "observed_at"}:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery frozen admission evidence differs")
+    scope = spent50_recovery_admission_scope(config)
+    expected = validate_spent50_recovery_admission(config, {
+        "id": int(config.document["admission"]["uri"].rsplit("-", 1)[1]),
+        "html_url": proof["uri"], "issue_url": "https://api.github.com/repos/DREAM-XIN/ai-sdlc/issues/239",
+        "user": proof["author"], "body": canonical_json(scope),
+        "created_at": proof["created_at"], "updated_at": proof["updated_at"]},
+        observed_at=proof["observed_at"])
+    if canonical_json(proof) != canonical_json(expected):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery frozen admission proof differs")
+    return proof
+
+def validate_spent50_recovery_anchor(anchor):
+    if type(anchor) is not dict or set(anchor) != {"started_at", "expires_at"}:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery observation anchor differs")
+    if (_spent50_utc(anchor["expires_at"]) - _spent50_utc(anchor["started_at"])).total_seconds() != 2400:
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery observation window differs")
+    return anchor
+
+SPENT50_RECOVERY_SCHEMA = "ai-sdlc.v03-spent50-recovery/v1"
+SPENT50_RECOVERY_BASE = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/dogfood-spent50-recovery"
+SPENT50_RECOVERY_AUTH_PATH = SPENT50_RECOVERY_BASE + "/authorization.json"
+SPENT50_RECOVERY_CLAIM_PATH = SPENT50_RECOVERY_BASE + "/create-claim.json"
+SPENT50_RECOVERY_SEAL_PATH = SPENT50_RECOVERY_BASE + "/sealed-result.json"
+SPENT50_RECOVERY_TERMINAL_PATH = SPENT50_RECOVERY_BASE + "/terminal-observation.json"
+SPENT50_RECOVERY_PATHS = (SPENT50_RECOVERY_AUTH_PATH, SPENT50_RECOVERY_CLAIM_PATH, SPENT50_RECOVERY_SEAL_PATH, SPENT50_RECOVERY_TERMINAL_PATH)
+SPENT50_RECOVERY_FAILED_RUN = 38699515120
+SPENT50_RECOVERY_PRIOR_KEY = "dispatch-6d6819672287d87f90ee08661526b21e36d5b56b"
+SPENT50_RECOVERY_PRIOR_SOURCE = "22345e09dca6d0ef0bf1686b90d4751f0f95cd57"
+SPENT50_RECOVERY_PROJECTION_PATH = QA_FOURTH_PROJECTION_PATH
+SPENT50_RECOVERY_PROJECTION_BLOB = QA_SPENT50_PROJECTION_BLOB
+
+
+def load_spent50_recovery_config(source, policy_authority):
+    """Read only the fixed path at the authenticated installation, never current main."""
+    binding = recovery_execution_binding(policy_authority)
+    sha = binding["execution_source_head_sha"]
+    document = source._json(source.config.control_repository,
+        "/contents/" + SPENT50_RECOVERY_CONFIG_PATH + "?ref=" + sha,
+        source.config.control_token)
+    return bind_spent50_recovery_config(document, installation_commit_sha=sha)
+
+def verify_spent50_recovery_source_config(source, policy_authority, auth):
+    config = load_spent50_recovery_config(source, policy_authority)
+    if canonical_json(spent50_recovery_config_record(config)) != canonical_json(auth["source_config"]):
+        raise VerticalInvariantError("POLICY_DENIED", "fixed recovery source configuration changed")
+    return config
+
+
+def spent50_recovery_inspection(snapshot, consumer_binding):
+    old=snapshot.get(QA_FIFTH_AUTH_PATH)
+    return (QA_FIFTH_TERMINAL_PATH in snapshot.files
+        and isinstance(old,dict) and old.get("consumer_execution_binding")!=consumer_binding)
+
+def spent50_recovery_present(snapshot):
+    return any(path.startswith(SPENT50_RECOVERY_BASE + "/") for path in snapshot.files)
+
+def spent50_recovery_workflows():
+    from v03_dogfood_live_gate import INLINE_DOGFOOD_WORKFLOWS
+    return GhAwVerticalWorkflowMap(default_branch="main",
+        developer_workflow=INLINE_DOGFOOD_WORKFLOWS["developer"],
+        reviewer_workflow=INLINE_DOGFOOD_WORKFLOWS["reviewer"], qa_workflow=SPENT50_RECOVERY_WORKFLOW)
+
+def spent50_recovery_dispatch(auth, *, physical=True):
+    return {"operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+        "operation_profile": VERTICAL_PROFILE, "semantic_effect_key": QA_SEMANTIC_KEY,
+        "external_dispatch_key": auth["physical_key"] if physical else QA_OLD_KEY,
+        "dispatch_id": auth["physical_dispatch_id"] if physical else QA_LOGICAL_DISPATCH,
+        "target_repository": "dream-xin/ai-sdlc", "target_ref": "dogfood/v0.3-happy-path-0001",
+        "feature_id": "F-OPERATOR-V03-DOGFOOD-HAPPY-0001", "expected_revision": 5,
+        "feature_stage": "verification", "task_id": QA_TASK, "task_identity": QA_TASK,
+        "role": "qa", "candidate_pr_number": 552, "candidate_head_sha": QA_CANDIDATE}
+
+def validate_spent50_recovery_predecessor(snapshot, *, fresh=False):
+    if not _SHA40.fullmatch(str(snapshot.ref_sha or "")):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement lacks existing protected Store")
+    pins = {**SPENT50_RECOVERY_HISTORY_BLOBS, **SPENT50_RECOVERY_DOCUMENT_BLOBS}
+    ancestry = {**REVIEWER_DOCUMENT_BLOBS, **REVIEWER_POST_MODEL_DOCUMENT_BLOBS,
+        **REVIEWER_STRUCTURED_PRIOR_BLOBS, **REVIEWER_INLINE_PRIOR_BLOBS}
+    inherited = {path: blob for path, blob in ancestry.items() if path not in pins}
+    if (len(inherited) != 4 or any(pins[path] != blob for path, blob in ancestry.items() if path in pins)
+            or any(path not in snapshot.files or _recovery_document_blob(snapshot.get(path)) != blob
+                   for path, blob in {**pins, **inherited}.items())):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement historical bytes differ")
+    prefix = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/"
+    if any(path.startswith(prefix) and "/events/" not in path and path not in SPENT50_RECOVERY_DOCUMENT_BLOBS
+           and path not in SPENT50_RECOVERY_PATHS for path in snapshot.files):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement has foreign operation sidecars")
+    events = operation_events(snapshot, RECOVERY_OPERATION_ID)
+    if len(events) < 50 or [e["sequence"] for e in events[:50]] != list(range(1, 51)):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement journal prefix differs")
+    reviewer = reviewer_replacement_route(snapshot)
+    if (reviewer["ordinal"] != 4 or reviewer["sealed"]["run_id"] != 38074007355
+            or reviewer["sealed"]["execution_binding"]["execution_source_head_sha"] != QA_HISTORICAL_SOURCE):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement lacks immutable accepted Reviewer")
+    # Accepted Reviewer/Persist and all four spent replacement stops remain immutable.
+    from operator_vertical_store import vertical_projection
+    projection = vertical_projection(snapshot, RECOVERY_OPERATION_ID)
+    if (projection["generation"] != 1 or
+            (fresh and (len(events) != 50 or projection["status"] != "NEEDS_USER"))):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement stage already progressed")
+    if any(path in snapshot.files for path in (QA_REPLACEMENT_SEAL_PATH, QA_SECOND_SEAL_PATH, QA_THIRD_SEAL_PATH, QA_FOURTH_SEAL_PATH, QA_FIFTH_SEAL_PATH)):
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery predecessor unexpectedly has a prior QA PASS seal")
+    if fresh and (_recovery_document_blob(snapshot.get(SPENT50_RECOVERY_PROJECTION_PATH))!=SPENT50_RECOVERY_PROJECTION_BLOB
+            or canonical_json(snapshot.get(SPENT50_RECOVERY_PROJECTION_PATH))!=canonical_json(rebuild_projection(snapshot,RECOVERY_OPERATION_ID))
+            or [row["event_type"] for row in events[45:50]]!=["operation.needs-user"]*5):
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery fresh stopped projection differs")
+    prior = snapshot.get(QA_FIFTH_TERMINAL_PATH)
+    if prior.get("outcome") != "UNKNOWN" or prior.get("observation") != {
+            "conclusion": None, "lookup_state": "LAUNCHED", "reason": "worker_unresolved",
+            "run_id": SPENT50_RECOVERY_FAILED_RUN, "status": "in_progress"}:
+        raise VerticalInvariantError("POLICY_DENIED", "spent50 preserved UNKNOWN differs")
+    return reviewer, events
+
+def spent50_recovery_historical_reviewer_binding(snapshot):
+    reviewer, _ = validate_spent50_recovery_predecessor(snapshot)
+    return reviewer["authorization"]["consumer_execution_binding"]
+
+def spent50_recovery_authorization(snapshot, *, consumer_binding, predecessor_proof, source_config, admission_proof, observation_anchor):
+    reviewer, events = validate_spent50_recovery_predecessor(snapshot)
+    validate_spent50_recovery_proof(predecessor_proof)
+    config = spent50_recovery_config_from_record(source_config, consumer_binding=consumer_binding)
+    validate_spent50_recovery_admission_proof(config, admission_proof)
+    validate_spent50_recovery_anchor(observation_anchor)
+    identity = {
+        "schema_version": SPENT50_RECOVERY_SCHEMA, "recovery_id": "spent50-v5", "admission": dict(config.document["admission"]),
+        "source_config": source_config, "admission_proof": admission_proof, "observation_anchor": observation_anchor,
+        "operation_id": RECOVERY_OPERATION_ID, "operation_generation": 1,
+        "predecessor_store_commit": SPENT50_RECOVERY_STORE,
+        "predecessor_event_blobs": SPENT50_RECOVERY_HISTORY_BLOBS, "predecessor_document_blobs": SPENT50_RECOVERY_DOCUMENT_BLOBS,
+        "predecessor_event_digest": "sha256:" + digest_json(events[:50]),
+        "logical_key": QA_OLD_KEY, "logical_dispatch_id": QA_LOGICAL_DISPATCH,
+        "semantic_effect_key": QA_SEMANTIC_KEY, "task_id": QA_TASK, "candidate_head_sha": QA_CANDIDATE,
+        "candidate_pr_number": 552, "expected_revision": 5, "role": "qa", "stage": "verification",
+        "workflow_file": SPENT50_RECOVERY_WORKFLOW, "failed_run_id": SPENT50_RECOVERY_FAILED_RUN,
+        "historical_reviewer_execution_binding": reviewer["authorization"]["consumer_execution_binding"],
+        "consumer_execution_binding": consumer_binding, "worker_blobs": SPENT50_RECOVERY_WORKER_BLOBS,
+        "predecessor_proof": predecessor_proof,
+    }
+    auth = dict(identity)
+    auth["physical_key"] = "dispatch-" + digest_json(identity)[:40]
+    auth["physical_dispatch_id"] = "vertical-" + digest_json({
+        "operation_id": RECOVERY_OPERATION_ID, "generation": 1, "role": "qa",
+        "external_dispatch_key": auth["physical_key"]})[:32]
+    auth["payload_digest"] = "sha256:" + digest_json(
+        json.loads(GhAwVerticalRoleDispatchGateway._task_payload(spent50_recovery_dispatch(auth))))
+    return auth
+def validate_spent50_recovery_authorization(snapshot, *, consumer_binding=None):
+    _, events = validate_spent50_recovery_predecessor(snapshot)
+    auth, claim = snapshot.get(SPENT50_RECOVERY_AUTH_PATH), snapshot.get(SPENT50_RECOVERY_CLAIM_PATH)
+    if not isinstance(auth, dict) or not isinstance(claim, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA authorization/claim incomplete")
+    binding = auth.get("consumer_execution_binding")
+    expected = spent50_recovery_authorization(snapshot, consumer_binding=binding,
+                                                  predecessor_proof=auth.get("predecessor_proof"), source_config=auth.get("source_config"),
+                                                  admission_proof=auth.get("admission_proof"), observation_anchor=auth.get("observation_anchor"))
+    if (canonical_json(auth) != canonical_json(expected) or not isinstance(binding, dict)
+            or set(binding) != set(recovery_execution_binding_fields())
+            or any(not _SHA40.fullmatch(str(binding.get(k) or "")) for k in
+                   ("execution_source_head_sha", "execution_materialization_commit_sha"))
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(binding.get(k) or "")) for k in
+                   ("execution_policy_bundle_digest", "execution_policy_receipt_digest"))
+            or binding["execution_source_head_sha"] in {QA_HISTORICAL_SOURCE, SPENT50_RECOVERY_PRIOR_SOURCE}
+            or (consumer_binding is not None and canonical_json(binding) != canonical_json(consumer_binding))):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA authority/source differs")
+    validate_spent50_recovery_proof(auth["predecessor_proof"])
+    if (set(claim) != {"schema_version", "recovery_id", "authorization_digest", "physical_key",
+                       "create_consumed", "preclaim_store_commit", "dispatch_inputs", "dispatch_inputs_digest",
+                       "context_digest", "observation_anchor"}
+            or claim["schema_version"] != auth["schema_version"] or type(claim["recovery_id"]) is not str
+            or claim["recovery_id"] != "spent50-v5" or claim["create_consumed"] is not True
+            or claim["observation_anchor"] != auth["observation_anchor"]
+            or claim["physical_key"] != auth["physical_key"]
+            or claim["authorization_digest"] != "sha256:" + digest_json(auth)
+            or not _SHA40.fullmatch(str(claim["preclaim_store_commit"]))
+            or claim["dispatch_inputs_digest"] != "sha256:" + digest_json(claim["dispatch_inputs"])):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA frozen claim differs")
+    workflows = spent50_recovery_workflows()
+    context = _validate_structured_inputs(claim["dispatch_inputs"], spent50_recovery_dispatch(auth), workflows)
+    if (context["context_sha256"] != claim["context_digest"]
+            or context["provenance"]["store_commit_sha"] != claim["preclaim_store_commit"]
+            or context["provenance"]["producer_source_sha"] != binding["execution_source_head_sha"]
+            or context["provenance"]["producer_policy_digest"] != binding["execution_policy_bundle_digest"]):
+        raise VerticalInvariantError("POLICY_DENIED", "replacement QA context provenance differs")
+    tail = events[50:]
+    lookups=[e for e in tail if e["event_type"]=="dispatch.launch.lookup-recorded"]
+    sealed=snapshot.get(SPENT50_RECOVERY_SEAL_PATH)
+    if SPENT50_RECOVERY_SEAL_PATH in snapshot.files:
+        if (not isinstance(sealed,dict) or len(lookups)!=1 or not tail or tail[0]!=lookups[0]
+                or lookups[0]["payload"]!={"external_dispatch_key":QA_OLD_KEY,
+                    "lookup_state":"LAUNCHED","receipt_id":str(sealed.get("run_id"))}
+                or lookups[0]["operation_generation"]!=1):
+            raise VerticalInvariantError("POLICY_DENIED","spent50 recovery PASS seal lacks exact atomic successor lookup")
+    elif lookups or any(e["event_type"]!="operation.needs-user" for e in tail):
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery unlocked before full PASS")
+    if any(e["event_type"] == "dispatch.claimed" or (
+            e["event_type"] == "worker.callback.recorded" and
+            e["payload"].get("external_dispatch_key") != QA_OLD_KEY) for e in tail):
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement escaped its only logical callback")
+    if SPENT50_RECOVERY_TERMINAL_PATH in snapshot.files:
+        if (SPENT50_RECOVERY_SEAL_PATH in snapshot.files or any(e["event_type"] in {
+                "dispatch.launch.lookup-recorded","worker.callback.recorded", "feature.event.translated", "persist.requested"} for e in tail)):
+            raise VerticalInvariantError("POLICY_DENIED", "terminal QA has forbidden lifecycle effects")
+    else:
+        _validate_spent50_recovery_callback(snapshot, auth, events)
+    return auth, claim
+
+def plan_spent50_recovery(snapshot, *, consumer_binding, predecessor_proof, dispatch_inputs, source_config, admission_proof, observation_anchor):
+    if spent50_recovery_present(snapshot):
+        auth, claim = validate_spent50_recovery_authorization(snapshot, consumer_binding=consumer_binding)
+        return StoreMutationPlan(snapshot.ref_sha, (), {"acquired": False, "authorization": auth, "claim": claim})
+    validate_spent50_recovery_predecessor(snapshot, fresh=True)
+    auth = spent50_recovery_authorization(snapshot, consumer_binding=consumer_binding,
+                                              predecessor_proof=predecessor_proof, source_config=source_config,
+                                              admission_proof=admission_proof, observation_anchor=observation_anchor)
+    context = json.loads(dispatch_inputs["task_payload"])["feature_context"]["gate_context"]
+    claim = {"schema_version": auth["schema_version"], "recovery_id": "spent50-v5",
+        "authorization_digest": "sha256:" + digest_json(auth), "physical_key": auth["physical_key"],
+        "create_consumed": True, "preclaim_store_commit": snapshot.ref_sha,
+        "dispatch_inputs": dispatch_inputs, "dispatch_inputs_digest": "sha256:" + digest_json(dispatch_inputs),
+        "context_digest": context["context_sha256"], "observation_anchor": auth["observation_anchor"]}
+    from operator_store_model import apply_plan_to_snapshot
+    plan = StoreMutationPlan(snapshot.ref_sha, (
+        StoreMutation("create_immutable", SPENT50_RECOVERY_AUTH_PATH, auth),
+        StoreMutation("create_immutable", SPENT50_RECOVERY_CLAIM_PATH, claim)),
+        {"acquired": True, "authorization": auth, "claim": claim})
+    validate_spent50_recovery_authorization(apply_plan_to_snapshot(snapshot, plan), consumer_binding=consumer_binding)
+    return plan
+
+
+def validate_spent50_recovery_proof(proof):
+    if (not isinstance(proof, dict) or set(proof) != {"schema_version", "accepted_reviewer", "failed_qa"}
+            or proof["schema_version"] != "ai-sdlc.v03-spent50-recovery-predecessor/v1"
+            or _recovery_document_blob(proof["accepted_reviewer"]) !=
+                "cf0438fee6e9cbbcd68cb74f113bed03b2da573c"):
+        raise VerticalInvariantError("POLICY_DENIED", "QA predecessor proof differs from accepted Reviewer")
+    failure = proof["failed_qa"]
+    if (not isinstance(failure, dict) or set(failure) != {"historical_proof", "current_observation"}
+            or canonical_json(failure["historical_proof"]) != canonical_json(spent50_failure_historical_proof())):
+        raise VerticalInvariantError("POLICY_DENIED", "QA original failed execution proof differs")
+    validate_spent50_failure_observation(failure["current_observation"])
+    return proof
+
+def validate_spent50_recovery_relation(frozen, fresh):
+    validate_spent50_recovery_proof(frozen)
+    validate_spent50_recovery_proof(fresh)
+    if frozen["accepted_reviewer"] != fresh["accepted_reviewer"]:
+        raise VerticalInvariantError("POLICY_DENIED", "QA accepted Reviewer proof changed")
+    validate_spent50_failure_relation(frozen["failed_qa"], fresh["failed_qa"])
+    return fresh
+
+def _validate_spent50_recovery_callback(snapshot, auth, events):
+    callbacks = [e for e in events[50:] if e["event_type"] == "worker.callback.recorded"]
+    if len(callbacks) > 1:
+        raise VerticalInvariantError("POLICY_DENIED", "QA replacement has conflicting callbacks")
+    if not callbacks:
+        return
+    sealed = snapshot.get(SPENT50_RECOVERY_SEAL_PATH)
+    payload = callbacks[0]["payload"]
+    envelope = payload.get("trusted_callback_envelope")
+    context = envelope.get("trusted_context") if isinstance(envelope, dict) else None
+    if not isinstance(sealed, dict) or not isinstance(context, dict):
+        raise VerticalInvariantError("POLICY_DENIED", "QA callback predates its PASS seal")
+    callback_id = "gh-aw-callback-" + digest_json({"operation_id": RECOVERY_OPERATION_ID,
+        "generation": 1, "external_dispatch_key": QA_OLD_KEY,
+        "runtime_receipt_identity": str(sealed["run_id"]), "run_id": sealed["run_id"]})[:24]
+    expected = spent50_recovery_dispatch(auth, physical=False)
+    expected.update(runtime_receipt_identity=str(sealed["run_id"]),
+        worker_identity=f"gh-aw:{auth['workflow_file']}@{auth['consumer_execution_binding']['execution_source_head_sha']}")
+    fields = ("operation_id", "operation_generation", "operation_profile", "semantic_effect_key",
+        "external_dispatch_key", "dispatch_id", "target_repository", "target_ref", "feature_id",
+        "expected_revision", "feature_stage", "task_id", "role", "candidate_pr_number",
+        "candidate_head_sha", "runtime_receipt_identity", "worker_identity")
+    if (payload.get("callback_id") != callback_id
+            or any(context.get(k) != expected[k] for k in fields)
+            or payload.get("external_dispatch_key") != QA_OLD_KEY
+            or digest_json(envelope) != payload.get("trusted_callback_envelope_digest")
+            or envelope.get("worker_payload", {}).get("verdict") != "PASS"
+            or "sha256:" + digest_json(envelope.get("worker_payload")) != sealed.get("role_payload_digest")
+            or len(envelope.get("collected_outputs") or []) != 1
+            or any(envelope["collected_outputs"][0].get(k) != v for k,v in {
+                "trusted_uri":sealed.get("trusted_uri"),"sha256":sealed.get("content_sha256"),
+                "size_bytes":sealed.get("content_size")}.items())):
+        raise VerticalInvariantError("POLICY_DENIED", "QA callback differs from sealed physical result")
+
+def spent50_recovery_route(snapshot, *, consumer_binding=None, require_seal=True):
+    auth, claim = validate_spent50_recovery_authorization(snapshot, consumer_binding=consumer_binding)
+    if SPENT50_RECOVERY_TERMINAL_PATH in snapshot.files:
+        spent50_recovery_terminal(snapshot, consumer_binding=consumer_binding)
+        raise VerticalInvariantError("NEEDS_USER", "QA replacement stopped without accepted PASS")
+    sealed = snapshot.get(SPENT50_RECOVERY_SEAL_PATH)
+    if require_seal or SPENT50_RECOVERY_SEAL_PATH in snapshot.files:
+        fields = {"schema_version","recovery_id","authorization_digest","claim_digest","logical_key",
+            "physical_key","run_id","run_attempt","conclusion","workflow_file","execution_binding",
+            "recommendation","accepted_at","resolved_digest","role_payload_digest","safe_output_proof","trusted_uri",
+            "content_sha256","content_size"}
+        if (not isinstance(sealed,dict) or set(sealed)!=fields
+                or sealed["schema_version"]!=SPENT50_RECOVERY_SCHEMA
+                or type(sealed["recovery_id"]) is not str or sealed["recovery_id"]!="spent50-v5"
+                or sealed["authorization_digest"]!="sha256:"+digest_json(auth)
+                or sealed["claim_digest"]!="sha256:"+digest_json(claim)
+                or sealed["logical_key"]!=QA_OLD_KEY or sealed["physical_key"]!=auth["physical_key"]
+                or type(sealed["run_id"]) is not int or sealed["run_id"]<=0
+                or sealed["run_id"] in {QA_FAILED_RUN,QA_SECOND_FAILED_RUN,QA_THIRD_FAILED_RUN,QA_FOURTH_FAILED_RUN,QA_FIFTH_FAILED_RUN,SPENT50_RECOVERY_FAILED_RUN,38074007355}
+                or type(sealed["run_attempt"]) is not int or sealed["run_attempt"]!=1
+                or sealed["conclusion"]!="success" or sealed["recommendation"]!="PASS"
+                or not (_spent50_utc(auth["observation_anchor"]["started_at"]) <= _spent50_utc(sealed["accepted_at"])
+                        < _spent50_utc(auth["observation_anchor"]["expires_at"]))
+                or sealed["workflow_file"]!=SPENT50_RECOVERY_WORKFLOW
+                or sealed["execution_binding"]!=auth["consumer_execution_binding"]
+                or not isinstance(sealed["safe_output_proof"],dict)
+                or sealed["safe_output_proof"].get("run_id")!=sealed["run_id"]
+                or sealed["safe_output_proof"].get("source_head_sha")!=auth["consumer_execution_binding"]["execution_source_head_sha"]
+                or sealed["safe_output_proof"].get("candidate_pr_number")!=552
+                or type(sealed["content_size"]) is not int or sealed["content_size"]<=0
+                or not re.fullmatch(r"[0-9a-f]{64}",str(sealed["content_sha256"]))
+                or any(not re.fullmatch(r"sha256:[0-9a-f]{64}",str(sealed[k]))
+                       for k in ("resolved_digest","role_payload_digest"))):
+            raise VerticalInvariantError("POLICY_DENIED", "QA replacement PASS seal differs")
+    return {"authorization":auth,"claim":claim,"sealed":sealed,
+        "physical_key":auth["physical_key"],"receipt_id":str(sealed["run_id"]) if sealed else None}
+
+def spent50_recovery_terminal(snapshot, *, consumer_binding=None):
+    auth,claim=validate_spent50_recovery_authorization(snapshot,consumer_binding=consumer_binding)
+    row=snapshot.get(SPENT50_RECOVERY_TERMINAL_PATH)
+    fields={"schema_version","recovery_id","authorization_digest","claim_digest","physical_key",
+            "outcome","observation","execution_binding"}
+    if (not isinstance(row,dict) or set(row)!=fields or row["schema_version"]!=SPENT50_RECOVERY_SCHEMA
+            or type(row["recovery_id"]) is not str or row["recovery_id"]!="spent50-v5"
+            or row["authorization_digest"]!="sha256:"+digest_json(auth)
+            or row["claim_digest"]!="sha256:"+digest_json(claim)
+            or row["physical_key"]!=auth["physical_key"]
+            or row["execution_binding"]!=auth["consumer_execution_binding"]
+            or row["outcome"] not in {"FAIL","BLOCKED","EXECUTION_FAILED","UNKNOWN"}
+            or not isinstance(row["observation"],dict)):
+        raise VerticalInvariantError("POLICY_DENIED","QA terminal observation differs")
+    observation=row["observation"]
+    if row["outcome"] in {"FAIL","BLOCKED"}:
+        if (set(observation)!={"run_id","run_attempt","workflow_file","physical_key","source_head_sha","role_payload","proof"}
+                or type(observation["run_attempt"]) is not int or observation["run_attempt"]!=1
+                or observation["workflow_file"]!=SPENT50_RECOVERY_WORKFLOW
+                or observation["physical_key"]!=auth["physical_key"]
+                or observation["source_head_sha"]!=auth["consumer_execution_binding"]["execution_source_head_sha"]
+                or not isinstance(observation["role_payload"],dict)
+                or observation["role_payload"].get("verdict")!=row["outcome"]):
+            raise VerticalInvariantError("POLICY_DENIED","QA non-PASS observation lacks authentic identity")
+        _validate_spent50_recovery_result_material(auth,observation["run_id"],observation["role_payload"],observation["proof"])
+    else:
+        if set(observation)!={"lookup_state","run_id","status","conclusion","reason"}:
+            raise VerticalInvariantError("POLICY_DENIED","QA unsuccessful observation shape differs")
+        run_id=observation["run_id"]
+        launched=(observation["lookup_state"]=="LAUNCHED" and type(run_id) is int
+                  and run_id>0 and run_id not in {QA_FAILED_RUN,QA_SECOND_FAILED_RUN,QA_THIRD_FAILED_RUN,QA_FOURTH_FAILED_RUN,QA_FIFTH_FAILED_RUN,SPENT50_RECOVERY_FAILED_RUN,38074007355})
+        absent=(observation["lookup_state"] in {"UNKNOWN","NOT_LAUNCHED"} and run_id is None
+                and observation["status"] is None and observation["conclusion"] is None
+                and observation["reason"]=="launch_unresolved")
+        failed=(launched and observation["status"]=="completed"
+                and observation["conclusion"] in {"failure","cancelled","timed_out","action_required","stale","startup_failure"}
+                and observation["reason"]=="worker_unsuccessful")
+        unavailable=(launched and observation["status"]=="completed" and observation["conclusion"]=="success"
+                     and observation["reason"]=="result_unavailable")
+        pending=(launched and observation["status"] in {"queued","in_progress","waiting","requested","pending"}
+                 and observation["conclusion"] is None and observation["reason"]=="worker_unresolved")
+        expired = (observation["reason"] == "observation_expired"
+            and ((launched and observation["status"] in {None, "queued", "in_progress", "waiting", "requested", "pending", "completed"}
+                 and observation["conclusion"] in {None, "success", "failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"})
+                 or (observation["lookup_state"] in {"UNKNOWN", "NOT_LAUNCHED"} and run_id is None
+                     and observation["status"] is None and observation["conclusion"] is None)))
+        if not ((row["outcome"]=="EXECUTION_FAILED" and failed) or
+                (row["outcome"]=="UNKNOWN" and (absent or unavailable or pending or expired))):
+            raise VerticalInvariantError("POLICY_DENIED","QA unsuccessful observation facts conflict")
+    tail=operation_events(snapshot,RECOVERY_OPERATION_ID)[50:]
+    summary="Replacement QA "+row["outcome"]+"; observation sha256:"+digest_json(row)
+    if (len(tail)!=1 or tail[0]["event_type"]!="operation.needs-user"
+            or tail[0]["operation_generation"]!=1
+            or tail[0]["payload"]!={"reason_code":"VERTICAL_NEEDS_USER","summary":summary[:512]}):
+        raise VerticalInvariantError("POLICY_DENIED","QA terminal stop differs")
+    return row
+
+def plan_spent50_recovery_terminal(snapshot, *, outcome, observation, consumer_binding,
+                                 occurred_at, trusted_context_digest):
+    auth,claim=validate_spent50_recovery_authorization(snapshot,consumer_binding=consumer_binding)
+    row={"schema_version":SPENT50_RECOVERY_SCHEMA,"recovery_id":"spent50-v5",
+        "authorization_digest":"sha256:"+digest_json(auth),"claim_digest":"sha256:"+digest_json(claim),
+        "physical_key":auth["physical_key"],"outcome":outcome,"observation":observation,
+        "execution_binding":consumer_binding}
+    if SPENT50_RECOVERY_TERMINAL_PATH in snapshot.files:
+        existing=spent50_recovery_terminal(snapshot,consumer_binding=consumer_binding)
+        if canonical_json(existing)!=canonical_json(row):
+            raise VerticalInvariantError("POLICY_DENIED","QA terminal replay differs")
+        return StoreMutationPlan(snapshot.ref_sha,(),{"terminal":existing})
+    validate_spent50_recovery_predecessor(snapshot,fresh=True)
+    if SPENT50_RECOVERY_SEAL_PATH in snapshot.files:
+        raise VerticalInvariantError("POLICY_DENIED","QA already has accepted PASS")
+    from operator_store import plan_needs_user
+    from operator_store_model import apply_plan_to_snapshot
+    mutation=StoreMutation("create_immutable",SPENT50_RECOVERY_TERMINAL_PATH,row)
+    provisional=apply_plan_to_snapshot(snapshot,StoreMutationPlan(snapshot.ref_sha,(mutation,),{}))
+    stop=plan_needs_user(provisional,operation_id=RECOVERY_OPERATION_ID,generation=1,
+        reason_code="VERTICAL_NEEDS_USER",
+        summary="Replacement QA "+outcome+"; observation sha256:"+digest_json(row),
+        occurred_at=occurred_at,trusted_context_digest=trusted_context_digest)
+    plan=StoreMutationPlan(snapshot.ref_sha,(mutation,*stop.mutations),{"terminal":row})
+    spent50_recovery_terminal(apply_plan_to_snapshot(snapshot,plan),consumer_binding=consumer_binding)
+    return plan
+
+def spent50_recovery_trusted_context(auth):
+    trusted = spent50_recovery_dispatch(auth, physical=False)
+    trusted.update(external_dispatch_key=auth["physical_key"], launch_candidate_head_sha=QA_CANDIDATE,
+        source_head_sha=auth["consumer_execution_binding"]["execution_source_head_sha"])
+    return trusted
+
+def spent50_recovery_reviewer_binding(snapshot, policy_authority):
+    current = recovery_execution_binding(policy_authority)
+    old = snapshot.get(REVIEWER_INLINE_AUTH_PATH)
+    if (not isinstance(old,dict) or old.get("consumer_execution_binding")==current
+            or not all(path in snapshot.files for path in SPENT50_RECOVERY_HISTORY_BLOBS)):
+        return current
+    reviewer, _ = validate_spent50_recovery_predecessor(snapshot)
+    # This exact accepted historical producer is a read lease, never a dispatch grant.
+    if spent50_recovery_present(snapshot):
+        validate_spent50_recovery_authorization(snapshot,consumer_binding=current)
+    elif len(operation_events(snapshot,RECOVERY_OPERATION_ID))!=50:
+        raise VerticalInvariantError("POLICY_DENIED","historical QA inspection escaped frozen prefix")
+    return reviewer["authorization"]["consumer_execution_binding"]
+
+class DogfoodSpent50RecoveryResultSource(DogfoodQaFifthResultSource):
+    """Exact QA physical view; ordinary selectors and historical producer maps stay fixed."""
+    def _spent50_recovery_view(self, key):
+        from copy import copy
+        from dataclasses import replace
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        auth,claim=validate_spent50_recovery_authorization(snapshot,
+            consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+        if key!=auth["physical_key"]:
+            raise VerticalInvariantError("POLICY_DENIED","QA source view escaped frozen physical key")
+        view=copy(self)
+        view.config=replace(self.config,workflows=spent50_recovery_workflows())
+        view._qa_view_key=key
+        return view,auth,claim
+
+    def resolve(self, *, external_dispatch_key, expected_receipt_identity, trusted_context):
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        if spent50_recovery_present(snapshot):
+            auth,_=validate_spent50_recovery_authorization(snapshot,
+                consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+            if external_dispatch_key==QA_OLD_KEY:
+                raise VerticalInvariantError("POLICY_DENIED","failed QA is not an adoptable result")
+            if external_dispatch_key==auth["physical_key"]:
+                view,auth,_=self._spent50_recovery_view(external_dispatch_key)
+                expected=spent50_recovery_trusted_context(auth)
+                for key in ("operation_id","operation_generation","semantic_effect_key","dispatch_id",
+                    "target_repository","target_ref","feature_id","expected_revision","feature_stage",
+                    "role","task_id","candidate_pr_number","launch_candidate_head_sha"):
+                    if trusted_context.get(key)!=expected[key]:
+                        raise VerticalInvariantError("POLICY_DENIED","QA physical/logical context differs")
+                resolved=DogfoodStructuredGateResultSource.resolve(view,
+                    external_dispatch_key=external_dispatch_key,
+                    expected_receipt_identity=expected_receipt_identity,trusted_context=trusted_context)
+                if (resolved.run.task_id!=QA_TASK or resolved.run.candidate_head_sha!=QA_CANDIDATE
+                        or resolved.run.candidate_pr_number!=552 or len(resolved.outputs)!=1):
+                    raise VerticalInvariantError("POLICY_DENIED","QA replacement result identity differs")
+                material=view._reviewer_proofs[resolved.run.run_id]
+                _validate_spent50_recovery_result_material(auth,resolved.run.run_id,resolved.role_payload,material)
+                if SPENT50_RECOVERY_SEAL_PATH in snapshot.files:
+                    sealed=spent50_recovery_route(snapshot)["sealed"]
+                    if sealed["run_id"]!=resolved.run.run_id or any(sealed.get(k)!=v for k,v in material.items()):
+                        raise VerticalInvariantError("POLICY_DENIED","QA current resolution differs from immutable PASS seal")
+                self._reviewer_proofs=getattr(self,"_reviewer_proofs",{})
+                self._reviewer_proofs[resolved.run.run_id]=material
+                return resolved
+        if spent50_recovery_inspection(snapshot,recovery_execution_binding(self.reviewer_policy_authority)):
+            return DogfoodStructuredGateResultSource.resolve(self,external_dispatch_key=external_dispatch_key,
+                expected_receipt_identity=expected_receipt_identity,trusted_context=trusted_context)
+        return super().resolve(external_dispatch_key=external_dispatch_key,
+            expected_receipt_identity=expected_receipt_identity,trusted_context=trusted_context)
+
+    def load_content(self, uri):
+        match=_FIRST_ATTEMPT_URI_RE.fullmatch(str(uri or ""))
+        snapshot=self.reviewer_runtime.backend.read_snapshot()
+        if match and spent50_recovery_present(snapshot):
+            auth,_=validate_spent50_recovery_authorization(snapshot,
+                consumer_binding=recovery_execution_binding(self.reviewer_policy_authority))
+            if match.group("key")==auth["physical_key"]:
+                view,_,_=self._spent50_recovery_view(match.group("key"))
+                route=spent50_recovery_route(snapshot)
+                if uri!=route["sealed"]["trusted_uri"]:
+                    raise VerticalInvariantError("POLICY_DENIED","QA content is not exact sealed result")
+                content=DogfoodStructuredGateResultSource.load_content(view,uri)
+                sealed=route["sealed"]
+                comment=view._json(view.target_repository,
+                    "/issues/comments/"+str(sealed["safe_output_proof"]["comment_id"]),view.config.target_token)
+                proof=view._run_owned_gate_comment(run_id=sealed["run_id"],
+                    source_head_sha=auth["consumer_execution_binding"]["execution_source_head_sha"],
+                    comment=comment,candidate_pr_number=552)
+                if (proof!=sealed["safe_output_proof"] or len(content)!=sealed["content_size"]
+                        or hashlib.sha256(content).hexdigest()!=sealed["content_sha256"]):
+                    raise VerticalInvariantError("POLICY_DENIED","QA leased content differs from immutable PASS seal")
+                return content
+        if spent50_recovery_inspection(snapshot,recovery_execution_binding(self.reviewer_policy_authority)):
+            return DogfoodStructuredGateResultSource.load_content(self,uri)
+        return super().load_content(uri)
+
+class DogfoodSpent50RecoveryCollector(DogfoodQaFifthCollector):
+    def handle(self, *, operation_id, external_dispatch_key):
+        if operation_id!=RECOVERY_OPERATION_ID or external_dispatch_key!=QA_OLD_KEY:
+            return super().handle(operation_id=operation_id,external_dispatch_key=external_dispatch_key)
+        snapshot=self.callback_coordinator.executor.runtime.backend.read_snapshot()
+        if not spent50_recovery_present(snapshot):
+            return super().handle(operation_id=operation_id,external_dispatch_key=external_dispatch_key)
+        route=spent50_recovery_route(snapshot,consumer_binding=recovery_execution_binding(self.policy_authority))
+        verify_spent50_recovery_source_config(self.result_source,self.policy_authority,route["authorization"])
+        auth,sealed=route["authorization"],route["sealed"]
+        projection,launch,receipt=spent50_recovery_launch_binding(snapshot,
+            operation_id=operation_id,external_dispatch_key=external_dispatch_key,
+            consumer_binding=recovery_execution_binding(self.policy_authority))
+        if receipt!=str(sealed["run_id"]):
+            raise VerticalInvariantError("POLICY_DENIED","QA original launch receipt changed")
+        resolved=self.result_source.resolve(external_dispatch_key=auth["physical_key"],
+            expected_receipt_identity=str(sealed["run_id"]),trusted_context=spent50_recovery_trusted_context(auth))
+        reservation=snapshot.get(reservation_path(QA_SEMANTIC_KEY))
+        _validate_run(resolved.run,control_repository=self.control_repository,workflows=spent50_recovery_workflows(),
+            launch=dict(launch,external_dispatch_key=auth["physical_key"]),
+            expected_receipt_identity=str(sealed["run_id"]),external_dispatch_key=auth["physical_key"],
+            reservation=dict(reservation,external_dispatch_key=auth["physical_key"]))
+        dispatch=spent50_recovery_dispatch(auth,physical=False)
+        context=TrustedDispatchContext(**{key:dispatch[key] for key in (
+            "operation_id","operation_generation","operation_profile","semantic_effect_key",
+            "external_dispatch_key","dispatch_id","target_repository","target_ref","feature_id",
+            "expected_revision","feature_stage","task_id","role","candidate_pr_number","candidate_head_sha")},
+            runtime_receipt_identity=str(sealed["run_id"]),worker_identity=resolved.run.worker_identity,
+            collector_identity=resolved.run.collector_identity)
+        payload=validate_worker_result("qa",resolved.role_payload)
+        if payload["verdict"]!="PASS":
+            raise VerticalInvariantError("NEEDS_USER","QA replacement non-PASS cannot enter lifecycle")
+        declared={row["label"]:row["kind"] for row in payload["outputs"]}
+        receipts=_build_receipts(coordinator=self.callback_coordinator,context=context,
+            outputs=resolved.outputs,declared_outputs=declared,collected_at=str(self.clock()))
+        callback_id="gh-aw-callback-"+digest_json({"operation_id":operation_id,"generation":1,
+            "external_dispatch_key":QA_OLD_KEY,"runtime_receipt_identity":str(sealed["run_id"]),
+            "run_id":sealed["run_id"]})[:24]
+        return self.callback_coordinator.handle(context=context,callback_id=callback_id,
+            worker_payload=payload,receipts=receipts)
+
+def _validate_spent50_recovery_result_material(auth, run_id, payload, material):
+    fields={"resolved_digest","role_payload_digest","safe_output_proof","trusted_uri",
+            "content_sha256","content_size"}
+    if (type(run_id) is not int or run_id<=0 or run_id in {QA_FAILED_RUN,QA_SECOND_FAILED_RUN,QA_THIRD_FAILED_RUN,QA_FOURTH_FAILED_RUN,QA_FIFTH_FAILED_RUN,SPENT50_RECOVERY_FAILED_RUN,38074007355}
+            or not isinstance(payload,dict) or not isinstance(material,dict) or set(material)!=fields):
+        raise VerticalInvariantError("POLICY_DENIED","QA result material shape differs")
+    validate_worker_result("qa",payload)
+    proof=material["safe_output_proof"]
+    source=auth["consumer_execution_binding"]["execution_source_head_sha"]
+    match=_FIRST_ATTEMPT_URI_RE.fullmatch(str(material["trusted_uri"]))
+    proof_fields={"artifact_id","archive_digest","manifest_entry_digest","run_id","source_head_sha",
+                  "candidate_pr_number","comment_id","comment_url"}
+    if (not isinstance(proof,dict) or set(proof)!=proof_fields
+            or proof["run_id"]!=run_id or proof["source_head_sha"]!=source or proof["candidate_pr_number"]!=552
+            or type(proof["artifact_id"]) is not int or proof["artifact_id"]<=0
+            or type(proof["comment_id"]) is not int or proof["comment_id"]<=0
+            or not isinstance(proof["comment_url"],str)
+            or proof["comment_url"].lower()!=f"https://github.com/dream-xin/ai-sdlc/pull/552#issuecomment-{proof['comment_id']}"
+            or any(not re.fullmatch(r"sha256:[0-9a-f]{64}",str(proof[k])) for k in ("archive_digest","manifest_entry_digest"))
+            or not match or match.group("key")!=auth["physical_key"] or match.group("run")!=str(run_id)
+            or match.group("head")!=source or f"/qa-comment-{proof['comment_id']}-" not in material["trusted_uri"]
+            or material["role_payload_digest"]!="sha256:"+digest_json(payload)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}",str(material["resolved_digest"]))
+            or not re.fullmatch(r"[0-9a-f]{64}",str(material["content_sha256"]))
+            or type(material["content_size"]) is not int or material["content_size"]<=0):
+        raise VerticalInvariantError("POLICY_DENIED","QA result material producer binding differs")
+    return material
+class DogfoodSpent50RecoveryTransport(GitHubActionsVerticalGhAwTransport):
+    def __init__(self, config, *, snapshot, consumer_binding, allow_post, deadline_check, http=None, sleeper=None):
+        super().__init__(config, http=http, sleeper=sleeper or __import__('time').sleep)
+        self.authorization, self.claim = validate_spent50_recovery_authorization(snapshot, consumer_binding=consumer_binding)
+        self.scan = spent50_recovery_scan
+        self._allow_post = allow_post is True
+        if not callable(deadline_check):
+            raise VerticalInvariantError("POLICY_DENIED", "fixed recovery requires its original deadline check")
+        self._deadline_check = deadline_check
+        self._original_http = self.http
+        self.http = self._reviewer_http
+
+    def _reviewer_http(self, *, method, url, token, body=None):
+        if method == "POST":
+            auth = self.authorization
+            if (not self._allow_post or url != self._api(f"/actions/workflows/{auth['workflow_file']}/dispatches")):
+                raise VerticalInvariantError("POLICY_DENIED", "QA replacement create slot already consumed")
+            self._allow_post = False
+            if self.scan(self, physical_key=auth["physical_key"])["lookup_state"] != "NOT_LAUNCHED":
+                raise VerticalInvariantError("BLOCKED", "QA replacement appeared before POST")
+            self.prepost()
+            status, _, raw = self._original_http(method="GET", url=self._api("/git/ref/heads/main"), token=token, body=None)
+            if status != 200 or json.loads(raw).get("object", {}).get("sha") != auth["consumer_execution_binding"]["execution_source_head_sha"]:
+                raise VerticalInvariantError("POLICY_DENIED", "QA replacement main changed before POST")
+            status, _, raw = self._original_http(method="GET", url=self._api("/pulls/552"), token=token, body=None)
+            pr = json.loads(raw) if status == 200 else {}
+            if (pr.get("state") != "open" or pr.get("draft") is not False
+                    or pr.get("head", {}).get("sha") != QA_CANDIDATE
+                    or pr.get("head", {}).get("ref") != "dogfood/v0.3-happy-path-0001"
+                    or str(pr.get("head", {}).get("repo", {}).get("full_name") or "").lower() != "dream-xin/ai-sdlc"):
+                raise VerticalInvariantError("POLICY_DENIED", "QA replacement candidate changed before POST")
+            self._deadline_check()  # All preceding network time counts; no reads occur before POST.
+        return self._original_http(method=method, url=url, token=token, body=body)
+
+    def _validate_dispatch_inputs(self, *, workflow, ref, inputs):
+        auth = self.authorization
+        if workflow != auth["workflow_file"] or ref != "main" or canonical_json(inputs) != canonical_json(self.claim["dispatch_inputs"]):
+            raise VerticalInvariantError("POLICY_DENIED", "QA replacement differs from exact frozen payload")
+        return super()._validate_dispatch_inputs(workflow=workflow, ref=ref, inputs=inputs)
+
+
+def spent50_recovery_scan(transport, *, physical_key):
+    from dataclasses import replace
+    workflows=tuple(dict.fromkeys((transport.config.workflows.developer_workflow,
+        *INLINE_GATE_WORKFLOWS.values(),*STRUCTURED_GATE_WORKFLOWS.values(),QA_OBSERVED_WORKFLOW,QA_FIFTH_WORKFLOW,SPENT50_RECOVERY_WORKFLOW,
+        REVIEWER_OLD_WORKFLOW,REVIEWER_NEW_WORKFLOW,REVIEWER_BOUNDED_WORKFLOW,
+        "ai-sdlc-gh-aw-qa-deepseek-v03-release-local.lock.yml",
+        "ai-sdlc-gh-aw-qa-deepseek-v03-bounded-local.lock.yml")))
+    results={}
+    for key in (QA_OLD_KEY,QA_SECOND_PRIOR_KEY,QA_THIRD_PRIOR_KEY,QA_FOURTH_PRIOR_KEY,QA_FIFTH_PRIOR_KEY,SPENT50_RECOVERY_PRIOR_KEY,physical_key):
+        matches=[]
+        for workflow in workflows:
+            role="qa" if "-qa-" in workflow else "reviewer" if "-reviewer-" in workflow else "developer"
+            mapping=replace(transport.config.workflows,**{role+"_workflow":workflow})
+            reader=GitHubActionsVerticalGhAwTransport(replace(transport.config,workflows=mapping),
+                http=transport.http,sleeper=lambda _:None)
+            receipt=reader.lookup(workflow=workflow,ref="main",dispatch_key=key)
+            if receipt.get("lookup_state")=="LAUNCHED":
+                matches.append((workflow,str(receipt.get("receipt_id"))))
+            elif receipt.get("lookup_state")!="NOT_LAUNCHED":
+                raise VerticalInvariantError("BLOCKED","QA replacement inventory is incomplete")
+        results[key]=matches
+    if results[QA_OLD_KEY]!=[(INLINE_GATE_WORKFLOWS["qa"],str(QA_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","failed original QA lookup changed")
+    if results[QA_SECOND_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_SECOND_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA1 lookup changed")
+    if results[QA_THIRD_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_THIRD_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA2 lookup changed")
+    if results[QA_FOURTH_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_FOURTH_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA3 lookup changed")
+    if results[QA_FIFTH_PRIOR_KEY]!=[(QA_OBSERVED_WORKFLOW,str(QA_FIFTH_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA4 lookup changed")
+    if results[SPENT50_RECOVERY_PRIOR_KEY]!=[(QA_FIFTH_WORKFLOW,str(SPENT50_RECOVERY_FAILED_RUN))]:
+        raise VerticalInvariantError("POLICY_DENIED","spent QA5 lookup changed")
+    matches=results[physical_key]
+    if len(matches)>1 or matches and matches[0][0]!=SPENT50_RECOVERY_WORKFLOW:
+        raise VerticalInvariantError("POLICY_DENIED","QA replacement physical key is ambiguous")
+    return {"lookup_state":"LAUNCHED","receipt_id":matches[0][1]} if matches else {"lookup_state":"NOT_LAUNCHED","receipt_id":None}
+
+
+
+
+
+def spent50_recovery_launch_binding(snapshot, *, operation_id, external_dispatch_key, consumer_binding):
+    """Resolve only the authenticated spent50 recovery successor without hiding its failed predecessor."""
+    if operation_id!=RECOVERY_OPERATION_ID or external_dispatch_key!=QA_OLD_KEY:
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery launch resolver escaped fixed logical identity")
+    route=spent50_recovery_route(snapshot,consumer_binding=consumer_binding)
+    from operator_vertical_store import vertical_projection
+    projection=vertical_projection(snapshot,operation_id)
+    if projection.get("operation_profile")!=VERTICAL_PROFILE or projection["generation"]!=1:
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery launch projection differs")
+    if projection["status"] in {"CANCELLED","BLOCKED","NEEDS_USER"}:
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery callback is stopped by current canonical state")
+    events=operation_events(snapshot,operation_id)
+    launches=[e["payload"] for e in events if e["operation_generation"]==1
+        and e["event_type"]=="dispatch.launch.authorized"
+        and e["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+    lookups=[e["payload"] for e in events if e["operation_generation"]==1
+        and e["event_type"]=="dispatch.launch.lookup-recorded"
+        and e["payload"].get("external_dispatch_key")==QA_OLD_KEY]
+    expected=[{"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":str(QA_FAILED_RUN)},
+        {"external_dispatch_key":QA_OLD_KEY,"lookup_state":"LAUNCHED","receipt_id":route["receipt_id"]}]
+    if len(launches)!=1 or lookups!=expected:
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery launch receipt chain differs from exact predecessor and seal")
+    launch=launches[0]
+    if launch.get("semantic_effect_key")!=QA_SEMANTIC_KEY:
+        raise VerticalInvariantError("POLICY_DENIED","spent50 recovery semantic launch differs")
+    reservation=snapshot.get(reservation_path(QA_SEMANTIC_KEY))
+    expected={"external_dispatch_key":QA_OLD_KEY,"feature_id":projection["feature_id"],
+        "expected_revision":projection["expected_feature_revision"],"current_stage":launch.get("stage"),
+        "role":launch.get("role")}
+    if not isinstance(reservation,dict) or any(reservation.get(k)!=v for k,v in expected.items()):
+        raise VerticalInvariantError("STALE_REVISION","spent50 recovery launch/reservation projection differs")
+    return projection,launch,route["receipt_id"]
+
+
+
+SPENT50_FAILURE_RUN = {"id":38699515120,"run_attempt":1,"workflow_id":385108079,"path":".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.lock.yml","event":"workflow_dispatch","head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57","status":"completed","conclusion":"failure","display_title":"AI-SDLC gh-aw dispatch-6d6819672287d87f90ee08661526b21e36d5b56b","created_at":"2026-10-15T07:33:07Z","updated_at":"2026-10-15T07:54:24Z"}
+SPENT50_FAILURE_JOBS = [{"id":116304024450,"name":"activation","run_id":38699515120,"run_attempt":1,"head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57","status":"completed","conclusion":"success","steps":[{"name":"Interpolate variables and render templates","status":"completed","conclusion":"success"},{"name":"Upload activation artifact","status":"completed","conclusion":"success"}]},{"id":116304160539,"name":"agent","run_id":38699515120,"run_attempt":1,"head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57","status":"completed","conclusion":"failure","steps":[{"name":"Prepare authenticated Gate context before model","status":"completed","conclusion":"success"},{"name":"Execute GitHub Copilot CLI","status":"completed","conclusion":"failure"},{"name":"Ingest agent output","status":"completed","conclusion":"success"},{"name":"Render validated structured Gate output before detection","status":"completed","conclusion":"skipped"}]},{"id":116311612758,"name":"detection","run_id":38699515120,"run_attempt":1,"head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57","status":"completed","conclusion":"failure","steps":[{"name":"Check if detection needed","status":"completed","conclusion":"success"},{"name":"Verify Gate detector input bytes before scanning","status":"completed","conclusion":"skipped"},{"name":"Execute threat detection with AWF","status":"completed","conclusion":"skipped"},{"name":"Upload immutable Gate scan byte receipt","status":"completed","conclusion":"skipped"},{"name":"Conclude threat detection","status":"completed","conclusion":"failure"}]},{"id":116311765068,"name":"conclusion","run_id":38699515120,"run_attempt":1,"head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57","status":"completed","conclusion":"success","steps":[{"name":"Record non-authoritative Gate execution identity","status":"completed","conclusion":"skipped"},{"name":"Handle agent failure","status":"completed","conclusion":"success"}]},{"id":116311765873,"name":"safe_outputs","run_id":38699515120,"run_attempt":1,"head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57","status":"completed","conclusion":"skipped","steps":[]}]
+SPENT50_FAILURE_ARTIFACTS = [{"id":11956790442,"name":"usage","digest":"sha256:23269e112a1b32ef55f4c32dec3c52903859a5a9087e12f6f55487489f65731a","size_in_bytes":24192,"created_at":"2026-10-15T07:54:16Z","updated_at":"2026-10-15T07:54:16Z","expires_at":"2027-01-13T07:33:09Z","workflow_run":{"id":38699515120,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57"}},{"id":11956780232,"name":"agent-output-fallback","digest":"sha256:6244410ee9e9a25f6372408c20ed30be647b7de47425ff4dc4bb2349c2ab1348","size_in_bytes":23105,"created_at":"2026-10-15T07:53:32Z","updated_at":"2026-10-15T07:53:32Z","expires_at":"2027-01-13T07:33:09Z","workflow_run":{"id":38699515120,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57"}},{"id":11956713554,"name":"agent","digest":"sha256:c036e4104b7c83d8d1a9c294a90e448aa4ebcb53f0ff5bd0494d4275919e26c6","size_in_bytes":6748819,"created_at":"2026-10-15T07:53:33Z","updated_at":"2026-10-15T07:53:33Z","expires_at":"2027-01-13T07:33:09Z","workflow_run":{"id":38699515120,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57"}},{"id":11956655377,"name":"info","digest":"sha256:aea67922c702ab8cfd616da242956f959e28d83c40bb4374aeba4498d698b105","size_in_bytes":639,"created_at":"2026-10-15T07:33:28Z","updated_at":"2026-10-15T07:33:28Z","expires_at":"2027-01-13T07:33:09Z","workflow_run":{"id":38699515120,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57"}},{"id":11956477874,"name":"detection","digest":"sha256:876a5270feff1683b058663c7f64b60226a9e18d71b1ef0b8ce7d2ee8e59ca6e","size_in_bytes":570,"created_at":"2026-10-15T07:53:58Z","updated_at":"2026-10-15T07:53:58Z","expires_at":"2027-01-13T07:33:09Z","workflow_run":{"id":38699515120,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57"}},{"id":11954429707,"name":"activation","digest":"sha256:8f0d7b74b70b0a46f25c6a6a2769d943ad7e605be96506ff2332907b19609174","size_in_bytes":1434438,"created_at":"2026-10-15T07:33:30Z","updated_at":"2026-10-15T07:33:30Z","expires_at":"2026-10-16T07:33:28Z","workflow_run":{"id":38699515120,"repository_id":1326302284,"head_repository_id":1326302284,"head_branch":"main","head_sha":"22345e09dca6d0ef0bf1686b90d4751f0f95cd57"}}]
+SPENT50_FAILURE_AGENT_LINES = ["2026-10-15T07:53:24.1126796Z [copilot-harness] attempt 1 failed: exitCode=1 failureClass=invocation_cap_exceeded isCAPIError400=false isCAPIQuotaExceededError=true isInvocationCapExceeded=true apiProxyGuardRejection=none isMCPPolicyError=false isModelNotSupportedError=false isHTTP400ResponseError=false isNullTypeToolCallError=false isSDKSessionIdleTimeoutError=false isMCPGatewayShutdownError=false isConnectionRefusedError=false isAuthError=false isAuthenticationFailedError=false permissionDeniedCount=494 hasNumerousPermissionDenied=true hasOutput=true tokenCount=0 attemptDurationMs=1143463 retriesRemaining=6","2026-10-15T07:53:24.1137981Z [copilot-harness] attempt 1: LLM invocation cap saturated — the pooled per-run budget is fully exhausted; retries cannot make progress — not retrying (non-retryable guard condition)","2026-10-15T07:53:26.2620872Z ##[error]Process completed with exit code 1."]
+SPENT50_FAILURE_DETECTION_LINES = ["2026-10-15T07:53:53.0184919Z Detection skipped: no agent outputs or patches to analyze","2026-10-15T07:53:58.7949163Z   DETECTION_AGENTIC_EXECUTION_OUTCOME: skipped","2026-10-15T07:53:58.8084413Z ERR_SYSTEM: threat-detect binary not found on PATH","2026-10-15T07:53:58.8091511Z ##[error]Process completed with exit code 1."]
+SPENT50_FAILURE_PUBLICATION_LINES = ["2026-10-15T07:54:21.1201505Z ✓ Created new issue #606: https://github.com/DREAM-XIN/ai-sdlc/issues/606"]
+SPENT50_FAILURE_STATUS_LINES = ["2026-10-15T07:53:24.1126796Z [copilot-harness] attempt 1 failed: exitCode=1 failureClass=invocation_cap_exceeded isCAPIError400=false isCAPIQuotaExceededError=true isInvocationCapExceeded=true apiProxyGuardRejection=none isMCPPolicyError=false isModelNotSupportedError=false isHTTP400ResponseError=false isNullTypeToolCallError=false isSDKSessionIdleTimeoutError=false isMCPGatewayShutdownError=false isConnectionRefusedError=false isAuthError=false isAuthenticationFailedError=false permissionDeniedCount=494 hasNumerousPermissionDenied=true hasOutput=true tokenCount=0 attemptDurationMs=1143463 retriesRemaining=6","2026-10-15T07:53:24.1137981Z [copilot-harness] attempt 1: LLM invocation cap saturated — the pooled per-run budget is fully exhausted; retries cannot make progress — not retrying (non-retryable guard condition)","2026-10-15T07:53:26.2620872Z ##[error]Process completed with exit code 1.","2026-10-15T07:53:53.0184919Z Detection skipped: no agent outputs or patches to analyze","2026-10-15T07:53:58.7949163Z   DETECTION_AGENTIC_EXECUTION_OUTCOME: skipped","2026-10-15T07:53:58.8084413Z ERR_SYSTEM: threat-detect binary not found on PATH","2026-10-15T07:53:58.8091511Z ##[error]Process completed with exit code 1.","2026-10-15T07:54:21.1201505Z ✓ Created new issue #606: https://github.com/DREAM-XIN/ai-sdlc/issues/606"]
+SPENT50_FAILURE_UPLOAD_LINES = ["2026-10-15T07:33:28.1743967Z   retention-days: 1","2026-10-15T07:33:29.8588917Z SHA256 digest of uploaded artifact is 8f0d7b74b70b0a46f25c6a6a2769d943ad7e605be96506ff2332907b19609174","2026-10-15T07:33:30.1300430Z Artifact activation successfully finalized. Artifact ID 11954429707","2026-10-15T07:33:30.1302501Z Artifact activation has been successfully uploaded! Final size is 1434438 bytes. Artifact ID is 11954429707"]
+SPENT50_FAILURE_SOURCE_BLOBS = {".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.md":"6927cce8c0e38c6545a35591ac9542217cac43dc",".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local.lock.yml":"156bfb31c912817799df6eb5157b18c76463a1ac","scripts/v03_dogfood_gate_output_v4.py":"39c0a171bed758651fdbea69b3d46ffb9a5b1b3d","scripts/v03_detector_observation.mjs":"85d792241d3d20b0f1051d01e1054c608bfcabdc"}
+
+def spent50_failure_historical_proof():
+    from copy import deepcopy
+    return {"schema_version": "ai-sdlc.v03-spent50-failure-history/v1",
+        "run": deepcopy(SPENT50_FAILURE_RUN), "jobs": deepcopy(SPENT50_FAILURE_JOBS),
+        "source_blobs": dict(SPENT50_FAILURE_SOURCE_BLOBS),
+        "fixed_failure": "later Worker failure: agent invocation cap exhausted after permission denials; detector execution and Safe Outputs skipped; preserved Store UNKNOWN unchanged",
+        "selected_log_digest": digest_json(SPENT50_FAILURE_STATUS_LINES),
+        "activation_upload_digest": digest_json(SPENT50_FAILURE_UPLOAD_LINES),
+        "fixed_artifact_manifest": deepcopy(SPENT50_FAILURE_ARTIFACTS),
+        "failure_issue": {"id": 5862328383, "number": 606, "author_id": 41898282,
+            "body_sha256": "2cd34237f302cd6174ba16fac4431b8331c651e6186608552221675bdab7749f",
+            "created_at": "2026-10-15T07:54:20Z", "updated_at": "2026-10-15T07:54:20Z",
+            "workflow_id": "ai-sdlc-gh-aw-qa-deepseek-v03-observed-v4-local",
+            "failure_category": "engine_rate_limit_429"},
+        "safe_outputs_skipped": True, "publication_skipped": True,
+        "clean_detection_only": False, "whole_worker_pass": False, "result_adopted": False}
+
+
+def validate_spent50_failure_observation(value):
+    import datetime
+    def stamp(text):
+        if not isinstance(text, str):
+            raise V03DogfoodCompositionError("spent50 predecessor timestamp type differs")
+        try:
+            parsed = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as exc:
+            raise V03DogfoodCompositionError("spent50 predecessor timestamp differs") from exc
+        return parsed
+    if (not isinstance(value, dict) or set(value) != {
+            "schema_version", "run_id", "historical_digest", "observed_at",
+            "activation_state", "current_artifacts"}
+            or type(value.get("run_id")) is not int or value["run_id"] != 38699515120
+            or value.get("schema_version") != "ai-sdlc.v03-spent50-failure-observation/v1"
+            or value.get("historical_digest") != digest_json(spent50_failure_historical_proof())):
+        raise V03DogfoodCompositionError("spent50 predecessor observation shape differs")
+    observed = stamp(value["observed_at"])
+    if observed < stamp(SPENT50_FAILURE_RUN["updated_at"]):
+        raise V03DogfoodCompositionError("spent50 predecessor observation predates failure")
+    rows = value["current_artifacts"]
+    if not isinstance(rows, list) or len(rows) not in (5, 6):
+        raise V03DogfoodCompositionError("spent50 predecessor artifact count differs")
+    if any(not isinstance(row, dict) or type(row.get("id")) is not int for row in rows):
+        raise V03DogfoodCompositionError("spent50 predecessor artifact shape differs")
+    if [row["id"] for row in rows] != sorted(set(row["id"] for row in rows)):
+        raise V03DogfoodCompositionError("spent50 predecessor artifact IDs duplicate or unordered")
+    expected = {row["id"]: row for row in SPENT50_FAILURE_ARTIFACTS}
+    activation_id = 11954429707
+    by_id = {row["id"]: row for row in rows}
+    if set(by_id) - set(expected) or (set(expected) - {activation_id}) - set(by_id):
+        raise V03DogfoodCompositionError("spent50 predecessor required evidence missing or unknown")
+    for artifact_id, row in by_id.items():
+        expired = row.get("expired")
+        if type(expired) is not bool or set(row) != set(expected[artifact_id]) | {"expired"}:
+            raise V03DogfoodCompositionError("spent50 predecessor artifact fields differ")
+        if canonical_json({key: row[key] for key in expected[artifact_id]}) != canonical_json(expected[artifact_id]):
+            raise V03DogfoodCompositionError("spent50 predecessor artifact immutable metadata differs")
+        if artifact_id != activation_id and (expired or observed >= stamp(row["expires_at"])):
+            raise V03DogfoodCompositionError("spent50 predecessor result or diagnostic evidence expired")
+    row = by_id.get(activation_id)
+    actual = "absent" if row is None else "expired_listed" if row["expired"] else "present"
+    if value["activation_state"] != actual:
+        raise V03DogfoodCompositionError("spent50 predecessor activation state differs")
+    expiry = stamp(expected[activation_id]["expires_at"])
+    if actual != "present" and observed < expiry:
+        raise V03DogfoodCompositionError("spent50 predecessor activation lifetime differs")
+    return value
+
+
+def validate_spent50_failure_relation(frozen, fresh):
+    if (not isinstance(frozen, dict) or not isinstance(fresh, dict)
+            or set(frozen) != {"historical_proof", "current_observation"}
+            or set(fresh) != set(frozen)):
+        raise V03DogfoodCompositionError("spent50 predecessor proof shape differs")
+    expected = spent50_failure_historical_proof()
+    if (canonical_json(frozen["historical_proof"]) != canonical_json(expected)
+            or canonical_json(fresh["historical_proof"]) != canonical_json(expected)):
+        raise V03DogfoodCompositionError("spent50 predecessor stable history changed")
+    old = validate_spent50_failure_observation(frozen["current_observation"])
+    new = validate_spent50_failure_observation(fresh["current_observation"])
+    rank = {"present": 0, "expired_listed": 1, "absent": 2}
+    if (new["observed_at"] < old["observed_at"]
+            or rank[new["activation_state"]] < rank[old["activation_state"]]):
+        raise V03DogfoodCompositionError("spent50 predecessor observation rolled back")
+    return fresh
+
+
+
 

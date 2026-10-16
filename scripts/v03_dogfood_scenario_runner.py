@@ -224,8 +224,14 @@ def _launch_receipts(preflight: Any, operation_id: str) -> tuple[tuple[int, ...]
             receipt = _reviewer_route(preflight, preflight.composition.runtime.backend.read_snapshot())["receipt_id"]
         from v03_dogfood_full_composition import QA_OLD_KEY,QA_FAILED_RUN,qa_replacement_present,qa_replacement_route
         qa_snapshot=preflight.composition.runtime.backend.read_snapshot()
-        from v03_dogfood_full_composition import qa_fifth_present,qa_fifth_route,qa_fourth_present,qa_fourth_route,qa_third_present,qa_third_route,qa_second_present,qa_second_route
-        if operation_id==RECOVERY_OPERATION_ID and external_key==QA_OLD_KEY and qa_fifth_present(qa_snapshot):
+        from v03_dogfood_full_composition import spent50_recovery_present,spent50_recovery_route,qa_fifth_present,qa_fifth_route,qa_fourth_present,qa_fourth_route,qa_third_present,qa_third_route,qa_second_present,qa_second_route
+        if operation_id==RECOVERY_OPERATION_ID and external_key==QA_OLD_KEY and spent50_recovery_present(qa_snapshot):
+            spent50=spent50_recovery_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+            if receipt==str(QA_FAILED_RUN):
+                continue  # Immutable failed launch remains history, not a second successful run.
+            if receipt!=spent50["receipt_id"]:
+                raise V03DogfoodScenarioRunnerError("spent50 logical successor receipt differs")
+        elif operation_id==RECOVERY_OPERATION_ID and external_key==QA_OLD_KEY and qa_fifth_present(qa_snapshot):
             fifth=qa_fifth_route(qa_snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
             if receipt==str(QA_FAILED_RUN):
                 continue  # Immutable failed launch remains history, not a second successful run.
@@ -334,8 +340,12 @@ def wait_for_worker_run(*, read_run, receipt, workflow, installation_sha, extern
 
 def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
     snapshot = preflight.composition.runtime.backend.read_snapshot()
-    from v03_dogfood_full_composition import QA_OLD_KEY,qa_fifth_present,qa_fifth_launch_binding,qa_fourth_present,qa_fourth_launch_binding,qa_third_present,qa_third_launch_binding,qa_second_present,qa_second_launch_binding
-    if operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_fifth_present(snapshot):
+    from v03_dogfood_full_composition import QA_OLD_KEY,spent50_recovery_present,spent50_recovery_launch_binding,qa_fifth_present,qa_fifth_launch_binding,qa_fourth_present,qa_fourth_launch_binding,qa_third_present,qa_third_launch_binding,qa_second_present,qa_second_launch_binding
+    if operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and spent50_recovery_present(snapshot):
+        _projection,launch,receipt=spent50_recovery_launch_binding(snapshot,operation_id=operation_id,
+            external_dispatch_key=external_dispatch_key,
+            consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    elif operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_fifth_present(snapshot):
         _projection,launch,receipt=qa_fifth_launch_binding(snapshot,operation_id=operation_id,
             external_dispatch_key=external_dispatch_key,
             consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
@@ -364,8 +374,11 @@ def _wait_current_dispatch(preflight, operation_id, external_dispatch_key):
         receipt, lookup_key = reviewer["receipt_id"], reviewer["physical_key"]
         workflow = reviewer["authorization"]["workflow_file"]
     from v03_dogfood_full_composition import QA_OLD_KEY,qa_replacement_present,qa_replacement_route
-    from v03_dogfood_full_composition import qa_fifth_present,qa_fifth_route,qa_fourth_present,qa_fourth_route,qa_third_present,qa_third_route,qa_second_present,qa_second_route
-    if operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_fifth_present(snapshot):
+    from v03_dogfood_full_composition import spent50_recovery_present,spent50_recovery_route,qa_fifth_present,qa_fifth_route,qa_fourth_present,qa_fourth_route,qa_third_present,qa_third_route,qa_second_present,qa_second_route
+    if operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and spent50_recovery_present(snapshot):
+        qa=spent50_recovery_route(snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        receipt,lookup_key,workflow=qa["receipt_id"],qa["physical_key"],qa["authorization"]["workflow_file"]
+    elif operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_fifth_present(snapshot):
         qa=qa_fifth_route(snapshot,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         receipt,lookup_key,workflow=qa["receipt_id"],qa["physical_key"],qa["authorization"]["workflow_file"]
     elif operation_id==RECOVERY_OPERATION_ID and external_dispatch_key==QA_OLD_KEY and qa_fourth_present(snapshot):
@@ -639,7 +652,13 @@ def run_scenario(
     from v03_dogfood_full_composition import qa_third_present,QA_THIRD_TERMINAL_PATH,qa_third_terminal
     from v03_dogfood_full_composition import qa_fourth_present,QA_FOURTH_TERMINAL_PATH,qa_fourth_terminal
     from v03_dogfood_full_composition import qa_fifth_present,QA_FIFTH_TERMINAL_PATH,qa_fifth_terminal
-    if scenario=="happy_path" and QA_FIFTH_TERMINAL_PATH in current.files:
+    from v03_dogfood_full_composition import spent50_recovery_present,SPENT50_RECOVERY_TERMINAL_PATH,spent50_recovery_terminal,spent50_recovery_route
+    if scenario=="happy_path" and SPENT50_RECOVERY_TERMINAL_PATH in current.files:
+        spent50_recovery_terminal(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+        raise V03DogfoodScenarioRunnerError("fixed spent50 recovery is durably stopped without PASS")
+    if scenario=="happy_path" and spent50_recovery_present(current):
+        spent50_recovery_route(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
+    if scenario=="happy_path" and QA_FIFTH_TERMINAL_PATH in current.files and not spent50_recovery_present(current):
         qa_fifth_terminal(current,consumer_binding=recovery_execution_binding(preflight.composition.policy_authority))
         raise V03DogfoodScenarioRunnerError("QA5 is durably stopped without PASS")
     if scenario=="happy_path" and QA_FOURTH_TERMINAL_PATH in current.files and not qa_fifth_present(current):
