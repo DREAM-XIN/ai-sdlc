@@ -10847,6 +10847,92 @@ def qa_spent50_preparation_tests():
           "fresh Reviewer/Worker=false; execution_enabled=false; writes/POST/model=0")
 
 
+
+def worker_observation_anchor_tests():
+    """Pure UTC/monotonic arithmetic and real wait boundaries, without any effect API."""
+    from datetime import datetime, timedelta, timezone
+    import v03_dogfood_runtime_driver as d
+    import v03_dogfood_scenario_runner as runner
+    start = "2026-10-16T00:00:00Z"
+    expires = "2026-10-16T00:40:00Z"
+    utc = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    def rejected(call):
+        try:
+            call()
+        except (d.V03DogfoodRuntimeDriverError, runner.V03DogfoodScenarioRunnerError):
+            return
+        raise AssertionError("invalid Worker time anchor was accepted")
+    expect(d.validate_worker_observation_anchor(start, expires, now_utc=utc) == 2400.0,
+           "anchor start did not retain fixed forty minutes")
+    calls = []
+    def first_clock():
+        calls.append("first")
+        return 100.0
+    first = d.worker_observation_deadline_from_anchor(start, expires, now_utc=utc, clock=first_clock)
+    expect(first == 2500.0 and calls == ["first"], "conversion sampled monotonic more than once")
+    restarted = d.worker_observation_deadline_from_anchor(start, expires,
+        now_utc=utc + timedelta(minutes=25), clock=lambda: 9000.0)
+    expect(restarted == 9900.0 and restarted - 9000.0 == first - 100.0 - 1500.0,
+           "restart renewed original observation interval")
+    expect(d.validate_worker_observation_anchor(start, expires,
+           now_utc=utc + timedelta(seconds=2399, microseconds=999000)) == 0.001,
+           "last pre-deadline millisecond was lost")
+    for now in (utc - timedelta(microseconds=1), utc + timedelta(seconds=2400),
+                utc + timedelta(seconds=2400, microseconds=1)):
+        rejected(lambda: d.worker_observation_deadline_from_anchor(start, expires,
+            now_utc=now, clock=lambda: (_ for _ in ()).throw(AssertionError("expired anchor read clock"))))
+    for invalid in ("2026-02-30T00:00:00Z", "2026-10-16T00:00:00+00:00",
+                    "2026-10-16T00:00:00", "2026-10-16T00:00:00.000Z",
+                    "2026-10-16T00:00:60Z", "", None, True):
+        rejected(lambda: d.validate_worker_observation_anchor(invalid, expires, now_utc=utc))
+        rejected(lambda: d.validate_worker_observation_anchor(start, invalid, now_utc=utc))
+    for wrong_expiry in ("2026-10-16T00:39:59Z", "2026-10-16T00:40:01Z",
+                         "2026-10-15T23:59:59Z"):
+        rejected(lambda: d.validate_worker_observation_anchor(start, wrong_expiry, now_utc=utc))
+    for now in (utc.replace(tzinfo=None), utc.astimezone(timezone(timedelta(hours=1))),
+                "2026-10-16T00:00:00Z", None, True):
+        rejected(lambda: d.validate_worker_observation_anchor(start, expires, now_utc=now))
+    for value in (True, False, float("inf"), float("-inf"), float("nan"), "1", None,
+                  10**1000, 1e308):
+        rejected(lambda: d.worker_observation_deadline_from_anchor(start, expires,
+            now_utc=utc, clock=lambda: value))
+
+    good = dict(id=1001, event="workflow_dispatch", head_branch="main", head_sha="a"*40,
+                path=".github/workflows/worker.yml", display_title="AI-SDLC gh-aw key",
+                run_attempt=1, status="completed", conclusion="success")
+    class Clock:
+        def __init__(self):
+            self.now = 8000.0
+            self.reads = 0
+        def __call__(self):
+            return self.now
+        def sleep(self, seconds):
+            self.now += seconds
+    clock = Clock()
+    # Ten minutes have already elapsed before this process starts observing.
+    deadline = d.worker_observation_deadline_from_anchor(start, expires,
+        now_utc=utc + timedelta(minutes=10), clock=clock)
+    stages = [120.0, 600.0, 300.0, 120.0]  # setup, agent, scan, publication
+    def read_run(receipt):
+        expect(receipt == 1001, "anchor wait changed receipt")
+        clock.reads += 1
+        clock.now += stages.pop(0)
+        return good if not stages else {**good, "status": "in_progress", "conclusion": None}
+    result = runner.wait_for_worker_run(read_run=read_run, receipt="1001", workflow="worker.yml",
+        installation_sha="a"*40, external_dispatch_key="key", deadline_monotonic=deadline,
+        clock=clock, sleeper=clock.sleep)
+    expect(result == good and deadline == 9800.0 and clock.now == 9155.0 and clock.reads == 4,
+           "cross-stage wait reset the anchored deadline or excluded provider time")
+    clock.now = deadline
+    reads = clock.reads
+    rejected(lambda: runner.wait_for_worker_run(read_run=read_run, receipt="1001", workflow="worker.yml",
+        installation_sha="a"*40, external_dispatch_key="key", deadline_monotonic=deadline,
+        clock=clock, sleeper=clock.sleep))
+    expect(clock.reads == reads, "at-deadline replay read provider or renewed budget")
+    print("- UTC anchor arithmetic: fixed2400/restart remainder/strict time boundaries passed; "
+          "source authentication=false; route selected=false; writes/POST/model=0")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -10889,6 +10975,7 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("worker observation UTC anchor arithmetic", worker_observation_anchor_tests),
         ("spent QA fixed50 preparation", qa_spent50_preparation_tests),
         ("QA5 actual joined lifecycle", qa_fifth_joined_factory_tests),
         ("QA5 frozen CAS and replay", qa_fifth_admission_tests),
