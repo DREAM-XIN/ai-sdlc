@@ -1,0 +1,9 @@
+changes:
+- id: verification
+  kind: stage
+  status: WORKING
+expected_revision: 4
+feature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
+id: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-VERIFICATION-START-A31AD53CE3F2
+occurred_at: '2026-10-10T18:06:41Z'
+version: 0.1.0

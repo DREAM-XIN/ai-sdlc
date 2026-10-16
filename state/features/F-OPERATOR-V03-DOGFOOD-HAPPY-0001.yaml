@@ -1,0 +1,54 @@
+protocol_version: 0.1.0
+revision: 5
+feature:
+  id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
+  title: 'v0.3 release dogfood: happy_path'
+  risk: low
+  issue: '#342'
+workflow:
+  profile: v03-release-dogfood
+  status: ACTIVE
+  current_stage: verification
+  stages:
+  - id: implementation
+    status: DONE
+  - id: code-review
+    status: DONE
+    gate: code-gate
+  - id: verification
+    status: WORKING
+    gate: verification-gate
+  - id: acceptance
+    status: TODO
+    gate: release-gate
+tasks: []
+artifacts:
+- id: dogfood-scenario-task
+  type: dogfood-task
+  uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/dogfood-task.md
+  status: draft
+- id: vertical-artifact-3ac60f9b63c79ca4168c
+  status: approved
+  type: implementation
+  uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/worker-runs/vertical-31df3f1ed41b54c58ed4c4030a9f97d9/developer-pr-577-a7b208a49668fb9ae16de908a52418106c616819-binding-52d3fc01396e496b5930f8bbb95ded34b3506e457e5ec867de2d8298c8e6a91c--first-attempt--key-dispatch-86e969e947932b9dd38c608ca80333714c3396d2--run-37905505035--head-6e75792b8e441167cfaadab2d13667a2d80721b8--lease-008fa9d6a8dc823366cf1d367b048cae6e26bfa3db8c18a00448daf1793679e4.json
+gates:
+- id: code-gate
+  status: PASS
+  evidence:
+  - vertical-evidence-5fef33695f42b8d6c616
+- id: verification-gate
+  status: PENDING
+- id: release-gate
+  status: PENDING
+evidence:
+- id: vertical-evidence-5fef33695f42b8d6c616
+  status: pass
+  type: review
+  uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/worker-runs/vertical-e7823936c0cdccd56dc1d8f5e7a9d2e1/reviewer-comment-6100563138-binding-a97e7daba1fe34dd3f7bbfa8fcbb96eb6523d1c2185747459fff3854a77ef471--first-attempt--key-dispatch-7c0902c21a50078536e74133a6fa370618b4ac8f--run-38074007355--head-868d3dc25e5331392063b674496eb16b01208b42--lease-8492d94dde36d4fb7920cd84000300f9f619eed6a7b694497c6ec7585f2d21b3.json
+applied_events:
+- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-IMPLEMENTATION-START
+- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-IMPLEMENTATION-DONE-454A443721B6
+- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD
+- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-PASS-46BFD90425AF
+- EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-VERIFICATION-START-A31AD53CE3F2
+updated_at: '2026-10-10T18:06:41Z'

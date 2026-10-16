@@ -1,0 +1,28 @@
+changes:
+- kind: evidence
+  record:
+    id: vertical-evidence-5fef33695f42b8d6c616
+    status: pass
+    type: review
+    uri: docs/features/F-OPERATOR-V03-DOGFOOD-HAPPY-0001/worker-runs/vertical-e7823936c0cdccd56dc1d8f5e7a9d2e1/reviewer-comment-6100563138-binding-a97e7daba1fe34dd3f7bbfa8fcbb96eb6523d1c2185747459fff3854a77ef471--first-attempt--key-dispatch-7c0902c21a50078536e74133a6fa370618b4ac8f--run-38074007355--head-868d3dc25e5331392063b674496eb16b01208b42--lease-8492d94dde36d4fb7920cd84000300f9f619eed6a7b694497c6ec7585f2d21b3.json
+- evidence:
+  - vertical-evidence-5fef33695f42b8d6c616
+  id: vertical-artifact-3ac60f9b63c79ca4168c
+  kind: artifact
+  status: approved
+- evidence:
+  - vertical-evidence-5fef33695f42b8d6c616
+  id: code-gate
+  kind: gate
+  status: PASS
+- id: code-review
+  kind: stage
+  status: DONE
+- id: verification
+  kind: stage
+  status: READY
+expected_revision: 3
+feature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
+id: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-PASS-46BFD90425AF
+occurred_at: '2026-10-10T18:05:24Z'
+version: 0.1.0

@@ -1,0 +1,9 @@
+changes:
+- id: code-review
+  kind: stage
+  status: WORKING
+expected_revision: 2
+feature_id: F-OPERATOR-V03-DOGFOOD-HAPPY-0001
+id: EVT-F-OPERATOR-V03-DOGFOOD-HAPPY-0001-VERTICAL-CODE-REVIEW-START-47FA4BA969BD
+occurred_at: '2026-10-09T10:24:20Z'
+version: 0.1.0
