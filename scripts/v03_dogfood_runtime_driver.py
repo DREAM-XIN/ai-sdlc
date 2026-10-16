@@ -5113,5 +5113,56 @@ def create_worker_observation_deadline(*, clock=time.monotonic):
     return deadline
 
 
+def validate_worker_observation_anchor(started_at, expires_at, *, now_utc):
+    """Return remaining seconds for an unselected, fixed forty-minute UTC interval.
+
+    This is format/arithmetic validation only, not authentication of the anchor
+    or clock. A future caller must authenticate and persist the original anchor
+    and supply trusted UTC; this helper cannot detect an untrusted UTC rollback.
+    It never creates a new start time or renews an expired interval.
+    """
+    import re
+    from datetime import datetime, timedelta
+    pattern = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+    def parse(value):
+        if type(value) is not str or re.fullmatch(pattern, value) is None:
+            raise V03DogfoodRuntimeDriverError("invalid Worker observation UTC anchor")
+        try:
+            from datetime import timezone
+            return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise V03DogfoodRuntimeDriverError("invalid Worker observation UTC calendar") from exc
+    start, expires = parse(started_at), parse(expires_at)
+    if (not isinstance(now_utc, datetime) or now_utc.tzinfo is None
+            or now_utc.utcoffset() != timedelta(0)):
+        raise V03DogfoodRuntimeDriverError("Worker observation requires trusted UTC time")
+    if expires - start != timedelta(seconds=2400):
+        raise V03DogfoodRuntimeDriverError("Worker observation interval differs from fixed forty minutes")
+    if now_utc < start or now_utc >= expires:
+        raise V03DogfoodRuntimeDriverError("Worker observation interval is future or expired")
+    return (expires - now_utc).total_seconds()
+
+
+def worker_observation_deadline_from_anchor(started_at, expires_at, *, now_utc, clock=time.monotonic):
+    """Map only the original interval's remainder into this process's clock.
+
+    No current recovery route calls this helper. The returned monotonic value is
+    process-local and must not be persisted or reused after a process restart.
+    Restart conversion requires the same authenticated UTC anchor, never now+2400.
+    """
+    import math
+    remaining = validate_worker_observation_anchor(started_at, expires_at, now_utc=now_utc)
+    current = clock()
+    try:
+        valid = type(current) in (int, float) and math.isfinite(current)
+        deadline = current + remaining if valid else None
+        valid = valid and math.isfinite(deadline) and deadline > current
+    except (OverflowError, TypeError):
+        valid = False
+    if not valid:
+        raise V03DogfoodRuntimeDriverError("invalid process-local Worker observation clock")
+    return deadline
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
