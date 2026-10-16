@@ -9884,3 +9884,65 @@ def validate_qa5_failure_relation(frozen, fresh):
         raise V03DogfoodCompositionError("QA5 predecessor observation rolled back")
     return fresh
 
+
+
+# Read-only snapshot preparation only. No admission, route, budget or write API.
+QA_SPENT50_STORE = "af509c2e151d1193faab7e6e0864806bee4a6e84"
+QA_SPENT50_HISTORY_BLOBS = {
+    **QA_FIFTH_HISTORY_BLOBS,
+    "state/operator/v1/operations/op-3f7aa9b6290c8d1d90868dc079ce1af30cbaa7f4/events/00000050-operation-needs-user-7fee4beea0522eb1bf07125f0811f88f.json": "a1f76cadc6c1da4a34eda4501a72e82676601eba",
+}
+QA_SPENT50_DOCUMENT_BLOBS = {
+    **QA_FIFTH_DOCUMENT_BLOBS,
+    QA_FIFTH_AUTH_PATH: "19e7e5d843d008b53267bb0d10cffcf35ef877a0",
+    QA_FIFTH_CLAIM_PATH: "591307e5a73854847ddb6a15be6e2e0d29a5b1e7",
+    QA_FIFTH_TERMINAL_PATH: "ab718844fcb325b007f3cd569f6bab167db9369d",
+}
+QA_SPENT50_PROJECTION_BLOB = "cb88828d884cc082646d14867e2d125b7f368b11"
+
+
+def validate_qa_spent50_preparation(snapshot):
+    """Authenticate the fixed consumed snapshot, without authorizing a next attempt.
+
+    This validates stored historical evidence only. It neither rereads the live
+    Reviewer/Worker nor reinterprets the preserved UNKNOWN as a later failure.
+    """
+    if not _SHA40.fullmatch(str(snapshot.ref_sha or "")):
+        raise VerticalInvariantError("POLICY_DENIED", "spent QA preparation lacks protected Store")
+    pins = {**QA_SPENT50_HISTORY_BLOBS, **QA_SPENT50_DOCUMENT_BLOBS}
+    ancestry = {**REVIEWER_DOCUMENT_BLOBS, **REVIEWER_POST_MODEL_DOCUMENT_BLOBS,
+                **REVIEWER_STRUCTURED_PRIOR_BLOBS, **REVIEWER_INLINE_PRIOR_BLOBS}
+    inherited = {path: blob for path, blob in ancestry.items() if path not in pins}
+    if (len(QA_SPENT50_HISTORY_BLOBS) != 50 or len(QA_SPENT50_DOCUMENT_BLOBS) != 39
+            or len(inherited) != 4
+            or any(pins[path] != blob for path, blob in ancestry.items() if path in pins)
+            or any(path not in snapshot.files or _recovery_document_blob(snapshot.get(path)) != blob
+                   for path, blob in {**pins, **inherited}.items())):
+        raise VerticalInvariantError("POLICY_DENIED", "spent QA preparation historical bytes differ")
+    prefix = f"state/operator/v1/operations/{RECOVERY_OPERATION_ID}/"
+    if any(path.startswith(prefix) and path not in pins for path in snapshot.files):
+        raise VerticalInvariantError("POLICY_DENIED", "spent QA preparation has unknown operation namespace")
+    projection = snapshot.get(QA_FIFTH_PROJECTION_PATH)
+    if (_recovery_document_blob(projection) != QA_SPENT50_PROJECTION_BLOB
+            or canonical_json(projection) != canonical_json(rebuild_projection(snapshot, RECOVERY_OPERATION_ID))):
+        raise VerticalInvariantError("POLICY_DENIED", "spent QA preparation cached projection differs")
+    reviewer, events = validate_qa_fifth_predecessor(snapshot)
+    terminal = qa_fifth_terminal(snapshot)
+    if (len(events) != 50 or [row["sequence"] for row in events] != list(range(1, 51))
+            or [row["event_type"] for row in events[45:]] != ["operation.needs-user"] * 5
+            or projection["generation"] != 1 or projection["status"] != "NEEDS_USER"
+            or projection["expected_feature_revision"] != 1
+            or any(path in snapshot.files for path in
+                   (QA_REPLACEMENT_SEAL_PATH, QA_SECOND_SEAL_PATH, QA_THIRD_SEAL_PATH,
+                    QA_FOURTH_SEAL_PATH, QA_FIFTH_SEAL_PATH))
+            or terminal["outcome"] != "UNKNOWN"
+            or terminal["observation"] != {"conclusion": None, "lookup_state": "LAUNCHED",
+                "reason": "worker_unresolved", "run_id": 38699515120, "status": "in_progress"}):
+        raise VerticalInvariantError("POLICY_DENIED", "spent QA preparation fixed stopped boundary differs")
+    return {"schema_version": "ai-sdlc.v03-spent50-preparation/v1",
+            "history_event_count": 50, "direct_document_count": 39, "inherited_document_count": 4,
+            "accepted_reviewer_run_id": reviewer["sealed"]["run_id"],
+            "preserved_qa_outcome": terminal["outcome"], "history_pin_verified": True,
+            "fresh_reviewer_reread_performed": False, "fresh_worker_observation_performed": False,
+            "execution_enabled": False}
+

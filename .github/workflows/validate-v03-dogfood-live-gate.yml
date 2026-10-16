@@ -4420,7 +4420,9 @@ jobs:
           GH_AW_ACTIONS_ROOT: ${{ runner.temp }}/v03-detector-test-actions
           V03_ORDINAL2_DETECTOR_LOG_PATH: ${{ runner.temp }}/v03-ordinal2-detector.log
         if: ${{ !cancelled() }}
-        run: PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined --exclude-group cache --exclude-group qa-joined --exclude-group qa-safety --exclude-group qa2-joined --exclude-group qa2-safety --exclude-group qa3-joined --exclude-group qa3-safety --exclude-group current-v3 --exclude-group qa4-joined --exclude-group qa4-safety --exclude-group qa5-joined --exclude-group qa5-safety
+        run: |
+          PYTHONPATH=scripts python -u -c "from validate_v03_dogfood_runtime_driver import qa_spent50_preparation_tests; qa_spent50_preparation_tests()"
+          PYTHONPATH=scripts python -u scripts/validate_v03_dogfood_runtime_driver.py --exclude-group joined --exclude-group cache --exclude-group qa-joined --exclude-group qa-safety --exclude-group qa2-joined --exclude-group qa2-safety --exclude-group qa3-joined --exclude-group qa3-safety --exclude-group current-v3 --exclude-group qa4-joined --exclude-group qa4-safety --exclude-group qa5-joined --exclude-group qa5-safety
       - name: Observe immutable historical Worker through read-only GitHub API
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:

@@ -10762,6 +10762,91 @@ def qa_fifth_pre_effect_rejection_tests():
 
 
 
+
+def qa_spent50_preparation_tests():
+    """Read exact Git snapshot bytes; pure checks cannot create execution authority."""
+    import hashlib, json, subprocess
+    from copy import deepcopy
+    from pathlib import Path
+    from operator_store_model import StoreSnapshot, canonical_json
+    from operator_vertical import VerticalInvariantError
+    import v03_dogfood_full_composition as c
+    root = Path(__file__).resolve().parents[1]
+    pins = {**c.QA_SPENT50_HISTORY_BLOBS, **c.QA_SPENT50_DOCUMENT_BLOBS}
+    ancestry = {**c.REVIEWER_DOCUMENT_BLOBS, **c.REVIEWER_POST_MODEL_DOCUMENT_BLOBS,
+                **c.REVIEWER_STRUCTURED_PRIOR_BLOBS, **c.REVIEWER_INLINE_PRIOR_BLOBS}
+    inherited = {path: sha for path, sha in ancestry.items() if path not in pins}
+    expect(len(c.QA_SPENT50_HISTORY_BLOBS) == 50 and len(c.QA_SPENT50_DOCUMENT_BLOBS) == 39
+           and len(inherited) == 4
+           and all(pins[path] == sha for path, sha in ancestry.items() if path in pins),
+           "spent QA preparation manifest differs")
+    pins = {**pins, **inherited, c.QA_FIFTH_PROJECTION_PATH: c.QA_SPENT50_PROJECTION_BLOB}
+    files = {}
+    for path, expected in pins.items():
+        raw = subprocess.run(["git", "show", c.QA_SPENT50_STORE + ":" + path], cwd=root,
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).stdout
+        expect(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() == expected,
+               "spent QA preparation fixture Git blob differs")
+        files[path] = json.loads(raw)
+    snapshot = StoreSnapshot(c.QA_SPENT50_STORE, files)
+    original = canonical_json(snapshot.files)
+    expected_summary = {"schema_version": "ai-sdlc.v03-spent50-preparation/v1",
+        "history_event_count": 50, "direct_document_count": 39, "inherited_document_count": 4,
+        "accepted_reviewer_run_id": 38074007355, "preserved_qa_outcome": "UNKNOWN",
+        "history_pin_verified": True, "fresh_reviewer_reread_performed": False,
+        "fresh_worker_observation_performed": False, "execution_enabled": False}
+    expect(c.validate_qa_spent50_preparation(snapshot) == expected_summary,
+           "spent QA preparation summary overclaims authority")
+    def rejected(changed, label):
+        before = canonical_json(changed.files)
+        try:
+            c.validate_qa_spent50_preparation(changed)
+        except (VerticalInvariantError, c.V03DogfoodCompositionError):
+            pass
+        else:
+            raise AssertionError("spent QA preparation accepted " + label)
+        expect(canonical_json(changed.files) == before, "rejected pure check changed input")
+    for path in pins:
+        changed = deepcopy(snapshot)
+        changed.files.pop(path)
+        rejected(changed, "missing fixed/inherited document")
+        changed = deepcopy(snapshot)
+        changed.files[path]["unexpected"] = True
+        rejected(changed, "altered fixed/inherited document")
+    # Every old stop remains independently pinned, including the unresolved last one.
+    for path in list(c.QA_SPENT50_HISTORY_BLOBS)[45:]:
+        changed = deepcopy(snapshot)
+        changed.files[path]["event_type"] = "dispatch.launch.lookup-recorded"
+        rejected(changed, "replaced old stop")
+    for value in (None, {}):
+        for suffix in ("dogfood-qa-replacement-5/unknown.json",
+                       "unrecognized-recovery/authorization.json", "events/unknown.json"):
+            changed = deepcopy(snapshot)
+            changed.files["state/operator/v1/operations/" + c.RECOVERY_OPERATION_ID + "/" + suffix] = value
+            rejected(changed, "unknown operation namespace")
+    changed = deepcopy(snapshot)
+    changed.files[c.QA_FIFTH_SEAL_PATH] = {}
+    rejected(changed, "invented accepted result")
+    changed = deepcopy(snapshot)
+    changed.files[c.QA_FIFTH_TERMINAL_PATH]["outcome"] = "EXECUTION_FAILED"
+    changed.files[c.QA_FIFTH_TERMINAL_PATH]["observation"].update(
+        status="completed", conclusion="failure", reason="worker_unsuccessful")
+    rejected(changed, "later Worker fact substituted for original UNKNOWN")
+    changed = deepcopy(snapshot)
+    changed.files[c.QA_FIFTH_CLAIM_PATH]["create_consumed"] = False
+    rejected(changed, "reset consumed claim")
+    changed = deepcopy(snapshot)
+    changed.files[c.QA_FIFTH_PROJECTION_PATH]["status"] = "WAITING_EXTERNAL"
+    rejected(changed, "unlocked projection")
+    changed = StoreSnapshot("not-a-sha", deepcopy(snapshot.files))
+    rejected(changed, "invalid Store identity")
+    expect(c.validate_qa_spent50_preparation(snapshot) == expected_summary
+           and canonical_json(snapshot.files) == original,
+           "pure preparation replay changed snapshot or issued authority")
+    print("- spent QA preparation: history50/directdocs39/inheritedReviewer4; UNKNOWN preserved; "
+          "fresh Reviewer/Worker=false; execution_enabled=false; writes/POST/model=0")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -10804,6 +10889,7 @@ def main():
     # Independent diagnostics continue, but no failing group can become a pass.
     # In particular, a CAS negative failure cannot hide the fresh full pipeline.
     groups = (
+        ("spent QA fixed50 preparation", qa_spent50_preparation_tests),
         ("QA5 actual joined lifecycle", qa_fifth_joined_factory_tests),
         ("QA5 frozen CAS and replay", qa_fifth_admission_tests),
         ("QA5 non-PASS terminal", qa_fifth_nonpass_tests),
