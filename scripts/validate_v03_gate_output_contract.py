@@ -136,6 +136,35 @@ def qa5_observed_bytes(relative):
           == QA5_OBSERVED_BLOBS[relative], "QA5 observed source blob differs")
     return raw
 
+
+CURRENT_V5_SOURCE = "fb510b588b12637399e45557c1bd60e46a62d595"
+CURRENT_V5_BLOBS = {
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v5-local.md": "d2f6ff9fc8a11795ceecc0810dd28b808551c8cc",
+    ".github/workflows/ai-sdlc-gh-aw-qa-deepseek-v03-observed-v5-local.lock.yml": "8d5aece059aac59789d3cc23924ac22d9d8f374c",
+    "scripts/v03_dogfood_gate_output_v4.py": "39c0a171bed758651fdbea69b3d46ffb9a5b1b3d",
+    "scripts/v03_detector_observation.mjs": "85d792241d3d20b0f1051d01e1054c608bfcabdc",
+}
+
+def current_v5_bytes(relative, *, source_sha=CURRENT_V5_SOURCE, source_root=None):
+    check(relative in CURRENT_V5_BLOBS, "v5 read escaped fixed source closure")
+    check(type(source_sha) is str and len(source_sha) == 40
+          and all(c in "0123456789abcdef" for c in source_sha), "v5 source SHA invalid")
+    raw = subprocess.run(["git", "show", source_sha + ":" + relative],
+                         cwd=ROOT if source_root is None else Path(source_root).resolve(strict=True), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         timeout=30, check=True).stdout
+    check(hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+          == CURRENT_V5_BLOBS[relative], "v5 source blob differs")
+    return raw
+
+def current_v5_consumer_contract(context, workflow_sha, consumer_root=None):
+    check(context["provenance"]["producer_source_sha"] == workflow_sha,
+          "v5 context differs from actual consumer installation")
+    for relative in CURRENT_V5_BLOBS:
+        check(current_v5_bytes(relative, source_sha=workflow_sha, source_root=consumer_root) == current_v5_bytes(relative),
+              "v5 consumer installation differs from fixed producer")
+        check((ROOT / relative).read_bytes() == current_v5_bytes(relative),
+              "v5 executed checkout differs from selected producer")
+
 def generated_gate_config_inputs(lock, candidate):
     rows = [step for step in lock["jobs"]["agent"]["steps"]
             if "GH_AW_FILE_CONFIG" in step.get("env", {})
@@ -201,7 +230,8 @@ def selected_config(role, candidate=577, *, variant="structured-local", generate
     check(variant in ("structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local", "observed-v5-local"), "unsupported test workflow variant")
     check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-v4-local", "observed-qa5-local", "observed-v5-local"} or role == "qa", "observed workflow is QA-only")
     stem = roundtrip_workflow_stem(role, variant)
-    lock = yaml.safe_load(qa5_observed_bytes(".github/workflows/" + stem + ".lock.yml")
+    lock = yaml.safe_load(current_v5_bytes(".github/workflows/" + stem + ".lock.yml")
+                          if variant == "observed-v5-local" else qa5_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa5-local" else current_v3_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant in {"observed-v3-local", "observed-qa4-local"} else qa3_observed_bytes(".github/workflows/" + stem + ".lock.yml")
                           if variant == "observed-qa3-local" else qa2_observed_bytes(".github/workflows/" + stem + ".lock.yml")
@@ -214,7 +244,7 @@ def selected_config(role, candidate=577, *, variant="structured-local", generate
         check(len(values) == 1, "ambiguous compiled " + name)
         return values[0]
     config_text = unique_env("GH_AW_SAFE_OUTPUTS_CONFIG")
-    if not generated_config and variant != "observed-qa5-local":
+    if not generated_config and variant not in {"observed-qa5-local", "observed-v5-local"}:
         # Historical fixtures retain their prior pre-expanded approximation.
         config_text = config_text.replace("${GH_AW_INPUT_CANDIDATE_PR_NUMBER}", str(candidate))
         check("${" not in config_text, "unresolved Safe Outputs config")
@@ -802,6 +832,21 @@ def roundtrip_source_contract(role, variant, lock, metadata):
     check(metadata["GH_AW_WORKFLOW_SOURCE_URL"] ==
           "https://github.com/dream-xin/ai-sdlc/blob/main/.github/workflows/" + stem + ".md",
           "roundtrip source footer differs")
+    if variant == "observed-v5-local":
+        check(role == "qa", "v5 source is QA-only")
+        for relative in CURRENT_V5_BLOBS:
+            check((ROOT / relative).read_bytes() == current_v5_bytes(relative),
+                  "v5 checkout differs from selected producer")
+        check(lock == yaml.safe_load(current_v5_bytes(".github/workflows/" + stem + ".lock.yml")),
+              "v5 lock differs from selected producer")
+        import v03_dogfood_gate_output_v4 as current
+        check(Path(current.__file__).read_bytes() == current_v5_bytes("scripts/v03_dogfood_gate_output_v4.py"),
+              "v5 executed renderer differs from selected v4 source")
+        for job, identifier in (("agent", "gate_render"), ("safe_outputs", "gate_validate")):
+            rows = [step for step in lock["jobs"][job]["steps"] if step.get("id") == identifier]
+            check(len(rows) == 1 and "v03_dogfood_gate_output_v4.py" in rows[0]["run"],
+                  "v5 selected workflow lost v4 boundary")
+        generated_gate_config_inputs(lock, 552)
     if variant == "observed-qa5-local":
         check(role == "qa", "QA5 source is QA-only")
         for relative in QA5_OBSERVED_BLOBS:
@@ -871,21 +916,23 @@ def roundtrip_source_contract(role, variant, lock, metadata):
 
 def verify_context_roundtrip(role, context, *, root, actions_root,
                              verdict="PASS", run_id=9001, comment_id=9002,
-                             workflow_sha="e" * 40, variant="structured-local"):
+                             workflow_sha="e" * 40, variant="structured-local", consumer_root=None):
     """Carry an actual producer-built context through the official output boundary."""
     check(Path(root).resolve() == ROOT, "roundtrip repository root differs")
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "context role differs")
     original = canonical(context)
+    if variant == "observed-v5-local":
+        current_v5_consumer_contract(context, workflow_sha, consumer_root)
     renderer = subject
     if variant == "observed-qa3-local":
         import v03_dogfood_gate_output_v2 as renderer
-    elif variant == "observed-qa5-local":
+    elif variant in {"observed-qa5-local", "observed-v5-local"}:
         import v03_dogfood_gate_output_v4 as renderer
     elif variant in {"observed-v3-local", "observed-qa4-local"}:
         import v03_dogfood_gate_output_v3 as renderer
-    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"}, "roundtrip variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"} or role == "qa", "observed roundtrip is QA-only")
+    check(variant in {"structured-local", "structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"}, "roundtrip variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"} or role == "qa", "observed roundtrip is QA-only")
     payload = (inline_payload(role, verdict) if variant != "structured-local"
                else role_payload(role, verdict))
     for key in subject.PAYLOAD_IDENTITY_KEYS:
@@ -901,7 +948,7 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
         official = Official(resolve_actions_root(actions_root), Path(directory), config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
         raw_ledger = None
-        if variant == "observed-qa5-local":
+        if variant in {"observed-qa5-local", "observed-v5-local"}:
             generated_bytes = prepare_generated_gate_config(official, lock, payload["candidate_pr_number"])
             raw_ledger = official.mcp_rpc({"body": SENTINEL, "data": payload,
                 "secrecy": "public", "integrity": "high"},
@@ -912,9 +959,9 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
             official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
         raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role, renderer=renderer, raw_ledger=raw_ledger,
-            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"},
-            render_config=config if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"} else None)
-        if variant == "observed-qa5-local":
+            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"},
+            render_config=config if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"} else None)
+        if variant in {"observed-qa5-local", "observed-v5-local"}:
             check(Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]).read_bytes() == generated_bytes,
                   "QA5 nonjoined pipeline rewrote generated config")
     check(canonical(context) == original, "roundtrip mutated producer context")
@@ -924,23 +971,25 @@ def verify_context_roundtrip(role, context, *, root, actions_root,
 
 def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                                     verdict="PASS", run_id=9001, comment_id=9002,
-                                    workflow_sha="e" * 40, variant="structured-inline-local"):
+                                    workflow_sha="e" * 40, variant="structured-inline-local", consumer_root=None):
     """Synthetic recommendation through actual CLI/MCP bytes and official publication.
 
     The caller must supply the context frozen by its real production dispatch
     planner. Detection success is synthetic here; scan-byte identity is real.
     """
-    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"}, "joined variant differs")
-    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"} or role == "qa", "observed joined workflow is QA-only")
+    check(variant in {"structured-inline-local", "observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"}, "joined variant differs")
+    check(variant not in {"observed-inline-local", "observed-qa2-local", "observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"} or role == "qa", "observed joined workflow is QA-only")
     import base64
     check(Path(root).resolve() == ROOT, "joined repository root differs")
     subject.validate_context(context)
     check(context["identity"]["role"] == role, "joined context role differs")
     original = canonical(context)
+    if variant == "observed-v5-local":
+        current_v5_consumer_contract(context, workflow_sha, consumer_root)
     renderer = subject
     if variant == "observed-qa3-local":
         import v03_dogfood_gate_output_v2 as renderer
-    elif variant == "observed-qa5-local":
+    elif variant in {"observed-qa5-local", "observed-v5-local"}:
         import v03_dogfood_gate_output_v4 as renderer
     elif variant in {"observed-v3-local", "observed-qa4-local"}:
         import v03_dogfood_gate_output_v3 as renderer
@@ -971,8 +1020,8 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
                "config": config, "meta": compiled_tools_metadata(lock, payload["candidate_pr_number"]),
                "observed_projection": OBSERVED_CLI_PROJECTION[role], "payload": payload,
                "string_target": variant == "observed-qa3-local",
-               "omit_target_labels": variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"}}
-        if variant == "observed-qa5-local":
+               "omit_target_labels": variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"}}
+        if variant in {"observed-qa5-local", "observed-v5-local"}:
             row["generated_config"] = generated_gate_config_inputs(lock, payload["candidate_pr_number"])
         (temporary / "cases.json").write_bytes(canonical([row]))
         container = "v03-joined-" + temporary.name
@@ -1012,7 +1061,7 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             check(type(subject.strict_json(rows[0])["item_number"]) is str and
                   subject.strict_json(rows[0])["item_number"] == str(payload["candidate_pr_number"]),
                   "QA3 actual CLI ledger did not preserve canonical string target")
-        if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"}:
+        if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"}:
             entry = subject.strict_json(rows[0])
             check(not any(key in entry for key in ("item_number", "pr_number", "pr")) and
                   entry.get("secrecy") == "public" and entry.get("integrity") == "high",
@@ -1021,7 +1070,7 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
         official_dir.mkdir()
         official = Official(actions, official_dir, config, validation, metadata,
                             run_id=run_id, comment_id=comment_id, workflow_sha=workflow_sha)
-        if variant == "observed-qa5-local":
+        if variant in {"observed-qa5-local", "observed-v5-local"}:
             generated_bytes = prepare_generated_gate_config(official, lock, payload["candidate_pr_number"])
             check(result.get("generated_config_sha256") == hashlib.sha256(generated_bytes).hexdigest(),
                   "QA5 actual CLI/host generated config bytes differ")
@@ -1031,11 +1080,11 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"] = str(config_path)
         returned_raw, collected, artifact, proof, publication, body = _roundtrip(
             official, payload, context, role, raw_ledger=raw, renderer=renderer,
-            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local"},
-            render_config=config if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local"} else None)
+            render_cli=variant in {"observed-qa3-local", "observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"},
+            render_config=config if variant in {"observed-v3-local", "observed-qa4-local", "observed-qa5-local", "observed-v5-local"} else None)
         check(returned_raw == raw and proof["raw_ndjson_sha256"] == result["raw_ndjson_sha256"],
               "official boundary substituted genuine MCP ledger")
-        if variant == "observed-qa5-local":
+        if variant in {"observed-qa5-local", "observed-v5-local"}:
             check(Path(official.env["GH_AW_SAFE_OUTPUTS_CONFIG_PATH"]).read_bytes() == generated_bytes,
                   "QA5 pipeline rewrote original generated config")
     check(canonical(context) == original, "joined test mutated authenticated context")
@@ -1044,10 +1093,12 @@ def verify_joined_context_roundtrip(role, context, *, root, actions_root,
             "metadata_suffix": publication["suffix"],
             "cli_evidence": {"workflow_file": roundtrip_workflow_stem(role, variant) + ".lock.yml",
                              "source_variant": variant,
-                             "fixed_source_sha": (QA5_OBSERVED_SOURCE if variant == "observed-qa5-local" else CURRENT_V3_SOURCE if variant in {"observed-v3-local", "observed-qa4-local"} else QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
+                             **({"consumer_source_sha": workflow_sha,
+                                 "source_blobs": dict(CURRENT_V5_BLOBS)} if variant == "observed-v5-local" else {}),
+                             "fixed_source_sha": (CURRENT_V5_SOURCE if variant == "observed-v5-local" else QA5_OBSERVED_SOURCE if variant == "observed-qa5-local" else CURRENT_V3_SOURCE if variant in {"observed-v3-local", "observed-qa4-local"} else QA3_OBSERVED_SOURCE if variant == "observed-qa3-local" else
                                                   QA2_OBSERVED_SOURCE if variant == "observed-qa2-local" else None),
                              "generated_config_sha256": result.get("generated_config_sha256"),
-                             "renderer_version": "v4" if variant == "observed-qa5-local" else "v3" if variant in {"observed-v3-local", "observed-qa4-local"} else "v2" if variant == "observed-qa3-local" else "v1",
+                             "renderer_version": "v4" if variant in {"observed-qa5-local", "observed-v5-local"} else "v3" if variant in {"observed-v3-local", "observed-qa4-local"} else "v2" if variant == "observed-qa3-local" else "v1",
                              "provider_requests": 2, "tool_calls": 1, "linked_feedback": True,
                              "raw_ndjson_sha256": result["raw_ndjson_sha256"],
                              "threat_verdict": "synthetic-offline-only"}}
@@ -2821,6 +2872,35 @@ def denial_protocol_tests(actions_root):
 
 
 
+def current_v5_source_tests():
+    lock, config, _, metadata = selected_config("qa", variant="observed-v5-local")
+    roundtrip_source_contract("qa", "observed-v5-local", lock, metadata)
+    check(config["add_comment"]["target"] == "${GH_AW_INPUT_CANDIDATE_PR_NUMBER}",
+          "v5 selected config was pre-expanded")
+    previous_lock, _, _, _ = selected_config("qa", variant="observed-qa5-local")
+    try:
+        roundtrip_source_contract("qa", "observed-v5-local", previous_lock, metadata)
+    except AssertionError as error:
+        check(str(error) == "v5 lock differs from selected producer", "v5 old-lock rejection differs")
+    else:
+        raise AssertionError("v5 accepted previous producer lock")
+    try:
+        selected_config("reviewer", variant="observed-v5-local")
+    except AssertionError as error:
+        check(str(error) == "observed workflow is QA-only", "v5 role rejection differs")
+    else:
+        raise AssertionError("v5 accepted a Reviewer producer")
+    context = fixture_context(inline_payload("qa", "PASS"))
+    try:
+        current_v5_consumer_contract(context, "f" * 40)
+    except AssertionError as error:
+        check(str(error) == "v5 context differs from actual consumer installation",
+              "v5 consumer mismatch rejection differs")
+    else:
+        raise AssertionError("v5 accepted a mismatched consumer")
+    print("v5 source contract: original generated config, four fixed blobs, role/old-lock/consumer negatives passed.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--actions-root", type=Path)
@@ -2841,6 +2921,7 @@ def main():
         return
     observer_boundary_tests()
     scanned_receipt_tests()
+    current_v5_source_tests()
     with tempfile.TemporaryDirectory(prefix="v03-gate-output-") as directory:
         sanitizer_closure_tests(actions_root, Path(directory))
         v4_generated_config_tests(actions_root, Path(directory))
